@@ -206,6 +206,54 @@ menuitem:is(:hover, [_moz-menuactive="true"]):not([disabled]) {
     color: var(--toolbarbutton-icon-fill, var(--lwt-popup-color, var(--lwt-text-color))) !important;
 }
 
+/* Subview Hover (Hamburger menu text color) */
+panelview .toolbarbutton-1:not([disabled]):is(:hover, :active),
+.subviewbutton:not([disabled]):not(#appMenu-zoomReduce-button2, #appMenu-zoomReset-button2, #appMenu-zoomEnlarge-button2, #appMenu-fullscreen-button2):is(:hover, :active) {
+    color: var(--toolbarbutton-icon-fill, var(--lwt-popup-color, var(--lwt-text-color))) !important;
+}
+
+/* Menubar */
+menubar > menu[open] {
+    border-bottom: 2px solid var(--toolbarbutton-icon-fill, var(--lwt-popup-color, var(--lwt-text-color))) !important;
+}
+
+/* Separator */
+menuseparator::before {
+    border-top: 1px solid var(--toolbar-field-border, rgba(255,255,255,0.15)) !important;
+}
+
+/* Checkbox & Radio Items in Menus */
+menuitem[type="checkbox"] > .menu-icon,
+menuitem[type="radio"] > .menu-icon {
+    appearance: none !important;
+    -moz-default-appearance: none !important;
+    width: 14px !important;
+    height: 14px !important;
+    display: inline-block !important;
+    box-sizing: border-box !important;
+    content: "" !important;
+    list-style-image: none !important;
+    border: 1px solid transparent !important;
+    outline: none !important;
+    box-shadow: none !important;
+    background-color: var(--toolbar-field-background-color, rgba(255,255,255,0.1)) !important;
+    border-radius: 50%;
+    transition: all 120ms ease;
+}
+
+menuitem[type="checkbox"] > .menu-icon {
+    border-radius: 4px;
+}
+
+menuitem[type="checkbox"][checked] > .menu-icon,
+menuitem[type="radio"][checked] > .menu-icon {
+    background-color: var(--toolbarbutton-icon-fill, var(--lwt-popup-color, var(--lwt-text-color))) !important;
+}
+
+menuitem:is(:hover, [_moz-menuactive="true"]) > .menu-icon {
+    border-color: var(--toolbarbutton-icon-fill, var(--lwt-popup-color, var(--lwt-text-color))) !important;
+}
+
 findbar {
     background-color: var(--lwt-accent-color) !important;
     color: var(--lwt-text-color) !important;
@@ -217,7 +265,7 @@ findbar {
     color: var(--lwt-text-color) !important;
 }
 
-/* Popup Notifications & Message Bars */
+/* Popup Notifications, Fullscreen & Pointerlock Warnings */
 moz-message-bar,
 notification-message,
 notification,
@@ -230,13 +278,15 @@ infobar,
 .notification-bar,
 .notification-box,
 [value="popup-blocked"],
-.notificationbox-stack message-bar {
-    --message-bar-background-color: var(--lwt-popup-background-color, var(--lwt-accent-color)) !important;
-    --message-bar-text-color: var(--lwt-popup-color, var(--lwt-text-color)) !important;
-    --message-bar-icon-color: var(--toolbarbutton-icon-fill, var(--lwt-popup-color, var(--lwt-text-color))) !important;
-    background-color: var(--lwt-popup-background-color, var(--lwt-accent-color)) !important;
-    color: var(--lwt-popup-color, var(--lwt-text-color)) !important;
-    border-bottom: 1px solid var(--toolbar-field-border, rgba(255,255,255,0.15)) !important;
+.notificationbox-stack message-bar,
+#fullscreen-warning,
+#pointerlock-warning {
+    --message-bar-background-color: var(--lwt-popup-background-color, var(--lwt-accent-color, #1c1b22)) !important;
+    --message-bar-text-color: var(--lwt-popup-color, var(--lwt-text-color, #fbfbfe)) !important;
+    --message-bar-icon-color: var(--toolbarbutton-icon-fill, var(--lwt-popup-color, var(--lwt-text-color, #fbfbfe))) !important;
+    background-color: var(--lwt-popup-background-color, var(--lwt-accent-color, #1c1b22)) !important;
+    color: var(--lwt-popup-color, var(--lwt-text-color, #fbfbfe)) !important;
+    border: 1px solid var(--lwt-popup-border-color, var(--toolbar-field-border, rgba(255,255,255,0.15))) !important;
     border-radius: 6px !important;
 }
 
@@ -277,6 +327,27 @@ notification-message moz-button.close:hover {
     background-color: var(--toolbarbutton-hover-background, rgba(255, 255, 255, 0.1)) !important;
     color: var(--toolbarbutton-icon-fill, var(--lwt-popup-color, var(--lwt-text-color))) !important;
     fill: var(--toolbarbutton-icon-fill, var(--lwt-popup-color, var(--lwt-text-color))) !important;
+}
+
+/* Exit Full Screen & Pointerlock Buttons */
+#fullscreen-exit-button,
+#pointerlock-exit-button {
+    appearance: none !important;
+    -moz-default-appearance: none !important;
+    background-color: transparent !important;
+    color: var(--lwt-popup-color, var(--lwt-text-color, #fbfbfe)) !important;
+    border: 1px solid var(--lwt-popup-border-color, var(--toolbar-field-border, rgba(255, 255, 255, 0.15))) !important;
+    border-radius: 6px !important;
+    padding: 6px 12px !important;
+    margin-left: 12px !important;
+    transition: all 120ms ease;
+}
+
+#fullscreen-exit-button:hover,
+#pointerlock-exit-button:hover {
+    background-color: var(--toolbarbutton-hover-background, rgba(255, 255, 255, 0.1)) !important;
+    border-color: var(--toolbarbutton-icon-fill, var(--lwt-popup-color, var(--lwt-text-color))) !important;
+    color: var(--toolbarbutton-icon-fill, var(--lwt-popup-color, var(--lwt-text-color))) !important;
 }
 
 tooltip {
