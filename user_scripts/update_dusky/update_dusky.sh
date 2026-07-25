@@ -315,7 +315,7 @@ declare -ra UPDATE_SEQUENCE=(
     "U | wallpaper_selector.py --build-cache"
     "S | dusky_service_manager.sh"
 #    "U | append_defaults_keybinds_edit_here.sh"
-    "U | ignore-fail | dusky_matugen_config_tui.sh --smart"
+    "U | ignore-fail | tui_matugen.py --smart",
 #    "U | ignore-fail | dusky_firefox_tui.sh --sync --all"
     "U | ignore-fail | hypr_anim.sh --current"
     "U | ignore-fail | theme_ctl.sh refresh"

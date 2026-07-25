@@ -91,7 +91,7 @@ INSTALL_SEQUENCE=(
     "U | 135_battery_notify_service.sh"
     "U | 137_snapper_isolation_subvolume.sh --auto"
 
-    "U | dusky_matugen_config_tui.sh --smart"
+    "U | tui_matugen.py --smart"
 
     "U | 140_fc_cache_fv.sh"
     "U | 145_matugen_directories.py"

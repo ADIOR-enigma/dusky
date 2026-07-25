@@ -684,7 +684,7 @@ UPDATE_SEQUENCE = [
     "U | update_checker.sh --num",
     "U | wallpaper_selector.py --build-cache",
     "S | dusky_service_manager.sh",
-    "U | ignore-fail | dusky_matugen_config_tui.sh --smart",
+    "U | ignore-fail | tui_matugen.py --smart",
     "U | ignore-fail | hypr_anim.sh --current",
     "U | ignore-fail | theme_ctl.sh refresh",
     "U | ignore-fail | update_counter.sh",
@@ -736,7 +736,7 @@ def parse_manifest(sequence: list[str]) -> list[DuskyTask]:
         DuskyTask("Apply Bare Updates (Reset)", 'GIT', False, False, [])
     ]
 
-    interactive_heuristics = {'reboot_post_lua_update.sh', 'dusky_matugen_config_tui.sh', 'dusky_firefox_tui.sh'}
+    interactive_heuristics = {'reboot_post_lua_update.sh', 'tui_matugen.py', 'dusky_firefox_tui.sh'}
 
     for entry in sequence:
         entry = entry.strip()

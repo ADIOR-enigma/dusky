@@ -64,7 +64,7 @@ scripts = [
     "U | if:battery | 135_battery_notify_service.sh --auto",
     "U | if:btrfs | 137_snapper_isolation_subvolume.sh --auto",
     "U | 140_fc_cache_fv.sh",
-    "U | if:command:matugen | dusky_matugen_config_tui.sh --smart",
+    "U | if:command:matugen | tui_matugen.py --smart",
     "U | if:command:matugen | 145_matugen_directories.py",
     "U | 155_blur_shadow_opacity.sh",
     "U | 160_theme_ctl.py",

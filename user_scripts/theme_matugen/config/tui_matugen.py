@@ -1,0 +1,596 @@
+#!/usr/bin/env python3
+"""
+===============================================================================
+DUSKY TUI: MATUGEN THEME CONFIGURATOR SCHEMA
+===============================================================================
+Target: Arch Linux / Hyprland / Matugen dynamic TOML template manager.
+Python 3.14.6 implementation replacing legacy bash script dusky_matugen_config_tui.sh.
+"""
+
+import sys
+import shutil
+import argparse
+from pathlib import Path
+from typing import Any
+
+# Inject dusky_tui root into sys.path
+_DUSKY_ROOT = Path.home() / "user_scripts" / "dusky_tui"
+if str(_DUSKY_ROOT) not in sys.path:
+    sys.path.insert(0, str(_DUSKY_ROOT))
+
+from python.frontend.core_types import ConfigItem
+from python.engines.matugen import MatugenEngine
+
+# =============================================================================
+# 1. CORE APPLICATION ROUTING (REQUIRED)
+# =============================================================================
+ENGINE_TYPE = "matugen"
+TARGET_FILE = "~/.config/matugen/config.toml"
+APP_TITLE = "Matugen Theme Configurator"
+THEME_FILE = "~/.config/matugen/generated/dusky_tui.json"
+
+# =============================================================================
+# 2. UI & ENVIRONMENT BEHAVIOR
+# =============================================================================
+DEFAULT_MODE = "auto"
+ENABLE_USER_PRESETS = True
+USER_PRESETS_TAB = "Presets"
+
+# =============================================================================
+# 3. TABS DEFINITION
+# =============================================================================
+TABS = ["GTK & Qt", "System", "Apps", "Media & Misc", "Presets"]
+
+# Binary checking map for --smart scanning
+CHECK_CMDS: dict[str, str] = {
+    "waybar": "waybar",
+    "wlogout": "wlogout",
+    "rofi": "rofi",
+    "kitty": "kitty",
+    "opencode": "opencode",
+    "vscode": "vscodium",
+    "alacritty": "alacritty",
+    "neovim": "nvim",
+    "zed": "zeditor",
+    "yazi": "yazi",
+    "zathura": "zathura",
+    "tmux": "tmux",
+    "obsidian": "obsidian",
+    "obs": "obs",
+    "vesktop": "vesktop",
+    "beeper": "beeper",
+    "spicetify": "spicetify",
+    "pywalfox": "pywalfox",
+}
+
+# Track all explicitly registered keys for auto-discovery
+REGISTERED_KEYS: set[str] = set()
+
+# =============================================================================
+# 4. SCHEMA DEFINITION
+# =============================================================================
+SCHEMA: dict[int, list[ConfigItem]] = {
+    # -------------------------------------------------------------------------
+    # TAB 0: GTK & Qt
+    # -------------------------------------------------------------------------
+    0: [
+        ConfigItem(
+            label="GTK 3",
+            key="gtk3",
+            scope="DEFAULT",
+            type_="bool",
+            default=True,
+            group="GTK Theming",
+            extended_help="**GTK 3 Color Generation**\n\nGenerates `gtk-3.css` and links it to `~/.config/gtk-3.0/gtk.css` for adw-gtk3."
+        ),
+        ConfigItem(
+            label="GTK 4",
+            key="gtk4",
+            scope="DEFAULT",
+            type_="bool",
+            default=True,
+            group="GTK Theming",
+            extended_help="**GTK 4 / Libadwaita Generation**\n\nGenerates `gtk-4.css` and links libadwaita styling to `~/.config/gtk-4.0/`."
+        ),
+        ConfigItem(
+            label="Icon Theme",
+            key="icon_theme",
+            scope="DEFAULT",
+            type_="bool",
+            default=True,
+            group="Icons",
+            extended_help="**Icon Theme Setting**\n\nSets GTK interface icon-theme property."
+        ),
+        ConfigItem(
+            label="Qt5 CT",
+            key="qt5ct",
+            scope="DEFAULT",
+            type_="bool",
+            default=True,
+            group="Qt Theming",
+            extended_help="**Qt5 Color Palette**\n\nGenerates Matugen color scheme for Qt5 Configuration Tool."
+        ),
+        ConfigItem(
+            label="Qt6 CT",
+            key="qt6ct",
+            scope="DEFAULT",
+            type_="bool",
+            default=True,
+            group="Qt Theming",
+            extended_help="**Qt6 Color Palette**\n\nGenerates Matugen color scheme for Qt6 Configuration Tool."
+        ),
+    ],
+
+    # -------------------------------------------------------------------------
+    # TAB 1: SYSTEM
+    # -------------------------------------------------------------------------
+    1: [
+        ConfigItem(
+            label="Hyprland",
+            key="hyprland",
+            scope="DEFAULT",
+            type_="bool",
+            default=True,
+            group="Compositor",
+            extended_help="**Hyprland Color Scheme**\n\nGenerates `hyprland-colors.lua` and reloads Hyprland borders/colors."
+        ),
+        ConfigItem(
+            label="Hyprlock",
+            key="hyprlock",
+            scope="DEFAULT",
+            type_="bool",
+            default=True,
+            group="Screen Lock",
+            extended_help="**Hyprlock Theming**\n\nGenerates color definitions for the Hyprlock lock screen."
+        ),
+        ConfigItem(
+            label="Waybar",
+            key="waybar",
+            scope="DEFAULT",
+            type_="bool",
+            default=True,
+            group="Status Bar",
+            extended_help="**Waybar Styling**\n\nGenerates `waybar-colors.css` and sends SIGUSR2 to refresh active Waybar instances."
+        ),
+        ConfigItem(
+            label="Wlogout",
+            key="wlogout",
+            scope="DEFAULT",
+            type_="bool",
+            default=True,
+            group="Power Menu",
+            extended_help="**Wlogout Theme**\n\nGenerates color variables for the Wlogout session menu."
+        ),
+        ConfigItem(
+            label="Rofi",
+            key="rofi",
+            scope="DEFAULT",
+            type_="bool",
+            default=True,
+            group="Launcher",
+            extended_help="**Rofi Application Launcher**\n\nGenerates Rasi stylesheet `rofi-colors.rasi`."
+        ),
+        ConfigItem(
+            label="Dusky Control",
+            key="dusky_control_center",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Dusky Services",
+            extended_help="**Dusky Control Center Service**\n\nTriggers `dusky.service` systemd restart on theme changes."
+        ),
+        ConfigItem(
+            label="Dusky QuickPanal",
+            key="dusky_quickpanal",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Dusky Services",
+            extended_help="**Dusky QuickPanel Service**\n\nTriggers `dusky_quickpanal.service` systemd restart on theme changes."
+        ),
+        ConfigItem(
+            label="Hyprpolkit",
+            key="hyprpolkitagent",
+            scope="DEFAULT",
+            type_="bool",
+            default=True,
+            group="Authentication",
+            extended_help="**Hyprland Polkit Agent**\n\nRestarts `hyprpolkitagent` user service on theme updates."
+        ),
+    ],
+
+    # -------------------------------------------------------------------------
+    # TAB 2: APPS
+    # -------------------------------------------------------------------------
+    2: [
+        ConfigItem(
+            label="Kitty",
+            key="kitty",
+            scope="DEFAULT",
+            type_="bool",
+            default=True,
+            group="Terminals",
+            extended_help="**Kitty Terminal**\n\nGenerates `kitty-colors.conf` and reloads Kitty instances live via SIGUSR1."
+        ),
+        ConfigItem(
+            label="OpenCode",
+            key="opencode",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Editors",
+            extended_help="**OpenCode / VSCode Variant**\n\nGenerates theme JSON for OpenCode."
+        ),
+        ConfigItem(
+            label="VS Code",
+            key="vscode",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Editors",
+            extended_help="**Visual Studio Code / VSCodium**\n\nGenerates theme settings for VSCodium."
+        ),
+        ConfigItem(
+            label="Alacritty",
+            key="alacritty",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Terminals",
+            extended_help="**Alacritty Terminal**\n\nGenerates `alacritty-colors.toml`."
+        ),
+        ConfigItem(
+            label="Steam",
+            key="steam",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Gaming",
+            extended_help="**AdwSteamGtk / Steam**\n\nGenerates custom CSS for AdwSteamGtk."
+        ),
+        ConfigItem(
+            label="NeoVim",
+            key="neovim",
+            scope="DEFAULT",
+            type_="bool",
+            default=True,
+            group="Editors",
+            extended_help="**Neovim Text Editor**\n\nGenerates `neovim-colors.lua` and signals active Neovim processes."
+        ),
+        ConfigItem(
+            label="Zed Editor",
+            key="zed",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Editors",
+            extended_help="**Zed Code Editor**\n\nGenerates `zed-theme.json`."
+        ),
+        ConfigItem(
+            label="Yazi",
+            key="yazi",
+            scope="DEFAULT",
+            type_="bool",
+            default=True,
+            group="File Managers",
+            extended_help="**Yazi File Manager**\n\nGenerates Matugen palette for Yazi terminal file manager."
+        ),
+        ConfigItem(
+            label="Zathura",
+            key="zathura",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Document Viewers",
+            extended_help="**Zathura PDF Viewer**\n\nGenerates `zathura-colors` for zathurarc."
+        ),
+        ConfigItem(
+            label="Starship",
+            key="starship",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Shell Prompt",
+            extended_help="**Starship Shell Prompt**\n\nGenerates `starship-colors.toml`."
+        ),
+        ConfigItem(
+            label="Tmux",
+            key="tmux",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Terminal Multiplexers",
+            extended_help="**Tmux Terminal Multiplexer**\n\nGenerates `tmux-colors.conf`."
+        ),
+        ConfigItem(
+            label="Obsidian",
+            key="obsidian",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Productivity",
+            extended_help="**Obsidian Knowledge Base**\n\nGenerates custom CSS snippet for Obsidian themes."
+        ),
+    ],
+
+    # -------------------------------------------------------------------------
+    # TAB 3: MEDIA & MISC
+    # -------------------------------------------------------------------------
+    3: [
+        ConfigItem(
+            label="OBS Studio",
+            key="obs",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Media Production",
+            extended_help="**OBS Studio Broadcaster**\n\nGenerates `obs.obt` theme file."
+        ),
+        ConfigItem(
+            label="Vesktop",
+            key="vesktop",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Communication",
+            extended_help="**Vesktop Discord Client**\n\nGenerates Midnight Discord stylesheet `midnight-discord.css`."
+        ),
+        ConfigItem(
+            label="Beeper",
+            key="beeper",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Communication",
+            extended_help="**Beeper Chat**\n\nGenerates custom CSS for Beeper."
+        ),
+        ConfigItem(
+            label="Spicetify",
+            key="spicetify",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Audio",
+            extended_help="**Spicetify Spotify Client**\n\nGenerates `spotify-colors.ini` for Spicetify themes."
+        ),
+        ConfigItem(
+            label="Cava",
+            key="cava",
+            scope="DEFAULT",
+            type_="bool",
+            default=True,
+            group="Audio Visualizer",
+            extended_help="**Cava Audio Visualizer**\n\nGenerates `cava-colors.ini` and reloads Cava via SIGUSR1."
+        ),
+        ConfigItem(
+            label="Dump All Matugen Colors",
+            key="master_dump",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Developer Tools",
+            extended_help="**Master Dump Palette**\n\nGenerates complete raw JSONL dump of all Matugen colors."
+        ),
+        ConfigItem(
+            label="Btop",
+            key="btop",
+            scope="DEFAULT",
+            type_="bool",
+            default=True,
+            group="System Monitors",
+            extended_help="**Btop System Monitor**\n\nGenerates `btop-colors.theme` for Btop resource monitor."
+        ),
+        ConfigItem(
+            label="Pywalfox",
+            key="pywalfox",
+            scope="DEFAULT",
+            type_="bool",
+            default=True,
+            group="Web Browsers",
+            extended_help="**Pywalfox Firefox Connector**\n\nGenerates Pywalfox colors and updates Firefox themes."
+        ),
+        ConfigItem(
+            label="Dusky Sites (Webpages)",
+            key="dusky_sites",
+            scope="DEFAULT",
+            type_="bool",
+            default=True,
+            group="Web Browser Styles",
+            extended_help="**Dusky Sites Web Theme**\n\nGenerates CSS overrides for web applications."
+        ),
+        ConfigItem(
+            label="Icon Colors",
+            key="papirus_icon_theme",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Icons",
+            extended_help="**Papirus Icon Folder Recolor**\n\nTriggers Papirus folder color generation script."
+        ),
+    ],
+
+    # -------------------------------------------------------------------------
+    # TAB 4: PRESETS
+    # -------------------------------------------------------------------------
+    4: [
+        ConfigItem(
+            label="Enable Core Standard Templates",
+            key="preset_standard",
+            scope="DEFAULT",
+            type_="preset",
+            default=None,
+            group="Presets",
+            preset_payload={
+                "gtk3": True, "gtk4": True, "icon_theme": True, "qt5ct": True, "qt6ct": True,
+                "hyprland": True, "hyprlock": True, "waybar": True, "wlogout": True, "rofi": True,
+                "hyprpolkitagent": True, "kitty": True, "neovim": True, "yazi": True,
+                "cava": True, "btop": True, "pywalfox": True, "dusky_sites": True
+            },
+            extended_help="**Standard Workstation Preset**\n\nEnables standard desktop suite (GTK, Hyprland, Waybar, Kitty, Neovim, Yazi, Btop)."
+        ),
+        ConfigItem(
+            label="Enable All Discovered & Known Templates",
+            key="preset_all_on",
+            scope="DEFAULT",
+            type_="preset",
+            default=None,
+            group="Presets",
+            preset_payload={
+                "__ALL_DEFAULTS__": False
+            },
+            extended_help="**Enable Everything**\n\nEnables all available template blocks inside config.toml."
+        ),
+        ConfigItem(
+            label="Reset to Factory Defaults",
+            key="preset_reset_defaults",
+            scope="DEFAULT",
+            type_="preset",
+            default=None,
+            group="Presets",
+            preset_payload={
+                "__ALL_DEFAULTS__": True
+            },
+            extended_help="**Reset to Defaults**\n\nResets all template blocks back to their initial coded defaults."
+        ),
+    ]
+}
+
+# Populate registered keys set
+for items in SCHEMA.values():
+    for item in items:
+        if item.type_ != "preset":
+            REGISTERED_KEYS.add(item.key)
+
+# =============================================================================
+# 5. DYNAMIC AUTO-DISCOVERY (DEFERRED LOAD)
+# =============================================================================
+def DEFERRED_LOAD() -> list[int]:
+    """
+    Scans `config.toml` for any [templates.<key>] block not registered in static tabs,
+    and dynamically injects them into a 'Discovered' tab.
+    """
+    cfg_file = Path(TARGET_FILE).expanduser().resolve()
+    if not cfg_file.exists():
+        return []
+
+    engine = MatugenEngine(config_path=cfg_file)
+    state = engine.load_state()
+
+    unmapped = [k for k in state.keys() if k not in REGISTERED_KEYS and "/" not in k]
+    if not unmapped:
+        return []
+
+    unmapped.sort()
+
+    # Find or add Discovered tab
+    disc_tab_name = "Discovered"
+    disc_tab_idx = len(TABS) - 1 # Insert before Presets if possible, or append
+    if "Presets" in TABS:
+        preset_idx = TABS.index("Presets")
+        TABS.insert(preset_idx, disc_tab_name)
+        disc_tab_idx = preset_idx
+        # Shift preset schema index
+        SCHEMA[disc_tab_idx + 1] = SCHEMA.pop(disc_tab_idx)
+    else:
+        TABS.append(disc_tab_name)
+        disc_tab_idx = len(TABS) - 1
+
+    disc_items: list[ConfigItem] = []
+    for key in unmapped:
+        item = ConfigItem(
+            label=key,
+            key=key,
+            scope="DEFAULT",
+            type_="bool",
+            default=True,
+            group="Auto-Discovered",
+            extended_help=f"**Auto-Discovered Template: {key}**\n\nFound `[templates.{key}]` block in `config.toml`."
+        )
+        disc_items.append(item)
+        REGISTERED_KEYS.add(key)
+
+    SCHEMA[disc_tab_idx] = disc_items
+    return [disc_tab_idx]
+
+
+# =============================================================================
+# 6. HEADLESS AUTONOMOUS CLI HANDLERS (--smart / --default)
+# =============================================================================
+def run_smart_scan() -> int:
+    """
+    Autonomously scans system binaries for templates with registered check_cmd.
+    If binary is installed, enables template; otherwise disables it.
+    Unchecked templates retain their default state.
+    """
+    cfg_file = Path(TARGET_FILE).expanduser().resolve()
+    engine = MatugenEngine(config_path=cfg_file)
+    engine.load_state()
+
+    changes: list[tuple[str, str, str, str]] = []
+
+    for tab_idx, items in SCHEMA.items():
+        for item in items:
+            if item.type_ in ("preset", "action", "menu"):
+                continue
+
+            key = item.key
+            check_cmd = CHECK_CMDS.get(key)
+
+            if check_cmd:
+                is_installed = shutil.which(check_cmd) is not None
+                final_val = "true" if is_installed else "false"
+            else:
+                final_val = "true" if item.default else "false"
+
+            changes.append((key, "DEFAULT", final_val, "bool"))
+
+    ok, msg, debug = engine.write_batch(changes)
+    if ok:
+        print(f"[+] Smart package scan applied successfully to {cfg_file.name}.")
+        return 0
+    else:
+        print(f"[-] Smart scan failed: {msg}")
+        return 1
+
+
+def run_default_reset() -> int:
+    """Resets all registered items to schema defaults."""
+    cfg_file = Path(TARGET_FILE).expanduser().resolve()
+    engine = MatugenEngine(config_path=cfg_file)
+    engine.load_state()
+
+    changes: list[tuple[str, str, str, str]] = []
+
+    for tab_idx, items in SCHEMA.items():
+        for item in items:
+            if item.type_ in ("preset", "action", "menu"):
+                continue
+            val_str = "true" if item.default else "false"
+            changes.append((item.key, "DEFAULT", val_str, "bool"))
+
+    ok, msg, debug = engine.write_batch(changes)
+    if ok:
+        print(f"[+] Restored default Matugen template configuration to {cfg_file.name}.")
+        return 0
+    else:
+        print(f"[-] Default reset failed: {msg}")
+        return 1
+
+
+# =============================================================================
+# 7. DIRECT EXECUTION ROUTER
+# =============================================================================
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--smart":
+        sys.exit(run_smart_scan())
+
+    if len(sys.argv) > 1 and sys.argv[1] == "--default":
+        sys.exit(run_default_reset())
+
+    import subprocess
+    main_script = _DUSKY_ROOT / "python" / "main" / "main.py"
+    if main_script.exists():
+        subprocess.run([sys.executable, str(main_script), str(Path(__file__).resolve())] + sys.argv[1:])
+    else:
+        print(f"[-] Error: Could not find Dusky TUI master router at {main_script}")
+        sys.exit(1)

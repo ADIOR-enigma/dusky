@@ -89,7 +89,7 @@ INSTALL_SEQUENCE=(
     "U | 137_snapper_isolation_subvolume.sh --auto"
     "U | 140_fc_cache_fv.sh"
 
-    "U | dusky_matugen_config_tui.sh --smart"
+    "U | tui_matugen.py --smart"
 
     "U | 145_matugen_directories.py"
 #    "U | 150_wallpapers_download.sh"

@@ -140,13 +140,13 @@ post_hook   = '''
   touch "$HOME/.config/zellij/config.kdl" || :
 '''
 
-# [templates.opencode]
-# input_path  = '~/.config/matugen/templates/opencode-colors.json'
-# output_path = '~/.config/matugen/generated/opencode.json'
-# post_hook   = '''
-#   ln -nfs "$HOME/.config/matugen/generated/opencode.json" "$HOME/.config/opencode/themes/matugen.json"
-#   pkill -SIGUSR1 -x kitty || :
-# '''
+[templates.opencode]
+input_path  = '~/.config/matugen/templates/opencode-colors.json'
+output_path = '~/.config/matugen/generated/opencode.json'
+post_hook   = '''
+  ln -nfs "$HOME/.config/matugen/generated/opencode.json" "$HOME/.config/opencode/themes/matugen.json"
+  pkill -SIGUSR1 -x kitty || :
+'''
 
 # [templates.vscode]
 # input_path  = '~/.config/matugen/templates/vscode.json'
@@ -222,23 +222,23 @@ post_hook   = '''
   fi
 '''
 
-[templates.obs]
-input_path  = '~/.config/matugen/templates/obs.obt'
-output_path = '~/.config/matugen/generated/obs.obt'
-post_hook   = '''
-  if command -v obs >/dev/null 2>&1; then
-    ln -nfs "$HOME/.config/matugen/generated/obs.obt" "$HOME/.config/obs-studio/themes/matugen.obt"
-  fi
-'''
+# [templates.obs]
+# input_path  = '~/.config/matugen/templates/obs.obt'
+# output_path = '~/.config/matugen/generated/obs.obt'
+# post_hook   = '''
+#   if command -v obs >/dev/null 2>&1; then
+#     ln -nfs "$HOME/.config/matugen/generated/obs.obt" "$HOME/.config/obs-studio/themes/matugen.obt"
+#   fi
+# '''
 
-[templates.vesktop]
-input_path  = '~/.config/matugen/templates/midnight-discord.css'
-output_path = '~/.config/matugen/generated/midnight-discord.css'
-post_hook   = '''
-  if command -v vesktop >/dev/null 2>&1; then
-    ln -nfs "$HOME/.config/matugen/generated/midnight-discord.css" "$HOME/.config/vesktop/themes/midnight-discord.css"
-  fi
-'''
+# [templates.vesktop]
+# input_path  = '~/.config/matugen/templates/midnight-discord.css'
+# output_path = '~/.config/matugen/generated/midnight-discord.css'
+# post_hook   = '''
+#   if command -v vesktop >/dev/null 2>&1; then
+#     ln -nfs "$HOME/.config/matugen/generated/midnight-discord.css" "$HOME/.config/vesktop/themes/midnight-discord.css"
+#   fi
+# '''
 
 # [templates.beeper]
 # input_path  = '~/.config/matugen/templates/beeper.css'
