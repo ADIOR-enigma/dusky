@@ -493,11 +493,36 @@ EOF
     run_pacman -Syy || log_warn "Pacman database sync returned non-zero, but pipeline will continue."
 }
 
+ensure_active_mirrors_exist() {
+    if ! grep -qE '^[[:space:]]*Server[[:space:]]*=' "$TARGET_FILE" 2>/dev/null; then
+        log_warn "No active servers in ${TARGET_FILE}. Applying Global CDN Fallback..."
+        apply_arch_fallback_mirrorlist
+    fi
+
+    if grep -q '\[cachyos' /etc/pacman.conf 2>/dev/null; then
+        mkdir -p /etc/pacman.d
+        if ! grep -qE '^[[:space:]]*Server[[:space:]]*=' /etc/pacman.d/cachyos-mirrorlist 2>/dev/null; then
+            log_warn "No active servers found in /etc/pacman.d/cachyos-mirrorlist. Writing default CachyOS mirrors..."
+            cat << 'EOF' > /etc/pacman.d/cachyos-mirrorlist
+Server = https://mirror.cachyos.org/repo/x86_64/cachyos
+Server = https://cdn-mirror.cachyos.org/repo/x86_64/cachyos
+EOF
+        fi
+        if ! grep -qE '^[[:space:]]*Server[[:space:]]*=' /etc/pacman.d/cachyos-v3-mirrorlist 2>/dev/null; then
+            cat << 'EOF' > /etc/pacman.d/cachyos-v3-mirrorlist
+Server = https://mirror.cachyos.org/repo/x86_64_v3/cachyos-v3
+Server = https://cdn-mirror.cachyos.org/repo/x86_64_v3/cachyos-v3
+EOF
+        fi
+    fi
+}
+
 # --- ARCH LINUX SYNC ---
 sync_arch() {
     log_info "Initializing Native Arch Mirror Sync..."
 
     manage_pacman_lock
+    ensure_active_mirrors_exist
 
     if ! command -v reflector &>/dev/null; then
         log_info "Reflector missing. Bootstrapping dependency..."
@@ -529,15 +554,14 @@ sync_arch() {
                       --sort rate \
                       --info \
                       --save "$reflector_tmp"; then
-            if {
+            if grep -qE '^[[:space:]]*Server[[:space:]]*=' "$reflector_tmp" 2>/dev/null; then
                 chmod 0644 "$reflector_tmp"
                 mv -f -- "$reflector_tmp" "$TARGET_FILE"
-            }; then
                 log_ok "Arch mirrors topologically optimized in parallel."
                 configure_arch_timer
             else
                 rm -f -- "$reflector_tmp"
-                log_warn "Generated mirrorlist could not be installed."
+                log_warn "Reflector output contained 0 active servers."
                 log_info "Applying highly-available Global CDN Fallback to guarantee pipeline integrity..."
                 manage_pacman_lock
                 apply_arch_fallback_mirrorlist
@@ -562,7 +586,12 @@ sync_arch() {
     # natively without conflicts. reflector.timer manages updates organically.
 
     log_info "Synchronizing pacman databases..."
-    run_pacman -Syy || log_warn "Pacman database sync returned non-zero, but pipeline will continue."
+    if ! run_pacman -Syy; then
+        log_warn "Pacman database sync failed. Applying Global CDN Fallback recovery..."
+        manage_pacman_lock
+        apply_arch_fallback_mirrorlist
+        run_pacman -Syy || { log_err "Failed to sync pacman databases even with fallback mirrors."; return 1; }
+    fi
 }
 
 # --- ENTRY POINT ---
@@ -570,12 +599,13 @@ main() {
     printf '\n%s:: Commencing Zero-Interaction Mirror Orchestration%s\n' "$B" "$NC"
 
     manage_pacman_lock
+    ensure_active_mirrors_exist
 
     local os_state
     os_state="$(determine_os_state)"
 
     if [[ "$os_state" == "pure_cachyos" ]]; then
-        log_info "Pure CachyOS detected. Mirror and timer management is natively handled by the OS. Exiting safely."
+        log_info "Pure CachyOS detected. Mirror sanity check passed."
         exit 0
     elif [[ "$os_state" == "franken_arch" ]]; then
         sync_cachyos
