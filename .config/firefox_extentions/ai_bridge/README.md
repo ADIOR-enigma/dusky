@@ -1,57 +1,84 @@
-# Local AI Bridge - Firefox 153 - Bare Bones
+# Local AI Web Bridge
 
-Minimal flawless extension that lets your terminal local AI control web AI (ChatGPT/Claude/Meta AI) by typing into the page and streaming back results.
+A lightweight, zero-latency Firefox MV3 extension & CLI daemon that allows any local AI agent (Ollama, Antigravity, Llama.cpp, LangChain, or custom scripts) to interact directly with web-based AI platforms (Google Gemini, ChatGPT, Claude) with **100% event-driven, streamable prompt execution**.
 
-## Files
+---
 
-- manifest.json - MV3 with background.scripts (Firefox 153 does NOT support service_worker) + world:MAIN injection (since 128)
-- background.js - ESM module, WebSocket client to localhost:8765, tab targeting, badge status
-- content_isolated.js - ISOLATED world bridge background <-> MAIN
-- content_main.js - MAIN world, document_start: fetch hook + Lexical typing + MutationObserver streaming
-- bridge.py - Python WebSocket server that your local AI talks to
+## 🚀 Quick Start for Local AI Agents & Developers
 
-## Install - Firefox 153
+Any local AI or script can send prompts to Web AI models with **zero technical setup** by executing the Python bridge CLI:
 
-### Temporary (all editions, survives until restart, best for dev)
-
-1. Open about:debugging#/runtime/this-firefox
-2. Load Temporary Add-on -> select manifest.json folder
-3. Open chatgpt.com / claude.ai / meta.ai and keep logged in
-
-### Permanent unsigned (Developer, Nightly, ESR only)
-
-1. about:config -> xpinstall.signatures.required = false
-2. about:addons -> Gear -> Install Add-on From File -> zip files as .xpi (zip contents, not folder)
-
-Release/Beta 153 hard-locks signatures true - use Developer Edition.
-
-## Run
-
-pip install websockets
-python bridge.py
-
-- Extension auto-connects to ws://127.0.0.1:8765
-- Badge shows ON/OFF
-- Type query in terminal, it types into web AI tab and streams back
-
-## Integrate with local AI
-
-Replace input() loop in bridge.py:
-
-```python
-from ollama import AsyncClient
-
-async def local_ai_task(user_prompt):
-    # local LLM decides to use web AI
-    rid = await send_query(f"Search web: {user_prompt}")
-    # wait for pending[rid] to fill via FINAL event
+```bash
+python3 /home/dusk/.config/firefox_extentions/ai_bridge/bridge.py "Your prompt text here"
 ```
 
-## Why this design is flawless for 153
+### Chaining Follow-Up Prompts (Event-Driven, Zero Blind Waiting)
 
-- Uses world:MAIN directly in manifest (no CSP bypass hacks needed, GA since 128)
-- Uses background.scripts with type:module (service_worker not supported in Firefox)
-- Uses execCommand insertText for Lexical editors (only way that updates internal state in 2026)
-- Uses fetch tee() + MutationObserver dual extraction (covers all providers)
-- Minimal UI: only action badge, no popup
-- No backwards compat shims
+You **do not need to use sleep timers**. The `bridge.py` script waits for the browser's `FINAL` completion event and **exits immediately** as soon as the response finishes streaming.
+
+You can chain multiple follow-up prompts sequentially in a simple Python loop or bash pipeline:
+
+#### Python Example:
+```python
+import subprocess
+
+prompts = [
+    "What is 10 + 10?",
+    "Now multiply that result by 3.",
+    "Now add 5 to that."
+]
+
+for prompt in prompts:
+    # Synchronously runs query, streams output, and returns as soon as complete
+    result = subprocess.run(
+        ["python3", "/home/dusk/.config/firefox_extentions/ai_bridge/bridge.py", prompt],
+        capture_output=True, text=True
+    )
+    print("Web AI Answer:", result.stdout.strip())
+```
+
+#### Bash One-Liner:
+```bash
+python3 bridge.py "Explain quantum computing in 1 sentence" && python3 bridge.py "Simplify that for a 5-year-old"
+```
+
+---
+
+## 🛠️ How It Works Under the Hood
+
+```
++-------------------+      WebSocket      +----------------------+      WebExtension      +------------------------+
+| Local AI / Script |  ================>  | Python Bridge Daemon |  ====================> | Firefox Extension      |
+| (bridge.py CLI)   |  <================  | (127.0.0.1:8765)     |  <==================== | (Gemini/Claude/ChatGPT)|
++-------------------+     JSON Packets    +----------------------+      JSON Packets      +------------------------+
+```
+
+1. **Daemon Service**: `localai_bridge.service` runs a systemd user daemon hosting a WebSocket server on `127.0.0.1:8765`.
+2. **Browser Extension**: Listens on the active AI web tab (`gemini.google.com`, `chatgpt.com`, `claude.ai`), auto-reconnecting via `browser.alarms` keep-alive.
+3. **Execution**:
+   - `RUN_QUERY` is received by the extension.
+   - Extension focuses the active AI tab and sets text inside the rich editor.
+   - OS-level keystroke fallback (`wtype -k Return` + Hyprland IPC window focus) fires to submit the prompt cleanly.
+   - `MutationObserver` streams tokens (`STREAM_CHUNK`) in real-time back to stdout.
+   - Once generation stops, `FINAL` is emitted and `bridge.py` exits cleanly with code `0`.
+
+---
+
+## 📂 System Architecture & Files
+
+- **`manifest.json`**: Manifest V3 extension configuration with host permissions `<all_urls>` and permissions (`storage`, `tabs`, `activeTab`, `scripting`, `alarms`).
+- **`background.js`**: Background event page that auto-heals WebSocket connections to `127.0.0.1:8765` and targets active AI browser tabs.
+- **`content_isolated.js`**: Isolated content script bridging extension messages and main window DOM.
+- **`content_main.js`**: Main world page script performing Shadow DOM traversal, text typing, mutation observing, and token streaming.
+- **`bridge.py`**: Python CLI client & daemon server.
+
+---
+
+## ⚡ Extension Status Check
+
+- Check daemon status: `systemctl --user status localai_bridge.service`
+- Check active client connections:
+  ```bash
+  python3 -c "import socket, json; s=socket.socket(); s.connect(('127.0.0.1', 8765)); s.sendall(b'GET / HTTP/1.1\r\n\r\n'); print(s.recv(1024))"
+  ```
+- Firefox top-right toolbar icon shows **ON** (green badge) when connected and ready.

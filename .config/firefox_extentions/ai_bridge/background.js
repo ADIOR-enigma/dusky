@@ -1,11 +1,10 @@
 // background.js - Firefox 153 MV3 - ESM - Event Page
-// Robust bridge with Heartbeat, Tab Communication Retry, and Remote Reload
+// Robust bridge with activeTabId Lock, Auto-Healing, & Universal Support
 
 const WS_URL = "ws://127.0.0.1:8765";
 const AI_URL_PATTERNS = ["chatgpt.com", "chat.openai.com", "claude.ai", "meta.ai", "gemini.google.com"];
 
 let ws = null;
-let retry = 0;
 let isConnecting = false;
 let activeTabId = null;
 let heartbeatInterval = null;
@@ -28,24 +27,20 @@ async function setStatus(connected, extra=""){
 
 // --- WebSocket Connection ---
 function connectWS(force = false){
-  if(force && ws){
-    try{ ws.close(); }catch{}
-    ws = null;
-  }
-  if(ws && ws.readyState === WebSocket.OPEN){
+  if(!force && ws && ws.readyState === WebSocket.OPEN){
     setStatus(true);
     return;
   }
-  if(isConnecting) return;
-  isConnecting = true;
-  log(`Connecting to ${WS_URL} (attempt ${retry})`);
+
+  isConnecting = false;
+  if(ws){
+    try{ ws.close(); }catch(e){}
+    ws = null;
+  }
 
   try{
-    if(ws){ try{ ws.close(); }catch{} }
     ws = new WebSocket(WS_URL);
   }catch(e){
-    log("WS init error", e);
-    isConnecting = false;
     setStatus(false, "Init Error");
     scheduleReconnect();
     return;
@@ -53,8 +48,6 @@ function connectWS(force = false){
 
   ws.addEventListener("open", async ()=>{
     log("WS connected successfully!");
-    isConnecting = false;
-    retry = 0;
     await setStatus(true);
     startHeartbeat();
   });
@@ -64,14 +57,25 @@ function connectWS(force = false){
     try{ msg = JSON.parse(event.data); }catch{ return; }
 
     if(msg.type === "RELOAD_EXTENSION"){
-      log("Reloading extension...");
+      log("Reconnecting extension bridge...");
       try{ ws.send(JSON.stringify({type: "RELOAD_ACK"})); }catch{}
-      browser.runtime.reload();
+      connectWS(true);
       return;
     }
 
     if(msg.type === "PING"){
       try{ ws.send(JSON.stringify({type: "PONG"})); }catch{}
+      return;
+    }
+
+    if(msg.type === "DIAGNOSE_TABS"){
+      try{
+        const all = await browser.tabs.query({});
+        const tabList = all.map(t => ({id: t.id, url: t.url, active: t.active, title: t.title}));
+        ws?.send(JSON.stringify({type: "DIAGNOSE_REPLY", tabs: tabList}));
+      }catch(e){
+        ws?.send(JSON.stringify({type: "DIAGNOSE_REPLY", error: String(e)}));
+      }
       return;
     }
 
@@ -81,39 +85,36 @@ function connectWS(force = false){
         ws?.send(JSON.stringify({type:"ERROR", error:"No AI tab found. Open chatgpt.com/claude.ai/gemini.google.com", requestId: msg.requestId}));
         return;
       }
-      
-      let sent = false;
-      let lastErr = "";
-      for(let attempt = 0; attempt < 6; attempt++){
-        try{
-          await browser.tabs.sendMessage(targetId, {type:"RUN_QUERY", query: msg.query, requestId: msg.requestId});
-          sent = true;
-          break;
-        }catch(e){
-          lastErr = String(e);
-          await new Promise(r => setTimeout(r, 600));
-        }
-      }
-      if(!sent){
-        ws?.send(JSON.stringify({type:"ERROR", error: lastErr || "Tab connection failed", requestId: msg.requestId}));
+
+      try{
+        const tab = await browser.tabs.get(targetId);
+        if(tab.windowId) await browser.windows.update(tab.windowId, {focused: true});
+        await browser.tabs.update(targetId, {active: true});
+      }catch(e){ log("Focus error (non-fatal):", e); }
+
+      try{
+        browser.tabs.sendMessage(targetId, msg).catch((e)=>{
+          ws?.send(JSON.stringify({type:"ERROR", error:"Tab message failed: " + e.message, requestId: msg.requestId}));
+        });
+      }catch(e){
+        ws?.send(JSON.stringify({type:"ERROR", error:"Tab message error: " + e.message, requestId: msg.requestId}));
       }
     }
   });
 
-  ws.addEventListener("close", (e)=>{
-    log("WS closed", e);
-    isConnecting = false;
+  ws.addEventListener("close", ()=>{
     stopHeartbeat();
+    ws = null;
     setStatus(false);
     scheduleReconnect();
   });
 
-  ws.addEventListener("error", (e)=>{
-    log("WS error", e);
-    isConnecting = false;
+  ws.addEventListener("error", ()=>{
     stopHeartbeat();
-    try{ ws.close(); }catch{}
+    if(ws){ try{ ws.close(); }catch{} }
+    ws = null;
     setStatus(false, "Err");
+    scheduleReconnect();
   });
 }
 
@@ -124,13 +125,12 @@ function startHeartbeat(){
       try{
         ws.send(JSON.stringify({type: "HEARTBEAT"}));
       }catch(e){
-        log("Heartbeat failed, reconnecting...");
         connectWS(true);
       }
     } else {
       connectWS(true);
     }
-  }, 5000);
+  }, 3000);
 }
 
 function stopHeartbeat(){
@@ -141,16 +141,22 @@ function stopHeartbeat(){
 }
 
 function scheduleReconnect(){
-  retry++;
-  const delay = Math.min(1000 * Math.pow(1.5, retry), 15000);
-  log(`Reconnect scheduled in ${delay}ms`);
-  setTimeout(() => connectWS(false), delay);
-  try{
-    browser.alarms.create("reconnect", {when: Date.now()+delay});
-  }catch{}
+  setTimeout(() => connectWS(false), 2000);
 }
 
-// --- Tab targeting ---
+// --- Firefox MV3 Alarms Keep-Alive & Auto-Heal ---
+try {
+  browser.alarms?.create("keepAlive", {periodInMinutes: 0.1});
+  browser.alarms?.onAlarm.addListener((alarm) => {
+    if(alarm.name === "keepAlive"){
+      if(!ws || ws.readyState !== WebSocket.OPEN){
+        connectWS(true);
+      }
+    }
+  });
+} catch(e) {}
+
+// --- activeTabId Lock Priority Tab Targeting ---
 async function findTargetTab(preferredId){
   if(preferredId){
     try{
@@ -158,22 +164,49 @@ async function findTargetTab(preferredId){
       if(tab && AI_URL_PATTERNS.some(p=>tab.url?.includes(p))) return preferredId;
     }catch{}
   }
+
+  // 1. ALWAYS try active tab in currently focused window first
+  try{
+    const activeTabs = await browser.tabs.query({active: true, lastFocusedWindow: true});
+    if(activeTabs.length > 0 && activeTabs[0].url && AI_URL_PATTERNS.some(p => activeTabs[0].url.includes(p))){
+      log("Found via active focused tab:", activeTabs[0].id);
+      activeTabId = activeTabs[0].id;
+      return activeTabs[0].id;
+    }
+  }catch(e){}
+
+  // 2. Try last active/communicated tab ID
   if(activeTabId){
     try{
       const tab = await browser.tabs.get(activeTabId);
-      if(tab && AI_URL_PATTERNS.some(p=>tab.url?.includes(p))) return activeTabId;
+      if(tab && AI_URL_PATTERNS.some(p=>tab.url?.includes(p))){
+        log("Found via last activeTabId:", activeTabId);
+        return activeTabId;
+      }
     }catch{}
   }
-  const tabs = await browser.tabs.query({url: ["*://chatgpt.com/*","*://chat.openai.com/*","*://claude.ai/*","*://*.meta.ai/*","*://meta.ai/*","*://gemini.google.com/*"]});
-  if(!tabs.length) return null;
-  tabs.sort((a,b)=> (b.lastAccessed||0)-(a.lastAccessed||0));
-  activeTabId = tabs[0].id;
-  try{ await browser.storagesession.set({activeTabId}); }catch{}
-  return activeTabId;
+
+  // 3. Query open AI tabs
+  try{
+    const allTabs = await browser.tabs.query({});
+    const aiTabs = allTabs.filter(tab => tab.url && AI_URL_PATTERNS.some(p => tab.url.includes(p)));
+    if(aiTabs.length > 0){
+      aiTabs.sort((a,b) => {
+        if(a.active && !b.active) return -1;
+        if(!a.active && b.active) return 1;
+        return (b.lastAccessed || 0) - (a.lastAccessed || 0);
+      });
+      activeTabId = aiTabs[0].id;
+      return aiTabs[0].id;
+    }
+  }catch(e){}
+
+  return null;
 }
 
 // Track active tab
 browser.tabs.onActivated?.addListener(async ({tabId})=>{
+  connectWS();
   try{
     const tab = await browser.tabs.get(tabId);
     if(tab.url && AI_URL_PATTERNS.some(p=>tab.url.includes(p))){
@@ -182,6 +215,7 @@ browser.tabs.onActivated?.addListener(async ({tabId})=>{
     }
   }catch{}
 });
+
 browser.tabs.onUpdated?.addListener(async (tabId, change, tab)=>{
   if(change.url || change.status === "complete"){
     if(tab.url && AI_URL_PATTERNS.some(p=>tab.url.includes(p))){
@@ -191,19 +225,15 @@ browser.tabs.onUpdated?.addListener(async (tabId, change, tab)=>{
   }
 });
 
-// Forward content script messages -> WS
+// Forward content script messages -> WS & Lock activeTabId
 browser.runtime.onMessage.addListener((msg, sender)=>{
   if(!msg?.type) return;
   if(sender?.tab?.id) activeTabId = sender.tab.id;
   if(ws && ws.readyState === WebSocket.OPEN){
     try{
       ws.send(JSON.stringify({...msg, tabId: sender?.tab?.id}));
-    }catch(e){ log("WS send fail", e); }
+    }catch(e){}
   }
-});
-
-browser.alarms.onAlarm.addListener((alarm)=>{
-  if(alarm.name === "reconnect") connectWS();
 });
 
 browser.runtime.onStartup.addListener(()=> connectWS(true));

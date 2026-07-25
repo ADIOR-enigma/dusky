@@ -1,8 +1,5 @@
-// content_main.js - MAIN world, document_start - runs in page realm, before React
+// content_main.js - MAIN world - runs in page realm
 (() => {
-  if (globalThis.__LOCAL_AI_MAIN_INJECTED__) return;
-  globalThis.__LOCAL_AI_MAIN_INJECTED__ = true;
-
   const BRIDGE = "__LOCAL_AI_BRIDGE__";
   let currentRequestId = null;
   let lastFullText = "";
@@ -15,15 +12,38 @@
 
   // --- Selectors ---
   const getEditor = () => {
-    return document.querySelector('rich-textarea div[contenteditable="true"]') ||
-           document.querySelector('div.ql-editor[contenteditable="true"]') ||
-           document.querySelector('#prompt-textarea') ||
-           document.querySelector('div#prompt-textarea[contenteditable="true"]') ||
-           document.querySelector('div[data-lexical-editor="true"][contenteditable="true"]') ||
-           document.querySelector('div.ProseMirror[contenteditable="true"]') ||
-           document.querySelector('div[contenteditable="true"][role="textbox"]') ||
-           document.querySelector('div[contenteditable="true"]') ||
-           document.querySelector('textarea');
+    const rich = document.querySelector('rich-textarea');
+    if(rich){
+      if(rich.shadowRoot){
+        const sEdit = rich.shadowRoot.querySelector('div[contenteditable="true"], [contenteditable="true"], div.ql-editor');
+        if(sEdit) return sEdit;
+      }
+      const lEdit = rich.querySelector('div[contenteditable="true"], [contenteditable="true"], div.ql-editor');
+      if(lEdit) return lEdit;
+    }
+
+    const candidates = [
+      'rich-textarea div[contenteditable="true"]',
+      'rich-textarea div.ql-editor',
+      'rich-textarea [contenteditable="true"]',
+      'div.ql-editor[contenteditable="true"]',
+      '#prompt-textarea',
+      'div#prompt-textarea[contenteditable="true"]',
+      'div[data-lexical-editor="true"][contenteditable="true"]',
+      'div.ProseMirror[contenteditable="true"]',
+      'div[contenteditable="true"][role="textbox"]',
+      'div[contenteditable="true"]',
+      'textarea'
+    ];
+    for(const sel of candidates){
+      const el = document.querySelector(sel);
+      if(el && (el.isContentEditable || el.tagName === "TEXTAREA" || el.getAttribute("contenteditable") === "true")) return el;
+    }
+
+    const allEditable = Array.from(document.querySelectorAll('*')).filter(el => el.isContentEditable || el.getAttribute("contenteditable") === "true");
+    if(allEditable.length > 0) return allEditable[0];
+
+    return document.querySelector('rich-textarea');
   };
 
   const isGenerating = () => {
@@ -51,77 +71,215 @@
   const getSendButton = () => {
     if(isGenerating()) return null;
 
+    const rich = document.querySelector('rich-textarea');
+    if(rich && rich.shadowRoot){
+      const sBtn = rich.shadowRoot.querySelector('button.send-button') ||
+                   rich.shadowRoot.querySelector('button[aria-label*="Send"]') ||
+                   rich.shadowRoot.querySelector('button');
+      if(sBtn && !sBtn.disabled) return sBtn;
+    }
+
+    // Direct Gemini & Universal Send Button Selectors
+    const geminiBtn = document.querySelector('button.send-button') ||
+                      document.querySelector('button[aria-label*="Send prompt"]') ||
+                      document.querySelector('button[aria-label*="Send message"]') ||
+                      document.querySelector('button.send-button-container') ||
+                      document.querySelector('.send-button-container button') ||
+                      document.querySelector('rich-textarea ~ * button:last-of-type') ||
+                      document.querySelector('button[mat-icon-button][aria-label*="Send"]');
+    if(geminiBtn && !geminiBtn.disabled) return geminiBtn;
+
     const candidates = Array.from(document.querySelectorAll('button'));
     for(const btn of candidates){
       const label = (btn.getAttribute('aria-label') || '').toLowerCase();
       const text = (btn.textContent || '').toLowerCase();
       if(label.includes('stop') || text.includes('stop')) continue;
-      if(label.includes('send') || label.includes('submit') || btn.classList.contains('send-button')){
-        if(!btn.disabled) return btn;
+      if((label.includes('send') || label.includes('submit') || btn.classList.contains('send-button')) && !btn.disabled){
+        return btn;
       }
     }
 
-    return document.querySelector('button[aria-label*="Send message"]') ||
+    return document.querySelector('button[aria-label*="Send prompt"]') ||
+           document.querySelector('button[aria-label*="Send message"]') ||
            document.querySelector('button[aria-label*="Send"]') ||
            document.querySelector('button.send-button') ||
            document.querySelector('rich-textarea ~ button');
   };
 
-  // --- Typing ---
-  function setInput(el, text){
-    if(!el) return false;
-    el.focus({preventScroll:true});
+  // --- Select & Focus Text Box Before Typing ---
+  function selectAndFocus(el){
+    if(!el) return;
 
-    if(el.getAttribute && el.getAttribute("contenteditable") === "true"){
+    try{ el.dispatchEvent(new PointerEvent("pointerdown", {bubbles:true, cancelable:true, composed:true, view:window})); }catch(e){}
+    try{ el.dispatchEvent(new MouseEvent("mousedown", {bubbles:true, cancelable:true, composed:true, view:window})); }catch(e){}
+    try{ el.focus({preventScroll:true}); }catch(e){}
+    try{ el.dispatchEvent(new PointerEvent("pointerup", {bubbles:true, cancelable:true, composed:true, view:window})); }catch(e){}
+    try{ el.dispatchEvent(new MouseEvent("mouseup", {bubbles:true, cancelable:true, composed:true, view:window})); }catch(e){}
+    try{ el.dispatchEvent(new MouseEvent("click", {bubbles:true, cancelable:true, composed:true, view:window})); }catch(e){}
+
+    try{
       const sel = window.getSelection();
-      const range = document.createRange();
-      try{
+      if(sel){
+        const range = document.createRange();
         range.selectNodeContents(el);
+        range.collapse(false);
         sel.removeAllRanges();
         sel.addRange(range);
-      }catch{}
-
-      let ok = false;
-      try{ ok = document.execCommand("selectAll", false, null); }catch{}
-      try{ ok = document.execCommand("insertText", false, text) || ok; }catch{}
-
-      if(!ok || !el.textContent.trim()){
-        try{
-          const htmlContent = text.split('\n').map(line => `<p>${line || '<br>'}</p>`).join('');
-          el.innerHTML = htmlContent;
-        } catch{
-          el.textContent = text;
-        }
-        el.dispatchEvent(new InputEvent("beforeinput", {bubbles:true, inputType:"insertText", data:text}));
       }
-      el.dispatchEvent(new InputEvent("input", {bubbles:true, inputType:"insertText", data:text}));
-      el.dispatchEvent(new Event("change", {bubbles:true}));
-      return true;
-    } else {
-      const proto = el.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-      const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
-      if(setter) setter.call(el, text);
-      else el.value = text;
-      el.dispatchEvent(new Event("input", {bubbles:true}));
-      el.dispatchEvent(new Event("change", {bubbles:true}));
-      return true;
-    }
+    }catch(e){}
   }
 
-  function clickSend(){
-    if(isGenerating()) return false;
-    const btn = getSendButton();
-    if(btn && !btn.disabled){
-      btn.click();
-      return true;
+  // --- Typing ---
+  function setInput(targetEl, text){
+    if(!targetEl) return false;
+
+    const rich = document.querySelector('rich-textarea');
+
+    selectAndFocus(targetEl);
+    if(rich && rich !== targetEl) selectAndFocus(rich);
+
+    let ok = false;
+    try{ ok = document.execCommand("selectAll", false, null); }catch(e){}
+    try{ ok = document.execCommand("insertText", false, text); }catch(e){}
+
+    const targets = [targetEl];
+    if(rich && !targets.includes(rich)) targets.push(rich);
+
+    for(const el of targets){
+      if(!ok || !el.textContent || !el.textContent.includes(text)){
+        try{
+          if(el.tagName === "P"){
+            el.textContent = text;
+          } else if(el.tagName === "RICH-TEXTAREA"){
+            try{ if(el.value !== undefined) el.value = text; }catch(e){}
+          } else {
+            el.innerHTML = '<p>' + text + '</p>';
+          }
+        }catch(e){
+          try{ el.textContent = text; }catch(err){}
+        }
+        try{ if(el.value !== undefined) el.value = text; }catch(e){}
+      }
+
+      try{ el.dispatchEvent(new InputEvent("beforeinput", {bubbles:true, cancelable:true, composed:true, inputType:"insertText", data:text})); }catch(e){}
+      try{ el.dispatchEvent(new InputEvent("input", {bubbles:true, cancelable:true, composed:true, inputType:"insertText", data:text})); }catch(e){}
+      try{ el.dispatchEvent(new Event("input", {bubbles:true, composed:true})); }catch(e){}
+      try{ el.dispatchEvent(new Event("change", {bubbles:true, composed:true})); }catch(e){}
     }
-    const ed = getEditor();
-    if(ed){
-      ed.dispatchEvent(new KeyboardEvent("keydown", {key:"Enter", code:"Enter", keyCode:13, which:13, bubbles:true}));
-      ed.dispatchEvent(new KeyboardEvent("keyup", {key:"Enter", code:"Enter", keyCode:13, which:13, bubbles:true}));
-      return true;
+
+    return true;
+  }
+
+  function triggerAngularComponentSubmit(){
+    const targets = [
+      document.querySelector('rich-textarea'),
+      document.querySelector('button.send-button'),
+      document.querySelector('button[aria-label*="Send"]'),
+      document.querySelector('chat-window'),
+      document.querySelector('model-response'),
+      document.body
+    ];
+
+    for(const el of targets){
+      if(!el) continue;
+
+      if(window.ng && window.ng.getComponent){
+        try{
+          const comp = window.ng.getComponent(el);
+          if(comp){
+            const sendFn = comp.sendMessage || comp.onSubmit || comp.send || comp.onSendClick || comp.submit;
+            if(typeof sendFn === "function"){
+              sendFn.call(comp);
+              return true;
+            }
+          }
+        }catch(e){}
+      }
+
+      try{
+        for(const k in el){
+          if(k.startsWith('__ng') || k.includes('Angular')){
+            const ctx = el[k];
+            if(ctx){
+              const fn = ctx.sendMessage || ctx.onSubmit || ctx.send || ctx.onSendClick;
+              if(typeof fn === "function"){
+                fn.call(ctx);
+                return true;
+              }
+            }
+          }
+        }
+      }catch(e){}
     }
     return false;
+  }
+
+  async function clickSend(){
+    if(isGenerating()) return false;
+
+    // PRIORITY: Ensure the editor element has DOM focus so that the
+    // hardware wtype -k Return (sent by bridge.py 1.5s after query)
+    // hits the correct element. Synthetic JS events are isTrusted:false
+    // and Gemini ignores them, so the real submission happens via wtype.
+    const editor = getEditor();
+    if(editor){
+      let el = editor;
+      if(el.tagName === "RICH-TEXTAREA"){
+        el = el.querySelector('div[contenteditable="true"], p, div.ql-editor') || el;
+      }
+      selectAndFocus(el);
+    }
+
+    // Best-effort synthetic submission for non-Gemini sites
+    // (On Gemini, these all fail silently because isTrusted === false)
+
+    // 1. Try Form RequestSubmit
+    const form = document.querySelector('form') || document.querySelector('rich-textarea')?.closest('form');
+    if(form){
+      try{ form.requestSubmit(); }catch{ try{ form.submit(); }catch{} }
+    }
+
+    // 2. Poll for enabled Send button
+    for(let i = 0; i < 15; i++){
+      const btn = getSendButton();
+      if(btn && !btn.disabled){
+        try{ btn.focus(); }catch{}
+        try{ HTMLElement.prototype.click.call(btn); }catch{ btn.click(); }
+
+        btn.dispatchEvent(new PointerEvent("pointerdown", {bubbles:true, cancelable:true, composed:true, view:window}));
+        btn.dispatchEvent(new MouseEvent("mousedown", {bubbles:true, cancelable:true, composed:true, view:window}));
+        btn.dispatchEvent(new PointerEvent("pointerup", {bubbles:true, cancelable:true, composed:true, view:window}));
+        btn.dispatchEvent(new MouseEvent("mouseup", {bubbles:true, cancelable:true, composed:true, view:window}));
+        btn.dispatchEvent(new MouseEvent("click", {bubbles:true, cancelable:true, composed:true, view:window}));
+
+        triggerAngularComponentSubmit();
+        console.log("[LocalAI MAIN] Synthetic click attempted on send button");
+        
+        // Re-focus editor after clicking button so wtype Return hits the right element
+        if(editor){
+          let el = editor;
+          if(el.tagName === "RICH-TEXTAREA"){
+            el = el.querySelector('div[contenteditable="true"], p, div.ql-editor') || el;
+          }
+          selectAndFocus(el);
+        }
+        return true;
+      }
+      await new Promise(r => setTimeout(r, 200));
+    }
+
+    // 3. Synthetic Enter Keypress on Editor (last resort)
+    const ed = getEditor();
+    if(ed){
+      let pEl = ed.tagName === "RICH-TEXTAREA" ? (ed.querySelector('div[contenteditable="true"], p, div.ql-editor') || ed) : ed;
+      selectAndFocus(pEl);
+      pEl.dispatchEvent(new KeyboardEvent("keydown", {key:"Enter", code:"Enter", keyCode:13, which:13, bubbles:true, cancelable:true, composed:true}));
+      pEl.dispatchEvent(new KeyboardEvent("keypress", {key:"Enter", code:"Enter", keyCode:13, which:13, bubbles:true, cancelable:true, composed:true}));
+      pEl.dispatchEvent(new KeyboardEvent("keyup", {key:"Enter", code:"Enter", keyCode:13, which:13, bubbles:true, cancelable:true, composed:true}));
+      triggerAngularComponentSubmit();
+    }
+
+    return true;
   }
 
   function getModelResponseContainers(){
@@ -153,14 +311,13 @@
     observer = new MutationObserver(() => {
       const currentContainers = getModelResponseContainers();
 
-      // Index baselineCount is strictly the NEW response block for this query!
       if(!targetElement){
         if(currentContainers.length > baselineCount){
           const newContainer = currentContainers[baselineCount];
           targetElement = newContainer.querySelector('message-content') || newContainer;
           lastObservedText = "";
         } else {
-          return; // Wait for the new model-response container to be added to DOM
+          return;
         }
       }
 
@@ -176,7 +333,6 @@
         emit({type:"STREAM_CHUNK", text: chunk, full: full, requestId: currentRequestId});
       }
 
-      // Final check: MUST have started streaming, NOT currently generating, NO unclosed code blocks, and text stable for 3s
       clearTimeout(finalTimer);
       const checkCompletion = () => {
         if(!hasStartedStreaming || isGenerating() || hasUnclosedCodeBlock(lastFullText)){
@@ -199,25 +355,14 @@
     clearTimeout(finalTimer);
   }
 
-  // --- Listen for queries ---
-  globalThis.addEventListener("message", async (e)=>{
-    if(e.source !== globalThis) return;
-    const data = e.data;
-    if(!data || data.__bridge !== BRIDGE) return;
-    if(data.direction !== "BG_TO_MAIN") return;
-    const msg = data.payload;
-    if(msg?.type !== "RUN_QUERY") return;
+  // --- Query Handling ---
+  const handleQuery = async (msg) => {
+    if(!msg || msg.type !== "RUN_QUERY") return;
 
     currentRequestId = msg.requestId || crypto.randomUUID();
     lastFullText = "";
     lastObservedText = "";
     hasStartedStreaming = false;
-
-    // Wait if Gemini is currently generating or thinking
-    for(let i = 0; i < 40; i++){
-      if(!isGenerating()) break;
-      await new Promise(r => setTimeout(r, 500));
-    }
 
     const query = msg.query || "";
     const editor = getEditor();
@@ -227,6 +372,7 @@
     }
 
     startObserver();
+
     const ok = setInput(editor, query);
     if(!ok){
       emit({type:"ERROR", error:"Failed to set input", requestId: currentRequestId});
@@ -234,9 +380,19 @@
       return;
     }
 
-    setTimeout(()=>{
-      clickSend();
+    setTimeout(async ()=>{
+      await clickSend();
     }, 250);
+  };
+
+  window.__LocalAI_HandleQuery = handleQuery;
+
+  globalThis.addEventListener("message", async (e)=>{
+    const data = e.data;
+    if(!data || data.__bridge !== BRIDGE) return;
+    if(data.direction !== "BG_TO_MAIN") return;
+    const msg = data.payload;
+    if(msg?.type === "RUN_QUERY") handleQuery(msg);
   });
 
   console.log("[LocalAI MAIN] Injected - ready for queries - Firefox 153");
