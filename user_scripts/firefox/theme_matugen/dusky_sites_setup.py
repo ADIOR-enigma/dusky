@@ -161,7 +161,7 @@ sidebarheader {
 }
 
 menupopup,
-panel,
+panel:not(#autoscroller),
 panelview,
 panelmultiview,
 #unified-extensions-panel,
@@ -181,6 +181,26 @@ panelmultiview,
     --menu-background-color: var(--lwt-popup-background-color, var(--lwt-accent-color, #1c1b22)) !important;
     --menu-color: var(--lwt-popup-color, var(--lwt-text-color, #fbfbfe)) !important;
     --menu-border-color: var(--lwt-popup-border-color, var(--toolbar-field-border, rgba(255,255,255,0.15))) !important;
+}
+
+/* Middle-Click Auto-Scroll Floating Disc */
+#autoscroller,
+panel#autoscroller {
+    appearance: none !important;
+    -moz-default-appearance: none !important;
+    background-color: var(--lwt-popup-background-color, var(--lwt-accent-color, #1c1b22)) !important;
+    background: var(--lwt-popup-background-color, var(--lwt-accent-color, #1c1b22)) !important;
+    color: var(--lwt-popup-color, var(--lwt-text-color, #fbfbfe)) !important;
+    border: 1px solid var(--lwt-popup-border-color, var(--toolbar-field-border, rgba(255,255,255,0.2))) !important;
+    border-radius: 50% !important;
+    padding: 4px !important;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4) !important;
+}
+
+#autoscroller image,
+panel#autoscroller image {
+    fill: var(--toolbarbutton-icon-fill, var(--lwt-popup-color, var(--lwt-text-color, #fbfbfe))) !important;
+    color: var(--toolbarbutton-icon-fill, var(--lwt-popup-color, var(--lwt-text-color, #fbfbfe))) !important;
 }
 
 menupopup::part(content) {
