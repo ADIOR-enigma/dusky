@@ -109,6 +109,14 @@ def _do_os_return():
                 ws_info = target.get("workspace", {})
                 ws_id = ws_info.get("id")
                 if ws_id is not None and ws_id > 0:
+                    rel_ws = ((ws_id - 1) % 10) + 1
+                    try:
+                        subprocess.run(
+                            ["/home/dusk/user_scripts/hypr/multi_monitor_workspace.sh", "workspace", str(rel_ws)],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2
+                        )
+                    except Exception:
+                        pass
                     subprocess.run(
                         ["hyprctl", "dispatch", f'hl.dsp.focus({{ workspace = "{ws_id}" }})'],
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
