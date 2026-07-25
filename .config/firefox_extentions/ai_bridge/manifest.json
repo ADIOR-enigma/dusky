@@ -16,12 +16,15 @@
     "alarms"
   ],
   "host_permissions": [
-    "https://chatgpt.com/*",
-    "https://chat.openai.com/*",
-    "https://claude.ai/*",
-    "https://www.meta.ai/*",
-    "https://meta.ai/*"
+    "<all_urls>",
+    "http://127.0.0.1/*",
+    "http://localhost/*",
+    "ws://127.0.0.1/*",
+    "ws://localhost/*"
   ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' ws://127.0.0.1:* ws://localhost:* http://127.0.0.1:* http://localhost:*"
+  },
   "background": {
     "scripts": [
       "background.js"
@@ -35,7 +38,8 @@
         "https://chat.openai.com/*",
         "https://claude.ai/*",
         "https://www.meta.ai/*",
-        "https://meta.ai/*"
+        "https://meta.ai/*",
+        "https://gemini.google.com/*"
       ],
       "js": [
         "content_main.js"
@@ -50,7 +54,8 @@
         "https://chat.openai.com/*",
         "https://claude.ai/*",
         "https://www.meta.ai/*",
-        "https://meta.ai/*"
+        "https://meta.ai/*",
+        "https://gemini.google.com/*"
       ],
       "js": [
         "content_isolated.js"

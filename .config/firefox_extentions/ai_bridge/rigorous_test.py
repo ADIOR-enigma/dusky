@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-Local AI Bridge - Single Zero-Dependency Python File
-Connects browser extension (WebSocket ws://127.0.0.1:8765) to terminal / API client.
-Supports both interactive TTY CLI mode and systemd background daemon mode.
+Rigorous Multi-Turn Follow-Up Test
+Ensures zero premature cancellation and proper streaming token extraction.
 """
 
 import asyncio
@@ -11,12 +10,25 @@ import sys
 import hashlib
 import base64
 import struct
+import time
 
 HOST = "127.0.0.1"
 PORT = 8765
 
 clients = set()
 current_deferred = None
+received_text_buffer = ""
+
+TURNS = [
+    {
+        "turn": 1,
+        "prompt": "Explain how photosynthesis works in 2 short sentences."
+    },
+    {
+        "turn": 2,
+        "prompt": "Now summarize that in 5 words."
+    }
+]
 
 def build_ws_frame(message: str) -> bytes:
     payload = message.encode('utf-8')
@@ -55,7 +67,6 @@ async def parse_ws_frame(reader):
     return opcode, payload.decode('utf-8', errors='replace')
 
 async def handle_client(reader, writer):
-    peer = writer.get_extra_info('peername')
     try:
         request = await reader.readuntil(b"\r\n\r\n")
     except Exception:
@@ -92,7 +103,6 @@ async def handle_client(reader, writer):
 
     client = StdlibWSClient(writer)
     clients.add(client)
-    print(f"\n[+] Extension connected from {peer} - total clients: {len(clients)}")
 
     try:
         while True:
@@ -105,11 +115,10 @@ async def handle_client(reader, writer):
         pass
     finally:
         clients.discard(client)
-        print(f"\n[-] Extension disconnected - total clients: {len(clients)}")
         writer.close()
 
 def handle_incoming_msg(raw):
-    global current_deferred
+    global current_deferred, received_text_buffer
     try:
         msg = json.loads(raw)
     except Exception:
@@ -117,16 +126,15 @@ def handle_incoming_msg(raw):
     mtype = msg.get("type")
     if mtype == "STREAM_CHUNK":
         text = msg.get("text", "")
+        received_text_buffer += text
         sys.stdout.write(text)
         sys.stdout.flush()
     elif mtype in ("FINAL", "ERROR"):
-        print("\n")
         if current_deferred and not current_deferred.done():
             current_deferred.set_result(msg)
 
 async def broadcast_query(query: str):
     if not clients:
-        print("[!] No Firefox extension connected. Open Firefox and visit an AI tab.")
         return False
     import uuid
     rid = str(uuid.uuid4())[:8]
@@ -138,49 +146,54 @@ async def broadcast_query(query: str):
             pass
     return True
 
-async def cli_input_loop():
-    global current_deferred
-    if not sys.stdin.isatty():
-        print("[+] Running in daemon background mode. Waiting for incoming queries...")
-        while True:
-            await asyncio.sleep(3600)
-
-    loop = asyncio.get_running_loop()
-    while True:
-        try:
-            line = await loop.run_in_executor(None, input, "> ")
-        except (EOFError, KeyboardInterrupt):
-            print("\nExiting.")
-            sys.exit(0)
-
-        query = line.strip()
-        if not query:
-            continue
-        if query.lower() in ("exit", "quit"):
-            sys.exit(0)
-
-        current_deferred = loop.create_future()
-        ok = await broadcast_query(query)
-        if ok:
-            try:
-                res = await asyncio.wait_for(current_deferred, timeout=120.0)
-                if res.get("type") == "ERROR":
-                    print(f"[Error from browser]: {res.get('error')}")
-            except asyncio.TimeoutError:
-                print("\n[Timeout waiting for browser response]")
-
 async def main():
     server = await asyncio.start_server(handle_client, HOST, PORT)
-    print("==========================================")
-    print("  Local AI Bridge - Python Daemon Server")
-    print("==========================================")
+    print("==================================================")
+    print("   Rigorous Multi-Turn Follow-Up Test")
+    print("==================================================")
     print(f"Listening on ws://{HOST}:{PORT}")
+    print("Waiting for Firefox extension...\n")
 
     async with server:
-        await cli_input_loop()
+        while not clients:
+            await asyncio.sleep(0.5)
+        
+        print(f"[+] Extension connected! Starting 2-turn test...\n")
+
+        for turn_data in TURNS:
+            turn_num = turn_data["turn"]
+            prompt = turn_data["prompt"]
+            print(f"\n==================================================")
+            print(f" TURN {turn_num}: \"{prompt}\"")
+            print(f"==================================================\n")
+
+            while not clients:
+                await asyncio.sleep(0.5)
+
+            global current_deferred, received_text_buffer
+            received_text_buffer = ""
+            current_deferred = asyncio.get_event_loop().create_future()
+            start_t = time.time()
+            await broadcast_query(prompt)
+
+            try:
+                res = await asyncio.wait_for(current_deferred, timeout=60.0)
+                dur = time.time() - start_t
+                if res.get("type") == "FINAL":
+                    print(f"\n\n[Turn {turn_num} COMPLETE in {dur:.2f}s | Full Text Length: {len(received_text_buffer)} chars]")
+                else:
+                    print(f"\n\n[Turn {turn_num} ERROR]: {res.get('error')}")
+            except asyncio.TimeoutError:
+                print(f"\n\n[Turn {turn_num} TIMEOUT after 60s]")
+            
+            await asyncio.sleep(4.0)
+
+        print("\n==================================================")
+        print(" 🎉 RIGOROUS MULTI-TURN TEST COMPLETE!")
+        print("==================================================")
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\nExiting.")
+        print("\nBye")

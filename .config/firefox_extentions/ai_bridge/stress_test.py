@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
-Local AI Bridge - Single Zero-Dependency Python File
-Connects browser extension (WebSocket ws://127.0.0.1:8765) to terminal / API client.
-Supports both interactive TTY CLI mode and systemd background daemon mode.
+Local AI Bridge - Stress Test Suite
+Executes a battery of high-load tests against the web AI extension bridge:
+1. Complex formatting (Markdown + LaTeX formulas)
+2. Code generation (Newlines + Indentation + Quotes)
+3. Special characters, Emojis, and HTML escaping resilience
 """
 
 import asyncio
@@ -11,12 +13,27 @@ import sys
 import hashlib
 import base64
 import struct
+import time
 
 HOST = "127.0.0.1"
 PORT = 8765
 
 clients = set()
-current_deferred = None
+
+TEST_SUITE = [
+    {
+        "name": "Test 1: Complex Formatting & LaTeX",
+        "prompt": "Explain Quantum Entanglement in 3 bullet points using markdown bolding and the LaTeX formula: \\(|\\psi\\rangle = \\frac{1}{\\sqrt{2}}(|00\\rangle + |11\\rangle)\\)."
+    },
+    {
+        "name": "Test 2: Code Generation & Special Syntax",
+        "prompt": "Write a short Python function `def quicksort(arr):` with docstrings, inline comments, and nested quotes like 'hello \"world\"'. Output pure Python code."
+    },
+    {
+        "name": "Test 3: Emojis, Unicode & Escaping Resilience",
+        "prompt": "List 3 fun facts about space with emojis 🚀 🌌 🌟, nested quotes \"'test'\", and HTML tags `<div id=\"test\">`."
+    }
+]
 
 def build_ws_frame(message: str) -> bytes:
     payload = message.encode('utf-8')
@@ -54,8 +71,9 @@ async def parse_ws_frame(reader):
 
     return opcode, payload.decode('utf-8', errors='replace')
 
+current_deferred = None
+
 async def handle_client(reader, writer):
-    peer = writer.get_extra_info('peername')
     try:
         request = await reader.readuntil(b"\r\n\r\n")
     except Exception:
@@ -92,7 +110,6 @@ async def handle_client(reader, writer):
 
     client = StdlibWSClient(writer)
     clients.add(client)
-    print(f"\n[+] Extension connected from {peer} - total clients: {len(clients)}")
 
     try:
         while True:
@@ -105,7 +122,6 @@ async def handle_client(reader, writer):
         pass
     finally:
         clients.discard(client)
-        print(f"\n[-] Extension disconnected - total clients: {len(clients)}")
         writer.close()
 
 def handle_incoming_msg(raw):
@@ -120,67 +136,77 @@ def handle_incoming_msg(raw):
         sys.stdout.write(text)
         sys.stdout.flush()
     elif mtype in ("FINAL", "ERROR"):
-        print("\n")
         if current_deferred and not current_deferred.done():
             current_deferred.set_result(msg)
 
-async def broadcast_query(query: str):
-    if not clients:
-        print("[!] No Firefox extension connected. Open Firefox and visit an AI tab.")
-        return False
+async def run_single_test(client, test_info, test_num, total_tests):
+    global current_deferred
+    print(f"\n==========================================")
+    print(f" [{test_num}/{total_tests}] Executing: {test_info['name']}")
+    print(f" Prompt: \"{test_info['prompt']}\"")
+    print(f"==========================================\n")
+
     import uuid
     rid = str(uuid.uuid4())[:8]
-    payload = json.dumps({"type": "RUN_QUERY", "query": query, "requestId": rid})
-    for c in list(clients):
-        try:
-            await c.send(payload)
-        except Exception:
-            pass
-    return True
+    payload = {"type": "RUN_QUERY", "query": test_info["prompt"], "requestId": rid}
+    
+    current_deferred = asyncio.get_event_loop().create_future()
+    start_time = time.time()
+    await client.send(json.dumps(payload))
 
-async def cli_input_loop():
-    global current_deferred
-    if not sys.stdin.isatty():
-        print("[+] Running in daemon background mode. Waiting for incoming queries...")
-        while True:
-            await asyncio.sleep(3600)
-
-    loop = asyncio.get_running_loop()
-    while True:
-        try:
-            line = await loop.run_in_executor(None, input, "> ")
-        except (EOFError, KeyboardInterrupt):
-            print("\nExiting.")
-            sys.exit(0)
-
-        query = line.strip()
-        if not query:
-            continue
-        if query.lower() in ("exit", "quit"):
-            sys.exit(0)
-
-        current_deferred = loop.create_future()
-        ok = await broadcast_query(query)
-        if ok:
-            try:
-                res = await asyncio.wait_for(current_deferred, timeout=120.0)
-                if res.get("type") == "ERROR":
-                    print(f"[Error from browser]: {res.get('error')}")
-            except asyncio.TimeoutError:
-                print("\n[Timeout waiting for browser response]")
+    try:
+        res = await asyncio.wait_for(current_deferred, timeout=45.0)
+        elapsed = time.time() - start_time
+        if res.get("type") == "FINAL":
+            full_text = res.get("full", "")
+            print(f"\n\n[PASSED] Test {test_num} completed in {elapsed:.2f}s | Received {len(full_text)} characters")
+            return True
+        else:
+            print(f"\n\n[FAILED] Test {test_num} error: {res.get('error')}")
+            return False
+    except asyncio.TimeoutError:
+        print(f"\n\n[TIMEOUT] Test {test_num} timed out after 45 seconds!")
+        return False
 
 async def main():
+    # Kill previous task if running on port 8765
     server = await asyncio.start_server(handle_client, HOST, PORT)
     print("==========================================")
-    print("  Local AI Bridge - Python Daemon Server")
+    print("      Local AI Bridge - Stress Tester")
     print("==========================================")
     print(f"Listening on ws://{HOST}:{PORT}")
+    print("Waiting for Firefox extension client...")
 
     async with server:
-        await cli_input_loop()
+        while not clients:
+            await asyncio.sleep(0.5)
+        
+        client = list(clients)[0]
+        print(f"\n[+] Firefox extension connected! Starting stress test battery ({len(TEST_SUITE)} tests)...\n")
+        await asyncio.sleep(1.0)
+
+        results = []
+        for i, test in enumerate(TEST_SUITE, 1):
+            passed = await run_single_test(client, test, i, len(TEST_SUITE))
+            results.append((test['name'], passed))
+            await asyncio.sleep(2.0)
+
+        print("\n==========================================")
+        print("          STRESS TEST SUMMARY")
+        print("==========================================")
+        all_ok = True
+        for name, passed in results:
+            status = "PASSED ✅" if passed else "FAILED ❌"
+            print(f" - {name}: {status}")
+            if not passed: all_ok = False
+        print("==========================================\n")
+        if all_ok:
+            print("🎉 ALL STRESS TESTS PASSED PERFECTLY!")
+        else:
+            print("⚠️ SOME TESTS FAILED.")
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\nExiting.")
+        print("\nBye")

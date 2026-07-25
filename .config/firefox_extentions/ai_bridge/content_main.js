@@ -13,9 +13,11 @@
     globalThis.postMessage({__bridge: BRIDGE, direction: "MAIN_TO_BG", payload}, "*");
   }
 
-  // --- Selectors 2026 ---
+  // --- Selectors ---
   const getEditor = () => {
-    return document.querySelector('#prompt-textarea') ||
+    return document.querySelector('rich-textarea div[contenteditable="true"]') ||
+           document.querySelector('div.ql-editor[contenteditable="true"]') ||
+           document.querySelector('#prompt-textarea') ||
            document.querySelector('div#prompt-textarea[contenteditable="true"]') ||
            document.querySelector('div[data-lexical-editor="true"][contenteditable="true"]') ||
            document.querySelector('div.ProseMirror[contenteditable="true"]') ||
@@ -24,22 +26,53 @@
            document.querySelector('textarea');
   };
 
-  const getSendButton = () => {
-    return document.querySelector('button[data-testid="send-button"]') ||
-           document.querySelector('button[data-testid="send_button"]') ||
-           document.querySelector('button[aria-label*="Send"]') ||
-           document.querySelector('form button[type="submit"]') ||
-           document.querySelector('button:has([data-icon="paper-plane"])');
+  const isGenerating = () => {
+    const stopBtn = document.querySelector('button[aria-label*="Stop"]') ||
+                    document.querySelector('button[aria-label*="stop"]') ||
+                    document.querySelector('button.stop-button') ||
+                    document.querySelector('[data-is-streaming="true"]') ||
+                    document.querySelector('.is-streaming');
+    
+    const loading = document.querySelector('mat-progress-spinner') ||
+                    document.querySelector('mat-spinner') ||
+                    document.querySelector('.loading-dots') ||
+                    document.querySelector('.dot-flashing') ||
+                    document.querySelector('[data-test-id="thinking-indicator"]');
+
+    return !!(stopBtn || loading);
   };
 
-  // --- Typing for Lexical / React ---
+  const hasUnclosedCodeBlock = (txt) => {
+    if(!txt) return false;
+    const ticks = (txt.match(/```/g) || []).length;
+    return ticks % 2 !== 0;
+  };
+
+  const getSendButton = () => {
+    if(isGenerating()) return null;
+
+    const candidates = Array.from(document.querySelectorAll('button'));
+    for(const btn of candidates){
+      const label = (btn.getAttribute('aria-label') || '').toLowerCase();
+      const text = (btn.textContent || '').toLowerCase();
+      if(label.includes('stop') || text.includes('stop')) continue;
+      if(label.includes('send') || label.includes('submit') || btn.classList.contains('send-button')){
+        if(!btn.disabled) return btn;
+      }
+    }
+
+    return document.querySelector('button[aria-label*="Send message"]') ||
+           document.querySelector('button[aria-label*="Send"]') ||
+           document.querySelector('button.send-button') ||
+           document.querySelector('rich-textarea ~ button');
+  };
+
+  // --- Typing ---
   function setInput(el, text){
     if(!el) return false;
     el.focus({preventScroll:true});
 
-    // ContentEditable path - Lexical
     if(el.getAttribute && el.getAttribute("contenteditable") === "true"){
-      // Select all
       const sel = window.getSelection();
       const range = document.createRange();
       try{
@@ -47,29 +80,28 @@
         sel.removeAllRanges();
         sel.addRange(range);
       }catch{}
-      // execCommand is deprecated but still the ONLY reliable way for Lexical in Firefox 153
+
       let ok = false;
       try{ ok = document.execCommand("selectAll", false, null); }catch{}
       try{ ok = document.execCommand("insertText", false, text) || ok; }catch{}
 
-      if(!ok){
-        // Fallback: beforeinput + insert
+      if(!ok || !el.textContent.trim()){
+        try{
+          const htmlContent = text.split('\n').map(line => `<p>${line || '<br>'}</p>`).join('');
+          el.innerHTML = htmlContent;
+        } catch{
+          el.textContent = text;
+        }
         el.dispatchEvent(new InputEvent("beforeinput", {bubbles:true, inputType:"insertText", data:text}));
-        // direct text insertion as last resort
-        document.execCommand("insertText", false, text);
       }
       el.dispatchEvent(new InputEvent("input", {bubbles:true, inputType:"insertText", data:text}));
-      // Trigger React onChange via InputEvent
+      el.dispatchEvent(new Event("change", {bubbles:true}));
       return true;
     } else {
-      // textarea
       const proto = el.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
       const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
-      if(setter){
-        setter.call(el, text);
-      } else {
-        el.value = text;
-      }
+      if(setter) setter.call(el, text);
+      else el.value = text;
       el.dispatchEvent(new Event("input", {bubbles:true}));
       el.dispatchEvent(new Event("change", {bubbles:true}));
       return true;
@@ -77,118 +109,62 @@
   }
 
   function clickSend(){
+    if(isGenerating()) return false;
     const btn = getSendButton();
-    if(btn){
+    if(btn && !btn.disabled){
       btn.click();
       return true;
     }
     const ed = getEditor();
     if(ed){
-      ed.dispatchEvent(new KeyboardEvent("keydown", {key:"Enter", code:"Enter", keyCode:13, bubbles:true}));
-      ed.dispatchEvent(new KeyboardEvent("keyup", {key:"Enter", code:"Enter", keyCode:13, bubbles:true}));
+      ed.dispatchEvent(new KeyboardEvent("keydown", {key:"Enter", code:"Enter", keyCode:13, which:13, bubbles:true}));
+      ed.dispatchEvent(new KeyboardEvent("keyup", {key:"Enter", code:"Enter", keyCode:13, which:13, bubbles:true}));
       return true;
     }
     return false;
   }
 
-  // --- Fetch hook for streaming capture ---
-  const origFetch = globalThis.fetch;
-  const STREAM_URL_RE = /\/backend-api\/(?:f\/)?conversation|\/api\/organizations\/.*\/chat_conversations\/.*\/completion|\/backend-api\/conversation\/gen_title|v1\/chat\/completions|\/api\/chat|\/graphql/;
-
-  globalThis.fetch = async function(...args){
-    const url = (typeof args[0] === "string" ? args[0] : args[0]?.url || "").toString();
-    const isStreamUrl = STREAM_URL_RE.test(url);
-    let response;
-    try{
-      response = await origFetch.apply(this, args);
-    }catch(e){ throw e; }
-
-    if(!isStreamUrl || !response?.body || !currentRequestId){
-      return response;
+  function getModelResponseContainers(){
+    const host = window.location.hostname;
+    if(host.includes('gemini.google.com')){
+      return Array.from(document.querySelectorAll('model-response'));
+    } else if(host.includes('claude.ai')){
+      return Array.from(document.querySelectorAll('.font-claude-message, [data-is-streaming="true"]'));
+    } else {
+      return Array.from(document.querySelectorAll('div[data-message-author-role="assistant"]'));
     }
-
-    // Tee the stream - one for page, one for us
-    try{
-      const [branch1, branch2] = response.body.tee();
-      // Parse branch2 in background without blocking
-      (async () => {
-        const reader = branch2.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        try{
-          while(true){
-            const {done, value} = await reader.read();
-            if(done){
-              emit({type:"FINAL", requestId: currentRequestId, full: lastFullText});
-              currentRequestId = null;
-              break;
-            }
-            buffer += decoder.decode(value, {stream:true});
-            // Try to extract text from SSE lines
-            const lines = buffer.split("\n");
-            buffer = lines.pop() || "";
-            for(const line of lines){
-              if(!line.trim()) continue;
-              let data = line;
-              if(data.startsWith("data: ")) data = data.slice(6);
-              if(data === "[DONE]") continue;
-              try{
-                const json = JSON.parse(data);
-                // ChatGPT: json.v or json.p or choices[0].delta.content
-                let txt = json?.v || json?.o || json?.p || json?.choices?.[0]?.delta?.content || json?.delta?.text || "";
-                if(typeof txt === "string" && txt){
-                  // For ChatGPT, v can be JSON stringified
-                  if(txt.startsWith("{")){
-                    try{ const inner = JSON.parse(txt); txt = inner?.v || inner?.choices?.[0]?.delta?.content || ""; }catch{}
-                  }
-                  if(txt) handleNewText(txt);
-                }
-              }catch{
-                // plain text chunk
-                if(data.length > 0 && data.length < 5000){
-                  // Heuristic: if not JSON, might be raw text
-                }
-              }
-            }
-          }
-        }catch(e){
-          // ignore
-        }
-      })();
-
-      // Return original stream to page
-      return new Response(branch1, {status: response.status, statusText: response.statusText, headers: response.headers});
-    }catch{
-      return response;
-    }
-  };
-
-  // Fallback MutationObserver for DOM streaming
-  function handleNewText(newChunkOrFull){
-    // If fetch hook gives us incremental chunks, emit directly
-    // If we use DOM, we compute diff
   }
 
+  let baselineCount = 0;
+  let targetElement = null;
   let lastObservedText = "";
+  let hasStartedStreaming = false;
+
   function startObserver(){
     stopObserver();
+    const containers = getModelResponseContainers();
+    baselineCount = containers.length;
+    targetElement = null;
     lastObservedText = "";
+    lastFullText = "";
+    hasStartedStreaming = false;
+
     const target = document.body;
     observer = new MutationObserver(() => {
-      // Find assistant container - try multiple selectors
-      let el = document.querySelector('div[data-message-author-role="assistant"]:last-child') ||
-               document.querySelector('[data-message-author-role="assistant"]:last-of-type') ||
-               document.querySelector('div[data-is-streaming="true"]') ||
-               document.querySelector('article:last-child [data-message-author-role="assistant"]') ||
-               document.querySelector('main [data-testid="conversation-turn"]:last-child');
+      const currentContainers = getModelResponseContainers();
 
-      // Fallback: last assistant-looking block
-      if(!el){
-        const candidates = Array.from(document.querySelectorAll('div[data-message-author-role="assistant"], div[data-message-author-role="assistant"] *'));
-        el = candidates[candidates.length-1];
+      // Index baselineCount is strictly the NEW response block for this query!
+      if(!targetElement){
+        if(currentContainers.length > baselineCount){
+          const newContainer = currentContainers[baselineCount];
+          targetElement = newContainer.querySelector('message-content') || newContainer;
+          lastObservedText = "";
+        } else {
+          return; // Wait for the new model-response container to be added to DOM
+        }
       }
-      if(!el) return;
-      const full = (el.innerText || el.textContent || "").trim();
+
+      const full = (targetElement.innerText || targetElement.textContent || "").trim();
       if(!full || full === lastObservedText) return;
 
       const chunk = full.slice(lastObservedText.length);
@@ -196,14 +172,24 @@
       lastFullText = full;
 
       if(chunk){
+        hasStartedStreaming = true;
         emit({type:"STREAM_CHUNK", text: chunk, full: full, requestId: currentRequestId});
       }
 
-      // Detect final: no changes for 1.5s
+      // Final check: MUST have started streaming, NOT currently generating, NO unclosed code blocks, and text stable for 3s
       clearTimeout(finalTimer);
-      finalTimer = setTimeout(()=>{
-        emit({type:"FINAL", full: full, requestId: currentRequestId});
-      }, 1500);
+      const checkCompletion = () => {
+        if(!hasStartedStreaming || isGenerating() || hasUnclosedCodeBlock(lastFullText)){
+          finalTimer = setTimeout(checkCompletion, 1500);
+          return;
+        }
+        if(currentRequestId && lastFullText){
+          emit({type:"FINAL", full: lastFullText, requestId: currentRequestId});
+          currentRequestId = null;
+          stopObserver();
+        }
+      };
+      finalTimer = setTimeout(checkCompletion, 3000);
     });
     observer.observe(target, {childList:true, subtree:true, characterData:true, characterDataOldValue:true});
   }
@@ -213,8 +199,8 @@
     clearTimeout(finalTimer);
   }
 
-  // --- Listen for queries from background ---
-  globalThis.addEventListener("message", (e)=>{
+  // --- Listen for queries ---
+  globalThis.addEventListener("message", async (e)=>{
     if(e.source !== globalThis) return;
     const data = e.data;
     if(!data || data.__bridge !== BRIDGE) return;
@@ -225,6 +211,13 @@
     currentRequestId = msg.requestId || crypto.randomUUID();
     lastFullText = "";
     lastObservedText = "";
+    hasStartedStreaming = false;
+
+    // Wait if Gemini is currently generating or thinking
+    for(let i = 0; i < 40; i++){
+      if(!isGenerating()) break;
+      await new Promise(r => setTimeout(r, 500));
+    }
 
     const query = msg.query || "";
     const editor = getEditor();
@@ -243,16 +236,8 @@
 
     setTimeout(()=>{
       clickSend();
-      // In case fetch hook doesn't fire, observer will still capture
-    }, 120);
+    }, 250);
   });
-
-  // Auto-start observer once to be ready
-  if(document.readyState === "complete" || document.readyState === "interactive"){
-    // Don't start until first query
-  } else {
-    document.addEventListener("DOMContentLoaded", ()=>{}, {once:true});
-  }
 
   console.log("[LocalAI MAIN] Injected - ready for queries - Firefox 153");
 })();
