@@ -78,6 +78,63 @@ class WSConnection:
         try: self.writer.close()
         except: pass
 
+# --- Hardware Keypress Submission (daemon-level) ---
+# Gemini ignores synthetic JS clicks (isTrusted:false). The ONLY reliable
+# way to submit a typed prompt is via an OS-level hardware keypress.
+# This function is called by the daemon for EVERY RUN_QUERY, regardless
+# of whether the caller is bridge.py CLI, a benchmark script, or the SDK.
+import time as _time
+
+def _do_os_return():
+    """Focus Firefox AI tab and send hardware Ctrl+Enter + Return."""
+    # 1. Focus the Firefox window showing an AI chat
+    try:
+        res = subprocess.run(["hyprctl", "clients", "-j"], capture_output=True, text=True, timeout=2)
+        if res.returncode == 0:
+            clients = json.loads(res.stdout)
+            ai_keywords = (
+                "google gemini", "gemini.google", "chatgpt", "claude",
+                "meta ai", "chatgpt.com", "claude.ai",
+            )
+            ff = [c for c in clients if "firefox" in (c.get("class") or "").lower()]
+            preferred = None
+            for c in ff:
+                title = (c.get("title") or "").lower()
+                if any(k in title for k in ai_keywords):
+                    preferred = c
+                    break
+            target = preferred or (ff[0] if ff else None)
+            if target:
+                addr = target["address"]
+                ws_info = target.get("workspace", {})
+                ws_id = ws_info.get("id")
+                if ws_id is not None and ws_id > 0:
+                    subprocess.run(
+                        ["hyprctl", "dispatch", f'hl.dsp.focus({{ workspace = "{ws_id}" }})'],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
+                    )
+                subprocess.run(
+                    ["hyprctl", "dispatch", f'hl.dsp.focus({{ window = "address:{addr}" }})'],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
+                )
+    except Exception:
+        pass
+
+    # 2. Window focus settled - send Ctrl+Enter and Return to submit prompt
+    _time.sleep(0.4)
+    try:
+        subprocess.run(["wtype", "-M", "ctrl", "-k", "Return", "-m", "ctrl"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+        _time.sleep(0.2)
+        subprocess.run(["wtype", "-k", "Return"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+    except Exception:
+        pass
+
+def _schedule_os_return():
+    """Schedule hardware Return keypress 1.5s after query dispatch."""
+    t = threading.Timer(1.5, _do_os_return)
+    t.daemon = True
+    t.start()
+
 async def handle_client(reader, writer):
     # Perform HTTP WebSocket Handshake
     headers = ""
@@ -129,20 +186,37 @@ async def handle_client(reader, writer):
                 await ws.send(json.dumps({"type": "PONG"}))
                 continue
 
-            if msg_type == "GET_STATUS":
-                await ws.send(json.dumps({
-                    "type": "STATUS_REPLY",
-                    "clientCount": len(CONNECTED_CLIENTS)
-                }))
+            if msg_type == "DIAGNOSE_TABS":
+                # Forward to background.js and relay response
+                dead = set()
+                for c in CONNECTED_CLIENTS:
+                    if c != ws:
+                        try: await c.send(msg)
+                        except Exception: dead.add(c)
+                CONNECTED_CLIENTS.difference_update(dead)
                 continue
 
             # Broadcast all messages to all other connected clients
             dead = set()
+            broadcast_count = 0
             for c in CONNECTED_CLIENTS:
                 if c != ws:
-                    try: await c.send(msg)
+                    try:
+                        await c.send(msg)
+                        broadcast_count += 1
                     except Exception: dead.add(c)
             CONNECTED_CLIENTS.difference_update(dead)
+
+            if msg_type == "RUN_QUERY":
+                query_preview = data.get("query", "")[:60]
+                print(f"[Daemon] RUN_QUERY broadcast to {broadcast_count} client(s): '{query_preview}...'", flush=True)
+
+            # For every RUN_QUERY, schedule a hardware Return keypress
+            # This is essential because synthetic JS clicks are isTrusted:false
+            # and Gemini ignores them. The ONLY reliable submission is wtype.
+            if msg_type == "RUN_QUERY":
+                print(f"[Daemon] Scheduling _do_os_return in 1.5s", flush=True)
+                _schedule_os_return()
 
     except Exception:
         pass
@@ -191,54 +265,8 @@ def send_query_cli(query_text, stream=True, idle_timeout=10.0, hard_timeout=180.
     frame = bytearray([0x81, 0x80 | len(payload)]) + mask + masked
     s.sendall(frame)
 
-    # Hardware Return Keypress Fallback Trigger via wtype (1.5s post-typing)
-    def send_os_return():
-        # 1. Focus the Firefox window that is showing an AI chat (Gemini/ChatGPT/Claude)
-        try:
-            res = subprocess.run(["hyprctl", "clients", "-j"], capture_output=True, text=True, timeout=2)
-            if res.returncode == 0:
-                clients = json.loads(res.stdout)
-                ai_keywords = (
-                    "google gemini", "gemini.google", "chatgpt", "claude",
-                    "meta ai", "chatgpt.com", "claude.ai",
-                )
-                ff = [c for c in clients if "firefox" in (c.get("class") or "").lower()]
-                # Prefer a Firefox window whose title looks like an AI chat
-                preferred = None
-                for c in ff:
-                    title = (c.get("title") or "").lower()
-                    if any(k in title for k in ai_keywords):
-                        preferred = c
-                        break
-                target = preferred or (ff[0] if ff else None)
-                if target:
-                    addr = target["address"]
-                    ws_info = target.get("workspace", {})
-                    ws_id = ws_info.get("id")
-                    if ws_id is not None and ws_id > 0:
-                        subprocess.run(
-                            ["hyprctl", "dispatch", f"hl.dsp.focus({{ workspace = '{ws_id}' }})"],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
-                        )
-                    subprocess.run(
-                        ["hyprctl", "dispatch", f"hl.dsp.focus({{ window = 'address:{addr}' }})"],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
-                    )
-        except Exception:
-            pass
-
-        # 2. Window focus settled - send Ctrl+Enter and Return to submit prompt
-        _time.sleep(0.4)
-        try:
-            subprocess.run(["wtype", "-M", "ctrl", "-k", "Return", "-m", "ctrl"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
-            _time.sleep(0.2)
-            subprocess.run(["wtype", "-k", "Return"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
-        except Exception:
-            pass
-
-    t = threading.Timer(1.5, send_os_return)
-    t.daemon = True
-    t.start()
+    # NOTE: Hardware Return keypress is now handled by the daemon (_schedule_os_return)
+    # for ALL RUN_QUERY messages, so no need to schedule it here in CLI.
 
     full_text = ""
     started = _time.time()

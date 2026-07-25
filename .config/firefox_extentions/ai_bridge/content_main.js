@@ -507,6 +507,26 @@
     setTimeout(async ()=>{
       await clickSend();
     }, 250);
+
+    // Focus keep-alive: re-focus editor every 200ms for 3s so that when
+    // wtype sends hardware Return at ~T=1.9s, the editor has keyboard focus.
+    // Without this, focus drifts to the response area after Prompt 1 completes.
+    let focusKeepaliveCount = 0;
+    const focusInterval = setInterval(() => {
+      focusKeepaliveCount++;
+      if(focusKeepaliveCount > 15 || !currentRequestId || hasStartedStreaming){
+        clearInterval(focusInterval);
+        return;
+      }
+      const ed = getEditor();
+      if(ed){
+        let el = ed;
+        if(el.tagName === "RICH-TEXTAREA"){
+          el = el.querySelector('div[contenteditable="true"], p, div.ql-editor') || el;
+        }
+        try{ el.focus({preventScroll:true}); }catch{}
+      }
+    }, 200);
   };
 
   window.__LocalAI_HandleQuery = handleQuery;
