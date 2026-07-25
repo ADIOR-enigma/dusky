@@ -25,6 +25,8 @@ async function setStatus(connected, extra=""){
   }catch(e){}
 }
 
+let reconnectTimer = null;
+
 // --- WebSocket Connection ---
 function connectWS(force = false){
   if(!force && ws && ws.readyState === WebSocket.OPEN){
@@ -32,27 +34,36 @@ function connectWS(force = false){
     return;
   }
 
-  isConnecting = false;
+  if(isConnecting && !force) return;
+  isConnecting = true;
+
   if(ws){
-    try{ ws.close(); }catch(e){}
+    try{
+      ws.onopen = null;
+      ws.onmessage = null;
+      ws.onerror = null;
+      ws.onclose = null;
+      ws.close();
+    }catch(e){}
     ws = null;
   }
 
   try{
     ws = new WebSocket(WS_URL);
   }catch(e){
+    isConnecting = false;
     setStatus(false, "Init Error");
     scheduleReconnect();
     return;
   }
 
-  ws.addEventListener("open", async ()=>{
+  ws.onopen = async ()=>{
+    isConnecting = false;
     log("WS connected successfully!");
     await setStatus(true);
-    startHeartbeat();
-  });
+  };
 
-  ws.addEventListener("message", async (event)=>{
+  ws.onmessage = async (event)=>{
     let msg;
     try{ msg = JSON.parse(event.data); }catch{ return; }
 
@@ -93,55 +104,55 @@ function connectWS(force = false){
       }catch(e){ log("Focus error (non-fatal):", e); }
 
       try{
-        browser.tabs.sendMessage(targetId, msg).catch((e)=>{
-          ws?.send(JSON.stringify({type:"ERROR", error:"Tab message failed: " + e.message, requestId: msg.requestId}));
+        browser.tabs.sendMessage(targetId, msg).catch(async (e)=>{
+          log("Tab message failed (orphaned content script), auto-reloading tab:", targetId, e);
+          try {
+            await browser.tabs.reload(targetId);
+            setTimeout(() => {
+              browser.tabs.sendMessage(targetId, msg).catch((err) => {
+                ws?.send(JSON.stringify({type:"ERROR", error:"Tab message failed after reload: " + err.message, requestId: msg.requestId}));
+              });
+            }, 1800);
+          } catch(reloadErr) {
+            ws?.send(JSON.stringify({type:"ERROR", error:"Tab message failed: " + e.message, requestId: msg.requestId}));
+          }
         });
       }catch(e){
         ws?.send(JSON.stringify({type:"ERROR", error:"Tab message error: " + e.message, requestId: msg.requestId}));
       }
     }
-  });
+  };
 
-  ws.addEventListener("close", ()=>{
-    stopHeartbeat();
+  ws.onclose = ()=>{
+    isConnecting = false;
     ws = null;
     setStatus(false);
     scheduleReconnect();
-  });
+  };
 
-  ws.addEventListener("error", ()=>{
-    stopHeartbeat();
-    if(ws){ try{ ws.close(); }catch{} }
-    ws = null;
+  ws.onerror = ()=>{
+    isConnecting = false;
+    if(ws){
+      try{
+        ws.onopen = null;
+        ws.onmessage = null;
+        ws.onerror = null;
+        ws.onclose = null;
+        ws.close();
+      }catch(e){}
+      ws = null;
+    }
     setStatus(false, "Err");
     scheduleReconnect();
-  });
-}
-
-function startHeartbeat(){
-  stopHeartbeat();
-  heartbeatInterval = setInterval(()=>{
-    if(ws && ws.readyState === WebSocket.OPEN){
-      try{
-        ws.send(JSON.stringify({type: "HEARTBEAT"}));
-      }catch(e){
-        connectWS(true);
-      }
-    } else {
-      connectWS(true);
-    }
-  }, 3000);
-}
-
-function stopHeartbeat(){
-  if(heartbeatInterval){
-    clearInterval(heartbeatInterval);
-    heartbeatInterval = null;
-  }
+  };
 }
 
 function scheduleReconnect(){
-  setTimeout(() => connectWS(false), 2000);
+  if(reconnectTimer) clearTimeout(reconnectTimer);
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connectWS(false);
+  }, 2500);
 }
 
 // --- Firefox MV3 Alarms Keep-Alive & Auto-Heal ---

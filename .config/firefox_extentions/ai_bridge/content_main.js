@@ -1,5 +1,8 @@
 // content_main.js - MAIN world - runs in page realm
 (() => {
+  if (window.__LocalAI_Injected__) return;
+  window.__LocalAI_Injected__ = true;
+
   const BRIDGE = "__LOCAL_AI_BRIDGE__";
   let currentRequestId = null;
   let lastFullText = "";
@@ -61,34 +64,51 @@
     }
   };
 
-  const isGenerating = () => {
-    // Prefer explicit streaming markers first
-    const streamingMarkers = [
-      ...document.querySelectorAll('[data-is-streaming="true"]'),
-      ...document.querySelectorAll('.is-streaming'),
-      ...document.querySelectorAll('[data-test-id="thinking-indicator"]'),
-    ];
-    if(streamingMarkers.some(isVisible)) return true;
-
-    // Stop / cancel response button (must be visible — hidden templates are common)
-    const stopCandidates = document.querySelectorAll("button");
-    for(const btn of stopCandidates){
-      if(!isVisible(btn) || btn.disabled) continue;
-      const label = (btn.getAttribute("aria-label") || btn.textContent || "").toLowerCase();
-      const cls = (btn.className || "").toString().toLowerCase();
-      if(cls.includes("stop-button")) return true;
-      // Match stop/cancel generation, not unrelated UI
-      if(/\bstop\b/.test(label) || label.includes("stop response") || label.includes("cancel response")) return true;
+  const getSendButtonRaw = () => {
+    const rich = document.querySelector('rich-textarea');
+    if(rich && rich.shadowRoot){
+      const sBtn = rich.shadowRoot.querySelector('button.send-button') ||
+                   rich.shadowRoot.querySelector('button[aria-label*="Send"]') ||
+                   rich.shadowRoot.querySelector('button');
+      if(sBtn && !sBtn.disabled && isVisible(sBtn)) return sBtn;
     }
 
-    // Only count visible progress indicators (Angular Material often leaves hidden spinners in DOM)
-    const loading = [
-      ...document.querySelectorAll('mat-progress-spinner'),
-      ...document.querySelectorAll('mat-spinner'),
-      ...document.querySelectorAll('.loading-dots'),
-      ...document.querySelectorAll('.dot-flashing'),
-    ];
-    return loading.some(isVisible);
+    const geminiBtn = document.querySelector('button.send-button') ||
+                      document.querySelector('button[aria-label*="Send prompt"]') ||
+                      document.querySelector('button[aria-label*="Send message"]') ||
+                      document.querySelector('button.send-button-container') ||
+                      document.querySelector('.send-button-container button') ||
+                      document.querySelector('rich-textarea ~ * button:last-of-type') ||
+                      document.querySelector('button[mat-icon-button][aria-label*="Send"]');
+    if(geminiBtn && !geminiBtn.disabled && isVisible(geminiBtn)) return geminiBtn;
+
+    const candidates = Array.from(document.querySelectorAll('button'));
+    for(const btn of candidates){
+      const label = (btn.getAttribute('aria-label') || '').toLowerCase();
+      if(label.includes('stop')) continue;
+      if((label.includes('send') || label.includes('submit') || btn.classList.contains('send-button')) && !btn.disabled && isVisible(btn)){
+        return btn;
+      }
+    }
+    return null;
+  };
+
+  const isGenerating = () => {
+    // 1. Prompt bar Send button: if present and enabled, generation is 100% finished!
+    const sendBtn = getSendButtonRaw();
+    if(sendBtn) return false;
+
+    // 2. If Send button is not active, check for a visible Stop button in the prompt bar
+    const stopBtn = document.querySelector('rich-textarea ~ * button[aria-label*="Stop"]') ||
+                    document.querySelector('.send-button-container button[aria-label*="Stop"]') ||
+                    document.querySelector('button.stop-button');
+    if(stopBtn && isVisible(stopBtn)) return true;
+
+    // 3. Fallback check for active streaming attribute
+    const streaming = document.querySelector('[data-is-streaming="true"], .is-streaming');
+    if(streaming && isVisible(streaming)) return true;
+
+    return false;
   };
 
   const hasUnclosedCodeBlock = (txt) => {
@@ -99,40 +119,7 @@
 
   const getSendButton = () => {
     if(isGenerating()) return null;
-
-    const rich = document.querySelector('rich-textarea');
-    if(rich && rich.shadowRoot){
-      const sBtn = rich.shadowRoot.querySelector('button.send-button') ||
-                   rich.shadowRoot.querySelector('button[aria-label*="Send"]') ||
-                   rich.shadowRoot.querySelector('button');
-      if(sBtn && !sBtn.disabled) return sBtn;
-    }
-
-    // Direct Gemini & Universal Send Button Selectors
-    const geminiBtn = document.querySelector('button.send-button') ||
-                      document.querySelector('button[aria-label*="Send prompt"]') ||
-                      document.querySelector('button[aria-label*="Send message"]') ||
-                      document.querySelector('button.send-button-container') ||
-                      document.querySelector('.send-button-container button') ||
-                      document.querySelector('rich-textarea ~ * button:last-of-type') ||
-                      document.querySelector('button[mat-icon-button][aria-label*="Send"]');
-    if(geminiBtn && !geminiBtn.disabled) return geminiBtn;
-
-    const candidates = Array.from(document.querySelectorAll('button'));
-    for(const btn of candidates){
-      const label = (btn.getAttribute('aria-label') || '').toLowerCase();
-      const text = (btn.textContent || '').toLowerCase();
-      if(label.includes('stop') || text.includes('stop')) continue;
-      if((label.includes('send') || label.includes('submit') || btn.classList.contains('send-button')) && !btn.disabled){
-        return btn;
-      }
-    }
-
-    return document.querySelector('button[aria-label*="Send prompt"]') ||
-           document.querySelector('button[aria-label*="Send message"]') ||
-           document.querySelector('button[aria-label*="Send"]') ||
-           document.querySelector('button.send-button') ||
-           document.querySelector('rich-textarea ~ button');
+    return getSendButtonRaw();
   };
 
   // --- Select & Focus Text Box Before Typing ---
@@ -163,9 +150,8 @@
     if(!targetEl) return false;
 
     const rich = document.querySelector('rich-textarea');
-
-    selectAndFocus(targetEl);
     if(rich && rich !== targetEl) selectAndFocus(rich);
+    selectAndFocus(targetEl);
 
     let ok = false;
     try{ ok = document.execCommand("selectAll", false, null); }catch(e){}
@@ -194,6 +180,19 @@
       try{ el.dispatchEvent(new InputEvent("input", {bubbles:true, cancelable:true, composed:true, inputType:"insertText", data:text})); }catch(e){}
       try{ el.dispatchEvent(new Event("input", {bubbles:true, composed:true})); }catch(e){}
       try{ el.dispatchEvent(new Event("change", {bubbles:true, composed:true})); }catch(e){}
+      try{ el.dispatchEvent(new KeyboardEvent("keydown", {key:"a", code:"KeyA", bubbles:true, cancelable:true, composed:true})); }catch(e){}
+      try{ el.dispatchEvent(new KeyboardEvent("keyup", {key:"a", code:"KeyA", bubbles:true, cancelable:true, composed:true})); }catch(e){}
+    }
+
+    // Explicitly enable Send button if disabled by Angular template
+    const btns = Array.from(document.querySelectorAll('button'));
+    for(const btn of btns){
+      const label = (btn.getAttribute('aria-label') || '').toLowerCase();
+      if(label.includes('send') || btn.classList.contains('send-button')){
+        btn.removeAttribute('disabled');
+        btn.disabled = false;
+        btn.removeAttribute('aria-disabled');
+      }
     }
 
     return true;
@@ -297,15 +296,15 @@
       await new Promise(r => setTimeout(r, 200));
     }
 
-    // 3. Synthetic Enter Keypress on Editor (last resort)
+    // 3. Synthetic Ctrl+Enter / Enter Keypress on Editor
     const ed = getEditor();
     if(ed){
       let pEl = ed.tagName === "RICH-TEXTAREA" ? (ed.querySelector('div[contenteditable="true"], p, div.ql-editor') || ed) : ed;
       selectAndFocus(pEl);
+      pEl.dispatchEvent(new KeyboardEvent("keydown", {key:"Enter", code:"Enter", keyCode:13, which:13, ctrlKey:true, metaKey:true, bubbles:true, cancelable:true, composed:true}));
+      pEl.dispatchEvent(new KeyboardEvent("keyup", {key:"Enter", code:"Enter", keyCode:13, which:13, ctrlKey:true, metaKey:true, bubbles:true, cancelable:true, composed:true}));
       pEl.dispatchEvent(new KeyboardEvent("keydown", {key:"Enter", code:"Enter", keyCode:13, which:13, bubbles:true, cancelable:true, composed:true}));
-      pEl.dispatchEvent(new KeyboardEvent("keypress", {key:"Enter", code:"Enter", keyCode:13, which:13, bubbles:true, cancelable:true, composed:true}));
       pEl.dispatchEvent(new KeyboardEvent("keyup", {key:"Enter", code:"Enter", keyCode:13, which:13, bubbles:true, cancelable:true, composed:true}));
-      triggerAngularComponentSubmit();
     }
 
     return true;
@@ -327,8 +326,8 @@
   let lastObservedText = "";
   let hasStartedStreaming = false;
   let lastChangeAt = 0;
-  let idleFinalMs = 3500;
-  let hardFinalMs = 12000;
+  let idleFinalMs = 600;
+  let hardFinalMs = 1500;
   let pollTimer = null;
 
   function emitFinal(reason){
@@ -364,7 +363,7 @@
         return;
       }
 
-      finalTimer = setTimeout(checkCompletion, 800);
+      finalTimer = setTimeout(checkCompletion, 300);
     };
     finalTimer = setTimeout(checkCompletion, idleFinalMs);
   }

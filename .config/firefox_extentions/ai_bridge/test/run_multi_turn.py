@@ -50,7 +50,11 @@ def send_prompt(prompt_text, turn_num):
                 ff = [c for c in clients if 'firefox' in c.get('class','').lower()]
                 if ff:
                     addr = ff[0]['address']
-                    subprocess.run(["hyprctl", "dispatch", f'hl.dsp.window.bring_to_top({{ window = "address:{addr}" }})'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+                    ws_info = ff[0].get('workspace', {})
+                    ws_id = ws_info.get('id')
+                    if ws_id and ws_id > 0:
+                        subprocess.run(["hyprctl", "dispatch", f"hl.dsp.focus({{ workspace = '{ws_id}' }})"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+                    subprocess.run(["hyprctl", "dispatch", f"hl.dsp.focus({{ window = 'address:{addr}' }})"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
         except Exception: pass
 
         try: subprocess.run(["wtype", "-k", "Return"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -103,16 +107,17 @@ def send_prompt(prompt_text, turn_num):
 
 def main():
     prompts = [
-        "Tell me a short 1-sentence joke about computers.",
-        "Now explain why that joke is funny in 1 sentence.",
-        "Give me 3 keywords related to the joke."
+        "What is 15 + 25? Answer in one sentence.",
+        "Now multiply that result by 3.",
+        "Now subtract 20 from that result.",
+        "Summarize all three steps in one sentence."
     ]
 
     history = []
     for idx, p in enumerate(prompts, 1):
         ok, res = send_prompt(p, idx)
         history.append((idx, p, ok, res))
-        time.sleep(3.0)
+        time.sleep(2.0)
 
     print("\n==========================================", flush=True)
     print("MULTI-TURN TEST SUMMARY REPORT", flush=True)

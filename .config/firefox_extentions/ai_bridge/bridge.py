@@ -93,7 +93,11 @@ async def handle_client(reader, writer):
             break
 
     if not sec_key:
-        writer.close()
+        resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"status\":\"ok\"}\n"
+        writer.write(resp.encode('utf-8'))
+        await writer.drain()
+        try: writer.close()
+        except: pass
         return
 
     resp_key = make_ws_response_key(sec_key)
@@ -209,14 +213,15 @@ def send_query_cli(query_text, stream=True, idle_timeout=10.0, hard_timeout=180.
                 target = preferred or (ff[0] if ff else None)
                 if target:
                     addr = target["address"]
-                    # Standard Hyprland focus (bring_to_top alone does not give keyboard focus)
+                    ws_info = target.get("workspace", {})
+                    ws_id = ws_info.get("id")
+                    if ws_id is not None and ws_id > 0:
+                        subprocess.run(
+                            ["hyprctl", "dispatch", f"hl.dsp.focus({{ workspace = '{ws_id}' }})"],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
+                        )
                     subprocess.run(
-                        ["hyprctl", "dispatch", "focuswindow", f"address:{addr}"],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
-                    )
-                    # Best-effort raise if a helper dispatcher exists
-                    subprocess.run(
-                        ["hyprctl", "dispatch", "bringactivetotop"],
+                        ["hyprctl", "dispatch", f"hl.dsp.focus({{ window = 'address:{addr}' }})"],
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
                     )
         except Exception:
@@ -235,7 +240,7 @@ def send_query_cli(query_text, stream=True, idle_timeout=10.0, hard_timeout=180.
         except Exception:
             pass
 
-    t = threading.Timer(1.5, send_os_return)
+    t = threading.Timer(0.7, send_os_return)
     t.daemon = True
     t.start()
 
