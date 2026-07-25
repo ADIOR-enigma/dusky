@@ -1,8 +1,5 @@
 // content_main.js - MAIN world - runs in page realm
 (() => {
-  if (window.__LocalAI_Injected__) return;
-  window.__LocalAI_Injected__ = true;
-
   const BRIDGE = "__LOCAL_AI_BRIDGE__";
   let currentRequestId = null;
   let lastFullText = "";
@@ -67,26 +64,39 @@
   const getSendButtonRaw = () => {
     const rich = document.querySelector('rich-textarea');
     if(rich && rich.shadowRoot){
-      const sBtn = rich.shadowRoot.querySelector('button.send-button') ||
-                   rich.shadowRoot.querySelector('button[aria-label*="Send"]') ||
-                   rich.shadowRoot.querySelector('button');
+      const sBtn = rich.shadowRoot.querySelector('button[aria-label*="Send"], button.send-button, button');
       if(sBtn && !sBtn.disabled && isVisible(sBtn)) return sBtn;
     }
 
+    // 1. Direct query for Gemini Send button
     const geminiBtn = document.querySelector('button.send-button') ||
                       document.querySelector('button[aria-label*="Send prompt"]') ||
                       document.querySelector('button[aria-label*="Send message"]') ||
+                      document.querySelector('button[aria-label*="Send"]') ||
                       document.querySelector('button.send-button-container') ||
                       document.querySelector('.send-button-container button') ||
                       document.querySelector('rich-textarea ~ * button:last-of-type') ||
                       document.querySelector('button[mat-icon-button][aria-label*="Send"]');
     if(geminiBtn && !geminiBtn.disabled && isVisible(geminiBtn)) return geminiBtn;
 
+    // 2. Query prompt bar container buttons (excluding mic, add, upload, stop)
+    const promptParent = rich?.parentElement || document.querySelector('form') || document.querySelector('.input-area-container');
+    if(promptParent){
+      const pBtns = Array.from(promptParent.querySelectorAll('button'));
+      for(const b of pBtns){
+        if(b.disabled || !isVisible(b)) continue;
+        const label = (b.getAttribute('aria-label') || b.textContent || '').toLowerCase();
+        if(label.includes('mic') || label.includes('voice') || label.includes('upload') || label.includes('add') || label.includes('stop') || label.includes('cancel')) continue;
+        return b;
+      }
+    }
+
+    // 3. Fallback scan all buttons
     const candidates = Array.from(document.querySelectorAll('button'));
     for(const btn of candidates){
+      if(btn.disabled || !isVisible(btn)) continue;
       const label = (btn.getAttribute('aria-label') || '').toLowerCase();
-      if(label.includes('stop')) continue;
-      if((label.includes('send') || label.includes('submit') || btn.classList.contains('send-button')) && !btn.disabled && isVisible(btn)){
+      if(label.includes('send') || label.includes('submit') || btn.classList.contains('send-button')){
         return btn;
       }
     }
@@ -267,12 +277,17 @@
       try{ form.requestSubmit(); }catch{ try{ form.submit(); }catch{} }
     }
 
-    // 2. Poll for enabled Send button
-    for(let i = 0; i < 15; i++){
-      const btn = getSendButton();
-      if(btn && !btn.disabled){
+    // 2. Poll for Send button directly (up to 10 seconds)
+    for(let i = 0; i < 50; i++){
+      const btn = getSendButtonRaw();
+      if(btn){
+        btn.removeAttribute('disabled');
+        btn.disabled = false;
+        btn.removeAttribute('aria-disabled');
         try{ btn.focus(); }catch{}
         try{ HTMLElement.prototype.click.call(btn); }catch{ btn.click(); }
+        const childIcon = btn.querySelector('mat-icon, svg, i, span');
+        if(childIcon) try{ childIcon.click(); }catch{}
 
         btn.dispatchEvent(new PointerEvent("pointerdown", {bubbles:true, cancelable:true, composed:true, view:window}));
         btn.dispatchEvent(new MouseEvent("mousedown", {bubbles:true, cancelable:true, composed:true, view:window}));
@@ -281,9 +296,8 @@
         btn.dispatchEvent(new MouseEvent("click", {bubbles:true, cancelable:true, composed:true, view:window}));
 
         triggerAngularComponentSubmit();
-        console.log("[LocalAI MAIN] Synthetic click attempted on send button");
+        console.log("[LocalAI MAIN] Direct click executed on send button");
         
-        // Re-focus editor after clicking button so wtype Return hits the right element
         if(editor){
           let el = editor;
           if(el.tagName === "RICH-TEXTAREA"){
@@ -296,15 +310,11 @@
       await new Promise(r => setTimeout(r, 200));
     }
 
-    // 3. Synthetic Ctrl+Enter / Enter Keypress on Editor
+    // 3. Re-focus editor after clicking send button
     const ed = getEditor();
     if(ed){
       let pEl = ed.tagName === "RICH-TEXTAREA" ? (ed.querySelector('div[contenteditable="true"], p, div.ql-editor') || ed) : ed;
       selectAndFocus(pEl);
-      pEl.dispatchEvent(new KeyboardEvent("keydown", {key:"Enter", code:"Enter", keyCode:13, which:13, ctrlKey:true, metaKey:true, bubbles:true, cancelable:true, composed:true}));
-      pEl.dispatchEvent(new KeyboardEvent("keyup", {key:"Enter", code:"Enter", keyCode:13, which:13, ctrlKey:true, metaKey:true, bubbles:true, cancelable:true, composed:true}));
-      pEl.dispatchEvent(new KeyboardEvent("keydown", {key:"Enter", code:"Enter", keyCode:13, which:13, bubbles:true, cancelable:true, composed:true}));
-      pEl.dispatchEvent(new KeyboardEvent("keyup", {key:"Enter", code:"Enter", keyCode:13, which:13, bubbles:true, cancelable:true, composed:true}));
     }
 
     return true;
@@ -326,8 +336,8 @@
   let lastObservedText = "";
   let hasStartedStreaming = false;
   let lastChangeAt = 0;
-  let idleFinalMs = 600;
-  let hardFinalMs = 1500;
+  let idleFinalMs = 1200;
+  let hardFinalMs = 3000;
   let pollTimer = null;
 
   function emitFinal(reason){
@@ -342,30 +352,35 @@
     const checkCompletion = () => {
       if(!currentRequestId) return;
       if(!hasStartedStreaming || !lastFullText){
-        finalTimer = setTimeout(checkCompletion, 1000);
+        finalTimer = setTimeout(checkCompletion, 500);
         return;
       }
 
       const idleFor = Date.now() - lastChangeAt;
-      const generating = isGenerating();
+      const sendBtn = getSendButtonRaw();
       const openCode = hasUnclosedCodeBlock(lastFullText);
 
-      // Happy path: stream idle + not generating + closed code fences
-      if(idleFor >= idleFinalMs && !generating && !openCode){
+      // Primary Completion: Text hasn't grown for 1.2s AND Send button is enabled AND code fences closed
+      if(idleFor >= 1200 && sendBtn && !sendBtn.disabled && !openCode){
         emitFinal("idle");
         return;
       }
 
-      // Safety: if text has been stable long enough, finalize even if a hidden
-      // spinner/false-positive "generating" marker is stuck in the DOM.
-      if(idleFor >= hardFinalMs && !openCode){
-        emitFinal("hard-idle");
+      // Fallback Completion: Text hasn't grown for 2.5s AND code fences closed
+      if(idleFor >= 2500 && !openCode){
+        emitFinal("silence-fallback");
         return;
       }
 
-      finalTimer = setTimeout(checkCompletion, 300);
+      // Absolute Safety Fallback: Text hasn't grown for 4.0s (unconditional completion)
+      if(idleFor >= 4000){
+        emitFinal("absolute-safety");
+        return;
+      }
+
+      finalTimer = setTimeout(checkCompletion, 200);
     };
-    finalTimer = setTimeout(checkCompletion, idleFinalMs);
+    finalTimer = setTimeout(checkCompletion, 500);
   }
 
   function readResponseText(el){
@@ -390,31 +405,20 @@
       if(!currentRequestId) return;
       const currentContainers = getModelResponseContainers();
 
-      if(!targetElement){
-        // New response bubble after our send
-        if(currentContainers.length > baselineCount){
-          const newContainer = currentContainers[currentContainers.length - 1];
-          targetElement = newContainer.querySelector('message-content') || newContainer;
+      if(currentContainers.length > baselineCount){
+        const latest = currentContainers[currentContainers.length - 1];
+        const latestContent = latest.querySelector('message-content') || latest;
+        if(targetElement !== latestContent){
+          targetElement = latestContent;
           lastObservedText = "";
-        } else if(currentContainers.length > 0){
-          // Fallback: reuse last container if Gemini reuses/updates in place
-          // only after generation markers appear or text begins changing
-          if(isGenerating()){
-            const last = currentContainers[currentContainers.length - 1];
-            targetElement = last.querySelector('message-content') || last;
-            lastObservedText = readResponseText(targetElement);
-          } else {
-            return;
-          }
-        } else {
-          return;
         }
-      } else if(!document.contains(targetElement)){
-        // DOM recycled the node — rebind to latest response
-        if(currentContainers.length){
+      } else if(!targetElement || !document.contains(targetElement)){
+        if(currentContainers.length > 0){
           const last = currentContainers[currentContainers.length - 1];
           targetElement = last.querySelector('message-content') || last;
-          lastObservedText = "";
+          lastObservedText = readResponseText(targetElement);
+        } else {
+          return;
         }
       }
 

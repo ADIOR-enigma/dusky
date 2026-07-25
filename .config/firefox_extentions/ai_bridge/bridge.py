@@ -227,20 +227,16 @@ def send_query_cli(query_text, stream=True, idle_timeout=10.0, hard_timeout=180.
         except Exception:
             pass
 
-        # 2. Wait for window focus to settle, then fire authentic Return keypress
+        # 2. Window focus settled - send Ctrl+Enter and Return to submit prompt
         _time.sleep(0.4)
         try:
-            subprocess.run(["wtype", "-k", "Return"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
-        except Exception:
-            pass
-        # Second Return after a beat helps if the first hit before focus settled
-        _time.sleep(0.35)
-        try:
-            subprocess.run(["wtype", "-k", "Return"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+            subprocess.run(["wtype", "-M", "ctrl", "-k", "Return", "-m", "ctrl"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+            _time.sleep(0.2)
+            subprocess.run(["wtype", "-k", "Return"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
         except Exception:
             pass
 
-    t = threading.Timer(0.7, send_os_return)
+    t = threading.Timer(1.5, send_os_return)
     t.daemon = True
     t.start()
 

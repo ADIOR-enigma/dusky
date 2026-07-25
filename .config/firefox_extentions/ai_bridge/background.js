@@ -105,14 +105,20 @@ function connectWS(force = false){
 
       try{
         browser.tabs.sendMessage(targetId, msg).catch(async (e)=>{
-          log("Tab message failed (orphaned content script), auto-reloading tab:", targetId, e);
+          log("Tab message failed (orphaned content script), auto-healing tab:", targetId, e);
           try {
             await browser.tabs.reload(targetId);
-            setTimeout(() => {
-              browser.tabs.sendMessage(targetId, msg).catch((err) => {
-                ws?.send(JSON.stringify({type:"ERROR", error:"Tab message failed after reload: " + err.message, requestId: msg.requestId}));
-              });
-            }, 1800);
+            const onLoaded = (tId, changeInfo) => {
+              if(tId === targetId && changeInfo.status === "complete"){
+                browser.tabs.onUpdated.removeListener(onLoaded);
+                setTimeout(() => {
+                  browser.tabs.sendMessage(targetId, msg).catch((err) => {
+                    ws?.send(JSON.stringify({type:"ERROR", error:"Tab message failed after auto-heal: " + err.message, requestId: msg.requestId}));
+                  });
+                }, 1200);
+              }
+            };
+            browser.tabs.onUpdated.addListener(onLoaded);
           } catch(reloadErr) {
             ws?.send(JSON.stringify({type:"ERROR", error:"Tab message failed: " + e.message, requestId: msg.requestId}));
           }
@@ -167,46 +173,42 @@ try {
   });
 } catch(e) {}
 
+const knownAiTabs = new Set();
+
 // --- activeTabId Lock Priority Tab Targeting ---
 async function findTargetTab(preferredId){
   if(preferredId){
     try{
       const tab = await browser.tabs.get(preferredId);
-      if(tab && AI_URL_PATTERNS.some(p=>tab.url?.includes(p))) return preferredId;
+      if(tab) return preferredId;
     }catch{}
   }
 
-  // 1. ALWAYS try active tab in currently focused window first
-  try{
-    const activeTabs = await browser.tabs.query({active: true, lastFocusedWindow: true});
-    if(activeTabs.length > 0 && activeTabs[0].url && AI_URL_PATTERNS.some(p => activeTabs[0].url.includes(p))){
-      log("Found via active focused tab:", activeTabs[0].id);
-      activeTabId = activeTabs[0].id;
-      return activeTabs[0].id;
-    }
-  }catch(e){}
-
-  // 2. Try last active/communicated tab ID
   if(activeTabId){
     try{
       const tab = await browser.tabs.get(activeTabId);
-      if(tab && AI_URL_PATTERNS.some(p=>tab.url?.includes(p))){
-        log("Found via last activeTabId:", activeTabId);
-        return activeTabId;
-      }
-    }catch{}
+      if(tab) return activeTabId;
+    }catch{
+      activeTabId = null;
+    }
   }
 
-  // 3. Query open AI tabs
+  for(const tabId of knownAiTabs){
+    try{
+      const tab = await browser.tabs.get(tabId);
+      if(tab){
+        activeTabId = tabId;
+        return tabId;
+      }
+    }catch{
+      knownAiTabs.delete(tabId);
+    }
+  }
+
   try{
     const allTabs = await browser.tabs.query({});
     const aiTabs = allTabs.filter(tab => tab.url && AI_URL_PATTERNS.some(p => tab.url.includes(p)));
     if(aiTabs.length > 0){
-      aiTabs.sort((a,b) => {
-        if(a.active && !b.active) return -1;
-        if(!a.active && b.active) return 1;
-        return (b.lastAccessed || 0) - (a.lastAccessed || 0);
-      });
       activeTabId = aiTabs[0].id;
       return aiTabs[0].id;
     }
@@ -217,29 +219,27 @@ async function findTargetTab(preferredId){
 
 // Track active tab
 browser.tabs.onActivated?.addListener(async ({tabId})=>{
-  connectWS();
-  try{
-    const tab = await browser.tabs.get(tabId);
-    if(tab.url && AI_URL_PATTERNS.some(p=>tab.url.includes(p))){
-      activeTabId = tabId;
-      try{ await browser.storage.session.set({activeTabId}); }catch{}
-    }
-  }catch{}
+  activeTabId = tabId;
 });
 
 browser.tabs.onUpdated?.addListener(async (tabId, change, tab)=>{
-  if(change.url || change.status === "complete"){
-    if(tab.url && AI_URL_PATTERNS.some(p=>tab.url.includes(p))){
-      activeTabId = tabId;
-      try{ await browser.storage.session.set({activeTabId}); }catch{}
-    }
+  if(tab.url && AI_URL_PATTERNS.some(p=>tab.url.includes(p))){
+    activeTabId = tabId;
+    knownAiTabs.add(tabId);
   }
 });
 
 // Forward content script messages -> WS & Lock activeTabId
 browser.runtime.onMessage.addListener((msg, sender)=>{
   if(!msg?.type) return;
-  if(sender?.tab?.id) activeTabId = sender.tab.id;
+  if(sender?.tab?.id){
+    activeTabId = sender.tab.id;
+    knownAiTabs.add(sender.tab.id);
+  }
+  if(msg.type === "TAB_REGISTER"){
+    log("Tab registered via content script:", sender?.tab?.id);
+    return;
+  }
   if(ws && ws.readyState === WebSocket.OPEN){
     try{
       ws.send(JSON.stringify({...msg, tabId: sender?.tab?.id}));

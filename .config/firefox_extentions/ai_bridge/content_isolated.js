@@ -1,6 +1,10 @@
 (function () {
   const BRIDGE = "__LOCAL_AI_BRIDGE__";
 
+  try {
+    browser.runtime.sendMessage({type: "TAB_REGISTER", url: window.location.href});
+  } catch(e){}
+
   // 1. Robust Script Injection into Page Realm (MAIN world)
   let injected = false;
   function injectMain() {
