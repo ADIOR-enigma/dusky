@@ -153,9 +153,18 @@ async def start_daemon():
     async with server:
         await server.serve_forever()
 
-async def send_query_cli(query_text, stream=True):
+def send_query_cli(query_text, stream=True, idle_timeout=10.0, hard_timeout=180.0):
+    """Send one prompt and wait for FINAL (or idle/hard timeout fallback).
+
+    idle_timeout: seconds without STREAM_CHUNK after first token before treating
+                  the last full text as complete (guards against missing FINAL).
+    hard_timeout: absolute max wait from query send.
+    """
+    import time as _time
+
     # Standard library socket client
     s = socket.socket()
+    s.settimeout(1.0)  # allow periodic idle checks
     s.connect((HOST, PORT))
     sec_key = base64.b64encode(os.urandom(16)).decode('utf-8')
     handshake = (
@@ -180,36 +189,136 @@ async def send_query_cli(query_text, stream=True):
 
     # Hardware Return Keypress Fallback Trigger via wtype (1.5s post-typing)
     def send_os_return():
-        # 1. Focus Firefox window via Hyprland IPC
+        # 1. Focus the Firefox window that is showing an AI chat (Gemini/ChatGPT/Claude)
         try:
             res = subprocess.run(["hyprctl", "clients", "-j"], capture_output=True, text=True, timeout=2)
             if res.returncode == 0:
                 clients = json.loads(res.stdout)
-                ff = [c for c in clients if 'firefox' in c.get('class','').lower()]
-                if ff:
-                    addr = ff[0]['address']
-                    subprocess.run(["hyprctl", "dispatch", f'hl.dsp.window.bring_to_top({{ window = "address:{addr}" }})'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
-        except Exception: pass
+                ai_keywords = (
+                    "google gemini", "gemini.google", "chatgpt", "claude",
+                    "meta ai", "chatgpt.com", "claude.ai",
+                )
+                ff = [c for c in clients if "firefox" in (c.get("class") or "").lower()]
+                # Prefer a Firefox window whose title looks like an AI chat
+                preferred = None
+                for c in ff:
+                    title = (c.get("title") or "").lower()
+                    if any(k in title for k in ai_keywords):
+                        preferred = c
+                        break
+                target = preferred or (ff[0] if ff else None)
+                if target:
+                    addr = target["address"]
+                    # Standard Hyprland focus (bring_to_top alone does not give keyboard focus)
+                    subprocess.run(
+                        ["hyprctl", "dispatch", "focuswindow", f"address:{addr}"],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
+                    )
+                    # Best-effort raise if a helper dispatcher exists
+                    subprocess.run(
+                        ["hyprctl", "dispatch", "bringactivetotop"],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
+                    )
+        except Exception:
+            pass
 
-        # 2. Fire authentic Return keypress
-        try: subprocess.run(["wtype", "-k", "Return"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
-        except Exception: pass
-    
+        # 2. Wait for window focus to settle, then fire authentic Return keypress
+        _time.sleep(0.4)
+        try:
+            subprocess.run(["wtype", "-k", "Return"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+        except Exception:
+            pass
+        # Second Return after a beat helps if the first hit before focus settled
+        _time.sleep(0.35)
+        try:
+            subprocess.run(["wtype", "-k", "Return"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+        except Exception:
+            pass
+
     t = threading.Timer(1.5, send_os_return)
     t.daemon = True
     t.start()
 
     full_text = ""
+    started = _time.time()
+    last_chunk_at = None
+    printed_len = 0
+
+    def finish(text, note=None):
+        if stream:
+            # If we only got full snapshots, print any remaining tail once
+            if text and printed_len == 0:
+                sys.stdout.write(text)
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+        else:
+            print(text or "")
+        if note:
+            print(f"[bridge] {note}", file=sys.stderr)
+        try: s.close()
+        except Exception: pass
+        return text or ""
+
     while True:
-        head = s.recv(2)
+        now = _time.time()
+        if now - started > hard_timeout:
+            if full_text:
+                return finish(full_text, f"hard timeout after {hard_timeout:.0f}s — returning partial")
+            print(f"\n[Error] Timed out after {hard_timeout:.0f}s with no response", file=sys.stderr)
+            try: s.close()
+            except Exception: pass
+            sys.exit(1)
+
+        if last_chunk_at is not None and full_text and (now - last_chunk_at) >= idle_timeout:
+            return finish(full_text, f"idle timeout ({idle_timeout:.0f}s) — treating as FINAL")
+
+        try:
+            head = s.recv(2)
+        except socket.timeout:
+            continue
+        except Exception:
+            break
         if not head: break
+        # If partial header, keep reading
+        while len(head) < 2:
+            try:
+                more = s.recv(2 - len(head))
+            except socket.timeout:
+                continue
+            if not more:
+                break
+            head += more
+        if len(head) < 2:
+            break
+
         l = head[1] & 0x7F
-        if l == 126: l = struct.unpack("!H", s.recv(2))[0]
-        elif l == 127: l = struct.unpack("!Q", s.recv(8))[0]
+        if l == 126:
+            raw = b""
+            while len(raw) < 2:
+                try:
+                    c = s.recv(2 - len(raw))
+                except socket.timeout:
+                    continue
+                if not c: break
+                raw += c
+            l = struct.unpack("!H", raw)[0]
+        elif l == 127:
+            raw = b""
+            while len(raw) < 8:
+                try:
+                    c = s.recv(8 - len(raw))
+                except socket.timeout:
+                    continue
+                if not c: break
+                raw += c
+            l = struct.unpack("!Q", raw)[0]
 
         p = bytearray()
         while len(p) < l:
-            c = s.recv(l - len(p))
+            try:
+                c = s.recv(l - len(p))
+            except socket.timeout:
+                continue
             if not c: break
             p.extend(c)
 
@@ -221,22 +330,45 @@ async def send_query_cli(query_text, stream=True):
         mtype = data.get("type")
         if mtype == "STREAM_CHUNK":
             chunk = data.get("text", "")
-            if stream:
-                sys.stdout.write(chunk)
-                sys.stdout.flush()
-            full_text = data.get("full", full_text + chunk)
+            new_full = data.get("full")
+            if new_full:
+                full_text = new_full
+            elif chunk:
+                full_text = full_text + chunk
+
+            if stream and chunk:
+                # Avoid re-printing when chunk is a full re-render of known text
+                if chunk == full_text and printed_len > 0:
+                    # re-render snapshot — only print suffix beyond what we already showed
+                    if full_text.startswith(full_text[:printed_len]) and len(full_text) > printed_len:
+                        sys.stdout.write(full_text[printed_len:])
+                        sys.stdout.flush()
+                        printed_len = len(full_text)
+                    # else identical re-send; ignore
+                else:
+                    sys.stdout.write(chunk)
+                    sys.stdout.flush()
+                    printed_len += len(chunk)
+            last_chunk_at = _time.time()
         elif mtype == "FINAL":
-            if not stream:
-                print(data.get("full", full_text))
-            else:
-                sys.stdout.write("\n")
-                sys.stdout.flush()
-            s.close()
-            return data.get("full", full_text)
+            full = data.get("full", full_text) or full_text
+            # Print any unstreamed tail once (append-only case)
+            if stream and full and printed_len < len(full):
+                if printed_len == 0 or full[:printed_len] == full_text[:printed_len]:
+                    sys.stdout.write(full[printed_len:])
+                    sys.stdout.flush()
+                    printed_len = len(full)
+            return finish(full)
         elif mtype == "ERROR":
             print(f"\n[Error] {data.get('error')}", file=sys.stderr)
-            s.close()
+            try: s.close()
+            except Exception: pass
             sys.exit(1)
+
+    if full_text:
+        return finish(full_text, "connection closed — returning partial")
+    print("\n[Error] Connection closed with no response", file=sys.stderr)
+    sys.exit(1)
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
@@ -244,7 +376,7 @@ if __name__ == "__main__":
             asyncio.run(start_daemon())
         else:
             query = " ".join(sys.argv[1:])
-            asyncio.run(send_query_cli(query))
+            send_query_cli(query)
     else:
         print("Usage:")
         print("  python3 bridge.py --daemon            # Run server daemon")

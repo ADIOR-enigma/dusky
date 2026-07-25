@@ -46,20 +46,49 @@
     return document.querySelector('rich-textarea');
   };
 
-  const isGenerating = () => {
-    const stopBtn = document.querySelector('button[aria-label*="Stop"]') ||
-                    document.querySelector('button[aria-label*="stop"]') ||
-                    document.querySelector('button.stop-button') ||
-                    document.querySelector('[data-is-streaming="true"]') ||
-                    document.querySelector('.is-streaming');
-    
-    const loading = document.querySelector('mat-progress-spinner') ||
-                    document.querySelector('mat-spinner') ||
-                    document.querySelector('.loading-dots') ||
-                    document.querySelector('.dot-flashing') ||
-                    document.querySelector('[data-test-id="thinking-indicator"]');
+  const isVisible = (el) => {
+    if(!el) return false;
+    try{
+      const style = window.getComputedStyle(el);
+      if(style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
+      if(el.getAttribute("aria-hidden") === "true" || el.hasAttribute("hidden")) return false;
+      const rect = el.getBoundingClientRect();
+      if(rect.width < 1 && rect.height < 1) return false;
+      // offsetParent null can mean fixed/sticky; only treat as hidden when also no rect
+      return true;
+    }catch(e){
+      return !!el;
+    }
+  };
 
-    return !!(stopBtn || loading);
+  const isGenerating = () => {
+    // Prefer explicit streaming markers first
+    const streamingMarkers = [
+      ...document.querySelectorAll('[data-is-streaming="true"]'),
+      ...document.querySelectorAll('.is-streaming'),
+      ...document.querySelectorAll('[data-test-id="thinking-indicator"]'),
+    ];
+    if(streamingMarkers.some(isVisible)) return true;
+
+    // Stop / cancel response button (must be visible — hidden templates are common)
+    const stopCandidates = document.querySelectorAll("button");
+    for(const btn of stopCandidates){
+      if(!isVisible(btn) || btn.disabled) continue;
+      const label = (btn.getAttribute("aria-label") || btn.textContent || "").toLowerCase();
+      const cls = (btn.className || "").toString().toLowerCase();
+      if(cls.includes("stop-button")) return true;
+      // Match stop/cancel generation, not unrelated UI
+      if(/\bstop\b/.test(label) || label.includes("stop response") || label.includes("cancel response")) return true;
+    }
+
+    // Only count visible progress indicators (Angular Material often leaves hidden spinners in DOM)
+    const loading = [
+      ...document.querySelectorAll('mat-progress-spinner'),
+      ...document.querySelectorAll('mat-spinner'),
+      ...document.querySelectorAll('.loading-dots'),
+      ...document.querySelectorAll('.dot-flashing'),
+    ];
+    return loading.some(isVisible);
   };
 
   const hasUnclosedCodeBlock = (txt) => {
@@ -297,6 +326,55 @@
   let targetElement = null;
   let lastObservedText = "";
   let hasStartedStreaming = false;
+  let lastChangeAt = 0;
+  let idleFinalMs = 3500;
+  let hardFinalMs = 12000;
+  let pollTimer = null;
+
+  function emitFinal(reason){
+    if(!currentRequestId || !lastFullText) return;
+    emit({type:"FINAL", full: lastFullText, requestId: currentRequestId, reason: reason || "complete"});
+    currentRequestId = null;
+    stopObserver();
+  }
+
+  function scheduleCompletionCheck(){
+    clearTimeout(finalTimer);
+    const checkCompletion = () => {
+      if(!currentRequestId) return;
+      if(!hasStartedStreaming || !lastFullText){
+        finalTimer = setTimeout(checkCompletion, 1000);
+        return;
+      }
+
+      const idleFor = Date.now() - lastChangeAt;
+      const generating = isGenerating();
+      const openCode = hasUnclosedCodeBlock(lastFullText);
+
+      // Happy path: stream idle + not generating + closed code fences
+      if(idleFor >= idleFinalMs && !generating && !openCode){
+        emitFinal("idle");
+        return;
+      }
+
+      // Safety: if text has been stable long enough, finalize even if a hidden
+      // spinner/false-positive "generating" marker is stuck in the DOM.
+      if(idleFor >= hardFinalMs && !openCode){
+        emitFinal("hard-idle");
+        return;
+      }
+
+      finalTimer = setTimeout(checkCompletion, 800);
+    };
+    finalTimer = setTimeout(checkCompletion, idleFinalMs);
+  }
+
+  function readResponseText(el){
+    if(!el) return "";
+    // Prefer message-content body text; strip common chrome if present
+    const body = el.querySelector?.('message-content') || el;
+    return (body.innerText || body.textContent || "").trim();
+  }
 
   function startObserver(){
     stopObserver();
@@ -306,52 +384,95 @@
     lastObservedText = "";
     lastFullText = "";
     hasStartedStreaming = false;
+    lastChangeAt = Date.now();
 
     const target = document.body;
-    observer = new MutationObserver(() => {
+    const onDomTick = () => {
+      if(!currentRequestId) return;
       const currentContainers = getModelResponseContainers();
 
       if(!targetElement){
+        // New response bubble after our send
         if(currentContainers.length > baselineCount){
-          const newContainer = currentContainers[baselineCount];
+          const newContainer = currentContainers[currentContainers.length - 1];
           targetElement = newContainer.querySelector('message-content') || newContainer;
           lastObservedText = "";
+        } else if(currentContainers.length > 0){
+          // Fallback: reuse last container if Gemini reuses/updates in place
+          // only after generation markers appear or text begins changing
+          if(isGenerating()){
+            const last = currentContainers[currentContainers.length - 1];
+            targetElement = last.querySelector('message-content') || last;
+            lastObservedText = readResponseText(targetElement);
+          } else {
+            return;
+          }
         } else {
           return;
         }
+      } else if(!document.contains(targetElement)){
+        // DOM recycled the node — rebind to latest response
+        if(currentContainers.length){
+          const last = currentContainers[currentContainers.length - 1];
+          targetElement = last.querySelector('message-content') || last;
+          lastObservedText = "";
+        }
       }
 
-      const full = (targetElement.innerText || targetElement.textContent || "").trim();
-      if(!full || full === lastObservedText) return;
+      const full = readResponseText(targetElement);
+      if(!full) return;
 
-      const chunk = full.slice(lastObservedText.length);
+      if(full === lastObservedText){
+        // Still poll completion while idle
+        return;
+      }
+
+      let chunk = "";
+      if(full.startsWith(lastObservedText)){
+        // Append-only growth (ideal streaming)
+        chunk = full.slice(lastObservedText.length);
+      } else if(lastObservedText && lastObservedText.startsWith(full)){
+        // Transient shrink / rewrite mid-stream — wait for next tick
+        lastObservedText = full;
+        lastFullText = full;
+        lastChangeAt = Date.now();
+        scheduleCompletionCheck();
+        return;
+      } else {
+        // Full re-render: compute longest common prefix and emit the new suffix only
+        let i = 0;
+        const max = Math.min(lastObservedText.length, full.length);
+        while(i < max && lastObservedText.charCodeAt(i) === full.charCodeAt(i)) i++;
+        chunk = full.slice(i);
+        // If common prefix is tiny relative to previous text, treat as full replace
+        if(i < Math.min(12, lastObservedText.length) && lastObservedText.length > 0){
+          chunk = full;
+        }
+      }
+
       lastObservedText = full;
       lastFullText = full;
+      lastChangeAt = Date.now();
 
       if(chunk){
         hasStartedStreaming = true;
         emit({type:"STREAM_CHUNK", text: chunk, full: full, requestId: currentRequestId});
       }
 
-      clearTimeout(finalTimer);
-      const checkCompletion = () => {
-        if(!hasStartedStreaming || isGenerating() || hasUnclosedCodeBlock(lastFullText)){
-          finalTimer = setTimeout(checkCompletion, 1500);
-          return;
-        }
-        if(currentRequestId && lastFullText){
-          emit({type:"FINAL", full: lastFullText, requestId: currentRequestId});
-          currentRequestId = null;
-          stopObserver();
-        }
-      };
-      finalTimer = setTimeout(checkCompletion, 3000);
-    });
+      scheduleCompletionCheck();
+    };
+
+    observer = new MutationObserver(onDomTick);
     observer.observe(target, {childList:true, subtree:true, characterData:true, characterDataOldValue:true});
+
+    // Polling backup: Gemini sometimes mutates in ways that miss MutationObserver edges
+    pollTimer = setInterval(onDomTick, 500);
+    scheduleCompletionCheck();
   }
 
   function stopObserver(){
     if(observer){ observer.disconnect(); observer=null; }
+    if(pollTimer){ clearInterval(pollTimer); pollTimer=null; }
     clearTimeout(finalTimer);
   }
 
