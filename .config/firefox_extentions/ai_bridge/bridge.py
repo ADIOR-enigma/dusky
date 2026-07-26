@@ -446,13 +446,39 @@ def send_query_cli(query_text, stream=True, idle_timeout=10.0, hard_timeout=1800
         nonlocal emitted
         if not stream or not text:
             return
+
+        # 1. Exact string prefix check (fast path)
         if text.startswith(emitted):
             delta = text[len(emitted):]
             if delta:
                 safe_write(delta)
             emitted = text
             return
-        # Full rewrite mid-stream: mark a break then print.
+
+        # 2. Whitespace-insensitive prefix check (handles DOM re-renders where newlines/spaces change)
+        norm_emitted = "".join(emitted.split())
+        norm_text = "".join(text.split())
+        if norm_text.startswith(norm_emitted):
+            # Same content, DOM just adjusted spacing — find where actual new content begins
+            e_idx = 0
+            t_idx = 0
+            while e_idx < len(emitted) and t_idx < len(text):
+                if emitted[e_idx] == text[t_idx]:
+                    e_idx += 1
+                    t_idx += 1
+                elif text[t_idx].isspace():
+                    t_idx += 1
+                elif emitted[e_idx].isspace():
+                    e_idx += 1
+                else:
+                    break
+            if t_idx < len(text):
+                delta = text[t_idx:]
+                safe_write(delta)
+            emitted = text
+            return
+
+        # 3. True full rewrite mid-stream: mark a break then print.
         safe_write(("\n" if emitted else "") + text)
         emitted = text
 

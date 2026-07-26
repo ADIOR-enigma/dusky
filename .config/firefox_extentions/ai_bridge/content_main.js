@@ -86,7 +86,8 @@
   function readResponseText(el) {
     if (!el) return "";
     const body = el.querySelector?.("message-content") || el;
-    return (body.innerText || body.textContent || "").trim();
+    const txt = body.innerText || body.textContent || "";
+    return txt.replace(/\r\n/g, "\n").trim();
   }
 
   // ============================================================
@@ -432,12 +433,11 @@
 
   defineSite("meta.ai", {
     name: "Meta AI",
-    editorSelector: 'div[contenteditable="true"][role="textbox"], div[contenteditable="true"]',
-    sendButtonSelector: 'button[data-testid="composer-send-button"], button[aria-label*="Send"]',
-    stopButtonSelector: 'button[aria-label*="Stop"]',
-    // Meta AI response containers — adjust if DOM changes
-    responseContainerSelector: 'div[data-testid*="message-text"], div[class*="response-message"]',
-    thinkingSelector: '[aria-label*="Thinking"]',
+    editorSelector: 'div[contenteditable="true"][role="textbox"], div[contenteditable="true"], textarea',
+    sendButtonSelector: 'button[data-testid="composer-send-button"], button[aria-label*="Send"], button[aria-label*="send"], button[type="submit"], div[role="textbox"] ~ * button, form button',
+    stopButtonSelector: 'button[aria-label*="Stop"], button[aria-label*="stop"]',
+    responseContainerSelector: 'div[role="article"], div[data-testid*="message"], div[aria-label*="Meta AI"], div[class*="response-message"], div[class*="message-text"]',
+    thinkingSelector: '[aria-label*="Thinking"], button[aria-label*="Thinking"]',
     completionIdleMs: 1500,
     completionFallbackMs: 3000,
     completionSafetyMs: 5000,
@@ -448,7 +448,7 @@
     name: "Unknown AI",
     sendButtonSelector: 'button[aria-label*="Send"], button.send-button',
     stopButtonSelector: 'button[aria-label*="Stop"]',
-    responseContainerSelector: 'div[data-message-author-role="assistant"]',
+    responseContainerSelector: 'div[role="article"], div[data-message-author-role="assistant"]',
     thinkingSelector: "",
     completionIdleMs: 1500,
     completionFallbackMs: 3000,
@@ -525,11 +525,23 @@
       const result = Array.from(document.querySelectorAll(site.responseContainerSelector));
       if (result.length > 0) return result;
     }
-    // Hostname-based fallback for backward compatibility
-    const host = window.location.hostname;
-    if (host.includes("gemini.google.com")) return Array.from(document.querySelectorAll("model-response"));
-    if (host.includes("claude.ai")) return Array.from(document.querySelectorAll('.font-claude-message, [data-is-streaming="true"]'));
-    return Array.from(document.querySelectorAll('div[data-message-author-role="assistant"]'));
+    // Universal fallback cascade matching popular AI site DOMs
+    const fallbacks = [
+      'div[role="article"]',
+      'div[data-testid*="message"]',
+      'div[aria-label*="Meta AI"]',
+      'model-response',
+      '.font-claude-message',
+      '[data-is-streaming="true"]',
+      'div[data-message-author-role="assistant"]',
+      'div[class*="message-content"]',
+      'div[class*="assistant-message"]'
+    ];
+    for (const sel of fallbacks) {
+      const els = Array.from(document.querySelectorAll(sel));
+      if (els.length > 0) return els;
+    }
+    return [];
   }
 
   function siteIsThinking() {
