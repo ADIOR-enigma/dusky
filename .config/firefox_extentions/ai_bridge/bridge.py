@@ -20,7 +20,6 @@ HOST = "127.0.0.1"
 PORT = 8765
 
 CONNECTED_CLIENTS = set()
-REPLY_FUTURES = {}
 
 def make_ws_response_key(sec_key):
     magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -53,8 +52,9 @@ class WSConnection:
             head = await self.reader.readexactly(2)
         except Exception:
             return None
-        
+
         b1, b2 = head[0], head[1]
+        opcode = b1 & 0x0F
         masked = bool(b2 & 0x80)
         payload_len = b2 & 0x7F
 
@@ -69,10 +69,38 @@ class WSConnection:
         raw = await self.reader.readexactly(payload_len)
 
         if masked:
-            unmasked = bytearray(b ^ masks[i % 4] for i, b in enumerate(raw))
-            return unmasked.decode('utf-8', errors='replace')
-        else:
-            return raw.decode('utf-8', errors='replace')
+            raw = bytes(b ^ masks[i % 4] for i, b in enumerate(raw))
+
+        # Close frame (0x8)
+        if opcode == 0x8:
+            return None
+
+        # Ping frame (0x9) -> Send Pong (0x8A)
+        if opcode == 0x9:
+            frame = bytearray([0x8A])
+            n = len(raw)
+            if n <= 125:
+                frame.append(n)
+            elif n <= 65535:
+                frame.append(126)
+                frame.extend(struct.pack("!H", n))
+            else:
+                frame.append(127)
+                frame.extend(struct.pack("!Q", n))
+            frame.extend(raw)
+            self.writer.write(frame)
+            await self.writer.drain()
+            return await self.recv()
+
+        # Pong frame (0xA)
+        if opcode == 0xA:
+            return await self.recv()
+
+        # Only process text/continuation frames
+        if opcode not in (0x1, 0x0):
+            return await self.recv()
+
+        return raw.decode("utf-8", errors="replace")
 
     def close(self):
         try: self.writer.close()
@@ -86,62 +114,88 @@ class WSConnection:
 import time as _time
 
 def _do_os_return():
-    """Focus Firefox AI tab and send hardware Ctrl+Enter + Return."""
-    # 1. Focus the Firefox window showing an AI chat
+    """Focus Firefox AI tab and send hardware Ctrl+Enter + Return for Gemini."""
     try:
-        res = subprocess.run(["hyprctl", "clients", "-j"], capture_output=True, text=True, timeout=2)
-        if res.returncode == 0:
-            clients = json.loads(res.stdout)
-            ai_keywords = (
-                "google gemini", "gemini.google", "chatgpt", "claude",
-                "meta ai", "chatgpt.com", "claude.ai",
-            )
-            ff = [c for c in clients if "firefox" in (c.get("class") or "").lower()]
-            preferred = None
-            for c in ff:
-                title = (c.get("title") or "").lower()
-                if any(k in title for k in ai_keywords):
-                    preferred = c
-                    break
-            target = preferred or (ff[0] if ff else None)
-            if target:
-                addr = target["address"]
-                ws_info = target.get("workspace", {})
-                ws_id = ws_info.get("id")
-                if ws_id is not None and ws_id > 0:
-                    rel_ws = ((ws_id - 1) % 10) + 1
-                    try:
-                        subprocess.run(
-                            ["/home/dusk/user_scripts/hypr/multi_monitor_workspace.sh", "workspace", str(rel_ws)],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2
-                        )
-                    except Exception:
-                        pass
-                    subprocess.run(
-                        ["hyprctl", "dispatch", f'hl.dsp.focus({{ workspace = "{ws_id}" }})'],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
-                    )
+        res = subprocess.run(
+            ["hyprctl", "clients", "-j"],
+            capture_output=True, text=True, timeout=2,
+        )
+        if res.returncode != 0:
+            return
+
+        clients = json.loads(res.stdout)
+        ai_keywords = (
+            "google gemini", "gemini.google", "chatgpt", "claude",
+            "meta ai", "chatgpt.com", "claude.ai",
+        )
+        ff = [c for c in clients if "firefox" in (c.get("class") or "").lower()]
+        preferred = None
+        for c in ff:
+            title = (c.get("title") or "").lower()
+            if any(k in title for k in ai_keywords):
+                preferred = c
+                break
+        target = preferred or (ff[0] if ff else None)
+        if not target:
+            return
+
+        addr = target["address"]
+        ws_info = target.get("workspace", {}) or {}
+        ws_id = ws_info.get("id")
+        multi_mon_ws = os.environ.get(
+            "AI_BRIDGE_MULTI_MON_WS",
+            "/home/dusk/user_scripts/hypr/multi_monitor_workspace.sh",
+        )
+
+        if ws_id is not None and ws_id > 0:
+            rel_ws = ((ws_id - 1) % 10) + 1
+            try:
                 subprocess.run(
-                    ["hyprctl", "dispatch", f'hl.dsp.focus({{ window = "address:{addr}" }})'],
+                    [multi_mon_ws, "workspace", str(rel_ws)],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
                 )
-    except Exception:
-        pass
+            except Exception:
+                pass
+            subprocess.run(
+                ["hyprctl", "dispatch", f'hl.dsp.focus({{ workspace = "{ws_id}" }})'],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
+            )
 
-    # 2. Window focus settled - send Ctrl+Enter and Return to submit prompt
-    _time.sleep(0.4)
-    try:
-        subprocess.run(["wtype", "-M", "ctrl", "-k", "Return", "-m", "ctrl"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
-        _time.sleep(0.2)
-        subprocess.run(["wtype", "-k", "Return"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+        subprocess.run(
+            ["hyprctl", "dispatch", f'hl.dsp.focus({{ window = "address:{addr}" }})'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
+        )
+
+        title = (target.get("title") or "").lower()
+        if "gemini" in title:
+            _time.sleep(0.4)
+            subprocess.run(
+                ["wtype", "-M", "ctrl", "-k", "Return", "-m", "ctrl"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
+            )
+            _time.sleep(0.2)
+            subprocess.run(
+                ["wtype", "-k", "Return"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
+            )
     except Exception:
         pass
 
 def _schedule_os_return():
     """Schedule hardware Return keypress 1.5s after query dispatch."""
-    t = threading.Timer(1.5, _do_os_return)
-    t.daemon = True
-    t.start()
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        t = threading.Timer(1.5, _do_os_return)
+        t.daemon = True
+        t.start()
+        return
+
+    async def _run():
+        await asyncio.sleep(1.5)
+        await asyncio.to_thread(_do_os_return)
+
+    loop.create_task(_run())
 
 async def handle_client(reader, writer):
     # Perform HTTP WebSocket Handshake
@@ -239,6 +293,19 @@ async def start_daemon():
     async with server:
         await server.serve_forever()
 
+def safe_write(text):
+    if not text: return
+    try:
+        sys.stdout.write(text)
+        sys.stdout.flush()
+    except UnicodeEncodeError:
+        try:
+            clean = text.encode('utf-16', 'surrogatepass').decode('utf-16', 'replace')
+            sys.stdout.write(clean)
+            sys.stdout.flush()
+        except Exception:
+            pass
+
 def send_query_cli(query_text, stream=True, idle_timeout=10.0, hard_timeout=180.0):
     """Send one prompt and wait for FINAL (or idle/hard timeout fallback).
 
@@ -264,14 +331,28 @@ def send_query_cli(query_text, stream=True, idle_timeout=10.0, hard_timeout=180.
     s.sendall(handshake.encode('utf-8'))
     resp = s.recv(1024)
 
+    if b"101" not in resp.split(b"\r\n", 1)[0]:
+        print("[Error] WebSocket handshake failed:", resp[:200], file=sys.stderr)
+        try: s.close()
+        except Exception: pass
+        sys.exit(1)
+
     req_id = str(uuid.uuid4())
     payload = json.dumps({"type": "RUN_QUERY", "query": query_text, "requestId": req_id}).encode('utf-8')
-    
-    # Masked frame
+
     mask = os.urandom(4)
-    masked = bytearray(b ^ mask[i % 4] for i, b in enumerate(payload))
-    frame = bytearray([0x81, 0x80 | len(payload)]) + mask + masked
-    s.sendall(frame)
+    masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+    header = bytearray([0x81])
+    n = len(payload)
+    if n <= 125:
+        header.append(0x80 | n)
+    elif n <= 65535:
+        header.append(0x80 | 126)
+        header.extend(struct.pack("!H", n))
+    else:
+        header.append(0x80 | 127)
+        header.extend(struct.pack("!Q", n))
+    s.sendall(header + mask + masked)
 
     # NOTE: Hardware Return keypress is now handled by the daemon (_schedule_os_return)
     # for ALL RUN_QUERY messages, so no need to schedule it here in CLI.
@@ -285,7 +366,7 @@ def send_query_cli(query_text, stream=True, idle_timeout=10.0, hard_timeout=180.
         if stream:
             # If we only got full snapshots, print any remaining tail once
             if text and printed_len == 0:
-                sys.stdout.write(text)
+                safe_write(text)
             sys.stdout.write("\n")
             sys.stdout.flush()
         else:
@@ -378,13 +459,11 @@ def send_query_cli(query_text, stream=True, idle_timeout=10.0, hard_timeout=180.
                 if chunk == full_text and printed_len > 0:
                     # re-render snapshot — only print suffix beyond what we already showed
                     if full_text.startswith(full_text[:printed_len]) and len(full_text) > printed_len:
-                        sys.stdout.write(full_text[printed_len:])
-                        sys.stdout.flush()
+                        safe_write(full_text[printed_len:])
                         printed_len = len(full_text)
                     # else identical re-send; ignore
                 else:
-                    sys.stdout.write(chunk)
-                    sys.stdout.flush()
+                    safe_write(chunk)
                     printed_len += len(chunk)
             last_chunk_at = _time.time()
         elif mtype == "FINAL":
@@ -392,8 +471,7 @@ def send_query_cli(query_text, stream=True, idle_timeout=10.0, hard_timeout=180.
             # Print any unstreamed tail once (append-only case)
             if stream and full and printed_len < len(full):
                 if printed_len == 0 or full[:printed_len] == full_text[:printed_len]:
-                    sys.stdout.write(full[printed_len:])
-                    sys.stdout.flush()
+                    safe_write(full[printed_len:])
                     printed_len = len(full)
             return finish(full)
         elif mtype == "ERROR":

@@ -61,6 +61,13 @@ function connectWS(force = false){
     isConnecting = false;
     log("WS connected successfully!");
     await setStatus(true);
+
+    if(heartbeatInterval) clearInterval(heartbeatInterval);
+    heartbeatInterval = setInterval(() => {
+      if(ws && ws.readyState === WebSocket.OPEN){
+        try{ ws.send(JSON.stringify({type: "HEARTBEAT"})); }catch{}
+      }
+    }, 20000);
   };
 
   ws.onmessage = async (event)=>{
@@ -74,7 +81,7 @@ function connectWS(force = false){
       return;
     }
 
-    if(msg.type === "PING"){
+    if(msg.type === "PING" || msg.type === "HEARTBEAT"){
       try{ ws.send(JSON.stringify({type: "PONG"})); }catch{}
       return;
     }
@@ -132,6 +139,10 @@ function connectWS(force = false){
   ws.onclose = ()=>{
     isConnecting = false;
     ws = null;
+    if(heartbeatInterval){
+      clearInterval(heartbeatInterval);
+      heartbeatInterval = null;
+    }
     setStatus(false);
     scheduleReconnect();
   };
@@ -147,6 +158,10 @@ function connectWS(force = false){
         ws.close();
       }catch(e){}
       ws = null;
+    }
+    if(heartbeatInterval){
+      clearInterval(heartbeatInterval);
+      heartbeatInterval = null;
     }
     setStatus(false, "Err");
     scheduleReconnect();
@@ -175,19 +190,24 @@ try {
 
 const knownAiTabs = new Set();
 
+function isAiUrl(url){
+  return !!(url && AI_URL_PATTERNS.some(p => url.includes(p)));
+}
+
 // --- activeTabId Lock Priority Tab Targeting ---
 async function findTargetTab(preferredId){
   if(preferredId){
     try{
       const tab = await browser.tabs.get(preferredId);
-      if(tab) return preferredId;
+      if(tab && isAiUrl(tab.url)) return preferredId;
     }catch{}
   }
 
   if(activeTabId){
     try{
       const tab = await browser.tabs.get(activeTabId);
-      if(tab) return activeTabId;
+      if(tab && isAiUrl(tab.url)) return activeTabId;
+      activeTabId = null;
     }catch{
       activeTabId = null;
     }
@@ -196,10 +216,11 @@ async function findTargetTab(preferredId){
   for(const tabId of knownAiTabs){
     try{
       const tab = await browser.tabs.get(tabId);
-      if(tab){
+      if(tab && isAiUrl(tab.url)){
         activeTabId = tabId;
         return tabId;
       }
+      knownAiTabs.delete(tabId);
     }catch{
       knownAiTabs.delete(tabId);
     }
@@ -207,34 +228,56 @@ async function findTargetTab(preferredId){
 
   try{
     const allTabs = await browser.tabs.query({});
-    const aiTabs = allTabs.filter(tab => tab.url && AI_URL_PATTERNS.some(p => tab.url.includes(p)));
+    const aiTabs = allTabs.filter(tab => isAiUrl(tab.url));
     if(aiTabs.length > 0){
-      activeTabId = aiTabs[0].id;
-      return aiTabs[0].id;
+      const activeAi = aiTabs.find(t => t.active) || aiTabs[0];
+      activeTabId = activeAi.id;
+      knownAiTabs.add(activeAi.id);
+      try{ await browser.storage.session.set({activeTabId}); }catch{}
+      return activeAi.id;
     }
   }catch(e){}
 
   return null;
 }
 
-// Track active tab
+// Track active tab with strict URL validation & session persistence
 browser.tabs.onActivated?.addListener(async ({tabId})=>{
-  activeTabId = tabId;
+  try{
+    const tab = await browser.tabs.get(tabId);
+    if(isAiUrl(tab?.url)){
+      activeTabId = tabId;
+      knownAiTabs.add(tabId);
+      try{ await browser.storage.session.set({activeTabId: tabId}); }catch{}
+    }
+  }catch{}
 });
 
 browser.tabs.onUpdated?.addListener(async (tabId, change, tab)=>{
-  if(tab.url && AI_URL_PATTERNS.some(p=>tab.url.includes(p))){
-    activeTabId = tabId;
-    knownAiTabs.add(tabId);
+  if(change.url !== undefined || change.status === "complete"){
+    if(isAiUrl(tab?.url)){
+      activeTabId = tabId;
+      knownAiTabs.add(tabId);
+      try{ await browser.storage.session.set({activeTabId: tabId}); }catch{}
+    } else if(activeTabId === tabId){
+      activeTabId = null;
+      knownAiTabs.delete(tabId);
+    }
   }
+});
+
+browser.tabs.onRemoved?.addListener((tabId)=>{
+  knownAiTabs.delete(tabId);
+  if(activeTabId === tabId) activeTabId = null;
 });
 
 // Forward content script messages -> WS & Lock activeTabId
 browser.runtime.onMessage.addListener((msg, sender)=>{
   if(!msg?.type) return;
-  if(sender?.tab?.id){
+  if(sender?.tab?.id && isAiUrl(sender.tab.url)){
     activeTabId = sender.tab.id;
     knownAiTabs.add(sender.tab.id);
+    try{ browser.storage.session.set({activeTabId: sender.tab.id}); }catch{}
   }
   if(msg.type === "TAB_REGISTER"){
     log("Tab registered via content script:", sender?.tab?.id);

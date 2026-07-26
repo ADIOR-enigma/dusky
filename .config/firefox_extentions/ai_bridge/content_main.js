@@ -2,6 +2,7 @@
 (() => {
   const BRIDGE = "__LOCAL_AI_BRIDGE__";
   let currentRequestId = null;
+  let hasSubmittedThisQuery = false;
   let lastFullText = "";
   let observer = null;
   let finalTimer = null;
@@ -62,10 +63,14 @@
   };
 
   const getSendButtonRaw = () => {
+    // 0. Direct query for ChatGPT Send button
+    const chatgptBtn = document.querySelector('button[data-testid="send-button"]');
+    if(chatgptBtn && isVisible(chatgptBtn)) return chatgptBtn;
+
     const rich = document.querySelector('rich-textarea');
     if(rich && rich.shadowRoot){
       const sBtn = rich.shadowRoot.querySelector('button[aria-label*="Send"], button.send-button, button');
-      if(sBtn && !sBtn.disabled && isVisible(sBtn)) return sBtn;
+      if(sBtn && isVisible(sBtn)) return sBtn;
     }
 
     // 1. Direct query for Gemini Send button
@@ -77,14 +82,14 @@
                       document.querySelector('.send-button-container button') ||
                       document.querySelector('rich-textarea ~ * button:last-of-type') ||
                       document.querySelector('button[mat-icon-button][aria-label*="Send"]');
-    if(geminiBtn && !geminiBtn.disabled && isVisible(geminiBtn)) return geminiBtn;
+    if(geminiBtn && isVisible(geminiBtn)) return geminiBtn;
 
     // 2. Query prompt bar container buttons (excluding mic, add, upload, stop)
     const promptParent = rich?.parentElement || document.querySelector('form') || document.querySelector('.input-area-container');
     if(promptParent){
       const pBtns = Array.from(promptParent.querySelectorAll('button'));
       for(const b of pBtns){
-        if(b.disabled || !isVisible(b)) continue;
+        if(!isVisible(b)) continue;
         const label = (b.getAttribute('aria-label') || b.textContent || '').toLowerCase();
         if(label.includes('mic') || label.includes('voice') || label.includes('upload') || label.includes('add') || label.includes('stop') || label.includes('cancel')) continue;
         return b;
@@ -94,9 +99,9 @@
     // 3. Fallback scan all buttons
     const candidates = Array.from(document.querySelectorAll('button'));
     for(const btn of candidates){
-      if(btn.disabled || !isVisible(btn)) continue;
+      if(!isVisible(btn)) continue;
       const label = (btn.getAttribute('aria-label') || '').toLowerCase();
-      if(label.includes('send') || label.includes('submit') || btn.classList.contains('send-button')){
+      if(label.includes('send') || label.includes('submit') || btn.classList.contains('send-button') || btn.getAttribute('data-testid') === 'send-button'){
         return btn;
       }
     }
@@ -104,20 +109,22 @@
   };
 
   const isGenerating = () => {
-    // 1. Prompt bar Send button: if present and enabled, generation is 100% finished!
-    const sendBtn = getSendButtonRaw();
-    if(sendBtn) return false;
-
-    // 2. If Send button is not active, check for a visible Stop button in the prompt bar
-    const stopBtn = document.querySelector('rich-textarea ~ * button[aria-label*="Stop"]') ||
-                    document.querySelector('.send-button-container button[aria-label*="Stop"]') ||
-                    document.querySelector('button.stop-button');
+    const stopBtn =
+      document.querySelector('button[data-testid="stop-button"]') ||
+      document.querySelector('button[aria-label*="Stop generating"]') ||
+      document.querySelector('button[aria-label*="Stop"]') ||
+      document.querySelector('button.stop-button') ||
+      document.querySelector('.send-button-container button[aria-label*="Stop"]') ||
+      document.querySelector('rich-textarea ~ * button[aria-label*="Stop"]');
     if(stopBtn && isVisible(stopBtn)) return true;
 
-    // 3. Fallback check for active streaming attribute
     const streaming = document.querySelector('[data-is-streaming="true"], .is-streaming');
     if(streaming && isVisible(streaming)) return true;
 
+    const sendBtn = getSendButtonRaw();
+    if(sendBtn && (sendBtn.disabled || sendBtn.getAttribute("aria-disabled") === "true")){
+      if(hasSubmittedThisQuery) return true;
+    }
     return false;
   };
 
@@ -125,11 +132,6 @@
     if(!txt) return false;
     const ticks = (txt.match(/```/g) || []).length;
     return ticks % 2 !== 0;
-  };
-
-  const getSendButton = () => {
-    if(isGenerating()) return null;
-    return getSendButtonRaw();
   };
 
   // --- Select & Focus Text Box Before Typing ---
@@ -253,12 +255,8 @@
   }
 
   async function clickSend(){
-    if(isGenerating()) return false;
+    if(hasSubmittedThisQuery || isGenerating()) return false;
 
-    // PRIORITY: Ensure the editor element has DOM focus so that the
-    // hardware wtype -k Return (sent by bridge.py 1.5s after query)
-    // hits the correct element. Synthetic JS events are isTrusted:false
-    // and Gemini ignores them, so the real submission happens via wtype.
     const editor = getEditor();
     if(editor){
       let el = editor;
@@ -268,56 +266,31 @@
       selectAndFocus(el);
     }
 
-    // Best-effort synthetic submission for non-Gemini sites
-    // (On Gemini, these all fail silently because isTrusted === false)
-
-    // 1. Try Form RequestSubmit
-    const form = document.querySelector('form') || document.querySelector('rich-textarea')?.closest('form');
-    if(form){
-      try{ form.requestSubmit(); }catch{ try{ form.submit(); }catch{} }
-    }
-
-    // 2. Poll for Send button directly (up to 10 seconds)
-    for(let i = 0; i < 50; i++){
+    // Poll for Send button directly across all AI sites (ChatGPT, Gemini, Claude)
+    for(let i = 0; i < 30; i++){
+      if(hasSubmittedThisQuery) return true;
       const btn = getSendButtonRaw();
       if(btn){
         btn.removeAttribute('disabled');
         btn.disabled = false;
         btn.removeAttribute('aria-disabled');
-        try{ btn.focus(); }catch{}
-        try{ HTMLElement.prototype.click.call(btn); }catch{ btn.click(); }
-        const childIcon = btn.querySelector('mat-icon, svg, i, span');
-        if(childIcon) try{ childIcon.click(); }catch{}
+        hasSubmittedThisQuery = true;
 
-        btn.dispatchEvent(new PointerEvent("pointerdown", {bubbles:true, cancelable:true, composed:true, view:window}));
-        btn.dispatchEvent(new MouseEvent("mousedown", {bubbles:true, cancelable:true, composed:true, view:window}));
-        btn.dispatchEvent(new PointerEvent("pointerup", {bubbles:true, cancelable:true, composed:true, view:window}));
-        btn.dispatchEvent(new MouseEvent("mouseup", {bubbles:true, cancelable:true, composed:true, view:window}));
-        btn.dispatchEvent(new MouseEvent("click", {bubbles:true, cancelable:true, composed:true, view:window}));
+        try{ btn.focus(); }catch(e){}
+        try{ btn.click(); }catch(e){}
 
-        triggerAngularComponentSubmit();
-        console.log("[LocalAI MAIN] Direct click executed on send button");
-        
-        if(editor){
-          let el = editor;
-          if(el.tagName === "RICH-TEXTAREA"){
-            el = el.querySelector('div[contenteditable="true"], p, div.ql-editor') || el;
-          }
-          selectAndFocus(el);
+        const host = window.location.hostname;
+        if(host.includes('gemini.google.com')){
+          triggerAngularComponentSubmit();
         }
+
+        console.log("[LocalAI MAIN] Single click executed on send button");
         return true;
       }
-      await new Promise(r => setTimeout(r, 200));
+      await new Promise(r => setTimeout(r, 150));
     }
 
-    // 3. Re-focus editor after clicking send button
-    const ed = getEditor();
-    if(ed){
-      let pEl = ed.tagName === "RICH-TEXTAREA" ? (ed.querySelector('div[contenteditable="true"], p, div.ql-editor') || ed) : ed;
-      selectAndFocus(pEl);
-    }
-
-    return true;
+    return false;
   }
 
   function getModelResponseContainers(){
@@ -336,14 +309,13 @@
   let lastObservedText = "";
   let hasStartedStreaming = false;
   let lastChangeAt = 0;
-  let idleFinalMs = 1200;
-  let hardFinalMs = 3000;
   let pollTimer = null;
 
   function emitFinal(reason){
     if(!currentRequestId || !lastFullText) return;
     emit({type:"FINAL", full: lastFullText, requestId: currentRequestId, reason: reason || "complete"});
     currentRequestId = null;
+    hasSubmittedThisQuery = false;
     stopObserver();
   }
 
@@ -357,23 +329,28 @@
       }
 
       const idleFor = Date.now() - lastChangeAt;
-      const sendBtn = getSendButtonRaw();
       const openCode = hasUnclosedCodeBlock(lastFullText);
+      const stopBtn = document.querySelector('button[data-testid="stop-button"]') ||
+                      document.querySelector('button[aria-label*="Stop generating"]') ||
+                      document.querySelector('button[aria-label*="Stop"]') ||
+                      document.querySelector('button.stop-button') ||
+                      document.querySelector('.send-button-container button[aria-label*="Stop"]');
+      const isStillGenerating = !!(stopBtn && isVisible(stopBtn));
 
-      // Primary Completion: Text hasn't grown for 1.2s AND Send button is enabled AND code fences closed
-      if(idleFor >= 1200 && sendBtn && !sendBtn.disabled && !openCode){
+      // Primary Completion: Text hasn't grown for 1.0s AND generation stop button disappeared AND code fences closed
+      if(idleFor >= 1000 && !isStillGenerating && !openCode){
         emitFinal("idle");
         return;
       }
 
-      // Fallback Completion: Text hasn't grown for 2.5s AND code fences closed
-      if(idleFor >= 2500 && !openCode){
+      // Fallback Completion: Text hasn't grown for 2.0s AND code fences closed
+      if(idleFor >= 2000 && !openCode){
         emitFinal("silence-fallback");
         return;
       }
 
-      // Absolute Safety Fallback: Text hasn't grown for 4.0s (unconditional completion)
-      if(idleFor >= 4000){
+      // Absolute Safety Fallback: Text hasn't grown for 3.0s (unconditional completion)
+      if(idleFor >= 3000){
         emitFinal("absolute-safety");
         return;
       }
@@ -484,6 +461,7 @@
     if(!msg || msg.type !== "RUN_QUERY") return;
 
     currentRequestId = msg.requestId || crypto.randomUUID();
+    hasSubmittedThisQuery = false;
     lastFullText = "";
     lastObservedText = "";
     hasStartedStreaming = false;
@@ -506,7 +484,14 @@
 
     setTimeout(async ()=>{
       await clickSend();
-    }, 250);
+    }, 350);
+
+    setTimeout(async ()=>{
+      if(!hasSubmittedThisQuery && !hasStartedStreaming){
+        console.log("[LocalAI MAIN] Retrying clickSend at 800ms...");
+        await clickSend();
+      }
+    }, 800);
 
     // Focus keep-alive: re-focus editor every 200ms for 3s so that when
     // wtype sends hardware Return at ~T=1.9s, the editor has keyboard focus.

@@ -161,6 +161,15 @@ alias darkmode="$HOME/user_scripts/theme_matugen/theme_ctl.sh set --mode dark"
 alias lightmode="$HOME/user_scripts/theme_matugen/theme_ctl.sh set --mode light"
 alias run_sysbench="$HOME/user_scripts/performance/sysbench_benchmark.py"
 
+# Local AI Web Bridge Shortcut
+ask() {
+    if [ $# -eq 0 ]; then
+        echo "Usage: ask <your prompt here>"
+        return 1
+    fi
+    python3 /home/dusk/.config/firefox_extentions/ai_bridge/bridge.py "$*"
+}
+
 # Memory Optimization
 alias mem_optimize='sudo systemctl start dusky_boot_mem_reclaim.service'
 
