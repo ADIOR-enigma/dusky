@@ -64,9 +64,13 @@ The Local AI agent and Online Web AI model work as a **hand-in-glove pair**:
 - **Provide Complete Payload**: Pass this full empirical dataset to the Online AI in Pass 1 so it has complete, un-truncated context to perform deep reasoning.
 
 ### ⏳ 2. Non-Interruption & Generation Patience Directive
-- **Do NOT Interrupt**: The Local AI MUST NEVER interrupt, re-send, or berate the Online AI while it is generating a response.
-- **Allow Extended Generation Time**: Deep reasoning models (e.g. Gemini Thinking, ChatGPT Reasoning) can take anywhere from **2 to 20+ minutes** to complete a response.
-- **Prevention of Prompt Cancellation**: Sending a new command or interrupting mid-stream will **cancel out the previous prompt** on the web AI interface. The Local AI must wait silently until the web AI has completely finished generating (`FINAL` status received) before sending any follow-up query.
+
+> [!CAUTION]
+> **STRICT MANDATE: NEVER INTERRUPT AN IN-FLIGHT GENERATION OR SEND STATUS PINGS**
+> 
+> 1. **NO STATUS CHECK PROMPTS**: NEVER send queries like `"Is Gemini ready?"`, `"Are you active?"`, or `"Which platform is this?"` into the web AI prompt box. The bridge automatically handles routing to the active Firefox tab. Sending meta-status questions into the chat prompt box clutters the conversation and cancels active work.
+> 2. **NO INTERRUPTIONS MID-GENERATION**: NEVER send a follow-up prompt, re-query, or new command while the online AI is actively generating or thinking. On all web AI platforms, **submitting a new prompt while the AI is generating IMMEDIATELY CANCELS AND DESTROYS THE IN-FLIGHT RESPONSE**, wasting all previous reasoning work.
+> 3. **WAIT SILENTLY FOR FULL COMPLETION**: Deep reasoning models (e.g. Gemini Thinking, ChatGPT Reasoning) can take anywhere from **2 to 20+ minutes** to complete a response. The Local AI MUST wait silently until `bridge.py` finishes completely (`FINAL` status received, exit code 0) before sending any follow-up query.
 
 ---
 
