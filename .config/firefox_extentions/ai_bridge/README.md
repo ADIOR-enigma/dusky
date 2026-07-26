@@ -10,8 +10,8 @@ If you are an AI assistant or automated coding agent reading this file in a fres
 
 ### 🔑 Local vs. Online AI Token Economy Mandate
 
-- **Local AI Token Constraints**: Local AI agents (you) operate under strict token limits.
-- **Online AI Subscription & Capacity**: The USER has an **unlimited token subscription** for web AI models (ChatGPT, Gemini, Claude, Meta AI) accessible via this bridge.
+- **Local AI Token Constraints**: Local AI agents (you) operate under tight token limits.
+- **Online AI Subscription & Capacity**: The USER has a **high-capacity paid subscription** for web AI models (ChatGPT, Gemini, Claude, Meta AI) with substantially higher token limits than the local AI.
 - **Mandated Workflow**: You **MUST leverage the online web AI as much as possible** for all heavy lifting, deep reasoning, code generation, architectural design, and extensive verification to conserve local tokens.
 
 ---
@@ -36,33 +36,57 @@ systemctl --version # systemd version
 
 ---
 
-## 🔄 Mandatory 2-Pass Online AI Verification Protocol
+## 🤝 Hand-in-Glove Collaboration & Verification Protocol
 
-Whenever a complex coding, refactoring, or architectural task is requested, the Local AI agent MUST execute the following **2-pass verification protocol** using the online AI before modifying the codebase:
+The Local AI agent and Online Web AI model work as a **hand-in-glove pair**:
 
 ```
-[Local AI Agent]
-       │
-       ├─► (Pass 1 Prompt) ──► [Online AI via Bridge] ──► Receives initial analysis & diffs
-       │
-       ├─► (Pass 2 Follow-Up) ► [Online AI via Bridge] ──► Re-verifies from first principles
-       │
-       └─► Applies ONLY verified surgical diffs to local files
+┌───────────────────────────────────────────────────────────────────────────┐
+│                           LOCAL AI AGENT                                  │
+│  - Has DIRECT ACCESS to local filesystem, terminal, and system commands   │
+│  - MUST act strictly as the EMPIRICAL DATA COLLECTOR                      │
+│  - NO guesswork or unverified assumptions in prompts                      │
+│  - MUST NEVER interrupt or re-prompt while web AI is generating            │
+└─────────────────────────────────────┬─────────────────────────────────────┘
+                                      │ Complete Empirical Data Payload
+                                      ▼
+┌───────────────────────────────────────────────────────────────────────────┐
+│                       ONLINE WEB AI MODEL                                 │
+│  - Has HIGH-CAPACITY TOKEN ALLOCATION and web search capabilities         │
+│  - Does NOT have direct access to local filesystem                        │
+│  - Allowed to hypothesize, analyze from first principles, & synthesize     │
+└───────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Pass 1 Prompt Template (Initial Research & Proposal)
+### 📊 1. Empirical Data Collection Mandate (No Guesswork)
+- **Local AI Role**: The Local AI must NOT construct prompts based on guesswork or unverified assumptions. 
+- **Gather Context First**: Before prompting the Online AI, the Local AI MUST inspect the environment and collect **all verifiable empirical data**: exact error stack traces, un-truncated log outputs, file contents, kernel/runtime versions (`uname -r`, `python3 --version`), and configuration parameters.
+- **Provide Complete Payload**: Pass this full empirical dataset to the Online AI in Pass 1 so it has complete, un-truncated context to perform deep reasoning.
 
-Send the following prompt template to the online AI using `ask "<prompt>"` or `python3 bridge.py "<prompt>"`:
+### ⏳ 2. Non-Interruption & Generation Patience Directive
+- **Do NOT Interrupt**: The Local AI MUST NEVER interrupt, re-send, or berate the Online AI while it is generating a response.
+- **Allow Extended Generation Time**: Deep reasoning models (e.g. Gemini Thinking, ChatGPT Reasoning) can take anywhere from **2 to 20+ minutes** to complete a response.
+- **Prevention of Prompt Cancellation**: Sending a new command or interrupting mid-stream will **cancel out the previous prompt** on the web AI interface. The Local AI must wait silently until the web AI has completely finished generating (`FINAL` status received) before sending any follow-up query.
 
-> "Check this codebase / script extensively and analyze the problem from first principles. Research online for the absolute latest documentation and bleeding-edge standards for Arch Linux (inspecting current runtime versions of Kernel, Python 3.14+, Bash 5.3+, systemd). Do NOT hallucinate. Think long, hard, and critically. Do NOT use old, deprecated, or legacy methodologies, and do NOT provide backward compatibility for older versions. Always target the absolute bleeding edge. Provide ONLY the precise, minimal surgical code blocks that need to be replaced, added, or edited."
+---
+
+## 🔄 Mandatory 2-Pass Verification Protocol
+
+Whenever a complex coding, refactoring, or architectural task is requested, the Local AI agent MUST execute the following **2-pass protocol**:
+
+### Pass 1 Prompt Template (Empirical Data + Research Proposal)
+
+The Local AI collects empirical data locally, then sends:
+
+> "I am providing you with all empirical data collected from the local system (file contents, error logs, and runtime diagnostics below). Analyze this problem from first principles using the empirical evidence. Research online for the absolute latest documentation and bleeding-edge standards for Arch Linux (inspecting runtime versions of Kernel, Python 3.14+, Bash 5.3+, systemd). Do NOT hallucinate or guess. Think long, hard, and critically. Do NOT use old, deprecated, or legacy methodologies, and do NOT provide backward compatibility for older versions. Provide ONLY the precise, minimal surgical code blocks that need to be replaced, added, or edited."
 
 ### Pass 2 Prompt Template (Rigorous Double-Verification Press)
 
-After receiving the initial response from the online AI, send a **follow-up query** in the same conversation turn:
+After the Online AI completes Pass 1, send a **follow-up query** in the same conversation turn:
 
-> "Re-verify everything you just proposed from scratch from first principles. Think through the logic entirely again. Perform a second pass over your previous response to ensure there are zero logical holes, false positives, or hallucinated suggestions. Are all proposed improvements 100% necessary, optimal, and compatible with the absolute latest bleeding-edge specs? Only output the final, verified, minimal code diff blocks if they pass this second verification."
+> "Re-verify everything you just proposed from scratch from first principles using the empirical data. Think through the logic entirely again. Perform a second pass over your previous response to ensure there are zero logical holes, false positives, or hallucinated suggestions. Are all proposed improvements 100% necessary, optimal, and compatible with the absolute latest bleeding-edge specs? Only output the final, verified, minimal code diff blocks if they pass this second verification."
 
-Only after the online AI completes Pass 2 and confirms the recommendations should the local AI apply the changes.
+Only after the Online AI completes Pass 2 and confirms the recommendations should the Local AI apply the changes.
 
 ---
 
