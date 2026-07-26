@@ -5,10 +5,13 @@
   let hasSubmittedThisQuery = false;
   let lastFullText = "";
   let observer = null;
-  let finalTimer = null;
+  let focusKeepaliveTimer = null;
 
   function emit(payload){
-    globalThis.postMessage({__bridge: BRIDGE, direction: "MAIN_TO_BG", payload}, "*");
+    globalThis.postMessage(
+      {__bridge: BRIDGE, direction: "MAIN_TO_BG", payload},
+      globalThis.location.origin
+    );
   }
 
   // --- Selectors ---
@@ -175,12 +178,21 @@
     for(const el of targets){
       if(!ok || !el.textContent || !el.textContent.includes(text)){
         try{
-          if(el.tagName === "P"){
-            el.textContent = text;
+          if(el.tagName === "TEXTAREA" || el.tagName === "INPUT"){
+            el.value = text;
           } else if(el.tagName === "RICH-TEXTAREA"){
             try{ if(el.value !== undefined) el.value = text; }catch(e){}
+            if(!el.textContent || !el.textContent.includes(text)){
+              el.textContent = text;
+            }
+          } else if(el.isContentEditable || el.getAttribute("contenteditable") === "true"){
+            // Never HTML-concatenate untrusted prompt text.
+            while(el.firstChild) el.removeChild(el.firstChild);
+            const p = document.createElement("p");
+            p.textContent = text;
+            el.appendChild(p);
           } else {
-            el.innerHTML = '<p>' + text + '</p>';
+            el.textContent = text;
           }
         }catch(e){
           try{ el.textContent = text; }catch(err){}
@@ -496,11 +508,16 @@
     // Focus keep-alive: re-focus editor every 200ms for 3s so that when
     // wtype sends hardware Return at ~T=1.9s, the editor has keyboard focus.
     // Without this, focus drifts to the response area after Prompt 1 completes.
+    if(focusKeepaliveTimer){
+      clearInterval(focusKeepaliveTimer);
+      focusKeepaliveTimer = null;
+    }
     let focusKeepaliveCount = 0;
-    const focusInterval = setInterval(() => {
+    focusKeepaliveTimer = setInterval(() => {
       focusKeepaliveCount++;
       if(focusKeepaliveCount > 15 || !currentRequestId || hasStartedStreaming){
-        clearInterval(focusInterval);
+        clearInterval(focusKeepaliveTimer);
+        focusKeepaliveTimer = null;
         return;
       }
       const ed = getEditor();
@@ -514,9 +531,8 @@
     }, 200);
   };
 
-  window.__LocalAI_HandleQuery = handleQuery;
-
-  globalThis.addEventListener("message", async (e)=>{
+  globalThis.addEventListener("message", (e)=>{
+    if(e.source !== window) return;
     const data = e.data;
     if(!data || data.__bridge !== BRIDGE) return;
     if(data.direction !== "BG_TO_MAIN") return;

@@ -23,8 +23,11 @@ CONNECTED_CLIENTS = set()
 
 def make_ws_response_key(sec_key):
     magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-    sha1 = hashlib.sha1((sec_key + magic).encode('utf-8')).digest()
-    return base64.b64encode(sha1).decode('utf-8')
+    sha1 = hashlib.sha1(
+        (sec_key + magic).encode("utf-8"),
+        usedforsecurity=False,
+    ).digest()
+    return base64.b64encode(sha1).decode("utf-8")
 
 class WSConnection:
     def __init__(self, reader, writer):
@@ -195,7 +198,16 @@ def _schedule_os_return():
         await asyncio.sleep(1.5)
         await asyncio.to_thread(_do_os_return)
 
-    loop.create_task(_run())
+    task = loop.create_task(_run())
+
+    def _consume(done):
+        if done.cancelled():
+            return
+        exc = done.exception()
+        if exc is not None:
+            print(f"[Daemon] _do_os_return task error: {exc!r}", flush=True)
+
+    task.add_done_callback(_consume)
 
 async def handle_client(reader, writer):
     # Perform HTTP WebSocket Handshake
@@ -272,16 +284,13 @@ async def handle_client(reader, writer):
             if msg_type == "RUN_QUERY":
                 query_preview = data.get("query", "")[:60]
                 print(f"[Daemon] RUN_QUERY broadcast to {broadcast_count} client(s): '{query_preview}...'", flush=True)
+                # Only steal focus / wtype when an extension client actually received the query.
+                if broadcast_count > 0:
+                    print(f"[Daemon] Scheduling _do_os_return in 1.5s", flush=True)
+                    _schedule_os_return()
 
-            # For every RUN_QUERY, schedule a hardware Return keypress
-            # This is essential because synthetic JS clicks are isTrusted:false
-            # and Gemini ignores them. The ONLY reliable submission is wtype.
-            if msg_type == "RUN_QUERY":
-                print(f"[Daemon] Scheduling _do_os_return in 1.5s", flush=True)
-                _schedule_os_return()
-
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[Daemon] client handler error: {e!r}", flush=True)
     finally:
         CONNECTED_CLIENTS.discard(ws)
         ws.close()
@@ -315,11 +324,10 @@ def send_query_cli(query_text, stream=True, idle_timeout=10.0, hard_timeout=180.
     """
     import time as _time
 
-    # Standard library socket client
     s = socket.socket()
     s.settimeout(1.0)  # allow periodic idle checks
     s.connect((HOST, PORT))
-    sec_key = base64.b64encode(os.urandom(16)).decode('utf-8')
+    sec_key = base64.b64encode(os.urandom(16)).decode("utf-8")
     handshake = (
         f"GET / HTTP/1.1\r\n"
         f"Host: {HOST}:{PORT}\r\n"
@@ -328,17 +336,33 @@ def send_query_cli(query_text, stream=True, idle_timeout=10.0, hard_timeout=180.
         f"Sec-WebSocket-Key: {sec_key}\r\n"
         f"Sec-WebSocket-Version: 13\r\n\r\n"
     )
-    s.sendall(handshake.encode('utf-8'))
-    resp = s.recv(1024)
+    s.sendall(handshake.encode("utf-8"))
+
+    # Read full HTTP response headers (do not assume one recv is enough).
+    resp = b""
+    while b"\r\n\r\n" not in resp:
+        try:
+            chunk = s.recv(1024)
+        except socket.timeout:
+            continue
+        if not chunk:
+            break
+        resp += chunk
+        if len(resp) > 65536:
+            break
 
     if b"101" not in resp.split(b"\r\n", 1)[0]:
         print("[Error] WebSocket handshake failed:", resp[:200], file=sys.stderr)
-        try: s.close()
-        except Exception: pass
+        try:
+            s.close()
+        except Exception:
+            pass
         sys.exit(1)
 
     req_id = str(uuid.uuid4())
-    payload = json.dumps({"type": "RUN_QUERY", "query": query_text, "requestId": req_id}).encode('utf-8')
+    payload = json.dumps(
+        {"type": "RUN_QUERY", "query": query_text, "requestId": req_id}
+    ).encode("utf-8")
 
     mask = os.urandom(4)
     masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
@@ -354,28 +378,54 @@ def send_query_cli(query_text, stream=True, idle_timeout=10.0, hard_timeout=180.
         header.extend(struct.pack("!Q", n))
     s.sendall(header + mask + masked)
 
-    # NOTE: Hardware Return keypress is now handled by the daemon (_schedule_os_return)
-    # for ALL RUN_QUERY messages, so no need to schedule it here in CLI.
+    # Hardware Return is scheduled by the daemon for ALL RUN_QUERY messages.
 
     full_text = ""
+    emitted = ""
     started = _time.time()
     last_chunk_at = None
-    printed_len = 0
+
+    def emit_remainder(text):
+        """Print only the unseen suffix; handle non-prefix rewrites without tautologies."""
+        nonlocal emitted
+        if not stream or not text:
+            return
+        if text.startswith(emitted):
+            delta = text[len(emitted):]
+            if delta:
+                safe_write(delta)
+            emitted = text
+            return
+        # Full rewrite mid-stream: mark a break then print.
+        safe_write(("\n" if emitted else "") + text)
+        emitted = text
 
     def finish(text, note=None):
         if stream:
-            # If we only got full snapshots, print any remaining tail once
-            if text and printed_len == 0:
-                safe_write(text)
+            emit_remainder(text or "")
             sys.stdout.write("\n")
             sys.stdout.flush()
         else:
             print(text or "")
         if note:
             print(f"[bridge] {note}", file=sys.stderr)
-        try: s.close()
-        except Exception: pass
+        try:
+            s.close()
+        except Exception:
+            pass
         return text or ""
+
+    def recv_exact(count):
+        buf = bytearray()
+        while len(buf) < count:
+            try:
+                part = s.recv(count - len(buf))
+            except socket.timeout:
+                return None  # signal caller to run idle/hard timeout checks
+            if not part:
+                return b""
+            buf.extend(part)
+        return bytes(buf)
 
     while True:
         now = _time.time()
@@ -383,67 +433,73 @@ def send_query_cli(query_text, stream=True, idle_timeout=10.0, hard_timeout=180.
             if full_text:
                 return finish(full_text, f"hard timeout after {hard_timeout:.0f}s — returning partial")
             print(f"\n[Error] Timed out after {hard_timeout:.0f}s with no response", file=sys.stderr)
-            try: s.close()
-            except Exception: pass
+            try:
+                s.close()
+            except Exception:
+                pass
             sys.exit(1)
 
         if last_chunk_at is not None and full_text and (now - last_chunk_at) >= idle_timeout:
             return finish(full_text, f"idle timeout ({idle_timeout:.0f}s) — treating as FINAL")
 
-        try:
-            head = s.recv(2)
-        except socket.timeout:
+        head = recv_exact(2)
+        if head is None:
             continue
-        except Exception:
-            break
-        if not head: break
-        # If partial header, keep reading
-        while len(head) < 2:
-            try:
-                more = s.recv(2 - len(head))
-            except socket.timeout:
-                continue
-            if not more:
-                break
-            head += more
-        if len(head) < 2:
+        if head == b"" or len(head) < 2:
             break
 
+        opcode = head[0] & 0x0F
+        masked = bool(head[1] & 0x80)
         l = head[1] & 0x7F
+
         if l == 126:
-            raw = b""
-            while len(raw) < 2:
-                try:
-                    c = s.recv(2 - len(raw))
-                except socket.timeout:
-                    continue
-                if not c: break
-                raw += c
+            raw = recv_exact(2)
+            if raw is None:
+                continue
+            if len(raw) < 2:
+                break
             l = struct.unpack("!H", raw)[0]
         elif l == 127:
-            raw = b""
-            while len(raw) < 8:
-                try:
-                    c = s.recv(8 - len(raw))
-                except socket.timeout:
-                    continue
-                if not c: break
-                raw += c
+            raw = recv_exact(8)
+            if raw is None:
+                continue
+            if len(raw) < 8:
+                break
             l = struct.unpack("!Q", raw)[0]
 
-        p = bytearray()
-        while len(p) < l:
-            try:
-                c = s.recv(l - len(p))
-            except socket.timeout:
+        if masked:
+            mask_keys = recv_exact(4)
+            if mask_keys is None:
                 continue
-            if not c: break
-            p.extend(c)
+            if len(mask_keys) < 4:
+                break
+        else:
+            mask_keys = None
 
-        try: data = json.loads(p.decode('utf-8'))
-        except Exception: continue
+        p = recv_exact(l)
+        if p is None:
+            continue
+        if len(p) < l:
+            break
 
-        if data.get("requestId") != req_id: continue
+        if mask_keys is not None:
+            p = bytes(b ^ mask_keys[i % 4] for i, b in enumerate(p))
+
+        # Close / ping / pong / non-text
+        if opcode == 0x8:
+            break
+        if opcode in (0x9, 0xA):
+            continue
+        if opcode != 0x1:
+            continue
+
+        try:
+            data = json.loads(p.decode("utf-8"))
+        except Exception:
+            continue
+
+        if data.get("requestId") != req_id:
+            continue
 
         mtype = data.get("type")
         if mtype == "STREAM_CHUNK":
@@ -454,30 +510,23 @@ def send_query_cli(query_text, stream=True, idle_timeout=10.0, hard_timeout=180.
             elif chunk:
                 full_text = full_text + chunk
 
-            if stream and chunk:
-                # Avoid re-printing when chunk is a full re-render of known text
-                if chunk == full_text and printed_len > 0:
-                    # re-render snapshot — only print suffix beyond what we already showed
-                    if full_text.startswith(full_text[:printed_len]) and len(full_text) > printed_len:
-                        safe_write(full_text[printed_len:])
-                        printed_len = len(full_text)
-                    # else identical re-send; ignore
-                else:
+            if stream:
+                if new_full is not None:
+                    emit_remainder(full_text)
+                elif chunk:
                     safe_write(chunk)
-                    printed_len += len(chunk)
+                    emitted += chunk
+
             last_chunk_at = _time.time()
         elif mtype == "FINAL":
             full = data.get("full", full_text) or full_text
-            # Print any unstreamed tail once (append-only case)
-            if stream and full and printed_len < len(full):
-                if printed_len == 0 or full[:printed_len] == full_text[:printed_len]:
-                    safe_write(full[printed_len:])
-                    printed_len = len(full)
             return finish(full)
         elif mtype == "ERROR":
             print(f"\n[Error] {data.get('error')}", file=sys.stderr)
-            try: s.close()
-            except Exception: pass
+            try:
+                s.close()
+            except Exception:
+                pass
             sys.exit(1)
 
     if full_text:

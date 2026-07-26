@@ -115,9 +115,16 @@ function connectWS(force = false){
           log("Tab message failed (orphaned content script), auto-healing tab:", targetId, e);
           try {
             await browser.tabs.reload(targetId);
+            let settled = false;
+            const cleanup = () => {
+              if(settled) return;
+              settled = true;
+              browser.tabs.onUpdated.removeListener(onLoaded);
+              clearTimeout(failSafe);
+            };
             const onLoaded = (tId, changeInfo) => {
               if(tId === targetId && changeInfo.status === "complete"){
-                browser.tabs.onUpdated.removeListener(onLoaded);
+                cleanup();
                 setTimeout(() => {
                   browser.tabs.sendMessage(targetId, msg).catch((err) => {
                     ws?.send(JSON.stringify({type:"ERROR", error:"Tab message failed after auto-heal: " + err.message, requestId: msg.requestId}));
@@ -125,6 +132,10 @@ function connectWS(force = false){
                 }, 1200);
               }
             };
+            const failSafe = setTimeout(() => {
+              cleanup();
+              ws?.send(JSON.stringify({type:"ERROR", error:"Tab auto-heal timed out", requestId: msg.requestId}));
+            }, 15000);
             browser.tabs.onUpdated.addListener(onLoaded);
           } catch(reloadErr) {
             ws?.send(JSON.stringify({type:"ERROR", error:"Tab message failed: " + e.message, requestId: msg.requestId}));
@@ -277,7 +288,7 @@ browser.runtime.onMessage.addListener((msg, sender)=>{
   if(sender?.tab?.id && isAiUrl(sender.tab.url)){
     activeTabId = sender.tab.id;
     knownAiTabs.add(sender.tab.id);
-    try{ browser.storage.session.set({activeTabId: sender.tab.id}); }catch{}
+    browser.storage.session.set({activeTabId: sender.tab.id}).catch(() => {});
   }
   if(msg.type === "TAB_REGISTER"){
     log("Tab registered via content script:", sender?.tab?.id);
