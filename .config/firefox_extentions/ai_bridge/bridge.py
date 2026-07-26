@@ -116,9 +116,24 @@ class WSConnection:
 # of whether the caller is bridge.py CLI, a benchmark script, or the SDK.
 import time as _time
 
-def _do_os_return():
-    """Focus Firefox AI tab and send hardware Ctrl+Enter + Return for Gemini."""
+def _do_os_return(prev_addr=None, prev_ws_id=None):
+    """Focus Firefox AI tab, send hardware Return for Gemini, and restore previous window/workspace focus."""
     try:
+        # Fallback to activewindow check if prev_addr not passed explicitly
+        if not prev_addr:
+            try:
+                active_res = subprocess.run(
+                    ["hyprctl", "activewindow", "-j"],
+                    capture_output=True, text=True, timeout=2,
+                )
+                if active_res.returncode == 0 and active_res.stdout.strip():
+                    active_win = json.loads(active_res.stdout)
+                    prev_addr = active_win.get("address")
+                    prev_ws_id = active_win.get("workspace", {}).get("id")
+            except Exception:
+                pass
+
+        # Query clients for Firefox target
         res = subprocess.run(
             ["hyprctl", "clients", "-j"],
             capture_output=True, text=True, timeout=2,
@@ -181,22 +196,43 @@ def _do_os_return():
                 ["wtype", "-k", "Return"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
             )
+
+        # 3. Restore focus back to starting window & workspace!
+        if prev_addr and (prev_addr or "").lower() != (addr or "").lower():
+            _time.sleep(0.8)
+            if prev_ws_id is not None and prev_ws_id > 0:
+                rel_ws = ((prev_ws_id - 1) % 10) + 1
+                try:
+                    subprocess.run(
+                        [multi_mon_ws, "workspace", str(rel_ws)],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
+                    )
+                except Exception:
+                    pass
+                subprocess.run(
+                    ["hyprctl", "dispatch", f'hl.dsp.focus({{ workspace = "{prev_ws_id}" }})'],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
+                )
+            subprocess.run(
+                ["hyprctl", "dispatch", f'hl.dsp.focus({{ window = "address:{prev_addr}" }})'],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
+            )
     except Exception:
         pass
 
-def _schedule_os_return():
-    """Schedule hardware Return keypress 1.5s after query dispatch."""
+def _schedule_os_return(prev_addr=None, prev_ws_id=None):
+    """Schedule hardware Return keypress & focus restoration 1.5s after query dispatch."""
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
-        t = threading.Timer(1.5, _do_os_return)
+        t = threading.Timer(1.5, _do_os_return, args=(prev_addr, prev_ws_id))
         t.daemon = True
         t.start()
         return
 
     async def _run():
         await asyncio.sleep(1.5)
-        await asyncio.to_thread(_do_os_return)
+        await asyncio.to_thread(_do_os_return, prev_addr, prev_ws_id)
 
     task = loop.create_task(_run())
 
@@ -270,6 +306,22 @@ async def handle_client(reader, writer):
                 CONNECTED_CLIENTS.difference_update(dead)
                 continue
 
+            # Capture caller's active window/workspace IMMEDIATELY at T=0.0s before background.js brings Firefox to front!
+            prev_addr = None
+            prev_ws_id = None
+            if msg_type == "RUN_QUERY":
+                try:
+                    active_res = subprocess.run(
+                        ["hyprctl", "activewindow", "-j"],
+                        capture_output=True, text=True, timeout=2,
+                    )
+                    if active_res.returncode == 0 and active_res.stdout.strip():
+                        active_win = json.loads(active_res.stdout)
+                        prev_addr = active_win.get("address")
+                        prev_ws_id = active_win.get("workspace", {}).get("id")
+                except Exception:
+                    pass
+
             # Broadcast all messages to all other connected clients
             dead = set()
             broadcast_count = 0
@@ -286,8 +338,8 @@ async def handle_client(reader, writer):
                 print(f"[Daemon] RUN_QUERY broadcast to {broadcast_count} client(s): '{query_preview}...'", flush=True)
                 # Only steal focus / wtype when an extension client actually received the query.
                 if broadcast_count > 0:
-                    print(f"[Daemon] Scheduling _do_os_return in 1.5s", flush=True)
-                    _schedule_os_return()
+                    print(f"[Daemon] Scheduling _do_os_return in 1.5s (prev_addr={prev_addr}, prev_ws={prev_ws_id})", flush=True)
+                    _schedule_os_return(prev_addr, prev_ws_id)
 
     except Exception as e:
         print(f"[Daemon] client handler error: {e!r}", flush=True)
