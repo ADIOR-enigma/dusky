@@ -116,22 +116,37 @@ class WSConnection:
 # of whether the caller is bridge.py CLI, a benchmark script, or the SDK.
 import time as _time
 
+LAST_NON_FIREFOX_TARGET = {"address": None, "workspace_id": None}
+
+def get_active_window():
+    """Retrieve active window/workspace, automatically caching non-Firefox originating context across rapid queries."""
+    try:
+        active_res = subprocess.run(
+            ["hyprctl", "activewindow", "-j"],
+            capture_output=True, text=True, timeout=2,
+        )
+        if active_res.returncode == 0 and active_res.stdout.strip():
+            win = json.loads(active_res.stdout)
+            cls = (win.get("class") or "").lower()
+            addr = win.get("address")
+            ws_id = win.get("workspace", {}).get("id")
+            if addr and "firefox" not in cls:
+                LAST_NON_FIREFOX_TARGET["address"] = addr
+                LAST_NON_FIREFOX_TARGET["workspace_id"] = ws_id
+                return addr, ws_id
+            elif LAST_NON_FIREFOX_TARGET["address"]:
+                return LAST_NON_FIREFOX_TARGET["address"], LAST_NON_FIREFOX_TARGET["workspace_id"]
+            else:
+                return addr, ws_id
+    except Exception:
+        pass
+    return LAST_NON_FIREFOX_TARGET["address"], LAST_NON_FIREFOX_TARGET["workspace_id"]
+
 def _do_os_return(prev_addr=None, prev_ws_id=None):
     """Focus Firefox AI tab, send hardware Return for Gemini, and restore previous window/workspace focus."""
     try:
-        # Fallback to activewindow check if prev_addr not passed explicitly
         if not prev_addr:
-            try:
-                active_res = subprocess.run(
-                    ["hyprctl", "activewindow", "-j"],
-                    capture_output=True, text=True, timeout=2,
-                )
-                if active_res.returncode == 0 and active_res.stdout.strip():
-                    active_win = json.loads(active_res.stdout)
-                    prev_addr = active_win.get("address")
-                    prev_ws_id = active_win.get("workspace", {}).get("id")
-            except Exception:
-                pass
+            prev_addr, prev_ws_id = get_active_window()
 
         # Query clients for Firefox target
         res = subprocess.run(
@@ -184,18 +199,16 @@ def _do_os_return(prev_addr=None, prev_ws_id=None):
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
         )
 
-        title = (target.get("title") or "").lower()
-        if "gemini" in title:
-            _time.sleep(0.4)
-            subprocess.run(
-                ["wtype", "-M", "ctrl", "-k", "Return", "-m", "ctrl"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
-            )
-            _time.sleep(0.2)
-            subprocess.run(
-                ["wtype", "-k", "Return"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
-            )
+        _time.sleep(0.4)
+        subprocess.run(
+            ["wtype", "-M", "ctrl", "-k", "Return", "-m", "ctrl"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
+        )
+        _time.sleep(0.2)
+        subprocess.run(
+            ["wtype", "-k", "Return"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
+        )
 
         # 3. Restore focus back to starting window & workspace!
         if prev_addr and (prev_addr or "").lower() != (addr or "").lower():
@@ -310,17 +323,7 @@ async def handle_client(reader, writer):
             prev_addr = None
             prev_ws_id = None
             if msg_type == "RUN_QUERY":
-                try:
-                    active_res = subprocess.run(
-                        ["hyprctl", "activewindow", "-j"],
-                        capture_output=True, text=True, timeout=2,
-                    )
-                    if active_res.returncode == 0 and active_res.stdout.strip():
-                        active_win = json.loads(active_res.stdout)
-                        prev_addr = active_win.get("address")
-                        prev_ws_id = active_win.get("workspace", {}).get("id")
-                except Exception:
-                    pass
+                prev_addr, prev_ws_id = get_active_window()
 
             # Broadcast all messages to all other connected clients
             dead = set()
