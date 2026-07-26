@@ -370,7 +370,7 @@ def safe_write(text):
         except Exception:
             pass
 
-def send_query_cli(query_text, stream=True, idle_timeout=10.0, hard_timeout=180.0):
+def send_query_cli(query_text, stream=True, idle_timeout=10.0, hard_timeout=1800.0):
     """Send one prompt and wait for FINAL (or idle/hard timeout fallback).
 
     idle_timeout: seconds without STREAM_CHUNK after first token before treating
@@ -439,6 +439,7 @@ def send_query_cli(query_text, stream=True, idle_timeout=10.0, hard_timeout=180.
     emitted = ""
     started = _time.time()
     last_chunk_at = None
+    thinking_shown = False
 
     def emit_remainder(text):
         """Print only the unseen suffix; handle non-prefix rewrites without tautologies."""
@@ -573,6 +574,12 @@ def send_query_cli(query_text, stream=True, idle_timeout=10.0, hard_timeout=180.
                     emitted += chunk
 
             last_chunk_at = _time.time()
+        elif mtype == "THINKING":
+            # AI is thinking (reasoning model) — reset idle timer, keep waiting
+            last_chunk_at = _time.time()
+            if not thinking_shown:
+                print("[Thinking...]", file=sys.stderr, flush=True)
+                thinking_shown = True
         elif mtype == "FINAL":
             full = data.get("full", full_text) or full_text
             return finish(full)

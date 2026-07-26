@@ -97,6 +97,33 @@ function connectWS(force = false){
       return;
     }
 
+async function sendMessageWithTimeout(tabId, msg, timeoutMs = 2000){
+  return new Promise(async (resolve, reject) => {
+    let done = false;
+    const timer = setTimeout(() => {
+      if(!done){
+        done = true;
+        reject(new Error("Tab message timeout after " + timeoutMs + "ms"));
+      }
+    }, timeoutMs);
+
+    try {
+      await browser.tabs.sendMessage(tabId, msg);
+      if(!done){
+        done = true;
+        clearTimeout(timer);
+        resolve(true);
+      }
+    } catch(err) {
+      if(!done){
+        done = true;
+        clearTimeout(timer);
+        reject(err);
+      }
+    }
+  });
+}
+
     if(msg.type === "RUN_QUERY" && msg.query){
       const targetId = await findTargetTab(msg.tabId);
       if(!targetId){
@@ -111,38 +138,69 @@ function connectWS(force = false){
       }catch(e){ log("Focus error (non-fatal):", e); }
 
       try{
-        browser.tabs.sendMessage(targetId, msg).catch(async (e)=>{
-          log("Tab message failed (orphaned content script), auto-healing tab:", targetId, e);
-          try {
-            await browser.tabs.reload(targetId);
-            let settled = false;
-            const cleanup = () => {
-              if(settled) return;
-              settled = true;
-              browser.tabs.onUpdated.removeListener(onLoaded);
-              clearTimeout(failSafe);
-            };
-            const onLoaded = (tId, changeInfo) => {
-              if(tId === targetId && changeInfo.status === "complete"){
-                cleanup();
-                setTimeout(() => {
-                  browser.tabs.sendMessage(targetId, msg).catch((err) => {
-                    ws?.send(JSON.stringify({type:"ERROR", error:"Tab message failed after auto-heal: " + err.message, requestId: msg.requestId}));
-                  });
-                }, 1200);
-              }
-            };
-            const failSafe = setTimeout(() => {
-              cleanup();
-              ws?.send(JSON.stringify({type:"ERROR", error:"Tab auto-heal timed out", requestId: msg.requestId}));
-            }, 15000);
-            browser.tabs.onUpdated.addListener(onLoaded);
-          } catch(reloadErr) {
-            ws?.send(JSON.stringify({type:"ERROR", error:"Tab message failed: " + e.message, requestId: msg.requestId}));
-          }
-        });
+        await sendMessageWithTimeout(targetId, msg, 2500);
+        log("Tab message delivered successfully to:", targetId);
       }catch(e){
-        ws?.send(JSON.stringify({type:"ERROR", error:"Tab message error: " + e.message, requestId: msg.requestId}));
+        log("Tab message failed/timed out, attempting auto-heal:", targetId, e.message);
+        try {
+          try {
+            await browser.scripting.executeScript({
+              target: {tabId: targetId},
+              files: ["content_isolated.js"]
+            });
+          } catch(err){}
+          try {
+            await browser.scripting.executeScript({
+              target: {tabId: targetId},
+              files: ["content_main.js"],
+              world: "MAIN"
+            });
+          } catch(err){}
+
+          await new Promise(r => setTimeout(r, 400));
+
+          try {
+            await sendMessageWithTimeout(targetId, msg, 2500);
+            log("Programmatic injection succeeded for tab:", targetId);
+            return;
+          } catch(retryErr){
+            log("sendMessage still failed, reloading tab:", targetId, retryErr.message);
+          }
+
+          // Last resort: reload tab
+          await browser.tabs.reload(targetId);
+          let settled = false;
+          const cleanup = () => {
+            if(settled) return;
+            settled = true;
+            browser.tabs.onUpdated.removeListener(onLoaded);
+            clearTimeout(failSafe);
+          };
+          const onLoaded = (tId, changeInfo) => {
+            if(tId === targetId && changeInfo.status === "complete"){
+              cleanup();
+              setTimeout(async () => {
+                try {
+                  await browser.scripting.executeScript({ target: {tabId: targetId}, files: ["content_isolated.js"] });
+                } catch(e2) {}
+                try {
+                  await browser.scripting.executeScript({ target: {tabId: targetId}, files: ["content_main.js"], world: "MAIN" });
+                } catch(e2) {}
+                await new Promise(r => setTimeout(r, 600));
+                browser.tabs.sendMessage(targetId, msg).catch((err) => {
+                  ws?.send(JSON.stringify({type:"ERROR", error:"Tab message failed after reload: " + err.message, requestId: msg.requestId}));
+                });
+              }, 1500);
+            }
+          };
+          const failSafe = setTimeout(() => {
+            cleanup();
+            ws?.send(JSON.stringify({type:"ERROR", error:"Tab auto-heal timed out", requestId: msg.requestId}));
+          }, 15000);
+          browser.tabs.onUpdated.addListener(onLoaded);
+        } catch(reloadErr) {
+          ws?.send(JSON.stringify({type:"ERROR", error:"Tab message failed: " + e.message, requestId: msg.requestId}));
+        }
       }
     }
   };

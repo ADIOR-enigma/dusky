@@ -12,14 +12,26 @@
   "permissions": [
     "storage",
     "tabs",
-    "alarms"
+    "alarms",
+    "scripting"
   ],
   "host_permissions": [
-    "*://chatgpt.com/*",
-    "*://chat.openai.com/*",
-    "*://claude.ai/*",
+    "*://*.meta.ai/*",
     "*://meta.ai/*",
+    "*://*.chatgpt.com/*",
+    "*://chatgpt.com/*",
+    "*://*.openai.com/*",
+    "*://chat.openai.com/*",
+    "*://*.claude.ai/*",
+    "*://claude.ai/*",
+    "*://*.google.com/*",
     "*://gemini.google.com/*"
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["content_main.js"],
+      "matches": ["*://*/*"]
+    }
   ],
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' ws://127.0.0.1:8765 ws://localhost:8765;"
@@ -31,27 +43,19 @@
   "content_scripts": [
     {
       "matches": [
-        "*://chatgpt.com/*",
-        "*://chat.openai.com/*",
-        "*://claude.ai/*",
+        "*://*.meta.ai/*",
         "*://meta.ai/*",
-        "*://gemini.google.com/*"
-      ],
-      "js": ["content_main.js"],
-      "run_at": "document_start",
-      "world": "MAIN"
-    },
-    {
-      "matches": [
+        "*://*.chatgpt.com/*",
         "*://chatgpt.com/*",
+        "*://*.openai.com/*",
         "*://chat.openai.com/*",
+        "*://*.claude.ai/*",
         "*://claude.ai/*",
-        "*://meta.ai/*",
+        "*://*.google.com/*",
         "*://gemini.google.com/*"
       ],
       "js": ["content_isolated.js"],
-      "run_at": "document_start",
-      "world": "ISOLATED"
+      "run_at": "document_start"
     }
   ],
   "action": {
