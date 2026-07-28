@@ -363,6 +363,39 @@ async def handle_client(reader, writer):
             if msg_type == "RUN_QUERY":
                 query_preview = data.get("query", "")[:60]
                 print(f"[Daemon] RUN_QUERY broadcast to {broadcast_count} client(s): '{query_preview}...'", flush=True)
+
+                # If no extension clients received the query, wait for one to connect
+                # (handles race after daemon restart — extension reconnects in ~2.5s)
+                if broadcast_count == 0:
+                    print("[Daemon] No extension clients — waiting up to 5s for reconnect...", flush=True)
+                    for _retry in range(10):  # 10 x 0.5s = 5s max
+                        await asyncio.sleep(0.5)
+                        others = [c for c in CONNECTED_CLIENTS if c != ws]
+                        if others:
+                            dead = set()
+                            broadcast_count = 0
+                            for c in others:
+                                try:
+                                    await c.send(msg)
+                                    broadcast_count += 1
+                                except Exception:
+                                    dead.add(c)
+                            CONNECTED_CLIENTS.difference_update(dead)
+                            if broadcast_count > 0:
+                                print(f"[Daemon] Retry succeeded — broadcast to {broadcast_count} client(s)", flush=True)
+                                break
+                    if broadcast_count == 0:
+                        print("[Daemon] WARNING: No extension clients after 5s — query lost!", flush=True)
+                        # Notify the CLI client that the query couldn't be delivered
+                        try:
+                            await ws.send(json.dumps({
+                                "type": "ERROR",
+                                "error": "No browser extension connected — is Firefox running with the extension loaded?",
+                                "requestId": data.get("requestId"),
+                            }))
+                        except Exception:
+                            pass
+
                 # Only steal focus / wtype when an extension client actually received the query.
                 if broadcast_count > 0:
                     print(f"[Daemon] Scheduling _do_os_return in 1.5s (prev_addr={prev_addr}, prev_ws={prev_ws_id})", flush=True)
@@ -679,6 +712,13 @@ def send_query_cli(query_text, stream=True, idle_timeout=10.0, hard_timeout=1800
                 thinking_shown = True
         elif mtype == "FINAL":
             full = data.get("full", full_text) or full_text
+            reason = data.get("reason", "")
+            if reason == "interrupted":
+                finish(full, note=None)
+                print("[Interrupted by new query]", file=sys.stderr, flush=True)
+                try: s.close()
+                except Exception: pass
+                sys.exit(2)
             return finish(full)
         elif mtype == "ERROR":
             print(f"\n[Error] {data.get('error')}", file=sys.stderr)
