@@ -37,7 +37,10 @@ declare -a AUR_PACKAGES=(
 # ==============================================================================
 
 readonly REPO_NAME='archrepo'
-readonly ISOLATED_DB_DIR="/tmp/aur_factory_isolated_db_$$"
+# Populated with an unpredictable mktemp -d path in _init_isolated_db (cannot be
+# readonly: mktemp result is assigned at runtime). Default empty so the EXIT trap
+# is safe under 'set -u' if the script exits before the sandbox is created.
+declare -g  ISOLATED_DB_DIR=''
 readonly AUR_RPC_BASE_URL='https://aur.archlinux.org/rpc/v5/info'
 
 # Cleanup configuration (matching official pacman script)
@@ -328,9 +331,14 @@ _init_isolated_db() {
 
     log_info "Initialising isolated pacman sandbox (${mode_name})"
 
-    [[ -d "${ISOLATED_DB_DIR}" ]] && rm -rf -- "${ISOLATED_DB_DIR}"
+    [[ -n "${ISOLATED_DB_DIR}" && -d "${ISOLATED_DB_DIR}" ]] && rm -rf -- "${ISOLATED_DB_DIR}"
+    ISOLATED_DB_DIR=$(mktemp -d /tmp/aur_factory_isolated_db.XXXXXX) \
+        || die "Cannot create isolated pacman sandbox directory."
     mkdir -p -- "${ISOLATED_DB_DIR}/local" "${ISOLATED_DB_DIR}/sync" "${ISOLATED_DB_DIR}/pacman.d"
-    chmod -R 777 "${ISOLATED_DB_DIR}"
+    # Scope write access to ONLY the build user; never world-writable. Root (sudo
+    # pacman) bypasses these modes, so it can still populate the sync databases.
+    chown -R "${USER}:" -- "${ISOLATED_DB_DIR}"
+    chmod -R 0700 "${ISOLATED_DB_DIR}"
 
     if (( REPO_MODE == 2 )); then
         log_step "Generating pacman.conf with CachyOS v3 prioritization..."
