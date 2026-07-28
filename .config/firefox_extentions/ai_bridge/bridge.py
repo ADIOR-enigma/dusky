@@ -237,14 +237,31 @@ def _do_os_return(prev_addr=None, prev_ws_id=None):
     except Exception as e:
         print(f"[Daemon] _do_os_return error: {e!r}", flush=True)
 
+_pending_os_return = {"task": None, "timer": None}  # Debounce state
+
 def _schedule_os_return(prev_addr=None, prev_ws_id=None):
-    """Schedule hardware Return keypress & focus restoration 1.5s after query dispatch."""
+    """Schedule hardware Return keypress & focus restoration 1.5s after query dispatch.
+    
+    Debounced: if called again before the previous schedule fires, the old one
+    is cancelled. This prevents multiple wtype Return keystrokes from rapid queries.
+    """
+    # Cancel any pending schedule
+    if _pending_os_return["timer"] is not None:
+        _pending_os_return["timer"].cancel()
+        _pending_os_return["timer"] = None
+        print("[Daemon] Cancelled pending _do_os_return (debounce)", flush=True)
+    if _pending_os_return["task"] is not None:
+        _pending_os_return["task"].cancel()
+        _pending_os_return["task"] = None
+        print("[Daemon] Cancelled pending _do_os_return task (debounce)", flush=True)
+
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         t = threading.Timer(1.5, _do_os_return, args=(prev_addr, prev_ws_id))
         t.daemon = True
         t.start()
+        _pending_os_return["timer"] = t
         return
 
     async def _run():
@@ -252,8 +269,11 @@ def _schedule_os_return(prev_addr=None, prev_ws_id=None):
         await asyncio.to_thread(_do_os_return, prev_addr, prev_ws_id)
 
     task = loop.create_task(_run())
+    _pending_os_return["task"] = task
 
     def _consume(done):
+        if _pending_os_return["task"] is done:
+            _pending_os_return["task"] = None
         if done.cancelled():
             return
         exc = done.exception()
