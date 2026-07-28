@@ -199,20 +199,18 @@ def _do_os_return(prev_addr=None, prev_ws_id=None):
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
         )
 
-        _time.sleep(0.4)
-        subprocess.run(
-            ["wtype", "-M", "ctrl", "-k", "Return", "-m", "ctrl"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
-        )
-        _time.sleep(0.2)
+        _time.sleep(0.6)  # Let Firefox fully accept focus before keypress
+        # Plain Return only — Ctrl+Return inserts a newline in Gemini's
+        # rich-textarea, which prevents the subsequent Return from submitting.
         subprocess.run(
             ["wtype", "-k", "Return"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
         )
 
         # 3. Restore focus back to starting window & workspace!
-        if prev_addr and (prev_addr or "").lower() != (addr or "").lower():
-            _time.sleep(0.8)
+        if prev_addr and prev_addr.lower() != addr.lower():
+            _time.sleep(0.5)  # Let wtype Return register before switching away
+            print(f"[Daemon] Restoring focus: ws={prev_ws_id} addr={prev_addr}", flush=True)
             if prev_ws_id is not None and prev_ws_id > 0:
                 rel_ws = ((prev_ws_id - 1) % 10) + 1
                 try:
@@ -226,12 +224,18 @@ def _do_os_return(prev_addr=None, prev_ws_id=None):
                     ["hyprctl", "dispatch", f'hl.dsp.focus({{ workspace = "{prev_ws_id}" }})'],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
                 )
-            subprocess.run(
+            r = subprocess.run(
                 ["hyprctl", "dispatch", f'hl.dsp.focus({{ window = "address:{prev_addr}" }})'],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
+                capture_output=True, text=True, timeout=2,
             )
-    except Exception:
-        pass
+            if r.returncode != 0:
+                print(f"[Daemon] Focus restore failed: {r.stderr.strip()}", flush=True)
+            else:
+                print(f"[Daemon] Focus restored OK", flush=True)
+        else:
+            print(f"[Daemon] Skipping focus restore: prev_addr={prev_addr} ff_addr={addr} same={prev_addr and prev_addr.lower() == addr.lower()}", flush=True)
+    except Exception as e:
+        print(f"[Daemon] _do_os_return error: {e!r}", flush=True)
 
 def _schedule_os_return(prev_addr=None, prev_ws_id=None):
     """Schedule hardware Return keypress & focus restoration 1.5s after query dispatch."""
@@ -351,9 +355,56 @@ async def handle_client(reader, writer):
         ws.close()
         print(f"[Daemon] Client disconnected. Active clients: {len(CONNECTED_CLIENTS)}")
 
+SERVICE_NAME = "localai_bridge.service"
+
 async def start_daemon():
+    # Stop any stale daemon holding the port — systemd-aware
+    try:
+        test_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        test_sock.settimeout(0.5)
+        test_sock.connect((HOST, PORT))
+        test_sock.close()
+        # Port is occupied — figure out who owns it and stop them properly
+        print(f"[Daemon] Port {PORT} in use — stopping stale daemon...", flush=True)
+
+        # Check if the systemd user service is running
+        svc_check = subprocess.run(
+            ["systemctl", "--user", "is-active", SERVICE_NAME],
+            capture_output=True, text=True, timeout=3,
+        )
+        if svc_check.stdout.strip() == "active":
+            # Systemd owns it — must use systemctl to stop (Restart=always
+            # would just respawn a PID-killed process)
+            print(f"[Daemon] Stopping {SERVICE_NAME} via systemctl", flush=True)
+            subprocess.run(
+                ["systemctl", "--user", "stop", SERVICE_NAME],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5,
+            )
+            _time.sleep(0.3)
+        else:
+            # Not systemd-managed — kill the PID directly
+            import re as _re
+            res = subprocess.run(
+                ["ss", "-tlnp", f"sport = :{PORT}"],
+                capture_output=True, text=True, timeout=2,
+            )
+            for line in res.stdout.splitlines():
+                if f":{PORT}" in line:
+                    m = _re.search(r'pid=(\d+)', line)
+                    if m:
+                        old_pid = int(m.group(1))
+                        if old_pid != os.getpid():
+                            print(f"[Daemon] Killing stale PID {old_pid}", flush=True)
+                            os.kill(old_pid, 15)  # SIGTERM
+                            _time.sleep(0.5)
+    except (ConnectionRefusedError, OSError):
+        pass  # Port is free
+
     print(f"[Daemon] Starting Local AI WebSocket Daemon on {HOST}:{PORT} (Standard Library)")
-    server = await asyncio.start_server(handle_client, HOST, PORT)
+    server = await asyncio.start_server(
+        handle_client, HOST, PORT,
+        reuse_address=True,
+    )
     async with server:
         await server.serve_forever()
 
