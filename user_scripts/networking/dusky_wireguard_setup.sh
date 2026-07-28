@@ -77,9 +77,6 @@ sudo tee "$SUDOERS_FILE" > /dev/null <<EOF
 %wheel ALL=(ALL) NOPASSWD: /usr/bin/systemctl start wg-quick@*
 %wheel ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop wg-quick@*
 %wheel ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart wg-quick@*
-# direct wg-quick (also matches path-based: wg-quick up /etc/wireguard/subdir/name.conf)
-%wheel ALL=(ALL) NOPASSWD: /usr/bin/wg-quick up *
-%wheel ALL=(ALL) NOPASSWD: /usr/bin/wg-quick down *
 # wg show (live status + diagnostics)
 %wheel ALL=(ALL) NOPASSWD: /usr/bin/wg show
 %wheel ALL=(ALL) NOPASSWD: /usr/bin/wg show *

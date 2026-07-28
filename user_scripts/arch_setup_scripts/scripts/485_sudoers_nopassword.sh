@@ -21,7 +21,11 @@ declare -ar DEFAULT_BINARIES=(
     "/usr/bin/rfkill"
     "/usr/bin/smartctl"
     "/usr/bin/tlp"
-    "/usr/bin/choom"              # OOM score adjustment for dusky-run + compositor protection (211_systemd_oomd_zram.py)
+# SECURITY: /usr/bin/choom removed. "sudo choom -n 0 -- <cmd>" runs an arbitrary command
+# as root, so a default passwordless-sudo grant on it is effectively passwordless root.
+# OOM protection must move to a root-side mechanism instead (e.g. systemd OOMScoreAdjust=
+# in the relevant unit) rather than a user-invoked "sudo choom".
+#    "/usr/bin/choom"              # OOM score adjustment for dusky-run + compositor protection (211_systemd_oomd_zram.py)
 #    "~/user_scripts/btrfs_snapshots/cc/04_dusky_snapshot_manager.py"
 #    "~/user_scripts/btrfs_snapshots/cc/bash_wrapper_for_cc.sh"
 )

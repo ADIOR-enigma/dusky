@@ -313,7 +313,7 @@ setup_sudoers() {
     ipt_path=$(command -v iptables 2>/dev/null) || true
     pkill_path=$(command -v pkill 2>/dev/null) || true
     
-    local cmds="$ip_path, $dhcp_path"
+    local cmds="$ip_path link set * up, $dhcp_path"
     [[ -n "$fw_path" ]] && cmds+=", $fw_path"
     [[ -n "$ufw_path" ]] && cmds+=", $ufw_path"
     [[ -n "$ipt_path" ]] && cmds+=", $ipt_path"
