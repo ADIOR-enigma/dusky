@@ -267,10 +267,24 @@ async def handle_client(reader, writer):
         headers += line.decode('utf-8', errors='replace')
 
     sec_key = None
+    origin = None
     for l in headers.split("\r\n"):
         if l.lower().startswith("sec-websocket-key:"):
             sec_key = l.split(":", 1)[1].strip()
-            break
+        elif l.lower().startswith("origin:"):
+            origin = l.split(":", 1)[1].strip()
+
+    # Reject cross-origin WebSocket handshakes from web pages. Browsers always
+    # send Origin for page-initiated WebSockets, so any present Origin that is
+    # not a moz-extension:// URL is a malicious web page. Absent Origin is the
+    # bundled local CLI client, which we allow.
+    if origin and not origin.lower().startswith("moz-extension://"):
+        resp = "HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n"
+        writer.write(resp.encode('utf-8'))
+        await writer.drain()
+        try: writer.close()
+        except: pass
+        return
 
     if not sec_key:
         resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"status\":\"ok\"}\n"

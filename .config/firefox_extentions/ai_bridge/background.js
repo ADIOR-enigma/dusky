@@ -88,7 +88,7 @@ function connectWS(force = false){
 
     if(msg.type === "DIAGNOSE_TABS"){
       try{
-        const all = await browser.tabs.query({});
+        const all = await browser.tabs.query({active: true, currentWindow: true});
         const tabList = all.map(t => ({id: t.id, url: t.url, active: t.active, title: t.title}));
         ws?.send(JSON.stringify({type: "DIAGNOSE_REPLY", tabs: tabList}));
       }catch(e){
