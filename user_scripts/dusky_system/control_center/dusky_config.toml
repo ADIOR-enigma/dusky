@@ -2138,6 +2138,28 @@ command = "foot --app-id=dusky_tui --hold python3 $HOME/user_scripts/hypr/visual
 [[pages.layout.items.layout.items]]
 type = "button"
 [pages.layout.items.layout.items.properties]
+title = "Font Manager"
+description = "System fonts, rendering & cache"
+icon = "preferences-desktop-font-symbolic"
+
+[[pages.layout.items.layout.items.properties.buttons]]
+icon = "document-edit-symbolic"
+button_text = "File"
+[pages.layout.items.layout.items.properties.buttons.on_press]
+type = "exec"
+command = "$HOME/user_scripts/dusky_system/control_center/dusky_text_editor.py \"$HOME/.config/fontconfig/conf.d/99-dusky-fonts.conf\""
+
+[[pages.layout.items.layout.items.properties.buttons]]
+icon = "preferences-desktop-font-symbolic"
+button_text = "TUI"
+style = "suggested"
+[pages.layout.items.layout.items.properties.buttons.on_press]
+type = "exec"
+command = "foot --app-id=dusky_tui --hold python3 $HOME/user_scripts/fonts/tui_fonts.py"
+
+[[pages.layout.items.layout.items]]
+type = "button"
+[pages.layout.items.layout.items.properties]
 title = "Workspace Rules"
 description = "Configure Workspace Rules"
 icon = "applications-graphics-symbolic"
