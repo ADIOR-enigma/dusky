@@ -793,19 +793,15 @@ def parse_pkg_filename(name: str) -> Optional[Tuple[str, str, str, str]]:
 
 
 def ensure_archlinux_keyring(isolated: Optional[IsolatedDB] = None) -> None:
-    step("Refreshing archlinux-keyring if needed")
+    step("Ensuring Arch Linux GPG keys are populated")
     wait_for_pacman_lock()
-    cmd = ["pacman"]
-    if isolated is not None:
-        cmd.extend(["--config", str(isolated.conf_path)])
-    cmd.extend(["-Sy", "--needed", "--noconfirm", "archlinux-keyring"])
-    r = subprocess.run(
-        cmd,
+    subprocess.run(
+        ["pacman-key", "--populate", "archlinux"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         shell=False,
         check=False,
     )
-    if r.returncode != 0:
-        warn("archlinux-keyring refresh failed — sync/download may fail on signature checks")
 
 
 def estimate_download_bytes(isolated: "IsolatedDB", pkgs: Sequence[str]) -> int:
