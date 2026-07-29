@@ -106,6 +106,19 @@ PURGE_TARGETS=(usr/{,share}/info/dir .packlist *.pod)
 DBGSRCDIR="/usr/src/debug"
 LIB_DIRS=('lib:usr/lib' 'lib32:usr/lib32')
 
+DLAGENTS=('file::/usr/bin/curl -qgC - -o %o %u'
+          'ftp::/usr/bin/curl -qgfC - --ftp-pasv --retry 3 --retry-delay 3 -o %o %u'
+          'http::/usr/bin/curl -qgb "" -fLC - --retry 3 --retry-delay 3 -o %o %u'
+          'https::/usr/bin/curl -qgb "" -fLC - --retry 3 --retry-delay 3 -o %o %u'
+          'rsync::/usr/bin/rsync --no-motd -z %u %o'
+          'scp::/usr/bin/scp -C %u %o')
+
+VCSCLIENTS=('bzr::bazaar'
+            'fossil::fossil'
+            'git::git'
+            'hg::mercurial'
+            'svn::subversion')
+
 COMPRESSGZ=(gzip -c -f -n)
 COMPRESSBZ2=(bzip2 -c -f)
 COMPRESSXZ=(xz -c -z -)
@@ -1849,7 +1862,7 @@ def build_aur_package(
             )
         try:
             r = run_cmd(
-                ["makepkg", "-s", "--noconfirm", "-C"],
+                ["makepkg", "-s", "--noconfirm", "--skippgpcheck", "-C"],
                 as_user=real_user,
                 env=env,
                 cwd=target_dir,

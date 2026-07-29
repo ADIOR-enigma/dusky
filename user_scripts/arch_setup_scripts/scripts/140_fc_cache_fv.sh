@@ -4,7 +4,7 @@
 # -----------------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------------
-TARGET_FONT="Atkinson Hyperlegible Next"
+TARGET_FONT="Atkinson Hyperlegible"
 GREEN=$'\033[0;32m'
 YELLOW=$'\033[1;33m'
 RED=$'\033[0;31m'
@@ -23,14 +23,14 @@ echo -e "\n${YELLOW}:: Verifying Font Aliases...${NC}"
 MATCH_OUTPUT=$(fc-match "Arial")
 FAMILY_NAME=$(echo "$MATCH_OUTPUT" | cut -d'"' -f 2)
 
-echo -e "   Input Request:  ${NC}Arial"
-echo -e "   System Return:  ${NC}$MATCH_OUTPUT"
+printf '   Input Request:  %sArial%s\n' "${NC}" "${NC}"
+printf '   System Return:  %s%s%s\n' "${NC}" "$MATCH_OUTPUT" "${NC}"
 
 # 3. Validation Logic
 if [[ "$MATCH_OUTPUT" == *"$TARGET_FONT"* ]]; then
-  echo -e "\n${GREEN}[SUCCESS] System is correctly aliased to $TARGET_FONT.${NC}"
+  printf '\n%s[SUCCESS] System is correctly aliased to %s.%s\n' "${GREEN}" "$TARGET_FONT" "${NC}"
 else
-  echo -e "\n${RED}[FAIL] System is NOT using $TARGET_FONT.${NC}"
-  echo -e "       Current default for Arial is: $FAMILY_NAME"
-  echo -e "       Check ~/.config/fontconfig/fonts.conf or missing font files."
+  printf '\n%s[FAIL] System is NOT using %s.%s\n' "${RED}" "$TARGET_FONT" "${NC}"
+  printf '       Current default for Arial is: %s\n' "$FAMILY_NAME"
+  printf '       Check ~/.config/fontconfig/fonts.conf or missing font files.\n'
 fi
