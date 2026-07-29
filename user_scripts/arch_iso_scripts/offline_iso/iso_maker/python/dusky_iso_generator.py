@@ -122,7 +122,7 @@ VCSCLIENTS=('bzr::bazaar'
 COMPRESSGZ=(gzip -c -f -n)
 COMPRESSBZ2=(bzip2 -c -f)
 COMPRESSXZ=(xz -c -z -)
-COMPRESSZST=(zstd -c -T0 -19 -)
+COMPRESSZST=(zstd -c -T0 -19 --ultra -)
 COMPRESSLRZ=(lrzip -q)
 COMPRESSLZO=(lzop -q)
 COMPRESSZ=(compress -c -f)
@@ -747,9 +747,12 @@ def makepkg_clean_env(conf: Path, extra: Optional[Dict[str, str]] = None) -> Dic
     env = os.environ.copy()
     for k in _MAKEPKG_ENV_SCRUB:
         env.pop(k, None)
+    ncores = str(os.cpu_count() or 4)
     env["MAKEPKG_CONF"] = str(conf.resolve())
     env["GOAMD64"] = "v1"
     env["CI"] = "1"
+    env["CARGO_BUILD_JOBS"] = ncores
+    env["CMAKE_BUILD_PARALLEL_LEVEL"] = ncores
     env["PACKAGER"] = "Dusky Factory <factory@dusky>"
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GCM_INTERACTIVE"] = "never"
@@ -2038,21 +2041,21 @@ def _patch_profiledef_compression(profiledef: Path) -> None:
     new = txt
     new2 = re.sub(
         r"-comp\s+xz\b",
-        "-comp zstd -Xcompression-level 19",
+        "-comp zstd -b 1M -Xcompression-level 19",
         new,
     )
     if new2 == new and "airootfs_image_tool_options=" in new:
         if re.search(r"-comp\s+\w+", new):
             new2 = re.sub(
                 r"-comp\s+\w+",
-                "-comp zstd -Xcompression-level 19",
+                "-comp zstd -b 1M -Xcompression-level 19",
                 new,
                 count=1,
             )
         else:
             new2 = re.sub(
                 r"(airootfs_image_tool_options=\([^)]*)\)",
-                r"\1 -comp zstd -Xcompression-level 19)",
+                r"\1 -comp zstd -b 1M -Xcompression-level 19)",
                 new,
                 count=1,
             )
