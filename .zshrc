@@ -269,6 +269,29 @@ if [[ -n "$_fzf_bin" ]]; then
   fi
 fi
 
+# --- Matugen Dynamic FZF Color Integration ---
+_dusky_load_matugen_fzf() {
+  local theme_file="$HOME/.config/matugen/generated/dusky_tui.json"
+  local bg="#1d100a" fg="#f8ddd2" accent="#ffb694" error="#ffb4ab" warning="#efbc94" success="#f0be79" muted="#55433b"
+  if [[ -f "$theme_file" ]]; then
+    typeset -A theme
+    while read -r key val; do
+      theme[$key]="$val"
+    done < <(grep -E '"(bg|fg|accent|error|warning|success|muted)"' "$theme_file" 2>/dev/null | sed -E 's/.*"([^"]+)": *"([^"]+)".*/\1 \2/')
+    bg="${theme[bg]:-$bg}"
+    fg="${theme[fg]:-$fg}"
+    accent="${theme[accent]:-$accent}"
+    error="${theme[error]:-$error}"
+    warning="${theme[warning]:-$warning}"
+    success="${theme[success]:-$success}"
+    muted="${theme[muted]:-$muted}"
+  fi
+  export DUSKY_FZF_COLORS="bg+:${muted},bg:${bg},spinner:${accent},fg:${fg},fg+:${fg},header:${accent},info:${warning},pointer:${success},marker:${success},prompt:${accent},hl:${error},hl+:${error},border:${muted},label:${accent}"
+  export FZF_DEFAULT_OPTS="--color=$DUSKY_FZF_COLORS --pointer='❯ ' --marker='✔ ' --info=inline-right"
+}
+_dusky_load_matugen_fzf
+
+
 # --- Zoxide ---
 _zoxide_cache="$HOME/.zoxide-init.zsh"
 _zoxide_bin="$(command -v zoxide)"

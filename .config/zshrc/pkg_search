@@ -143,9 +143,11 @@ printf "\033[1;38;5;39m%-16s\033[0m: %b\n" "Status" "$status_str"
     ' | fzf --multi --ansi \
         --delimiter='\|' \
         --with-nth=2 \
+        --highlight-line \
+        --ghost="Search packages..." \
         --prompt=" 󰏖 Search Packages ❯ " \
-        --pointer="" \
-        --marker="✓" \
+        --pointer="❯ " \
+        --marker="✔ " \
         --layout=reverse \
         --border=rounded \
         --border-label=" Dusky Package Installer ($helper) [F1: Help] " \
@@ -159,7 +161,7 @@ printf "\033[1;38;5;39m%-16s\033[0m: %b\n" "Status" "$status_str"
         --bind="ctrl-u:preview-page-up" \
         --bind="alt-c:execute-silent(echo -n {1} | wl-copy)+change-prompt( 󰏖 Copied Package Name! ❯ )" \
         --bind="f1:execute(bash -c \"\$DUSKY_PKG_SEARCH_HELP\")" \
-        --color="$fzf_colors" \
+        --color="${DUSKY_FZF_COLORS:-$fzf_colors}" \
         --preview='bash -c "$DUSKY_INPKG_PREVIEW" _ {1}' \
         --preview-window="right,60%,border-left,wrap")"})
 
