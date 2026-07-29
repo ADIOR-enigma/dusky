@@ -63,14 +63,11 @@ fi
 set -Eeuo pipefail
 shopt -s inherit_errexit
 
-TARGET_OS="arch"
-
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --cachyos|--cachy) TARGET_OS="cachyos"; shift ;;
-      --arch)            TARGET_OS="arch"; shift ;;
-      *)                 shift ;; # Safely ignore --auto or other unknown flags
+      --arch) shift ;; # Ignored for backward compatibility
+      *)      shift ;; # Safely ignore --auto or other unknown flags
     esac
   done
 }
@@ -253,13 +250,8 @@ ensure_keyring() {
   print_warn "Pacman keyring is not initialized. Initializing now..."
   pacman-key --init
 
-  if [[ "${TARGET_OS}" == "cachyos" ]]; then
-      print_info "Populating Arch Linux and CachyOS keyrings..."
-      pacman-key --populate archlinux cachyos
-  else
-      print_info "Populating standard Arch Linux keyring..."
-      pacman-key --populate archlinux
-  fi
+  print_info "Populating standard Arch Linux keyring..."
+  pacman-key --populate archlinux
 
   print_ok "Keyring initialized."
 }

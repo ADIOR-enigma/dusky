@@ -160,14 +160,11 @@ fi
 set -Eeuo pipefail
 shopt -s inherit_errexit
 
-TARGET_OS=""
-
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --cachyos|--cachy) TARGET_OS="cachyos"; shift ;;
-      --arch)            TARGET_OS="arch"; shift ;;
-      *)                 shift ;; # Safely ignore --auto or other unknown flags
+      --arch) shift ;; # Ignored for backward compatibility
+      *)      shift ;; # Safely ignore --auto or other unknown flags
     esac
   done
 }
@@ -380,20 +377,7 @@ run_pacman() {
 }
 
 determine_os_state() {
-  if [[ -z "${TARGET_OS}" ]]; then
-    print_info "Analyzing system state for keyring requirements..."
-    
-    if grep -qi "ID=cachyos" /etc/os-release 2>/dev/null; then
-       print_info "Pure CachyOS detected."
-       TARGET_OS="cachyos_pure"
-    elif pacman -Qq cachyos-mirrorlist &>/dev/null; then
-       print_ok "Franken-Arch detected (CachyOS packages found on Standard Arch)."
-       TARGET_OS="cachyos"
-    else
-       print_info "Standard Arch Linux detected."
-       TARGET_OS="arch"
-    fi
-  fi
+  TARGET_OS="arch"
 }
 
 ensure_keyring() {
@@ -409,13 +393,8 @@ ensure_keyring() {
   print_warn "Pacman keyring is not initialized. Initializing now..."
   pacman-key --init
 
-  if [[ "${TARGET_OS}" == "cachyos" ]]; then
-      print_info "Populating Arch Linux and CachyOS keyrings..."
-      pacman-key --populate archlinux cachyos
-  else
-      print_info "Populating standard Arch Linux keyring..."
-      pacman-key --populate archlinux
-  fi
+  print_info "Populating standard Arch Linux keyring..."
+  pacman-key --populate archlinux
 
   print_ok "Keyring populated."
 }
@@ -527,13 +506,7 @@ main() {
   validate_group_configuration
   acquire_script_lock
   
-  determine_os_state
-  
-  if [[ "${TARGET_OS}" != "cachyos_pure" ]]; then
-    ensure_keyring
-  else
-    print_info "Skipping manual keyring configuration (Managed by CachyOS)."
-  fi
+  ensure_keyring
 
   for i in "${!GROUP_LABELS[@]}"; do
     install_group "${GROUP_LABELS[i]}" "${GROUP_ARRAYS[i]}"
