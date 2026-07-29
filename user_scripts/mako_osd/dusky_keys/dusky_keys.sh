@@ -118,7 +118,7 @@ deploy_config() {
 
 [display]
 # Maximum number of key items/chords in the OSD notification buffer.
-buffer_size = 5
+buffer_size = 10
 
 # Display timeout in seconds before clearing the OSD notification.
 display_timeout = 2.5
@@ -145,11 +145,11 @@ suppress_pure_modifiers = true
 enable_mouse = true
 
 # Custom mouse button symbols (used in compact mode)
-left_click = "🖰L"
-right_click = "🖰R"
-middle_click = "🖰M"
-side_click = "🖰B"
-extra_click = "🖰F"
+left_click = "LMB"
+right_click = "RMB"
+middle_click = "MMB"
+side_click = "Back"
+extra_click = "Fwd"
 
 [notification]
 app_name = "dusky-keys"
@@ -287,7 +287,7 @@ CFG_MOUSE = CONFIG.get("mouse", {})
 CFG_NOTIF = CONFIG.get("notification", {})
 CFG_SYM = CONFIG.get("symbols", {})
 
-BUFFER_SIZE = int(CFG_DISP.get("buffer_size", 5))
+BUFFER_SIZE = int(CFG_DISP.get("buffer_size", 10))
 DISPLAY_TIMEOUT = float(CFG_DISP.get("display_timeout", 2.5))
 COMPACT_SYMBOLS = bool(CFG_DISP.get("compact_symbols", True))
 PANGO_MARKUP = bool(CFG_DISP.get("use_pango_markup", False))
@@ -370,11 +370,11 @@ for i in range(1, 13):
         SPECIAL_KEYS[fk_code] = f"F{i}"
 
 MOUSE_BUTTONS = {
-    ecodes.BTN_LEFT: CFG_MOUSE.get("left_click", "🖰L"),
-    ecodes.BTN_RIGHT: CFG_MOUSE.get("right_click", "🖰R"),
-    ecodes.BTN_MIDDLE: CFG_MOUSE.get("middle_click", "🖰M"),
-    ecodes.BTN_SIDE: CFG_MOUSE.get("side_click", "🖰B"),
-    ecodes.BTN_EXTRA: CFG_MOUSE.get("extra_click", "🖰F"),
+    ecodes.BTN_LEFT: CFG_MOUSE.get("left_click", "LMB"),
+    ecodes.BTN_RIGHT: CFG_MOUSE.get("right_click", "RMB"),
+    ecodes.BTN_MIDDLE: CFG_MOUSE.get("middle_click", "MMB"),
+    ecodes.BTN_SIDE: CFG_MOUSE.get("side_click", "Back"),
+    ecodes.BTN_EXTRA: CFG_MOUSE.get("extra_click", "Fwd"),
 }
 
 # State variables
