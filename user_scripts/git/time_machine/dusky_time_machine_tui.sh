@@ -57,6 +57,9 @@ export GIT_OPTIONAL_LOCKS=0
 # Lock the session PID to ensure stash state files never collide
 export DUSKY_SESSION_ID="$$"
 
+# Capture initial active branch to preserve user working branch on exit/return
+export DUSKY_INITIAL_BRANCH="$(git branch --show-current 2>/dev/null || true)"
+
 # Guarantee UTF-8 character width mapping for Awk length() calculations
 export LC_ALL=en_US.UTF-8
 
@@ -214,29 +217,35 @@ _dusky_git_checkout() {
         fi
     fi
     
-    # Force checkout allows jumping cleanly regardless of detached head states
-    git checkout --force "$hash" -- || true
+    # Force switch to detached HEAD allows jumping cleanly across past commits
+    git switch --force --detach "$hash" || true
 }
 export -f _dusky_git_checkout
 
 _dusky_git_return() {
     exec < /dev/null > /dev/null 2>&1
-    local main_branch
-    main_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')
-    
-    # Detached HEAD fallback detection logic
-    if [[ -z "$main_branch" ]]; then
-        for b in main master; do
-            if git show-ref --verify --quiet "refs/heads/$b"; then
-                main_branch="$b"
-                break
-            fi
-        done
+    local target_branch=""
+
+    # 1. Prefer returning to initial branch captured at launch
+    if [[ -n "$DUSKY_INITIAL_BRANCH" ]] && git show-ref --verify --quiet "refs/heads/$DUSKY_INITIAL_BRANCH"; then
+        target_branch="$DUSKY_INITIAL_BRANCH"
+    else
+        # 2. Fallback to origin/HEAD
+        target_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')
+        # 3. Fallback to main/master local branches
+        if [[ -z "$target_branch" ]]; then
+            for b in main master; do
+                if git show-ref --verify --quiet "refs/heads/$b"; then
+                    target_branch="$b"
+                    break
+                fi
+            done
+        fi
     fi
-    
+
     # Guard to prevent returning to void if somehow no branches exist
-    if [[ -n "$main_branch" ]]; then
-        git checkout --force "$main_branch" -- || true
+    if [[ -n "$target_branch" ]]; then
+        git switch --force "$target_branch" || true
         
         # RESTORE SHIELD: Auto-pop exactly what was stashed in this specific session
         if [[ -f "/tmp/dusky_time_machine_stash_${DUSKY_SESSION_ID}" ]]; then
@@ -264,6 +273,10 @@ _dusky_git_copy() {
     [[ -z "$hash" ]] && exit 0
     if command -v wl-copy >/dev/null 2>&1; then
         printf "%s" "$hash" | wl-copy || true
+    elif command -v xclip >/dev/null 2>&1; then
+        printf "%s" "$hash" | xclip -selection clipboard || true
+    elif command -v xsel >/dev/null 2>&1; then
+        printf "%s" "$hash" | xsel --clipboard || true
     fi
 }
 export -f _dusky_git_copy
@@ -293,7 +306,7 @@ main() {
         fi
     fi
 
-    # Launch FZF subprocess mapping
+    # Launch FZF subprocess mapping (FZF 0.74.1 Bleeding-Edge Edition)
     _dusky_git_list | fzf --ansi \
         --sync \
         "${fzf_args[@]}" \
@@ -304,9 +317,11 @@ main() {
         --no-sort \
         --no-hscroll \
         --ellipsis='' \
+        --highlight-line \
+        --ghost="Filter history by message, author, date, or hash..." \
         --prompt=" :: Time Machine ❯ " \
-        --pointer=">" \
-        --marker="✓" \
+        --pointer="❯ " \
+        --marker="✔ " \
         --layout=reverse \
         --border=rounded \
         --border-label=" 󰏖 Dusky Time Machine [F1 / Ctrl-O: Help] " \
@@ -326,6 +341,8 @@ main() {
         --color="pointer:#a6e3a1,marker:#f5e0dc,prompt:#cba6f7" \
         --color="hl:#f38ba8,hl+:#f38ba8,border:#585b70,label:#89b4fa" \
         --preview="_dusky_git_preview {1}" \
+        --preview-label=" 󰈔 Commit Differential (Delta) " \
+        --preview-label-pos=center \
         --preview-window="right,65%,border-left,wrap"
 
     # Clean Exit Payload
