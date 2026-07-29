@@ -699,6 +699,10 @@ EXAMPLES:
             from python.engines.fontconfig import FontconfigEngine
             return FontconfigEngine(config_path=config_path)
 
+        elif e_type in ("toml", "toml_engine"):
+            from python.engines.toml import TomlEngine
+            return TomlEngine(config_path=config_path)
+
         elif e_type == "systemd_dns":
             from python.engines.dns_systemd import SystemdDnsEngine
             return SystemdDnsEngine(config_path=config_path)

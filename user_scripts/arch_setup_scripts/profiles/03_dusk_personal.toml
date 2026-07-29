@@ -135,7 +135,7 @@ scripts = [
     "S | if:btrfs | 430_btrfs_zstd_compression_stats.sh",
     "U | if:command:wayclick | 434_wayclick_soundpacks_download.sh --auto",
     "U | if:command:wayclick | 435_key_sound_wayclick_setup.sh --setup",
-    "U | if:command:dusky_keys | dusky_keys.sh --setup",
+    "U | dusky_keys.sh --setup",
     "U | if:battery | 440_config_bat_notify.sh --default",
     "U | if:wayland | 455_hyprctl_reload.sh",
     "U | 470_vesktop_matugen.sh",

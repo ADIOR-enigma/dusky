@@ -142,7 +142,7 @@ suppress_pure_modifiers = true
 
 [mouse]
 # Enable capturing mouse button clicks (Left, Right, Middle, Back, Forward).
-enable_mouse = true
+enable_mouse = false
 
 # Custom mouse button symbols (used in compact mode)
 left_click = "LMB"
@@ -165,7 +165,7 @@ tab = "⇥"
 enter = "⏎"
 backspace = "⌫"
 delete = "⌦"
-escape = "Esc"
+escape = "⎋"
 space = "␣"
 caps_lock = "⇪"
 up = "↑"
@@ -295,7 +295,7 @@ SEPARATOR = str(CFG_DISP.get("separator", " "))
 
 ENABLE_CHORDING = bool(CFG_CHORD.get("enable_chording", True))
 SUPPRESS_PURE_MODS = bool(CFG_CHORD.get("suppress_pure_modifiers", True))
-ENABLE_MOUSE = bool(CFG_MOUSE.get("enable_mouse", True))
+ENABLE_MOUSE = bool(CFG_MOUSE.get("enable_mouse", False))
 
 APP_NAME = str(CFG_NOTIF.get("app_name", "dusky-keys"))
 SYNC_ID = str(CFG_NOTIF.get("sync_id", "dusky-keys-sync"))
@@ -351,7 +351,7 @@ SPECIAL_KEYS = {
     ecodes.KEY_KPENTER: get_sym("enter", "⏎", "Enter"),
     ecodes.KEY_BACKSPACE: get_sym("backspace", "⌫", "Backspace"),
     ecodes.KEY_DELETE: get_sym("delete", "⌦", "Delete"),
-    ecodes.KEY_ESC: get_sym("escape", "Esc", "Esc"),
+    ecodes.KEY_ESC: get_sym("escape", "⎋", "Esc"),
     ecodes.KEY_CAPSLOCK: get_sym("caps_lock", "⇪", "CapsLock"),
     ecodes.KEY_UP: get_sym("up", "↑", "Up"),
     ecodes.KEY_DOWN: get_sym("down", "↓", "Down"),
