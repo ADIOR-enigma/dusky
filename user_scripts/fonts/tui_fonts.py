@@ -135,6 +135,14 @@ SCHEMA = {
             extended_help="Smooths the jagged edges of fonts. Highly recommended for modern high-DPI and standard displays."
         ),
         ConfigItem(
+            label="Enable Font Hinting",
+            key="hinting",
+            scope="DEFAULT",
+            type_="bool",
+            default=True,
+            extended_help="Master switch for font hinting. When enabled, FreeType aligns font glyphs to pixel boundaries for sharp text rendering."
+        ),
+        ConfigItem(
             label="Hinting Style",
             key="hintstyle",
             scope="DEFAULT",
@@ -172,6 +180,14 @@ SCHEMA = {
                 "Light fringe filter", "Legacy FreeType filter"
             ],
             extended_help="Reduces color fringing when using subpixel rendering. 'lcddefault' ensures optimal text clarity."
+        ),
+        ConfigItem(
+            label="Enable Embedded Bitmaps",
+            key="embeddedbitmap",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            extended_help="Controls whether fonts with embedded bitmap glyphs display bitmaps at small sizes. Disabling this forces scalable vector glyphs, preventing pixelated text rendering."
         )
     ],
 
@@ -191,13 +207,33 @@ SCHEMA = {
             extended_help="Executes `fc-cache -fv` to force an immediate, verbose rebuild of the system font cache, bypassing the background refresh."
         ),
         ConfigItem(
-            label="Verify Arial Aliasing Configuration",
+            label="Verify Sans-Serif Font Resolution",
+            key="trigger_verify_sans",
+            scope="DEFAULT",
+            type_="action",
+            default="fc-match 'sans-serif'",
+            options=["trigger"],
+            popup_message="Check status bar for the test output.",
+            extended_help="Executes `fc-match sans-serif` to verify which exact font file the system resolves for sans-serif requests."
+        ),
+        ConfigItem(
+            label="Verify Monospace Font Resolution",
+            key="trigger_verify_mono",
+            scope="DEFAULT",
+            type_="action",
+            default="fc-match 'monospace'",
+            options=["trigger"],
+            popup_message="Check status bar for the test output.",
+            extended_help="Executes `fc-match monospace` to verify which exact font file the system resolves for terminal/code requests."
+        ),
+        ConfigItem(
+            label="Verify Arial Aliasing Fallback",
             key="trigger_verify",
             scope="DEFAULT",
             type_="action",
             default="fc-match 'Arial'",
             options=["trigger"],
-            popup_message="Check your terminal or system journal for the test output.",
+            popup_message="Check status bar for the test output.",
             extended_help="Executes a test match to verify which exact font file the system currently falls back to when 'Arial' is requested."
         )
     ],
@@ -217,10 +253,13 @@ SCHEMA = {
                 "sans-serif": "Inter",
                 "serif": "Noto Serif",
                 "monospace": "JetBrainsMono Nerd Font",
+                "emoji": "Noto Color Emoji",
                 "antialias": True,
+                "hinting": True,
                 "hintstyle": "hintslight",
                 "rgba": "rgb",
-                "lcdfilter": "lcddefault"
+                "lcdfilter": "lcddefault",
+                "embeddedbitmap": False
             },
             extended_help="**Modern Sharp UI**\n\nApplies highly modern, crisp fonts (Inter, JetBrainsMono) with standard RGB subpixel rendering and slight hinting. Ideal for high-resolution standard monitors."
         ),
@@ -235,10 +274,34 @@ SCHEMA = {
                 "sans-serif": "Atkinson Hyperlegible",
                 "serif": "Merriweather",
                 "monospace": "FiraCode Nerd Font",
+                "emoji": "Noto Color Emoji",
                 "antialias": True,
-                "hintstyle": "hintslight"
+                "hinting": True,
+                "hintstyle": "hintslight",
+                "embeddedbitmap": False
             },
             extended_help="**Accessibility Focus**\n\nPrioritizes character distinction using Atkinson Hyperlegible (developed by the Braille Institute) to prevent visual confusion between similar characters like '1', 'l', and 'I'."
+        ),
+        ConfigItem(
+            label="Apply 4K / High-DPI Clean Profile",
+            key="preset_hidpi_clean",
+            scope="DEFAULT",
+            type_="preset",
+            default=None,
+            group="System Defaults",
+            preset_payload={
+                "sans-serif": "Roboto",
+                "serif": "Noto Serif",
+                "monospace": "Iosevka Nerd Font",
+                "emoji": "Noto Color Emoji",
+                "antialias": True,
+                "hinting": True,
+                "hintstyle": "hintnone",
+                "rgba": "none",
+                "lcdfilter": "lcdnone",
+                "embeddedbitmap": False
+            },
+            extended_help="**High-DPI / 4K Clean Profile**\n\nOptimized for 4K and Retina-class displays. Disables subpixel LCD geometry (`rgba=none`) and pixel grid alignment (`hintstyle=hintnone`) for ultra-clean pure vector outline rendering."
         ),
         ConfigItem(
             label="Apply Legacy Linux Defaults",
@@ -251,8 +314,11 @@ SCHEMA = {
                 "sans-serif": "DejaVu Sans",
                 "serif": "DejaVu Serif",
                 "monospace": "Hack Nerd Font",
+                "emoji": "Noto Color Emoji",
                 "antialias": True,
-                "hintstyle": "hintfull"
+                "hinting": True,
+                "hintstyle": "hintfull",
+                "embeddedbitmap": False
             },
             extended_help="**Legacy Linux Config**\n\nRestores the classic open-source desktop appearance utilizing the DejaVu font family alongside strict/full hinting pixel alignment."
         ),
