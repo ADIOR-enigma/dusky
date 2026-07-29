@@ -33,6 +33,7 @@ dirs = [
     "~/user_scripts/tts_stt/dusky_parakeet",
     "~/user_scripts/nvim",
     "~/user_scripts/mako_osd/dusky_keys",
+    "~/user_scripts/way_layers/visualizer",
 ]
 
 [conflict_resolutions]
@@ -136,6 +137,7 @@ scripts = [
     "U | if:command:wayclick | 434_wayclick_soundpacks_download.sh --auto",
     "U | if:command:wayclick | 435_key_sound_wayclick_setup.sh --setup",
     "U | dusky_keys.sh --setup",
+    "U | visualizer_daemon.py --setup",
     "U | if:battery | 440_config_bat_notify.sh --default",
     "U | if:wayland | 455_hyprctl_reload.sh",
     "U | 470_vesktop_matugen.sh",
