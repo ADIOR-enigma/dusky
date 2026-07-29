@@ -237,6 +237,16 @@ SCHEMA = {
             options=["trigger"],
             popup_message="Check status bar for the test output.",
             extended_help="Executes a test match to verify which exact font file the system currently falls back to when 'Arial' is requested."
+        ),
+        ConfigItem(
+            label="Sync Xft Rendering to ~/.Xresources",
+            key="trigger_sync_xresources",
+            scope="DEFAULT",
+            type_="action",
+            default="printf 'Xft.antialias: 1\\nXft.hinting: 1\\nXft.hintstyle: hintslight\\nXft.rgba: rgb\\nXft.lcdfilter: lcddefault\\n' > ~/.Xresources && xrdb -merge ~/.Xresources 2>/dev/null || true",
+            options=["trigger"],
+            popup_message="Synced Xft rendering properties to ~/.Xresources.",
+            extended_help="Syncs primary Xft rendering properties (antialias, hinting, hintstyle, rgba, lcdfilter) into ~/.Xresources and merges with xrdb for legacy non-Fontconfig X11 applications."
         )
     ],
     
