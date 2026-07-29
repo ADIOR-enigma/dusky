@@ -24,7 +24,7 @@ from python.frontend.core_types import ConfigItem
 ENGINE_TYPE = "systemd_dns"
 TARGET_FILE = "/etc/systemd/resolved.conf.d/99-dns-tui.conf"
 REQUIRE_ROOT = True
-APP_TITLE = "Arch Linux DNS & Resolver Configurator"
+APP_TITLE = "DNS Settings"
 
 # =============================================================================
 # 2. UI & ENVIRONMENT BEHAVIOR
@@ -32,16 +32,16 @@ APP_TITLE = "Arch Linux DNS & Resolver Configurator"
 DEFAULT_MODE = "auto"
 THEME_FILE = "~/.config/matugen/generated/dusky_tui.json"
 ENABLE_USER_PRESETS = True
-USER_PRESETS_TAB = "⚡ Top-Tier Presets"
+USER_PRESETS_TAB = "Presets"
 
 # =============================================================================
 # 3. TABS DEFINITION
 # =============================================================================
 TABS = {
-    0: "⚡ Top-Tier Presets",
-    1: "🛡️ Privacy & Protocols",
-    2: "🌐 Custom Upstreams",
-    3: "⚙️ Local Network Subsystems",
+    0: "Presets",
+    1: "Security",
+    2: "Custom",
+    3: "System",
 }
 
 # =============================================================================
@@ -122,103 +122,103 @@ SCHEMA = {
     # -------------------------------------------------------------------------
     0: [
         ConfigItem(
-            label="Cloudflare Standard (1.1.1.1 - Max Speed)",
+            label="Cloudflare",
             key="preset_cloudflare",
             type_="preset",
             default=False,
             scope="DEFAULT",
             preset_payload=PRESET_CLOUDFLARE,
-            extended_help="Configures Cloudflare high-performance global DNS with TLS SNI authentication (#cloudflare-dns.com). Highly recommended for standard setups.",
+            extended_help="Configures Cloudflare high-performance global DNS with TLS SNI authentication (#cloudflare-dns.com).",
             exists_in_target=True
         ),
         ConfigItem(
-            label="Cloudflare Family (1.1.1.3 - Malware & Adult Blocking)",
+            label="Cloudflare Family",
             key="preset_cloudflare_family",
             type_="preset",
             default=False,
             scope="DEFAULT",
             preset_payload=PRESET_CLOUDFLARE_FAMILY,
-            extended_help="Cloudflare Family DNS filtering out known malicious sites, phishing domains, and adult content at the DNS level.",
+            extended_help="Cloudflare Family DNS filtering out malware and adult content.",
             exists_in_target=True
         ),
         ConfigItem(
-            label="Quad9 (9.9.9.9 - Threat & Malware Blocking)",
+            label="Quad9",
             key="preset_quad9",
             type_="preset",
             default=False,
             scope="DEFAULT",
             preset_payload=PRESET_QUAD9,
-            extended_help="Configures Quad9 with strict DNS-over-TLS encryption. Automatically drops queries for known malicious, phishing, and botnet domains.",
+            extended_help="Configures Quad9 with strict DNS-over-TLS encryption and malware blocking.",
             exists_in_target=True
         ),
         ConfigItem(
-            label="Mullvad Public (Zero-Log Privacy)",
+            label="Mullvad",
             key="preset_mullvad",
             type_="preset",
             default=False,
             scope="DEFAULT",
             preset_payload=PRESET_MULLVAD,
-            extended_help="Routes lookups through Mullvad's audited, zero-knowledge, zero-log public DNS servers. Forces Strict DoT.",
+            extended_help="Routes lookups through Mullvad zero-log public DNS servers with strict DoT.",
             exists_in_target=True
         ),
         ConfigItem(
-            label="AdGuard (Ad & Tracker Null-Routing)",
+            label="AdGuard",
             key="preset_adguard",
             type_="preset",
             default=False,
             scope="DEFAULT",
             preset_payload=PRESET_ADGUARD,
-            extended_help="Blocks advertisements, tracking domains, and analytics networks at the resolver level before they hit the browser.",
+            extended_help="Blocks advertisements and tracking domains at the resolver level.",
             exists_in_target=True
         ),
         ConfigItem(
-            label="OpenDNS / Cisco Umbrella (208.67.222.222)",
+            label="OpenDNS",
             key="preset_opendns",
             type_="preset",
             default=False,
             scope="DEFAULT",
             preset_payload=PRESET_OPENDNS,
-            extended_help="Enterprise-grade reliable global DNS from Cisco Umbrella with DoT SNI support.",
+            extended_help="Reliable global DNS from Cisco Umbrella with DoT SNI support.",
             exists_in_target=True
         ),
         ConfigItem(
-            label="Google Public DNS (8.8.8.8)",
+            label="Google",
             key="preset_google",
             type_="preset",
             default=False,
             scope="DEFAULT",
             preset_payload=PRESET_GOOGLE,
-            extended_help="Standard Google Public DNS with IPv4 and IPv6 resolvers. Stable, but logs basic metadata.",
+            extended_help="Standard Google Public DNS with IPv4 and IPv6 resolvers.",
             exists_in_target=True
         ),
         ConfigItem(
-            label="ControlD Free (Uncensored Route)",
+            label="ControlD",
             key="preset_controld",
             type_="preset",
             default=False,
             scope="DEFAULT",
             preset_payload=PRESET_CONTROLD,
-            extended_help="ControlD's free unfiltered resolver network with DoT hostname verification.",
+            extended_help="ControlD free unfiltered resolver network with DoT hostname verification.",
             exists_in_target=True
         ),
         ConfigItem(
-            label="DHCP / Network Default (Clear Static DNS)",
+            label="DHCP",
             key="preset_dhcp",
             type_="preset",
             default=False,
             scope="DEFAULT",
             preset_payload=PRESET_DHCP,
-            extended_help="Wipes the static override drop-in file completely, returning full DNS control to local DHCP, NetworkManager, or VPN (like Tailscale) assignment.",
+            extended_help="Clears static drop-in overrides, returning full control to local DHCP/NetworkManager.",
             exists_in_target=True
         ),
     ],
 
     # -------------------------------------------------------------------------
-    # TAB 1: SECURITY & PROTOCOLS
+    # TAB 1: SECURITY
     # -------------------------------------------------------------------------
     1: [
         ConfigItem(
-            label="DNS-over-TLS (DoT Encryption)",
+            label="DNS-over-TLS",
             key="DNSOverTLS",
             type_="cycle",
             default="opportunistic",
@@ -226,126 +226,113 @@ SCHEMA = {
             options=["opportunistic", "yes", "no"],
             extended_help=(
                 "Controls encryption of DNS queries over TLS (Port 853).\n"
-                "  • yes: Strict mode. Will refuse to resolve if TLS fails.\n"
-                "  • opportunistic: Upgrades to TLS if the server supports it, falls back to UDP/53.\n"
+                "  • yes: Strict mode (refuses plaintext fallback).\n"
+                "  • opportunistic: Upgrades to TLS if supported, falls back to UDP/53.\n"
                 "  • no: Plaintext UDP/53 only."
             ),
         ),
         ConfigItem(
-            label="DNSSEC Validation",
+            label="DNSSEC",
             key="DNSSEC",
             type_="cycle",
             default="no",
             scope="Resolve",
             options=["no", "allow-downgrade", "yes"],
-            warning_msg="Setting DNSSEC to 'yes' on broken captive portals (like hotel Wi-Fi) will completely break the internet.",
+            warning_msg="Setting DNSSEC to 'yes' on broken captive portals will break name resolution.",
             extended_help=(
                 "Enables cryptographic signature verification of DNS records.\n"
-                "  • allow-downgrade: Validates if supported, permits fallback if the domain isn't signed.\n"
-                "  • yes: Strict enforcement. Highly vulnerable to broken upstream network behavior.\n"
-                "  • no: Disabled (Fastest, relies on upstream provider for security)."
+                "  • allow-downgrade: Validates if supported.\n"
+                "  • yes: Strict enforcement.\n"
+                "  • no: Disabled."
             ),
         ),
         ConfigItem(
-            label="Local DNS Cache Mode",
+            label="Cache Mode",
             key="Cache",
             type_="cycle",
             default="yes",
             scope="Resolve",
             options=["yes", "no-negative", "no"],
             extended_help=(
-                "Controls local DNS response caching in systemd-resolved.\n"
-                "  • yes: Full caching of positive and negative DNS responses.\n"
-                "  • no-negative: Caches positive lookups only (ignores NXDOMAIN errors).\n"
+                "Controls local DNS response caching.\n"
+                "  • yes: Full positive and negative response caching.\n"
+                "  • no-negative: Caches positive lookups only.\n"
                 "  • no: Disables local cache entirely."
             ),
         ),
         ConfigItem(
-            label="Fallback DNS Servers",
+            label="Fallback DNS",
             key="FallbackDNS",
             type_="string",
             default=FALLBACK_QUAD9,
             scope="Resolve",
-            extended_help="A space-separated list of fallback resolvers used ONLY if primary interface/static DNS servers fail entirely.",
+            extended_help="Space-separated list of fallback resolvers used only if primary DNS servers fail.",
         ),
     ],
 
     # -------------------------------------------------------------------------
-    # TAB 2: CUSTOM SERVERS
+    # TAB 2: CUSTOM
     # -------------------------------------------------------------------------
     2: [
         ConfigItem(
-            label="Static Primary & Secondary DNS Map",
+            label="DNS Servers",
             key="DNS",
             type_="string",
             default=PRESET_CLOUDFLARE["Resolve.DNS"],
             scope="Resolve",
-            extended_help=(
-                "Space-separated explicit DNS servers.\n"
-                "Format: IP#HOSTNAME for authenticated DoT (e.g. 1.1.1.1#cloudflare-dns.com 9.9.9.9#dns.quad9.net)."
-            ),
+            extended_help="Space-separated explicit DNS servers (Format: IP#HOSTNAME).",
         ),
         ConfigItem(
-            label="Routing & Search Domains",
+            label="Domains",
             key="Domains",
             type_="string",
             default="",
             scope="Resolve",
-            extended_help=(
-                "Space-separated list of domains used for search suffixes and routing.\n"
-                "Prefix with '~' to create a routing-only domain (e.g. '~.' routes ALL queries through these global DNS servers)."
-            ),
+            extended_help="Space-separated search suffixes and routing domains (e.g. '~.').",
         ),
     ],
 
     # -------------------------------------------------------------------------
-    # TAB 3: SYSTEM & LOCAL STUB
+    # TAB 3: SYSTEM
     # -------------------------------------------------------------------------
     3: [
         ConfigItem(
-            label="DNS Stub Listener (127.0.0.53:53)",
+            label="Stub Listener",
             key="DNSStubListener",
             type_="cycle",
             default="yes",
             scope="Resolve",
             options=["yes", "no", "udp", "tcp"],
-            extended_help=(
-                "Controls systemd-resolved's local stub listener.\n"
-                "  • yes: Full local stub enabled (/etc/resolv.conf targets stub-resolv.conf).\n"
-                "  • no: Stub disabled entirely (/etc/resolv.conf targets resolv.conf). Required if running a conflicting local DNS server (e.g., dnsmasq, Bind, or Pi-hole)."
-            ),
-            warning_msg="Disabling the stub listener without an active local DNS proxy in place will break standard system name resolution.",
+            extended_help="Controls systemd-resolved local stub listener (127.0.0.53).",
+            warning_msg="Disabling stub listener without a local DNS proxy will break resolution.",
         ),
         ConfigItem(
-            label="MulticastDNS (mDNS / UDP 5353)",
+            label="MulticastDNS",
             key="MulticastDNS",
             type_="cycle",
             default="no",
             scope="Resolve",
             options=["no", "resolve", "yes"],
-            extended_help=(
-                "Controls systemd-resolved mDNS handling.\n"
-                "Set this to 'no' if you are running Avahi Daemon to prevent UDP port 5353 contention. Leave 'no' for standard security."
-            ),
+            extended_help="Controls mDNS handling (UDP 5353). Keep 'no' if using Avahi.",
         ),
         ConfigItem(
-            label="LLMNR (Link-Local Multicast)",
+            label="LLMNR",
             key="LLMNR",
             type_="cycle",
             default="no",
             scope="Resolve",
             options=["no", "resolve", "yes"],
-            extended_help="Legacy local multicast resolution. Deprecated and vulnerable to network spoofing. Keep this disabled ('no').",
+            extended_help="Legacy local multicast resolution. Recommended: 'no'.",
         ),
         ConfigItem(
-            label="Flush Local Systemd DNS Cache",
+            label="Flush DNS Cache",
             key="flush_dns_cache",
             type_="action",  
             default="resolvectl flush-caches",
             scope="DEFAULT",
             exists_in_target=True,
-            confirm_message="Flush all cached DNS records across all network interfaces?",
-            extended_help="Executes `resolvectl flush-caches` in the shell to immediately purge all cached queries and force fresh upstream lookups.",
+            confirm_message="Flush all cached DNS records?",
+            extended_help="Executes resolvectl flush-caches to purge cached DNS queries.",
         ),
     ],
 }
