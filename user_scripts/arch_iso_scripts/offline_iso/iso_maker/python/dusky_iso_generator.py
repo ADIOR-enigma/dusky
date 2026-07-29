@@ -792,11 +792,15 @@ def parse_pkg_filename(name: str) -> Optional[Tuple[str, str, str, str]]:
     return m.group("name"), m.group("ver"), m.group("rel"), m.group("arch")
 
 
-def ensure_archlinux_keyring() -> None:
+def ensure_archlinux_keyring(isolated: Optional[IsolatedDB] = None) -> None:
     step("Refreshing archlinux-keyring if needed")
     wait_for_pacman_lock()
+    cmd = ["pacman"]
+    if isolated is not None:
+        cmd.extend(["--config", str(isolated.conf_path)])
+    cmd.extend(["-Sy", "--needed", "--noconfirm", "archlinux-keyring"])
     r = subprocess.run(
-        ["pacman", "-Sy", "--needed", "--noconfirm", "archlinux-keyring"],
+        cmd,
         shell=False,
         check=False,
     )
@@ -2688,10 +2692,10 @@ def main() -> None:
         master = build_master_list(
             external_pkg_list if external_pkg_list.exists() else None
         )
-        ensure_archlinux_keyring()
         isolated = IsolatedDB()
         try:
             isolated.generate_conf()
+            ensure_archlinux_keyring(isolated)
             if not isolated.sync():
                 die("Sync failed — check network/keyring")
             official_names, maybe_aur = resolve_official_names(isolated, master)
