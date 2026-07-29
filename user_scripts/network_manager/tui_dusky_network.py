@@ -398,9 +398,7 @@ def render_network_dashboard_view(app):
     grid.add_column(ratio=1)
     grid.add_row(p_conn, right_group)
 
-    footer = Text(" Switch tabs using [Tab] / [Shift+Tab] or [Alt+1..5] (Networks, Saved, Status, Speed Test, Hotspot)", style="dim italic")
-
-    return Group(grid, Align.center(footer))
+    return grid
 
 
 CUSTOM_VIEWS = {
