@@ -228,6 +228,11 @@ class SystemdDnsEngine(BaseEngine):
             if shutil.which("resolvectl"):
                 subprocess.run(["resolvectl", "flush-caches"], capture_output=True)
 
+            if shutil.which("nmcli"):
+                chk_nm = subprocess.run(["systemctl", "is-active", "--quiet", "NetworkManager.service"], capture_output=True)
+                if chk_nm.returncode == 0:
+                    subprocess.run(["nmcli", "general", "reload", "dns-full"], capture_output=True)
+
             return True, "Atomic commit successful. systemd-resolved restarted.", debug_output
 
         except Exception as e:
