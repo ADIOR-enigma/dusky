@@ -344,6 +344,7 @@ if __name__ == "__main__":
 
 try:
     from rich import box
+    from rich.align import Align
     from rich.console import Console
     from rich.panel import Panel
     from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
@@ -2526,14 +2527,23 @@ def build_iso_image(cfg: ISOConfig) -> Path:
 # Prompts / main
 # ==============================================================================
 def prompt_action() -> str:
-    console.print(Panel("Dusky Factory — What to do?", style="cyan", box=box.ROUNDED))
+    console.print(
+        Align.center(
+            Panel(
+                "Dusky Factory — What to do?",
+                style="cyan",
+                box=box.ROUNDED,
+                expand=False,
+            )
+        )
+    )
     table = Table(box=box.SIMPLE, show_header=False)
     table.add_column("No", style="magenta", width=4)
     table.add_column("Action", style="white")
     table.add_row("1", "Official Pacman repo + ISO [default]")
-    table.add_row("2", "Download official repo")
-    table.add_row("3", "Build AUR repo")
-    table.add_row("4", "Both repos")
+    table.add_row("2", "Download official repo (no ISO)")
+    table.add_row("3", "Build AUR repo (no ISO)")
+    table.add_row("4", "Both repos (Official + AUR, no ISO)")
     table.add_row("5", "Build ISO only")
     table.add_row("6", "Full pipeline: Official + AUR + ISO")
     console.print(table)
@@ -2594,11 +2604,14 @@ def main() -> None:
         ln.strip() for ln in (pq.stdout or "").splitlines() if ln.strip()
     ) or "pacman/archiso unknown"
     console.print(
-        Panel(
-            f"Dusky Factory v{VERSION}\n"
-            f"Python {sys.version.split()[0]} · {pq_line}",
-            style="bold cyan",
-            box=box.DOUBLE,
+        Align.center(
+            Panel(
+                f"Dusky Factory v{VERSION}\n"
+                f"Python {sys.version.split()[0]} · {pq_line}",
+                style="bold cyan",
+                box=box.DOUBLE,
+                expand=False,
+            )
         )
     )
     check_is_arch()
