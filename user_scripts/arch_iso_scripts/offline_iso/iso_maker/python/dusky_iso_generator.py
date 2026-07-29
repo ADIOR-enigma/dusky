@@ -164,7 +164,7 @@ ALL_GROUPS: Dict[str, List[str]] = {
         "ttf-font-awesome", "ttf-jetbrains-mono-nerd", "otf-atkinsonhyperlegiblemono-nerd",
         "noto-fonts-emoji", "sassc", "python-packaging", "python", "python-gobject",
         "python-cairo", "python-opengl", "gtk-layer-shell", "python-evdev", "python-pyudev",
-        "fontconfig", "papirus-icon-theme", "python-pyquery", "python-textual", "python-rich",
+        "fontconfig", "python-pyquery", "python-textual", "python-rich",
     ],
     "desktop": [
         "waybar", "awww", "hyprlock", "hypridle", "hyprsunset", "hyprpicker", "rofi",
@@ -234,6 +234,7 @@ AUR_SEED: Tuple[str, ...] = (
     "xdg-terminal-exec",
     "paru",
     "hyprshutdown",
+    "papirus-icon-theme-git",
 )
 
 # ==============================================================================
@@ -1707,12 +1708,21 @@ def build_aur_package(
 
     clone_root = clone_base / f"clone_{pkg}"
     if clone_root.exists():
-        shutil.rmtree(clone_root)
+        shutil.rmtree(clone_root, ignore_errors=True)
     clone_root.mkdir(parents=True)
+    if os.geteuid() == 0:
+        subprocess.run(
+            ["chown", "-R", "-h", "--no-dereference", f"{real_user}:", str(clone_root)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            shell=False,
+            check=False,
+        )
 
     target_dir = clone_root / pkg
     git_env = git_noninteractive_env()
     cloned = False
+    last_clone_err = ""
     for _ in range(6):
         if target_dir.exists():
             shutil.rmtree(target_dir, ignore_errors=True)
@@ -1730,12 +1740,14 @@ def build_aur_package(
             capture=True,
             check=False,
         )
+        last_clone_err = (r.stderr or r.stdout or "").strip()
         if r.returncode == 0:
             cloned = True
             break
         time.sleep(2)
     if not cloned:
-        err(f"Clone failed {pkg}")
+        console.print(f"[bold red][XX] Clone failed {pkg}: {last_clone_err}[/]")
+        shutil.rmtree(clone_root, ignore_errors=True)
         return False, False, False
 
     if not (target_dir / "PKGBUILD").exists():
