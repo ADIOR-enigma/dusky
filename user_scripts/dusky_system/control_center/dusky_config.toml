@@ -875,6 +875,35 @@ type = "exec"
 command = "kitty --class 325_hosts_files_block.sh --hold sh -c \"$HOME/user_scripts/arch_setup_scripts/scripts/325_hosts_files_block.sh\""
 terminal = false
 
+[[pages.layout]]
+type = "section"
+[pages.layout.properties]
+title = "DNS & Resolver"
+icon = ""
+description = ""
+
+[[pages.layout.items]]
+type = "button"
+[pages.layout.items.properties]
+title = "DNS & Resolver Configurator"
+description = "Systemd-resolved DNS, DNS-over-TLS & Presets"
+icon = "preferences-system-network-proxy-symbolic"
+
+[[pages.layout.items.properties.buttons]]
+icon = "document-edit-symbolic"
+button_text = "File"
+[pages.layout.items.properties.buttons.on_press]
+type = "exec"
+command = "$HOME/user_scripts/dusky_system/control_center/dusky_text_editor.py \"/etc/systemd/resolved.conf.d/99-dns-tui.conf\""
+
+[[pages.layout.items.properties.buttons]]
+icon = "preferences-system-network-proxy-symbolic"
+button_text = "TUI"
+style = "suggested"
+[pages.layout.items.properties.buttons.on_press]
+type = "exec"
+command = "foot --app-id=dusky_tui --hold python3 $HOME/user_scripts/network_manager/tui_dns.py"
+
 
 [[pages]]
 id = "hardware"

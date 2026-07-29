@@ -1,4 +1,4 @@
-/home/dusk/user_scripts/dusky_tui/python/
+~/user_scripts/dusky_tui/python/
 ├── engines/
 │   └── *.py
 ├── frontend/
