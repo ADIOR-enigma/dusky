@@ -59,13 +59,13 @@ SCHEMA = {
             default="Atkinson Hyperlegible",
             options=[
                 "Atkinson Hyperlegible", "Inter", "Roboto", "Noto Sans", 
-                "Fira Sans", "Cantarell", "Ubuntu", "Open Sans"
+                "Fira Sans", "Cantarell", "Ubuntu", "Open Sans", "DejaVu Sans"
             ],
             hints=[
                 "High legibility (Braille Inst.)", "Modern, crisp UI", 
                 "Classic Android UI", "Excellent global coverage", 
                 "Mozilla's UI font", "GNOME default", 
-                "Canonical's UI font", "Friendly & readable"
+                "Canonical's UI font", "Friendly & readable", "Classic open-source default"
             ],
             extended_help="Sets the primary Sans-Serif font used across the desktop environment (e.g., Waybar, Hyprland, GTK apps)."
         ),

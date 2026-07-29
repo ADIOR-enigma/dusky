@@ -20,7 +20,7 @@ class FontconfigEngine(BaseEngine):
         return str(self.config_path)
 
     def load_state(self) -> dict[str, Any]:
-        if not self.config_path.exists():
+        if not self.config_path.exists() or self.config_path.stat().st_size == 0:
             return {}
 
         state = {}
@@ -28,7 +28,7 @@ class FontconfigEngine(BaseEngine):
             tree = ET.parse(self.config_path)
             root = tree.getroot()
 
-            # Parse Font Aliases (sans-serif, serif, monospace)
+            # Parse Font Aliases (sans-serif, serif, monospace, emoji, etc.)
             for alias in root.findall('alias'):
                 family_elem = alias.find('family')
                 if family_elem is not None and family_elem.text:
@@ -37,14 +37,14 @@ class FontconfigEngine(BaseEngine):
                     if prefer_elem is not None and prefer_elem.text:
                         state[family] = prefer_elem.text.strip()
 
-            # Parse Subpixel Rendering & Hinting Configuration
-            for match in root.findall("match[@target='font']"):
+            # Parse Subpixel Rendering & Hinting Configuration across match blocks
+            for match in root.findall("match"):
                 for edit in match.findall('edit'):
                     name = edit.get('name')
                     if name:
                         bool_val = edit.find('bool')
                         if bool_val is not None:
-                            state[name] = bool_val.text.strip().lower() == "true"
+                            state[name] = bool_val.text.strip().lower() in ("true", "1", "yes", "on", "t", "y")
                         
                         const_val = edit.find('const')
                         if const_val is not None:
@@ -60,9 +60,14 @@ class FontconfigEngine(BaseEngine):
             return True, "No pending changes.", ""
 
         state = self.load_state()
+        known_bool_keys = {"antialias", "hinting", "autohint", "embeddedbitmap", "subpixel"}
+
         for key, scope, val, itype in changes:
-            if itype == "bool":
-                state[key] = str(val).lower() in ("true", "1", "yes", "on", "t", "y")
+            if itype == "bool" or key in known_bool_keys or isinstance(val, bool):
+                if isinstance(val, bool):
+                    state[key] = val
+                else:
+                    state[key] = str(val).lower() in ("true", "1", "yes", "on", "t", "y")
             else:
                 state[key] = val
 
@@ -72,7 +77,7 @@ class FontconfigEngine(BaseEngine):
             root = ET.Element('fontconfig')
 
             # 1. Generate Alias Blocks
-            font_classes = ['sans-serif', 'serif', 'monospace']
+            font_classes = ['sans-serif', 'serif', 'monospace', 'emoji']
             for fc in font_classes:
                 if fc in state:
                     alias = ET.SubElement(root, 'alias', {'binding': 'strong'})
@@ -82,19 +87,18 @@ class FontconfigEngine(BaseEngine):
                     pref_fam = ET.SubElement(pref, 'family')
                     pref_fam.text = str(state[fc])
 
-            # 2. Generate Rendering Match Block
-            render_settings = ['antialias', 'hintstyle', 'rgba', 'lcdfilter']
-            if any(k in state for k in render_settings):
+            # 2. Generate Rendering Match Block (for non-alias fontconfig keys)
+            render_keys = [k for k in state if k not in font_classes]
+            if render_keys:
                 match = ET.SubElement(root, 'match', {'target': 'font'})
-                for k in render_settings:
-                    if k in state:
-                        edit = ET.SubElement(match, 'edit', {'mode': 'assign', 'name': k})
-                        if isinstance(state[k], bool):
-                            b = ET.SubElement(edit, 'bool')
-                            b.text = "true" if state[k] else "false"
-                        else:
-                            c = ET.SubElement(edit, 'const')
-                            c.text = str(state[k])
+                for k in render_keys:
+                    edit = ET.SubElement(match, 'edit', {'mode': 'assign', 'name': k})
+                    if isinstance(state[k], bool):
+                        b = ET.SubElement(edit, 'bool')
+                        b.text = "true" if state[k] else "false"
+                    else:
+                        c = ET.SubElement(edit, 'const')
+                        c.text = str(state[k])
 
             # 3. Format and clean XML string
             xmlstr = minidom.parseString(ET.tostring(root)).toprettyxml(indent="  ")
@@ -116,12 +120,15 @@ class FontconfigEngine(BaseEngine):
 
             self.cache = state
             
-            # 5. Non-blocking System Cache Refresh
-            subprocess.Popen(
-                ["fc-cache", "-f"], 
-                stdout=subprocess.DEVNULL, 
-                stderr=subprocess.DEVNULL
-            )
+            # 5. Non-blocking System Cache Refresh (fail-safe)
+            try:
+                subprocess.Popen(
+                    ["fc-cache", "-f"], 
+                    stdout=subprocess.DEVNULL, 
+                    stderr=subprocess.DEVNULL
+                )
+            except Exception:
+                pass
             
             return True, f"Successfully applied {len(changes)} font settings.", ""
             
