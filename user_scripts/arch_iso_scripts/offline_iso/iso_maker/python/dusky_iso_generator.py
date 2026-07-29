@@ -2038,35 +2038,17 @@ def _patch_profiledef_compression(profiledef: Path) -> None:
     if not profiledef.is_file():
         return
     txt = profiledef.read_text(encoding="utf-8")
-    new = txt
-    new2 = re.sub(
-        r"-comp\s+xz\b",
-        "-comp zstd -b 1M -Xcompression-level 19",
-        new,
+    new_opts = "airootfs_image_tool_options=('-comp' 'zstd' '-b' '1M' '-Xcompression-level' '19')"
+    if "airootfs_image_tool_options=" in txt:
+        new = re.sub(r"airootfs_image_tool_options=\([^)]*\)", new_opts, txt)
+        if new != txt:
+            profiledef.write_text(new, encoding="utf-8")
+            step("profiledef: set airootfs_image_tool_options=('-comp' 'zstd' '-b' '1M' '-Xcompression-level' '19')")
+            return
+    step(
+        "profiledef: compression left upstream "
+        "(check archiso profiledef.sh manually if you want smaller ISOs)"
     )
-    if new2 == new and "airootfs_image_tool_options=" in new:
-        if re.search(r"-comp\s+\w+", new):
-            new2 = re.sub(
-                r"-comp\s+\w+",
-                "-comp zstd -b 1M -Xcompression-level 19",
-                new,
-                count=1,
-            )
-        else:
-            new2 = re.sub(
-                r"(airootfs_image_tool_options=\([^)]*)\)",
-                r"\1 -comp zstd -b 1M -Xcompression-level 19)",
-                new,
-                count=1,
-            )
-    if new2 != txt:
-        profiledef.write_text(new2, encoding="utf-8")
-        step("profiledef: requested zstd compression level 19")
-    else:
-        step(
-            "profiledef: compression left upstream "
-            "(check archiso profiledef.sh manually if you want smaller ISOs)"
-        )
 
 
 def stage_payloads(cfg: ISOConfig) -> None:
@@ -2328,7 +2310,7 @@ def configure_iso_pacman_conf(cfg: ISOConfig) -> None:
             continue
         if s == "[options]":
             out.append(line)
-            out.extend(["Color", "ILoveCandy", "VerbosePkgLists", "ParallelDownloads = 10"])
+            out.extend(["Color", "ILoveCandy", "VerbosePkgLists", "ParallelDownloads = 5"])
             out.append(f"CacheDir = {cfg.official_repo}")
             if cfg.aur_repo is not None and cfg.aur_repo.exists():
                 out.append(f"CacheDir = {cfg.aur_repo}")
