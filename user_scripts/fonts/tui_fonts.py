@@ -28,6 +28,8 @@ APP_TITLE = "Font Manager"
 # =============================================================================
 # 2. UI & ENVIRONMENT BEHAVIOR
 # =============================================================================
+
+THEME_FILE = "~/.config/matugen/generated/dusky_tui.json"
 DEFAULT_MODE = "auto"
 ENABLE_USER_PRESETS = True
 USER_PRESETS_TAB = "Profiles"
