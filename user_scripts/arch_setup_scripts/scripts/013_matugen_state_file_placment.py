@@ -80,18 +80,19 @@ def main() -> None:
     # ------------------------------------------------------------------------------
     # textwrap.dedent strips leading whitespace, allowing natural indentation in code
     state_content = textwrap.dedent("""\
-        # Dusky Theme State File
-        THEME_MODE="dark"
-        MATUGEN_TYPE="scheme-vibrant"
-        MATUGEN_CONTRAST="0"
-        SOURCE_COLOR_INDEX="1"
-        BASE16_BACKEND="disable"
-        AWWW_TRANS_TYPE="random"
-        AWWW_TRANS_DURATION="2"
-        AWWW_TRANS_FPS="60"
-        AWWW_TRANS_BEZIER=".54,0,.34,.99"
-        AWWW_TRANS_ANGLE="45"
-        AWWW_TRANS_POS="center"
+# Dusky Theme State File
+THEME_MODE="dark"
+MATUGEN_TYPE="scheme-tonal-spot"
+MATUGEN_CONTRAST="0"
+SOURCE_COLOR_INDEX="0"
+BASE16_BACKEND="disable"
+AWWW_TRANS_TYPE="random"
+AWWW_TRANS_DURATION="2"
+AWWW_TRANS_FPS="60"
+AWWW_TRANS_BEZIER=".54,0,.34,.99"
+AWWW_TRANS_ANGLE="30"
+AWWW_TRANS_POS="center"
+LAST_APPLIED_HEX=#FF0000
     """)
 
     # ------------------------------------------------------------------------------
