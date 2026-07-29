@@ -1622,24 +1622,7 @@ def find_repo_pkg_files(repo: Path, pkgname: str) -> List[Path]:
     return out
 
 
-def pacman_U_asdeps(paths: Sequence[Path]) -> bool:
-    """
-    Install built packages on the *host* so later `makepkg -s` can see them.
-    Note: this pollutes the factory machine (acceptable on a build host).
-    IsolatedDB conf alone does NOT feed makepkg -s.
-    """
-    files = [str(p) for p in paths if p.is_file()]
-    if not files:
-        return True
-    if os.geteuid() != 0:
-        warn("pacman -U skipped (not root); AUR makedepends may fail")
-        return False
-    r = subprocess.run(
-        ["pacman", "-U", "--asdeps", "--noconfirm", "--needed", "--", *files],
-        shell=False,
-        check=False,
-    )
-    return r.returncode == 0
+
 
 
 def download_official_deps(
@@ -1709,11 +1692,7 @@ def build_aur_package(
         return False, False, False
 
     if package_is_current(aur_repo, pkg, ver):
-        step(f"{pkg}-{ver} already present")
-        # Ensure host can use it as a dependency for later builds.
-        existing = find_repo_pkg_files(aur_repo, pkg)
-        if existing and not pkg_installed(pkg):
-            pacman_U_asdeps(existing)
+        step(f"{pkg}-{ver} already present in ISO repo")
         return True, True, False
 
     clone_root = clone_base / f"clone_{pkg}"
@@ -1815,9 +1794,6 @@ def build_aur_package(
                 aur_queue.append(dep)
             blocked.append(dep)
 
-        if ready_files:
-            pacman_U_asdeps(ready_files)
-
         if blocked:
             step(f"{pkg}: defer — waiting for AUR deps: {', '.join(blocked)}")
             shutil.rmtree(clone_root, ignore_errors=True)
@@ -1916,10 +1892,6 @@ def build_aur_package(
             download_official_deps(
                 isolated, official_repo, aur_repo, deps, aur_queue, aur_known
             )
-
-    # Host install so the *next* makepkg -s can satisfy AUR deps (not IsolatedDB).
-    if not pacman_U_asdeps(published):
-        warn(f"{pkg}: pacman -U --asdeps failed; later AUR builds may break")
 
     shutil.rmtree(clone_root, ignore_errors=True)
     shutil.rmtree(build_work, ignore_errors=True)
