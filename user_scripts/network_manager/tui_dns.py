@@ -91,9 +91,24 @@ PRESET_CONTROLD = {
     "Resolve.DNSSEC": "no",
 }
 
+PRESET_CLOUDFLARE_FAMILY = {
+    "Resolve.DNS": "1.1.1.3#family.cloudflare-dns.com 1.0.0.3#family.cloudflare-dns.com 2606:4700:4700::1113#family.cloudflare-dns.com 2606:4700:4700::1003#family.cloudflare-dns.com",
+    "Resolve.FallbackDNS": FALLBACK_QUAD9,
+    "Resolve.DNSOverTLS": "opportunistic",
+    "Resolve.DNSSEC": "no",
+}
+
+PRESET_OPENDNS = {
+    "Resolve.DNS": "208.67.222.222#dns.opendns.com 208.67.220.220#dns.opendns.com 2620:119:35::35#dns.opendns.com 2620:119:53::53#dns.opendns.com",
+    "Resolve.FallbackDNS": FALLBACK_QUAD9,
+    "Resolve.DNSOverTLS": "opportunistic",
+    "Resolve.DNSSEC": "no",
+}
+
 PRESET_DHCP = {
     "Resolve.DNS": "",
     "Resolve.FallbackDNS": "",
+    "Resolve.Domains": "",
     "Resolve.DNSOverTLS": "no",
     "Resolve.DNSSEC": "no",
 }
@@ -107,13 +122,23 @@ SCHEMA = {
     # -------------------------------------------------------------------------
     0: [
         ConfigItem(
-            label="Cloudflare (1.1.1.1 - Maximum Global Speed)",
+            label="Cloudflare Standard (1.1.1.1 - Max Speed)",
             key="preset_cloudflare",
             type_="preset",
             default=False,
             scope="DEFAULT",
             preset_payload=PRESET_CLOUDFLARE,
             extended_help="Configures Cloudflare high-performance global DNS with TLS SNI authentication (#cloudflare-dns.com). Highly recommended for standard setups.",
+            exists_in_target=True
+        ),
+        ConfigItem(
+            label="Cloudflare Family (1.1.1.3 - Malware & Adult Blocking)",
+            key="preset_cloudflare_family",
+            type_="preset",
+            default=False,
+            scope="DEFAULT",
+            preset_payload=PRESET_CLOUDFLARE_FAMILY,
+            extended_help="Cloudflare Family DNS filtering out known malicious sites, phishing domains, and adult content at the DNS level.",
             exists_in_target=True
         ),
         ConfigItem(
@@ -144,6 +169,16 @@ SCHEMA = {
             scope="DEFAULT",
             preset_payload=PRESET_ADGUARD,
             extended_help="Blocks advertisements, tracking domains, and analytics networks at the resolver level before they hit the browser.",
+            exists_in_target=True
+        ),
+        ConfigItem(
+            label="OpenDNS / Cisco Umbrella (208.67.222.222)",
+            key="preset_opendns",
+            type_="preset",
+            default=False,
+            scope="DEFAULT",
+            preset_payload=PRESET_OPENDNS,
+            extended_help="Enterprise-grade reliable global DNS from Cisco Umbrella with DoT SNI support.",
             exists_in_target=True
         ),
         ConfigItem(
@@ -212,6 +247,20 @@ SCHEMA = {
             ),
         ),
         ConfigItem(
+            label="Local DNS Cache Mode",
+            key="Cache",
+            type_="cycle",
+            default="yes",
+            scope="Resolve",
+            options=["yes", "no-negative", "no"],
+            extended_help=(
+                "Controls local DNS response caching in systemd-resolved.\n"
+                "  • yes: Full caching of positive and negative DNS responses.\n"
+                "  • no-negative: Caches positive lookups only (ignores NXDOMAIN errors).\n"
+                "  • no: Disables local cache entirely."
+            ),
+        ),
+        ConfigItem(
             label="Fallback DNS Servers",
             key="FallbackDNS",
             type_="string",
@@ -234,6 +283,17 @@ SCHEMA = {
             extended_help=(
                 "Space-separated explicit DNS servers.\n"
                 "Format: IP#HOSTNAME for authenticated DoT (e.g. 1.1.1.1#cloudflare-dns.com 9.9.9.9#dns.quad9.net)."
+            ),
+        ),
+        ConfigItem(
+            label="Routing & Search Domains",
+            key="Domains",
+            type_="string",
+            default="",
+            scope="Resolve",
+            extended_help=(
+                "Space-separated list of domains used for search suffixes and routing.\n"
+                "Prefix with '~' to create a routing-only domain (e.g. '~.' routes ALL queries through these global DNS servers)."
             ),
         ),
     ],
