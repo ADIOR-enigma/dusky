@@ -162,6 +162,7 @@ ALL_GROUPS: Dict[str, List[str]] = {
         "qt5-wayland", "qt6-wayland", "gtk3", "gtk4", "nwg-look", "qt5ct", "qt6ct", "qt6-svg",
         "qt6-multimedia-ffmpeg", "adw-gtk-theme", "upower", "plocate", "matugen",
         "ttf-font-awesome", "ttf-jetbrains-mono-nerd", "otf-atkinsonhyperlegiblemono-nerd",
+        "ttf-atkinson-hyperlegible", "otf-atkinson-hyperlegible",
         "noto-fonts-emoji", "sassc", "python-packaging", "python", "python-gobject",
         "python-cairo", "python-opengl", "gtk-layer-shell", "python-evdev", "python-pyudev",
         "fontconfig", "python-pyquery", "python-textual", "python-rich",
@@ -223,11 +224,7 @@ ALL_GROUPS: Dict[str, List[str]] = {
 # Seed list only — runtime queue is a copy that may grow with AUR deps.
 AUR_SEED: Tuple[str, ...] = (
     "wlogout",
-    "adwaita-qt6",
-    "adwaita-qt5",
     "adwsteamgtk",
-    "otf-atkinson-hyperlegible-next",
-    "python-pywalfox",
     "hyprshade",
     "peaclock",
     "tray-tui",
@@ -1852,7 +1849,7 @@ def build_aur_package(
             )
         try:
             r = run_cmd(
-                ["makepkg", "-s", "--noconfirm", "--cleanbuild", "--cleanafter"],
+                ["makepkg", "-s", "--noconfirm", "-C"],
                 as_user=real_user,
                 env=env,
                 cwd=target_dir,

@@ -203,15 +203,15 @@ post_hook   = '''
 # input_path  = '~/.config/matugen/templates/tmux-colors.conf'
 # output_path = '~/.config/matugen/generated/tmux-colors.conf'
 
-[templates.pywalfox]
-input_path  = '~/.config/matugen/templates/pywalfox-colors.json'
-output_path = '~/.config/matugen/generated/pywalfox-colors.json'
-post_hook   = '''
-  if command -v pywalfox >/dev/null 2>&1; then
-    ln -nfs "$HOME/.config/matugen/generated/pywalfox-colors.json" "$HOME/.cache/wal/colors.json"
-    pywalfox update || :
-  fi
-'''
+# [templates.pywalfox]
+# input_path  = '~/.config/matugen/templates/pywalfox-colors.json'
+# output_path = '~/.config/matugen/generated/pywalfox-colors.json'
+# post_hook   = '''
+#   if command -v pywalfox >/dev/null 2>&1; then
+#     ln -nfs "$HOME/.config/matugen/generated/pywalfox-colors.json" "$HOME/.cache/wal/colors.json"
+#     pywalfox update || :
+#   fi
+# '''
 
 [templates.obsidian]
 input_path  = '~/.config/matugen/templates/obsidian-theme.css'

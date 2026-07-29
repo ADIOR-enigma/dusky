@@ -47,6 +47,8 @@ matugen
 ttf-font-awesome
 ttf-jetbrains-mono-nerd
 otf-atkinsonhyperlegiblemono-nerd
+ttf-atkinson-hyperlegible
+otf-atkinson-hyperlegible
 noto-fonts-emoji
 sassc
 python-packaging

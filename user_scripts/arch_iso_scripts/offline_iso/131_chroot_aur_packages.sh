@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#arch_iso_scripts/offline_iso/131_chroot_aur_packages.sh!/usr/bin/env bash
 # This script installs ALL PACKAGES from the Offline Repository. Inspect it manually to remove/add anything you want.
 # It installs packages only. It does not enable systemd services automatically.
 # ------------------------------------------------------------------------------
@@ -14,13 +14,11 @@ declare -ar pkgs_aur=(
   "adwaita-qt5"
   "adwsteamgtk"
   "otf-atkinson-hyperlegible-next"
-  "python-pywalfox"
   "hyprshade"
   "peaclock"
   "tray-tui"
   "xdg-terminal-exec"
   "paru"
-  "python-pywalfox"
 )
 
 
