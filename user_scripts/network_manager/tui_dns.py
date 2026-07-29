@@ -238,11 +238,10 @@ SCHEMA = {
             default="no",
             scope="Resolve",
             options=["no", "allow-downgrade", "yes"],
-            warning_msg="Setting DNSSEC to 'yes' on broken captive portals will break name resolution.",
             extended_help=(
                 "Enables cryptographic signature verification of DNS records.\n"
                 "  • allow-downgrade: Validates if supported.\n"
-                "  • yes: Strict enforcement.\n"
+                "  • yes: Strict enforcement (may break broken captive portals).\n"
                 "  • no: Disabled."
             ),
         ),
@@ -303,8 +302,7 @@ SCHEMA = {
             default="yes",
             scope="Resolve",
             options=["yes", "no", "udp", "tcp"],
-            extended_help="Controls systemd-resolved local stub listener (127.0.0.53).",
-            warning_msg="Disabling stub listener without a local DNS proxy will break resolution.",
+            extended_help="Controls systemd-resolved local stub listener (127.0.0.53). Note: Disabling without a local DNS proxy breaks resolution.",
         ),
         ConfigItem(
             label="MulticastDNS",
