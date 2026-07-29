@@ -1194,18 +1194,6 @@ class EliteInstallerApp(App):
         self.status_label.update("Validating and refreshing pacman keyrings...")
         self.log_system("Verifying pacman keyring state...")
 
-        has_cachy = False
-        try:
-            res = subprocess.run(
-                ["pacman", "-Qq", "cachyos-keyring"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False
-            )
-            has_cachy = (res.returncode == 0)
-        except Exception:
-            pass
-
         keyring_dir = Path("/etc/pacman.d/gnupg")
         has_keyring = keyring_dir.joinpath("trustdb.gpg").exists() and (
             keyring_dir.joinpath("pubring.kbx").exists() or keyring_dir.joinpath("pubring.gpg").exists()
@@ -1221,8 +1209,6 @@ class EliteInstallerApp(App):
                 return False
 
             populate_cmd = ["pacman-key", "--populate", "archlinux"]
-            if has_cachy:
-                populate_cmd.append("cachyos")
             if not self.ctx.is_root:
                 populate_cmd = ["sudo"] + populate_cmd
             if not await self.execute_pty_command(populate_cmd):
@@ -1230,9 +1216,6 @@ class EliteInstallerApp(App):
                 return False
 
         keyring_pkgs = ["archlinux-keyring"]
-        if has_cachy:
-            keyring_pkgs.append("cachyos-keyring")
-
         self.log_system(f"Refreshing keyring packages: {', '.join(keyring_pkgs)}...")
         sync_cmd = ["pacman", "-Sy", "--needed", "--noconfirm"] + keyring_pkgs
         if not self.ctx.is_root:
