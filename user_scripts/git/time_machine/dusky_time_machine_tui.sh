@@ -63,6 +63,29 @@ export DUSKY_INITIAL_BRANCH="$(git branch --show-current 2>/dev/null || true)"
 # Guarantee UTF-8 character width mapping for Awk length() calculations
 export LC_ALL=en_US.UTF-8
 
+# Load dynamic Matugen UI colors from ~/.config/matugen/generated/dusky_tui.json
+_dusky_get_color() {
+    local key="$1"
+    local default="$2"
+    local json_file="$HOME/.config/matugen/generated/dusky_tui.json"
+    if [[ -f "$json_file" ]]; then
+        local val
+        val=$(grep -o "\"$key\": *\"[^\"]*\"" "$json_file" 2>/dev/null | cut -d'"' -f4)
+        if [[ -n "$val" ]]; then
+            echo "$val"
+            return
+        fi
+    fi
+    echo "$default"
+}
+
+export MATUGEN_BG="$(_dusky_get_color "bg" "#1d100a")"
+export MATUGEN_FG="$(_dusky_get_color "fg" "#f8ddd2")"
+export MATUGEN_ACCENT="$(_dusky_get_color "accent" "#ffb694")"
+export MATUGEN_MUTED="$(_dusky_get_color "muted" "#55433b")"
+export MATUGEN_SUCCESS="$(_dusky_get_color "success" "#f0be79")"
+export MATUGEN_ERROR="$(_dusky_get_color "error" "#ffb4ab")"
+
 # Purge global FZF options to ensure pristine rendering
 unset FZF_DEFAULT_OPTS
 
@@ -336,10 +359,10 @@ main() {
         --bind="alt-c:execute-silent(_dusky_git_copy {1})+transform-prompt( [ -n \"{1}\" ] && echo \" :: Copied {1} ❯ \" || echo \" :: Time Machine ❯ \" )" \
         --bind="f1:execute(_dusky_git_help)" \
         --bind="ctrl-o:execute(_dusky_git_help)" \
-        --color="bg+:#1e1e2e,bg:#11111b,spinner:#f5e0dc" \
-        --color="fg:#cdd6f4,fg+:#cdd6f4,header:#89b4fa,info:#cba6f7" \
-        --color="pointer:#a6e3a1,marker:#f5e0dc,prompt:#cba6f7" \
-        --color="hl:#f38ba8,hl+:#f38ba8,border:#585b70,label:#89b4fa" \
+        --color="bg+:${MATUGEN_MUTED},bg:${MATUGEN_BG},spinner:${MATUGEN_ACCENT}" \
+        --color="fg:${MATUGEN_FG},fg+:${MATUGEN_FG},header:${MATUGEN_ACCENT},info:${MATUGEN_ACCENT}" \
+        --color="pointer:${MATUGEN_SUCCESS},marker:${MATUGEN_SUCCESS},prompt:${MATUGEN_ACCENT}" \
+        --color="hl:${MATUGEN_ACCENT},hl+:${MATUGEN_ACCENT},border:${MATUGEN_MUTED},label:${MATUGEN_ACCENT}" \
         --preview="_dusky_git_preview {1}" \
         --preview-label=" 󰈔 Commit Differential (Delta) " \
         --preview-label-pos=center \

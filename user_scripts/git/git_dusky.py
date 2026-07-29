@@ -8,6 +8,7 @@ Execution: Python 3.14 Strict Synchronous I/O
 import os
 import re
 import sys
+import json
 import shutil
 import shlex
 import fnmatch
@@ -30,6 +31,28 @@ GIT_DIR: Path = HOME / "dusky"
 WORK_TREE: Path = HOME
 DOTFILES_LIST: Path = HOME / ".git_dusky_list"
 TIME_MACHINE_BIN: Path = HOME / "user_scripts" / "git" / "time_machine" / "dusky_time_machine_tui.sh"
+MATUGEN_JSON: Path = HOME / ".config" / "matugen" / "generated" / "dusky_tui.json"
+
+def load_matugen_colors() -> dict[str, str]:
+    """Loads dynamic Matugen UI colors from ~/.config/matugen/generated/dusky_tui.json."""
+    defaults = {
+        "bg": "#1d100a",
+        "fg": "#f8ddd2",
+        "accent": "#ffb694",
+        "error": "#ffb4ab",
+        "warning": "#efbc94",
+        "success": "#f0be79",
+        "muted": "#55433b",
+    }
+    if MATUGEN_JSON.is_file():
+        try:
+            data = json.loads(MATUGEN_JSON.read_text(encoding="utf-8"))
+            return {**defaults, **data}
+        except Exception:
+            pass
+    return defaults
+
+COLORS: dict[str, str] = load_matugen_colors()
 
 # Set Git environment variables globally so child processes (like fzf and sub-scripts)
 # execute within the correct bare repository context.
@@ -128,11 +151,21 @@ def fzf_select(choices: list[str], prompt: str = "Select", multi: bool = False, 
     if not choices:
         return []
     
+    fzf_colors = (
+        f"bg+:{COLORS['muted']},bg:{COLORS['bg']},"
+        f"fg:{COLORS['fg']},fg+:{COLORS['fg']},"
+        f"header:{COLORS['accent']},info:{COLORS['accent']},"
+        f"pointer:{COLORS['success']},marker:{COLORS['success']},"
+        f"prompt:{COLORS['accent']},border:{COLORS['muted']},"
+        f"label:{COLORS['accent']}"
+    )
+    
     fzf_cmd = [
         "fzf",
         "--read0",
         "--print0",
         "--ansi",
+        f"--color={fzf_colors}",
         f"--prompt={prompt} ❯ ",
         "--pointer=❯ ",
         "--marker=✔ ",
@@ -1237,29 +1270,29 @@ def print_help() -> None:
     
     # 2. Branching & Remote PRs (Green)
     table.add_row("[bold green]Category[/bold green]", "[bold green]  BRANCHING & REMOTE PRs (GitHub PRs & Branch Management)[/bold green]", "")
-    table.add_row("14", "[green]Checkout GitHub PR (Local Edits / Testing)[/green]", "[green]No[/green]")
-    table.add_row("15", "[green]Branch Management Submenu (Create/Switch/Merge/Push/Delete)[/green]", "[green]No[/green]")
+    table.add_row("6", "[green]Checkout GitHub PR (Local Edits / Testing)[/green]", "[green]No[/green]")
+    table.add_row("7", "[green]Branch Management Submenu (Create/Switch/Merge/Push/Delete)[/green]", "[green]No[/green]")
     table.add_section()
     
     # 3. Stash & Workspace Edits (Magenta)
     table.add_row("[bold magenta]Category[/bold magenta]", "[bold magenta]󰏖  STASH & WORKSPACE EDITS (Stashes & Discard Edits)[/bold magenta]", "")
-    table.add_row("16", "[magenta]Stash Management Submenu (Create/Pop/Apply/Drop/Clear)[/magenta]", "[green]No[/green]")
-    table.add_row("10", "[magenta]Discard All Uncommitted Local Edits[/magenta]", "[bold red]YES[/bold red]")
+    table.add_row("8", "[magenta]Stash Management Submenu (Create/Pop/Apply/Drop/Clear)[/magenta]", "[green]No[/green]")
+    table.add_row("9", "[magenta]Discard All Uncommitted Local Edits[/magenta]", "[bold red]YES[/bold red]")
     table.add_section()
     
     # 4. Local History Recovery (Yellow)
     table.add_row("[bold yellow]Category[/bold yellow]", "[bold yellow]  LOCAL HISTORY RECOVERY (Safe Undos & Local Rollbacks)[/bold yellow]", "")
-    table.add_row("6", "[yellow]Undo Last Commit Safely (Create Revert Commit)[/yellow]", "[green]No[/green]")
-    table.add_row("7", "[yellow]Undo Local Commits to a Specific Commit (Keep Edits)[/yellow]", "[green]No[/green]")
-    table.add_row("11", "[yellow]Reset Local Branch State to Match GitHub Remote[/yellow]", "[bold red]YES[/bold red]")
+    table.add_row("10", "[yellow]Undo Last Commit Safely (Create Revert Commit)[/yellow]", "[green]No[/green]")
+    table.add_row("11", "[yellow]Undo Local Commits to a Specific Commit (Keep Edits)[/yellow]", "[green]No[/green]")
+    table.add_row("12", "[yellow]Reset Local Branch State to Match GitHub Remote[/yellow]", "[bold red]YES[/bold red]")
     table.add_section()
     
     # 5. Destructive Force Rewriting (Red)
     table.add_row("[bold red]Category[/bold red]", "[bold red]  DESTRUCTIVE FORCE REWRITING (History Obliteration)[/bold red]", "")
-    table.add_row("8", "[red]Delete Local Commits since a Specific Commit (Wipes Edits)[/red]", "[bold red]YES[/bold red]")
-    table.add_row("9", "[red]Delete Last Commit from Remote (Force Push HEAD~1)[/red]", "[bold red]YES[/bold red]")
-    table.add_row("12", "[red]Delete Commits since Commit from Remote (Nuclear Force Push)[/red]", "[bold red]YES[/bold red]")
-    table.add_row("13", "[red]Engage Ephemeral Time Machine (TUI)[/red]", "[green]No[/green]")
+    table.add_row("13", "[red]Delete Local Commits since a Specific Commit (Wipes Edits)[/red]", "[bold red]YES[/bold red]")
+    table.add_row("14", "[red]Delete Last Commit from Remote (Force Push HEAD~1)[/red]", "[bold red]YES[/bold red]")
+    table.add_row("15", "[red]Delete Commits since Commit from Remote (Nuclear Force Push)[/red]", "[bold red]YES[/bold red]")
+    table.add_row("16", "[red]Engage Ephemeral Time Machine (TUI)[/red]", "[green]No[/green]")
     table.add_row("q", "[red]Quit Dashboard[/red]", "[green]No[/green]")
     table.add_row("h", "[red]Show this CLI help menu[/red]", "[green]No[/green]")
     
@@ -1286,17 +1319,17 @@ def main() -> Never:
                     except subprocess.CalledProcessError:
                         pass
                 case "5": show_delta()
-                case "6": safe_revert_last_commit()
-                case "7": undo_local_commits_to_commit()
-                case "8": delete_local_commits_to_commit()
-                case "9": quick_step_back()
-                case "10": discard_local_changes()
-                case "11": reset_local_to_remote()
-                case "12": nuclear_revert()
-                case "13": run_time_machine()
-                case "14": checkout_pr()
-                case "15": manage_branches()
-                case "16": manage_stashes()
+                case "6": checkout_pr()
+                case "7": manage_branches()
+                case "8": manage_stashes()
+                case "9": discard_local_changes()
+                case "10": safe_revert_last_commit()
+                case "11": undo_local_commits_to_commit()
+                case "12": reset_local_to_remote()
+                case "13": delete_local_commits_to_commit()
+                case "14": quick_step_back()
+                case "15": nuclear_revert()
+                case "16": run_time_machine()
                 case "q": sys.exit(0)
             sys.exit(0)
         else:
@@ -1309,66 +1342,71 @@ def main() -> Never:
         _, current_branch_raw, _ = run_git("branch", "--show-current")
         active_branch = current_branch_raw.strip() or "Detached HEAD"
         
-        console.print(f"[bold blue]󰏖 Dusky Dotfiles Manager[/bold blue]  │  [bold cyan]Active Branch:[/bold cyan] [bold green]{active_branch}[/bold green]\n")
+        c_acc = COLORS['accent']
+        c_suc = COLORS['success']
+        c_wrn = COLORS['warning']
+        c_err = COLORS['error']
         
-        # 1. Staging & Commits (Cyan)
+        console.print(f"[bold {c_acc}]󰏖 Dusky Dotfiles Manager[/bold {c_acc}]  │  [bold {c_acc}]Active Branch:[/bold {c_acc}] [bold {c_suc}]{active_branch}[/bold {c_suc}]\n")
+        
+        # 1. Staging & Commits (Accent Color)
         console.print(Panel.fit(
-            "[bold cyan]1[/bold cyan] │ Commit All (Local & Remote)\n"
-            "[bold cyan]2[/bold cyan] │ Commit Specific File(s) (Local & Remote)\n"
-            "[bold cyan]3[/bold cyan] │ Commit All (Local Only)\n"
-            "[bold cyan]4[/bold cyan] │ Push Existing Local Commits to Remote\n"
-            "[bold cyan]5[/bold cyan] │ View Delta Differential",
-            title="[bold cyan]  STAGING & COMMITS (Local & Remote Sync)[/bold cyan]",
-            border_style="cyan",
+            f"[bold {c_acc}]1[/bold {c_acc}] │ Commit All (Local & Remote)\n"
+            f"[bold {c_acc}]2[/bold {c_acc}] │ Commit Specific File(s) (Local & Remote)\n"
+            f"[bold {c_acc}]3[/bold {c_acc}] │ Commit All (Local Only)\n"
+            f"[bold {c_acc}]4[/bold {c_acc}] │ Push Existing Local Commits to Remote\n"
+            f"[bold {c_acc}]5[/bold {c_acc}] │ View Delta Differential",
+            title=f"[bold {c_acc}]  STAGING & COMMITS (Local & Remote Sync)[/bold {c_acc}]",
+            border_style=c_acc,
             title_align="left",
             box=box.ROUNDED
         ))
         
-        # 2. Branching & Remote PRs (Green)
+        # 2. Branching & Remote PRs (Success Color)
         console.print(Panel.fit(
-            "[bold green]14[/bold green] │ Checkout GitHub Pull Request (Local Inspection/Edits)\n"
-            "[bold green]15[/bold green] │ Branch Management Submenu (Create / Switch / Merge / Push / Delete)",
-            title="[bold green]  BRANCHING & REMOTE PRs (GitHub PRs & Branch Operations)[/bold green]",
-            border_style="green",
+            f"[bold {c_suc}]6[/bold {c_suc}] │ Checkout GitHub Pull Request (Local Inspection/Edits)\n"
+            f"[bold {c_suc}]7[/bold {c_suc}] │ Branch Management Submenu (Create / Switch / Merge / Push / Delete)",
+            title=f"[bold {c_suc}]  BRANCHING & REMOTE PRs (GitHub PRs & Branch Operations)[/bold {c_suc}]",
+            border_style=c_suc,
             title_align="left",
             box=box.ROUNDED
         ))
         
-        # 3. Stash & Workspace Edits (Magenta)
+        # 3. Stash & Workspace Edits (Warning Color)
         console.print(Panel.fit(
-            "[bold magenta]16[/bold magenta] │ Stash Management Submenu (Create / Pop / Apply / Drop / Clear)\n"
-            "[bold magenta]10[/bold magenta] │ [bold red]Discard[/bold red] All Uncommitted Local Edits (Destructive)",
-            title="[bold magenta]󰏖  STASH & WORKSPACE EDITS (Stash Operations & Discards)[/bold magenta]",
-            border_style="magenta",
+            f"[bold {c_wrn}]8[/bold {c_wrn}] │ Stash Management Submenu (Create / Pop / Apply / Drop / Clear)\n"
+            f"[bold {c_wrn}]9[/bold {c_wrn}] │ [bold {c_err}]Discard[/bold {c_err}] All Uncommitted Local Edits (Destructive)",
+            title=f"[bold {c_wrn}]󰏖  STASH & WORKSPACE EDITS (Stash Operations & Discards)[/bold {c_wrn}]",
+            border_style=c_wrn,
             title_align="left",
             box=box.ROUNDED
         ))
         
-        # 4. Local History Recovery (Yellow)
+        # 4. Local History Recovery (Accent Color)
         console.print(Panel.fit(
-            "[bold yellow]6[/bold yellow]  │ Undo Last Commit Safely (Creates Revert Commit on Local & Remote)\n"
-            "[bold yellow]7[/bold yellow]  │ Undo Local Commits to a Specific Commit (Safe - keeps edits on disk)\n"
-            "[bold yellow]11[/bold yellow] │ [bold red]Reset[/bold red] Local Branch State to Match GitHub (Destructive)",
-            title="[bold yellow]  LOCAL HISTORY RECOVERY (Safe Undos & Local Rollbacks)[/bold yellow]",
-            border_style="yellow",
+            f"[bold {c_acc}]10[/bold {c_acc}] │ Undo Last Commit Safely (Creates Revert Commit on Local & Remote)\n"
+            f"[bold {c_acc}]11[/bold {c_acc}] │ Undo Local Commits to a Specific Commit (Safe - keeps edits on disk)\n"
+            f"[bold {c_acc}]12[/bold {c_acc}] │ [bold {c_err}]Reset[/bold {c_err}] Local Branch State to Match GitHub (Destructive)",
+            title=f"[bold {c_acc}]  LOCAL HISTORY RECOVERY (Safe Undos & Local Rollbacks)[/bold {c_acc}]",
+            border_style=c_acc,
             title_align="left",
             box=box.ROUNDED
         ))
         
-        # 5. Destructive Force Rewriting (Red)
+        # 5. Destructive Force Rewriting (Error Color)
         console.print(Panel.fit(
-            "[bold red]8[/bold red]  │ [bold red]Delete[/bold red] Local Commits since a Specific Commit (Destructive - discards edits)\n"
-            "[bold red]9[/bold red]  │ [bold red]Delete[/bold red] Last Commit from Remote (Force Push HEAD~1)\n"
-            "[bold red]12[/bold red] │ [bold red]Delete[/bold red] Commits since a Specific Commit from Remote (Nuclear Force Push)\n"
-            "[bold red]13[/bold red] │ Engage Ephemeral Time Machine (TUI)\n"
-            "[bold red]q[/bold red]  │ Quit Dashboard",
-            title="[bold red]  DESTRUCTIVE FORCE REWRITING (History Obliteration)[/bold red]",
-            border_style="red",
+            f"[bold {c_err}]13[/bold {c_err}] │ [bold {c_err}]Delete[/bold {c_err}] Local Commits since a Specific Commit (Destructive - discards edits)\n"
+            f"[bold {c_err}]14[/bold {c_err}] │ [bold {c_err}]Delete[/bold {c_err}] Last Commit from Remote (Force Push HEAD~1)\n"
+            f"[bold {c_err}]15[/bold {c_err}] │ [bold {c_err}]Delete[/bold {c_err}] Commits since a Specific Commit from Remote (Nuclear Force Push)\n"
+            f"[bold {c_err}]16[/bold {c_err}] │ Engage Ephemeral Time Machine (TUI)\n"
+            f"[bold {c_err}]q[/bold {c_err}]  │ Quit Dashboard",
+            title=f"[bold {c_err}]  DESTRUCTIVE FORCE REWRITING (History Obliteration)[/bold {c_err}]",
+            border_style=c_err,
             title_align="left",
             box=box.ROUNDED
         ))
         
-        console.print("\n[bold blue]Awaiting Directive [1-16/q] [default: 1][/bold blue]")
+        console.print(f"\n[bold {c_acc}]Awaiting Directive [1-16/q] [default: 1][/bold {c_acc}]")
         choice = input(" ❯ ").strip() or "1"
         while choice not in ("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "q"):
             console.print("[bold red]✖ Invalid choice. Please select a valid key.[/bold red]")
@@ -1385,17 +1423,17 @@ def main() -> Never:
                 except subprocess.CalledProcessError:
                     pass
             case "5": show_delta()
-            case "6": safe_revert_last_commit()
-            case "7": undo_local_commits_to_commit()
-            case "8": delete_local_commits_to_commit()
-            case "9": quick_step_back()
-            case "10": discard_local_changes()
-            case "11": reset_local_to_remote()
-            case "12": nuclear_revert()
-            case "13": run_time_machine()
-            case "14": checkout_pr()
-            case "15": manage_branches()
-            case "16": manage_stashes()
+            case "6": checkout_pr()
+            case "7": manage_branches()
+            case "8": manage_stashes()
+            case "9": discard_local_changes()
+            case "10": safe_revert_last_commit()
+            case "11": undo_local_commits_to_commit()
+            case "12": reset_local_to_remote()
+            case "13": delete_local_commits_to_commit()
+            case "14": quick_step_back()
+            case "15": nuclear_revert()
+            case "16": run_time_machine()
             case "q": raise SystemExit(0)
             
         console.print("\n[dim]Press [Enter] to return to dashboard...[/dim]")
