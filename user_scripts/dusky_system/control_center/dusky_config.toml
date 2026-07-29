@@ -1993,6 +1993,28 @@ command = "kitty --class dusky_keybinds.sh --hold sh -c \"$HOME/user_scripts/hyp
 [[pages.layout.items.layout.items]]
 type = "button"
 [pages.layout.items.layout.items.properties]
+title = "Dusky Keys"
+description = "On-screen keypress visualizer"
+icon = "input-keyboard-symbolic"
+
+[[pages.layout.items.layout.items.properties.buttons]]
+icon = "document-edit-symbolic"
+button_text = "File"
+[pages.layout.items.layout.items.properties.buttons.on_press]
+type = "exec"
+command = "$HOME/user_scripts/dusky_system/control_center/dusky_text_editor.py \"$HOME/.config/dusky/settings/dusky_keys/config.toml\""
+
+[[pages.layout.items.layout.items.properties.buttons]]
+icon = "input-keyboard-symbolic"
+button_text = "TUI"
+style = "suggested"
+[pages.layout.items.layout.items.properties.buttons.on_press]
+type = "exec"
+command = "foot --app-id=dusky_tui --hold python3 $HOME/user_scripts/mako_osd/dusky_keys/tui_dusky_keys.py"
+
+[[pages.layout.items.layout.items]]
+type = "button"
+[pages.layout.items.layout.items.properties]
 title = "Input"
 description = "Edit input configuration"
 icon = "input-mouse-symbolic"
