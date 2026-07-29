@@ -6,12 +6,14 @@ Execution: Python 3.14 Strict Synchronous I/O
 """
 
 import os
+import re
 import sys
 import shutil
 import shlex
 import fnmatch
 import subprocess
 import readline
+from datetime import datetime
 from pathlib import Path
 from typing import Never
 
@@ -539,7 +541,7 @@ def discard_local_changes() -> None:
         console.print("[bold green]✔[/bold green] Working tree already clean. No changes to discard.")
         return
 
-    console.print(Panel(
+    console.print(Panel.fit(
         "[bold red]!!! DISCARD LOCAL CHANGES !!![/bold red]\n"
         "This will permanently erase local changes of your choice (modifications in tracked files and/or untracked files).",
         border_style="red"
@@ -597,7 +599,7 @@ def discard_local_changes() -> None:
 
 def reset_local_to_remote() -> None:
     """Hard resets the local repository to match the remote branch tracking state."""
-    console.print(Panel(
+    console.print(Panel.fit(
         "[bold red]⚠ RESET LOCAL STATE TO MATCH GITHUB ⚠[/bold red]\n"
         "This will discard all local commits that haven't been pushed to GitHub\n"
         "AND erase all uncommitted edits on your disk, resetting everything to match the remote.",
@@ -628,7 +630,7 @@ def reset_local_to_remote() -> None:
 
 def quick_step_back() -> None:
     """Rolls back the repository by exactly 1 commit on both local and remote."""
-    console.print(Panel(
+    console.print(Panel.fit(
         "[bold red]⚠ DELETE LAST COMMIT FROM REMOTE ⚠[/bold red]\n"
         "This will hard-reset the local repository to HEAD~1 and force-push to origin,\n"
         "permanently deleting the last commit from both local and remote history.",
@@ -662,7 +664,7 @@ def quick_step_back() -> None:
 
 def undo_local_commits_to_commit() -> None:
     """Safe mixed reset to a selected past commit (uncommits files, keeping disk modifications)."""
-    console.print(Panel(
+    console.print(Panel.fit(
         "[bold yellow]⚠ UNDO LOCAL COMMITS TO A SPECIFIC COMMIT ⚠[/bold yellow]\n"
         "This will reset your local HEAD to a selected past commit,\n"
         "returning all files changed since that commit to your unstaged area.\n"
@@ -696,7 +698,7 @@ def undo_local_commits_to_commit() -> None:
 
 def delete_local_commits_to_commit() -> None:
     """Destructive hard reset to a selected past commit (uncommits files and wipes edits)."""
-    console.print(Panel(
+    console.print(Panel.fit(
         "[bold red]⚠ DELETE LOCAL COMMITS SINCE A SPECIFIC COMMIT ⚠[/bold red]\n"
         "This will permanently delete commits from your local history up to the selected past commit,\n"
         "AND erase all changes associated with those commits from your disk.",
@@ -729,7 +731,7 @@ def delete_local_commits_to_commit() -> None:
 
 def safe_revert_last_commit() -> None:
     """Safe non-destructive revert that appends a new commit undoing the last commit."""
-    console.print(Panel(
+    console.print(Panel.fit(
         "[bold green]✔ UNDO LAST COMMIT SAFELY (Create Revert Commit) ✔[/bold green]\n"
         "This will create a new commit that undoes the changes of the last commit,\n"
         "preserving the commit history without rewriting it.",
@@ -764,7 +766,7 @@ def show_delta() -> None:
 
 def nuclear_revert() -> None:
     """Absolute destructive timeline sync. Hard resets local tree and force-pushes."""
-    console.print(Panel(
+    console.print(Panel.fit(
         "[bold red]⚠ DELETE COMMITS FROM REMOTE ⚠[/bold red]\n"
         "This will permanently delete commits since the selected commit from local history\n"
         "AND force-push to overwrite the remote history on GitHub.",
@@ -815,6 +817,399 @@ def run_time_machine() -> None:
     else:
         console.print(f"[bold red]✖ Error:[/bold red] Time machine binary not found or not executable at {TIME_MACHINE_BIN}")
 
+def checkout_pr() -> None:
+    """Fetches a GitHub Pull Request by URL or number and checks out a local branch without merging."""
+    console.print(Panel.fit(
+        "[bold cyan]󰏖 CHECKOUT GITHUB PULL REQUEST[/bold cyan]\n"
+        "Fetch a Pull Request locally for editing/testing without merging into main.",
+        border_style="cyan"
+    ))
+    console.print("[bold cyan]Enter GitHub PR URL or PR Number (e.g. 268 or https://github.com/dusklinux/dusky/pull/268)[/bold cyan]")
+    user_input = input(" ❯ ").strip()
+    if not user_input or user_input.lower() in ("q", "abort", "exit"):
+        console.print("[bold yellow]⚠ Aborted PR checkout.[/bold yellow]")
+        return
+        
+    match = re.search(r'(?:pull/)?(\d+)', user_input)
+    if not match:
+        console.print(f"[bold red]✖ Error: Could not parse a valid PR number from '{user_input}'.[/bold red]")
+        return
+        
+    pr_num = match.group(1)
+    branch_name = f"pr/{pr_num}"
+    
+    console.print(f"[bold blue]Fetching PR #{pr_num} into branch '{branch_name}'...[/bold blue]")
+    try:
+        run_git("fetch", "origin", f"pull/{pr_num}/head:{branch_name}", capture=False, check=True)
+        console.print(f"[bold blue]Checking out branch '{branch_name}'...[/bold blue]")
+        run_git("checkout", branch_name, capture=False, check=True)
+        console.print(Panel.fit(
+            f"[bold green]✔ Checked out PR #{pr_num} on branch '{branch_name}'![/bold green]\n\n"
+            f"You can now edit and test your files locally.\n"
+            f"When done, use option 15 ([bold yellow]Switch Branch[/bold yellow]) to return to 'main'.",
+            border_style="green"
+        ))
+    except subprocess.CalledProcessError:
+        console.print(f"[bold red]✖ Failed to checkout PR #{pr_num}. Make sure the PR exists on GitHub remote.[/bold red]")
+
+def create_branch() -> None:
+    """Creates a new local branch and optionally checks it out."""
+    console.print("\n[bold cyan]Enter new branch name (or 'abort' to cancel):[/bold cyan]")
+    name = input(" ❯ ").strip()
+    if not name or name.lower() in ("abort", "q"):
+        console.print("[bold yellow]⚠ Branch creation cancelled.[/bold yellow]")
+        return
+        
+    clean_name = name.replace(" ", "-")
+    
+    console.print(f"[bold cyan]Switch to branch '{clean_name}' immediately? (Y/n)[/bold cyan]")
+    ans = input(" ❯ ").strip().lower()
+    checkout = not ans or ans in ("y", "yes")
+    
+    try:
+        if checkout:
+            run_git("checkout", "-b", clean_name, capture=False, check=True)
+            console.print(f"[bold green]✔ Branch '{clean_name}' created and checked out successfully.[/bold green]")
+        else:
+            run_git("branch", clean_name, capture=False, check=True)
+            console.print(f"[bold green]✔ Branch '{clean_name}' created successfully.[/bold green]")
+    except subprocess.CalledProcessError:
+        console.print(f"[bold red]✖ Failed to create branch '{clean_name}'.[/bold red]")
+
+def switch_branch() -> None:
+    """Interactively lists and switches local branches using FZF with commit preview."""
+    code, branches_out, _ = run_git("branch", "--format=%(refname:short)")
+    if code != 0 or not branches_out.strip():
+        console.print("[bold red]✖ Error: Failed to list local branches.[/bold red]")
+        return
+        
+    branches = [b.strip() for b in branches_out.splitlines() if b.strip()]
+    if not branches:
+        console.print("[bold yellow]⚠ No local branches found.[/bold yellow]")
+        return
+        
+    _, current_branch, _ = run_git("branch", "--show-current")
+    current_branch = current_branch.strip()
+    
+    console.print(f"[bold cyan]Current branch:[/bold cyan] [bold green]{current_branch}[/bold green]")
+    preview_cmd = "git --no-advice log -n 10 --oneline --color=always {1}"
+    selected = fzf_select(branches, prompt="Select Branch to Checkout", preview=preview_cmd)
+    if not selected:
+        return
+        
+    target_branch = selected[0]
+    if target_branch == current_branch:
+        console.print(f"[bold yellow]⚠ Already on branch '{target_branch}'.[/bold yellow]")
+        return
+        
+    try:
+        run_git("checkout", target_branch, capture=False, check=True)
+        console.print(f"[bold green]✔ Successfully switched to branch '{target_branch}'.[/bold green]")
+    except subprocess.CalledProcessError:
+        console.print(f"[bold red]✖ Failed to checkout branch '{target_branch}'.[/bold red]")
+
+def merge_branch() -> None:
+    """Merges a selected branch into the current branch."""
+    _, current_branch, _ = run_git("branch", "--show-current")
+    current_branch = current_branch.strip()
+    if not current_branch:
+        console.print("[bold red]✖ Error: Detached HEAD state. Cannot merge.[/bold red]")
+        return
+        
+    code, branches_out, _ = run_git("branch", "--format=%(refname:short)")
+    if code != 0 or not branches_out.strip():
+        console.print("[bold red]✖ Error: Failed to list local branches.[/bold red]")
+        return
+        
+    other_branches = [b.strip() for b in branches_out.splitlines() if b.strip() and b.strip() != current_branch]
+    if not other_branches:
+        console.print("[bold yellow]⚠ No other local branches available to merge.[/bold yellow]")
+        return
+        
+    preview_cmd = "git --no-advice log -n 10 --oneline --color=always {1}"
+    console.print(f"[bold cyan]Merging into active branch:[/bold cyan] [bold green]{current_branch}[/bold green]")
+    selected = fzf_select(other_branches, prompt="Select Branch to Merge IN", preview=preview_cmd)
+    if not selected:
+        return
+        
+    source_branch = selected[0]
+    console.print(f"[bold cyan]Merge branch '{source_branch}' into '{current_branch}'? (Y/n)[/bold cyan]")
+    ans = input(" ❯ ").strip().lower()
+    if ans and ans not in ("y", "yes"):
+        console.print("[bold yellow]⚠ Merge operation cancelled.[/bold yellow]")
+        return
+        
+    try:
+        run_git("merge", source_branch, capture=False, check=True)
+        console.print(f"[bold green]✔ Successfully merged branch '{source_branch}' into '{current_branch}'.[/bold green]")
+    except subprocess.CalledProcessError:
+        console.print(f"[bold red]✖ Merge failed or encountered conflicts. Resolve conflicts and commit.[/bold red]")
+
+def push_branch_to_remote() -> None:
+    """Pushes current or selected branch to remote origin and sets upstream."""
+    _, current_branch, _ = run_git("branch", "--show-current")
+    current_branch = current_branch.strip()
+    if not current_branch:
+        console.print("[bold red]✖ Error: Detached HEAD state. Cannot push branch.[/bold red]")
+        return
+        
+    console.print(f"[bold cyan]Push current branch '{current_branch}' to origin remote (set-upstream)? (Y/n)[/bold cyan]")
+    ans = input(" ❯ ").strip().lower()
+    if not ans or ans in ("y", "yes"):
+        console.print(f"[bold blue]Pushing '{current_branch}' to origin...[/bold blue]")
+        try:
+            run_git("push", "-u", "origin", current_branch, capture=False, check=True)
+            console.print(f"[bold green]✔ Branch '{current_branch}' pushed to origin successfully.[/bold green]")
+        except subprocess.CalledProcessError:
+            console.print(f"[bold red]✖ Push failed for branch '{current_branch}'.[/bold red]")
+
+def delete_local_branch() -> None:
+    """Deletes a local branch."""
+    _, current_branch, _ = run_git("branch", "--show-current")
+    current_branch = current_branch.strip()
+    
+    code, branches_out, _ = run_git("branch", "--format=%(refname:short)")
+    if code != 0 or not branches_out.strip():
+        console.print("[bold red]✖ Error: Failed to list local branches.[/bold red]")
+        return
+        
+    other_branches = [b.strip() for b in branches_out.splitlines() if b.strip() and b.strip() != current_branch]
+    if not other_branches:
+        console.print("[bold yellow]⚠ No other local branches to delete.[/bold yellow]")
+        return
+        
+    preview_cmd = "git --no-advice log -n 10 --oneline --color=always {1}"
+    selected = fzf_select(other_branches, prompt="Select Local Branch to DELETE", preview=preview_cmd)
+    if not selected:
+        return
+        
+    target_branch = selected[0]
+    console.print(f"[bold red]Force delete local branch '{target_branch}'? (y/N)[/bold red]")
+    ans = input(" ❯ ").strip().lower()
+    if ans in ("y", "yes"):
+        try:
+            run_git("branch", "-D", target_branch, capture=False, check=True)
+            console.print(f"[bold green]✔ Local branch '{target_branch}' deleted successfully.[/bold green]")
+        except subprocess.CalledProcessError:
+            console.print(f"[bold red]✖ Failed to delete local branch '{target_branch}'.[/bold red]")
+
+def delete_remote_branch() -> None:
+    """Deletes a remote branch on GitHub origin."""
+    code, refs_out, _ = run_git("branch", "-r", "--format=%(refname:short)")
+    if code != 0 or not refs_out.strip():
+        console.print("[bold red]✖ Error: Failed to list remote branches.[/bold red]")
+        return
+        
+    remote_branches = []
+    for line in refs_out.splitlines():
+        b = line.strip()
+        if b.startswith("origin/") and not b.endswith("/HEAD"):
+            remote_branches.append(b.replace("origin/", ""))
+            
+    if not remote_branches:
+        console.print("[bold yellow]⚠ No remote branches found.[/bold yellow]")
+        return
+        
+    selected = fzf_select(remote_branches, prompt="Select Remote Branch on GitHub to DELETE")
+    if not selected:
+        return
+        
+    target_branch = selected[0]
+    console.print(Panel.fit(
+        f"[bold red]⚠ DELETE REMOTE BRANCH ⚠[/bold red]\n"
+        f"This will permanently delete 'origin/{target_branch}' from GitHub remote repository!",
+        border_style="red"
+    ))
+    console.print(f"[bold red]Are you sure you want to delete 'origin/{target_branch}' on GitHub? (y/N)[/bold red]")
+    ans = input(" ❯ ").strip().lower()
+    if ans in ("y", "yes"):
+        try:
+            run_git("push", "origin", "--delete", target_branch, capture=False, check=True)
+            console.print(f"[bold green]✔ Remote branch 'origin/{target_branch}' deleted successfully.[/bold green]")
+        except subprocess.CalledProcessError:
+            console.print(f"[bold red]✖ Failed to delete remote branch '{target_branch}'.[/bold red]")
+
+def list_all_branches() -> None:
+    """Displays detailed list of all local and remote branches."""
+    console.print("\n[bold cyan]All Local & Remote Branches:[/bold cyan]")
+    run_git("-c", "color.ui=always", "branch", "-a", "-v", capture=False)
+
+def manage_branches() -> None:
+    """Interactive sub-menu for complete branch management."""
+    while True:
+        _, current, _ = run_git("branch", "--show-current")
+        current_str = current.strip() or "Detached HEAD"
+        
+        console.print(Panel.fit(
+            f"[bold cyan]Active Branch:[/bold cyan] [bold green]{current_str}[/bold green]\n\n"
+            "[bold cyan]1[/bold cyan] │ Create New Branch & Switch\n"
+            "[bold cyan]2[/bold cyan] │ Switch Local Branch (FZF Picker & Commit Logs)\n"
+            "[bold cyan]3[/bold cyan] │ Merge Branch into Active Branch\n"
+            "[bold cyan]4[/bold cyan] │ Push Active Branch to Remote (origin set-upstream)\n"
+            "[bold cyan]5[/bold cyan] │ Delete Local Branch\n"
+            "[bold red]6[/bold red] │ Delete Remote Branch on GitHub (Destructive)\n"
+            "[bold cyan]7[/bold cyan] │ List All Branches (Local & Remote)\n"
+            "[bold red]q[/bold red] │ Return to Main Menu",
+            title="[bold cyan]󰏖 BRANCH MANAGEMENT TOOLBOX[/bold cyan]",
+            border_style="cyan",
+            title_align="left",
+            box=box.ROUNDED
+        ))
+        
+        choice = input(" ❯ ").strip().lower()
+        if choice in ("q", "back", "exit"):
+            break
+            
+        match choice:
+            case "1": create_branch()
+            case "2": switch_branch()
+            case "3": merge_branch()
+            case "4": push_branch_to_remote()
+            case "5": delete_local_branch()
+            case "6": delete_remote_branch()
+            case "7": list_all_branches()
+            case _: console.print("[bold red]✖ Invalid choice.[/bold red]")
+
+def get_stash_list() -> list[str]:
+    """Retrieves list of stashes formatted for display and selection."""
+    code, stash_out, _ = run_git("stash", "list")
+    if code != 0 or not stash_out.strip():
+        return []
+    return [line.strip() for line in stash_out.splitlines() if line.strip()]
+
+def list_stashes() -> None:
+    """Lists current stashes."""
+    stashes = get_stash_list()
+    if not stashes:
+        console.print("[bold yellow]⚠ No stashes found in repository.[/bold yellow]")
+        return
+    console.print("\n[bold cyan]Current Stashes:[/bold cyan]")
+    for s in stashes:
+        console.print(f"  [magenta]➔ {s}[/magenta]")
+
+def create_stash() -> None:
+    """Creates a stash with proper naming scheme: dusky-stash-YYYYMMDD-HHMMSS: description."""
+    console.print("\n[bold cyan]Enter Stash Description / Label (or 'abort' to cancel):[/bold cyan]")
+    desc = input(" ❯ ").strip()
+    if not desc or desc.lower() in ("abort", "q"):
+        console.print("[bold yellow]⚠ Stash creation cancelled.[/bold yellow]")
+        return
+        
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    stash_msg = f"dusky-stash-{timestamp}: {desc}"
+    
+    console.print("[bold cyan]Include untracked files in stash? (y/N)[/bold cyan]")
+    ans = input(" ❯ ").strip().lower()
+    include_untracked = ans in ("y", "yes")
+    
+    stash_args = ["stash", "push", "-m", stash_msg]
+    if include_untracked:
+        stash_args.append("-u")
+        
+    try:
+        run_git(*stash_args, capture=False, check=True)
+        console.print(f"[bold green]✔ Stash created successfully:[/bold green] [dim]{stash_msg}[/dim]")
+    except subprocess.CalledProcessError:
+        console.print("[bold red]✖ Failed to create stash.[/bold red]")
+
+def pop_or_apply_stash(action: str = "pop") -> None:
+    """Pops or applies a stash selected via FZF with diff preview."""
+    stashes = get_stash_list()
+    if not stashes:
+        console.print("[bold yellow]⚠ No stashes found in repository.[/bold yellow]")
+        return
+        
+    preview_cmd = "git --no-advice stash show -p {1}"
+    prompt_text = f"Select Stash to {action.upper()}"
+    
+    selected = fzf_select(stashes, prompt=prompt_text, preview=preview_cmd)
+    if not selected:
+        return
+        
+    stash_ref = selected[0].split(":")[0].strip()
+    
+    try:
+        run_git("stash", action, stash_ref, capture=False, check=True)
+        msg = f"Successfully popped {stash_ref}." if action == "pop" else f"Successfully applied {stash_ref}."
+        console.print(f"[bold green]✔ {msg}[/bold green]")
+    except subprocess.CalledProcessError:
+        console.print(f"[bold red]✖ Failed to {action} {stash_ref}.[/bold red]")
+
+def drop_stash() -> None:
+    """Drops/deletes a selected stash via FZF."""
+    stashes = get_stash_list()
+    if not stashes:
+        console.print("[bold yellow]⚠ No stashes found in repository.[/bold yellow]")
+        return
+        
+    preview_cmd = "git --no-advice stash show -p {1}"
+    selected = fzf_select(stashes, prompt="Select Stash to DROP/DELETE", preview=preview_cmd)
+    if not selected:
+        return
+        
+    stash_ref = selected[0].split(":")[0].strip()
+    stash_desc = selected[0]
+    
+    console.print(f"[bold red]Permanently delete {stash_desc}? (y/N)[/bold red]")
+    ans = input(" ❯ ").strip().lower()
+    if ans in ("y", "yes"):
+        try:
+            run_git("stash", "drop", stash_ref, capture=False, check=True)
+            console.print(f"[bold green]✔ Successfully dropped {stash_ref}.[/bold green]")
+        except subprocess.CalledProcessError:
+            console.print(f"[bold red]✖ Failed to drop {stash_ref}.[/bold red]")
+
+def clear_stashes() -> None:
+    """Clears all stashes in repository."""
+    stashes = get_stash_list()
+    if not stashes:
+        console.print("[bold yellow]⚠ No stashes found in repository.[/bold yellow]")
+        return
+        
+    console.print(Panel.fit(
+        f"[bold red]⚠ CLEAR ALL STASHES ⚠[/bold red]\n"
+        f"This will permanently delete all {len(stashes)} stash entry/entries!",
+        border_style="red"
+    ))
+    console.print("[bold red]Are you absolutely sure you want to clear ALL stashes? (y/N)[/bold red]")
+    ans = input(" ❯ ").strip().lower()
+    if ans in ("y", "yes"):
+        try:
+            run_git("stash", "clear", capture=False, check=True)
+            console.print("[bold green]✔ All stashes cleared successfully.[/bold green]")
+        except subprocess.CalledProcessError:
+            console.print("[bold red]✖ Failed to clear stashes.[/bold red]")
+
+def manage_stashes() -> None:
+    """Interactive sub-menu for stash operations."""
+    while True:
+        console.print(Panel.fit(
+            "[bold magenta]1[/bold magenta] │ Create Stash (With Timestamp & Custom Description)\n"
+            "[bold magenta]2[/bold magenta] │ Pop Stash (Apply & remove from stash list)\n"
+            "[bold magenta]3[/bold magenta] │ Apply Stash (Apply & keep in stash list)\n"
+            "[bold magenta]4[/bold magenta] │ Drop / Delete Specific Stash\n"
+            "[bold magenta]5[/bold magenta] │ List All Stashes\n"
+            "[bold red]6[/bold red] │ Clear All Stashes (Destructive)\n"
+            "[bold red]q[/bold red] │ Return to Main Menu",
+            title="[bold magenta]󰏖 STASH MANAGEMENT TOOLBOX[/bold magenta]",
+            border_style="magenta",
+            title_align="left",
+            box=box.ROUNDED
+        ))
+        
+        choice = input(" ❯ ").strip().lower()
+        if choice in ("q", "back", "exit"):
+            break
+            
+        match choice:
+            case "1": create_stash()
+            case "2": pop_or_apply_stash(action="pop")
+            case "3": pop_or_apply_stash(action="apply")
+            case "4": drop_stash()
+            case "5": list_stashes()
+            case "6": clear_stashes()
+            case _: console.print("[bold red]✖ Invalid choice.[/bold red]")
+
 # --- 5. MAIN ROUTING ENGINE ---
 def print_help() -> None:
     """Prints a categorized, color-coded usage manual of CLI quick flags."""
@@ -858,6 +1253,9 @@ def print_help() -> None:
     # 5. Advanced Toolbox (Magenta)
     table.add_row("[bold magenta]Category[/bold magenta]", "[bold magenta]  ADVANCED TOOLBOX[/bold magenta]", "")
     table.add_row("13", "[magenta]Engage Ephemeral Time Machine (TUI)[/magenta]", "[green]No[/green]")
+    table.add_row("14", "[magenta]Checkout GitHub PR (Local Edits/Testing)[/magenta]", "[green]No[/green]")
+    table.add_row("15", "[magenta]Branch Management Toolbox (Create/Switch/Merge/Push/Delete)[/magenta]", "[green]No[/green]")
+    table.add_row("16", "[magenta]Stash Management Toolbox[/magenta]", "[green]No[/green]")
     table.add_row("q", "[magenta]Quit Dashboard[/magenta]", "[green]No[/green]")
     table.add_row("h", "[magenta]Show this CLI help menu[/magenta]", "[green]No[/green]")
     
@@ -872,7 +1270,7 @@ def main() -> Never:
         if choice in ("-h", "--help", "help", "h"):
             print_help()
             sys.exit(0)
-        elif choice in ("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "q"):
+        elif choice in ("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "q"):
             match choice:
                 case "1": sync_all()
                 case "2": sync_single()
@@ -892,6 +1290,9 @@ def main() -> Never:
                 case "11": reset_local_to_remote()
                 case "12": nuclear_revert()
                 case "13": run_time_machine()
+                case "14": checkout_pr()
+                case "15": manage_branches()
+                case "16": manage_stashes()
                 case "q": sys.exit(0)
             sys.exit(0)
         else:
@@ -904,7 +1305,7 @@ def main() -> Never:
         console.print("[bold blue]󰏖 Dusky Dotfiles Manager[/bold blue]\n")
         
         # 1. Working Tree & Staging (Cyan)
-        console.print(Panel(
+        console.print(Panel.fit(
             "[bold cyan]1[/bold cyan] │ Commit All (Local & Remote)\n"
             "[bold cyan]2[/bold cyan] │ Commit Specific File(s) (Local & Remote)\n"
             "[bold cyan]5[/bold cyan] │ View Delta Differential",
@@ -915,7 +1316,7 @@ def main() -> Never:
         ))
         
         # 2. Commits & Sync (Green)
-        console.print(Panel(
+        console.print(Panel.fit(
             "[bold green]3[/bold green] │ Commit All (Local Only)\n"
             "[bold green]4[/bold green] │ Push Existing Local Commits to Remote",
             title="[bold green]  COMMITS & SYNC (Save to Local / Remote)[/bold green]",
@@ -925,7 +1326,7 @@ def main() -> Never:
         ))
         
         # 3. Local History Rollback (Yellow)
-        console.print(Panel(
+        console.print(Panel.fit(
             "[bold yellow]7[/bold yellow]  │ Undo Local Commits to a Specific Commit (Safe - uncommits but keeps edits on disk)\n"
             "[bold yellow]8[/bold yellow]  │ [bold red]Delete[/bold red] Local Commits since a Specific Commit (Destructive - discards all edits)\n"
             "[bold yellow]10[/bold yellow] │ [bold red]Discard[/bold red] All Uncommitted Local Changes (Destructive - wipes unstaged edits)\n"
@@ -937,7 +1338,7 @@ def main() -> Never:
         ))
         
         # 4. Force Rewriting (Red)
-        console.print(Panel(
+        console.print(Panel.fit(
             "[bold red]6[/bold red]  │ Undo Last Commit Safely (Creates new revert commit on Local & Remote)\n"
             "[bold red]9[/bold red]  │ [bold red]Delete[/bold red] Last Commit from Remote (Destructive - rewrites local & remote)\n"
             "[bold red]12[/bold red] │ [bold red]Delete[/bold red] Commits since a Specific Commit from Remote (Destructive - rewrites local & remote)",
@@ -948,8 +1349,11 @@ def main() -> Never:
         ))
         
         # 5. Advanced Toolbox (Magenta)
-        console.print(Panel(
+        console.print(Panel.fit(
             "[bold magenta]13[/bold magenta] │ Engage Ephemeral Time Machine (TUI)\n"
+            "[bold magenta]14[/bold magenta] │ Checkout GitHub PR (Local Edits / Testing)\n"
+            "[bold magenta]15[/bold magenta] │ Branch Management Toolbox (Create / Switch / Merge / Push / Delete)\n"
+            "[bold magenta]16[/bold magenta] │ Stash Management Toolbox (Create / Pop / Drop / Clear)\n"
             "[bold red]q[/bold red]  │ Quit Dashboard",
             title="[bold magenta]  ADVANCED TOOLBOX[/bold magenta]",
             border_style="magenta",
@@ -957,9 +1361,9 @@ def main() -> Never:
             box=box.ROUNDED
         ))
         
-        console.print("\n[bold blue]Awaiting Directive [1-13/q] [default: 1][/bold blue]")
+        console.print("\n[bold blue]Awaiting Directive [1-16/q] [default: 1][/bold blue]")
         choice = input(" ❯ ").strip() or "1"
-        while choice not in ("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "q"):
+        while choice not in ("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "q"):
             console.print("[bold red]✖ Invalid choice. Please select a valid key.[/bold red]")
             choice = input(" ❯ ").strip() or "1"
         
@@ -982,6 +1386,9 @@ def main() -> Never:
             case "11": reset_local_to_remote()
             case "12": nuclear_revert()
             case "13": run_time_machine()
+            case "14": checkout_pr()
+            case "15": manage_branches()
+            case "16": manage_stashes()
             case "q": raise SystemExit(0)
             
         console.print("\n[dim]Press [Enter] to return to dashboard...[/dim]")
