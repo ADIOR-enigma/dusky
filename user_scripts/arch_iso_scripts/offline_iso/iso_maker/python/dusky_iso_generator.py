@@ -872,6 +872,29 @@ class IsolatedDB:
             dest.write_text(txt, encoding="utf-8")
             dest.chmod(0o644)
 
+        # Optimize mirrorlist with reflector if available
+        if check_tool("reflector"):
+            mfile = self.pacman_d / "mirrorlist"
+            r = subprocess.run(
+                [
+                    "reflector",
+                    "--latest",
+                    "20",
+                    "--protocol",
+                    "https",
+                    "--download-timeout",
+                    "3",
+                    "--save",
+                    str(mfile),
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                shell=False,
+                check=False,
+            )
+            if r.returncode == 0 and mfile.is_file() and mfile.stat().st_size > 100:
+                step("Isolated mirrorlist optimized via reflector (20 fresh HTTPS mirrors)")
+
         out: List[str] = []
         skip = False
         for line in src.splitlines():
@@ -904,7 +927,7 @@ class IsolatedDB:
                         "Color",
                         "ILoveCandy",
                         "VerbosePkgLists",
-                        "ParallelDownloads = 10",
+                        "ParallelDownloads = 5",
                         "Architecture = auto",
                     ]
                 )
