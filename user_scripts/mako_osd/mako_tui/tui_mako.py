@@ -1057,6 +1057,15 @@ SCHEMA = {
     # -------------------------------------------------------------------------
     6: [
         ConfigItem(
+            label="Regenerate",
+            key="action_reload_mako", 
+            scope="DEFAULT",          
+            type_="action",
+            default="bash -c '~/user_scripts/theme_matugen/theme_ctl.sh refresh && makoctl reload'",
+            group="Reload",
+            extended_help="**Live Theme Regeneration**\n\nExecutes `theme_ctl.sh refresh` to compile all templated parameters and immediately reloads the active `makoctl` daemon to apply visual changes."
+        ),
+        ConfigItem(
             label="TestNormal",
             key="action_test_normal",
             scope="DEFAULT",
@@ -1100,15 +1109,6 @@ SCHEMA = {
             default="notify-send -a 'Battery Monitor' -i 'battery-good-charging' 'Power Connected' '80% — charging'",
             group="Execution",
             extended_help="**Battery OSD Test**\n\nFires a mock battery charging notification to preview your Battery OSD styling in the center of the screen."
-        ),
-        ConfigItem(
-            label="Regenerate",
-            key="action_reload_mako", 
-            scope="DEFAULT",          
-            type_="action",
-            default="bash -c '~/user_scripts/theme_matugen/theme_ctl.sh refresh && makoctl reload'",
-            group="Execution",
-            extended_help="**Live Theme Regeneration**\n\nExecutes `theme_ctl.sh refresh` to compile all templated parameters and immediately reloads the active `makoctl` daemon to apply visual changes."
         ),
         ConfigItem(
             label="Reset",
