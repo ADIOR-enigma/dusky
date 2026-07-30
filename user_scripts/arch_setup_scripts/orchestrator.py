@@ -74,28 +74,55 @@ except ImportError as exc:
 VERSION = "19.0.0"
 SCRIPT_DIR: Path = Path(__file__).resolve().parent
 PROFILES_DIR: Path = SCRIPT_DIR / "profiles"
-ASCII_MODE = False
-MAX_DEFER_PASSES = 3
 
-UNICODE_SYMBOLS = {
-    "logo": "◈",
-    "completed": "✔",
-    "running": "●",
-    "failed": "✘",
-    "skipped": "○",
-    "pending": "·",
-    "sep": "│",
-}
 
-ASCII_SYMBOLS = {
-    "logo": "DUSKY",
-    "completed": "OK",
-    "running": "RUN",
-    "failed": "ERR",
-    "skipped": "SKIP",
-    "pending": "...",
-    "sep": "|",
-}
+def load_global_config() -> dict:
+    config_path = PROFILES_DIR / "settings" / "orchestrator.toml"
+    if config_path.exists():
+        try:
+            with open(config_path, "rb") as f:
+                return tomllib.load(f)
+        except Exception as e:
+            sys.stderr.write(f"[WARN] Failed to parse global config: {e}\n")
+    return {}
+
+
+GLOBAL_CONFIG = load_global_config()
+
+ASCII_MODE = GLOBAL_CONFIG.get("ui", {}).get("ascii_mode", False)
+MAX_DEFER_PASSES = GLOBAL_CONFIG.get("execution", {}).get("max_defer_passes", 3)
+
+UNICODE_SYMBOLS = GLOBAL_CONFIG.get(
+    "ui",
+    {},
+).get(
+    "unicode_symbols",
+    {
+        "logo": "◈",
+        "completed": "✔",
+        "running": "●",
+        "failed": "✘",
+        "skipped": "○",
+        "pending": "·",
+        "sep": "│",
+    },
+)
+
+ASCII_SYMBOLS = GLOBAL_CONFIG.get(
+    "ui",
+    {},
+).get(
+    "ascii_symbols",
+    {
+        "logo": "DUSKY",
+        "completed": "OK",
+        "running": "RUN",
+        "failed": "ERR",
+        "skipped": "SKIP",
+        "pending": "...",
+        "sep": "|",
+    },
+)
 
 
 def S(key: str) -> str:
@@ -208,16 +235,17 @@ def safe_dir(primary: Path, fallback: Path, mode: int = 0o700) -> Path:
 def runtime_dir() -> Path:
     pw = target_user_pw()
     candidates: list[Path] = []
+    ns = GLOBAL_CONFIG.get("paths", {}).get("namespace", "dusky")
 
     if os.geteuid() == 0 and pw.pw_uid != 0:
-        candidates.append(Path(f"/run/user/{pw.pw_uid}") / "dusky")
+        candidates.append(Path(f"/run/user/{pw.pw_uid}") / ns)
     else:
         env = os.environ.get("XDG_RUNTIME_DIR")
         if env:
-            candidates.append(Path(env) / "dusky")
-        candidates.append(Path(f"/run/user/{pw.pw_uid}") / "dusky")
+            candidates.append(Path(env) / ns)
+        candidates.append(Path(f"/run/user/{pw.pw_uid}") / ns)
 
-    candidates.append(Path(tempfile.gettempdir()) / f"dusky-{pw.pw_uid}" / "run")
+    candidates.append(Path(tempfile.gettempdir()) / f"{ns}-{pw.pw_uid}" / "run")
 
     for candidate in candidates:
         try:
@@ -225,12 +253,14 @@ def runtime_dir() -> Path:
         except OSError:
             continue
 
-    return ensure_dir(Path.cwd() / ".dusky-run", 0o700)
+    return ensure_dir(Path.cwd() / f".{ns}-run", 0o700)
 
 
 @functools.cache
 def documents_root() -> Path:
-    root = user_home() / "Documents"
+    docs_dir = GLOBAL_CONFIG.get("paths", {}).get("documents_dir", "Documents")
+    p = Path(docs_dir).expanduser()
+    root = p if p.is_absolute() else user_home() / p
     try:
         root.mkdir(parents=True, exist_ok=True)
     except OSError as e:
@@ -240,7 +270,8 @@ def documents_root() -> Path:
 
 
 def _documents_subdir(name: str) -> Path:
-    path = documents_root() / name
+    p = Path(name).expanduser()
+    path = p if p.is_absolute() else documents_root() / p
     try:
         path.mkdir(parents=True, exist_ok=True)
         with suppress(OSError):
@@ -253,25 +284,26 @@ def _documents_subdir(name: str) -> Path:
 
 @functools.cache
 def state_dir() -> Path:
-    return _documents_subdir("state")
+    return _documents_subdir(GLOBAL_CONFIG.get("paths", {}).get("state_subdir", "state"))
 
 
 @functools.cache
 def logs_dir() -> Path:
-    return _documents_subdir("logs")
+    return _documents_subdir(GLOBAL_CONFIG.get("paths", {}).get("logs_subdir", "logs"))
 
 
 @functools.cache
 def backups_dir() -> Path:
-    return _documents_subdir("dusky_backups")
+    return _documents_subdir(GLOBAL_CONFIG.get("paths", {}).get("backups_subdir", "dusky_backups"))
 
 
 @functools.cache
 def cache_dir() -> Path:
     pw = target_user_pw()
+    ns = GLOBAL_CONFIG.get("paths", {}).get("namespace", "dusky")
     return safe_dir(
-        xdg_cache_home() / "dusky",
-        Path(tempfile.gettempdir()) / f"dusky-{pw.pw_uid}" / "cache",
+        xdg_cache_home() / ns,
+        Path(tempfile.gettempdir()) / f"{ns}-{pw.pw_uid}" / "cache",
     )
 
 
@@ -281,7 +313,9 @@ def askpass_dir() -> Path:
 
 
 def lock_path() -> Path:
-    return runtime_dir() / "orchestrator.lock"
+    lock_name = GLOBAL_CONFIG.get("paths", {}).get("lock_file", "orchestrator.lock")
+    p = Path(lock_name).expanduser()
+    return p if p.is_absolute() else runtime_dir() / p
 
 
 # ==============================================================================
@@ -307,55 +341,29 @@ ALT_SPEED_ETA_REGEX = re.compile(
 BRACKET_NEWLINE_RE = re.compile(r"[\r\n]+")
 SINGLE_NEWLINE_RE = re.compile(r"[\r\n]")
 
-PROMPT_RULES: list[tuple[str, re.Pattern[str], str]] = [
-    (
-        "sudo_password",
-        re.compile(
-            r"(?i)(\[sudo\] password for [^:]+:|^\s*Password:\s*$|sudo: a password is required|Password:\s*$)",
-            re.MULTILINE,
-        ),
-        "password",
-    ),
-    (
-        "pgp_import",
-        re.compile(
-            r"(?i)(::\s*Import PGP key.*\?\s*\[Y/n\]|::\s*Append key\?.*\[Y/n\]|Import PGP key.*\?\s*\[Y/n\])",
-            re.MULTILINE,
-        ),
-        "yes",
-    ),
-    (
-        "pacman_proceed",
-        re.compile(
-            r"(?i)::\s*(Proceed with (?:installation|download|upgrade)|Continue (?:installation|download|upgrade)).*\?\s*\[Y/n\]",
-            re.MULTILINE,
-        ),
-        "yes",
-    ),
-    (
-        "pacman_replace",
-        re.compile(r"(?i)::\s*Replace\s+.*\?\s*\[Y/n\]", re.MULTILINE),
-        "yes",
-    ),
-    (
-        "pacman_remove_conflict",
-        re.compile(r"(?i)::\s*Remove conflicting file.*\?\s*\[Y/n\]", re.MULTILINE),
-        "yes",
-    ),
-    (
-        "aur_proceed",
-        re.compile(
-            r"(?i)(Proceed with installation\?|Continue building\?|Continue installing\?|::\s*Proceed with (?:installation|download|build).*\?\s*\[Y/n\])",
-            re.MULTILINE,
-        ),
-        "yes",
-    ),
-    (
-        "generic_yes",
-        re.compile(r"(?i)\[Y/n\]|\(Y/n\)|\[y/N\]|\(y/N\)", re.MULTILINE),
-        "yes",
-    ),
-]
+def _build_prompt_rules() -> list[tuple[str, re.Pattern[str], str]]:
+    default_rules = [
+        ("sudo_password", r"(?i)(\[sudo\] password for [^:]+:|^\s*Password:\s*$|sudo: a password is required|Password:\s*$)", "password"),
+        ("pgp_import", r"(?i)(::\s*Import PGP key.*\?\s*\[Y/n\]|::\s*Append key\?.*\[Y/n\]|Import PGP key.*\?\s*\[Y/n\])", "yes"),
+        ("pacman_proceed", r"(?i)::\s*(Proceed with (?:installation|download|upgrade)|Continue (?:installation|download|upgrade)).*\?\s*\[Y/n\]", "yes"),
+        ("pacman_replace", r"(?i)::\s*Replace\s+.*\?\s*\[Y/n\]", "yes"),
+        ("pacman_remove_conflict", r"(?i)::\s*Remove conflicting file.*\?\s*\[Y/n\]", "yes"),
+        ("aur_proceed", r"(?i)(Proceed with installation\?|Continue building\?|Continue installing\?|::\s*Proceed with (?:installation|download|build).*\?\s*\[Y/n\])", "yes"),
+        ("generic_yes", r"(?i)\[Y/n\]|\(Y/n\)|\[y/N\]|\(y/N\)", "yes"),
+    ]
+    config_rules = GLOBAL_CONFIG.get("prompts", {}).get("rules", [])
+    rules = []
+    items_to_parse = config_rules if config_rules else default_rules
+    for item in items_to_parse:
+        if isinstance(item, dict):
+            name, pattern, kind = item["name"], item["pattern"], item["kind"]
+        else:
+            name, pattern, kind = item
+        rules.append((name, re.compile(pattern, re.MULTILINE), kind))
+    return rules
+
+
+PROMPT_RULES: list[tuple[str, re.Pattern[str], str]] = _build_prompt_rules()
 
 
 # ==============================================================================
@@ -489,9 +497,10 @@ class StateStore:
     def __init__(self, profile: ProfileConfig):
         self.path = state_dir() / f"{safe_filename(profile.name)}.db"
         self.conn = sqlite3.connect(self.path)
+        busy_timeout = GLOBAL_CONFIG.get("execution", {}).get("db_busy_timeout", 5000)
         self.conn.execute("PRAGMA journal_mode=WAL;")
         self.conn.execute("PRAGMA synchronous=NORMAL;")
-        self.conn.execute("PRAGMA busy_timeout=5000;")
+        self.conn.execute(f"PRAGMA busy_timeout={busy_timeout};")
         self.conn.execute(
             """
             CREATE TABLE IF NOT EXISTS state (
@@ -575,9 +584,10 @@ class OnceStore:
     def __init__(self) -> None:
         self.path = state_dir() / "once.db"
         self.conn = sqlite3.connect(self.path)
+        busy_timeout = GLOBAL_CONFIG.get("execution", {}).get("db_busy_timeout", 5000)
         self.conn.execute("PRAGMA journal_mode=WAL;")
         self.conn.execute("PRAGMA synchronous=NORMAL;")
-        self.conn.execute("PRAGMA busy_timeout=5000;")
+        self.conn.execute(f"PRAGMA busy_timeout={busy_timeout};")
         self.conn.execute(
             """
 CREATE TABLE IF NOT EXISTS once_markers (
@@ -796,6 +806,9 @@ class RunLogger:
         self._task_counts: dict[str, int] = {}
         self.run_id = run_id
 
+        if not GLOBAL_CONFIG.get("logging", {}).get("enabled", True):
+            return
+
         try:
             stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             self.root = logs_dir() / f"{stamp}_{safe_filename(profile.name)}_{run_id}"
@@ -982,28 +995,39 @@ class AudioNotifier:
     @classmethod
     @functools.cache
     def _get_player(cls) -> str | None:
-        for bin_name in ("pw-play", "paplay"):
+        players = GLOBAL_CONFIG.get("notifications", {}).get("audio_players", ["pw-play", "paplay"])
+        for bin_name in players:
             if p := shutil.which(bin_name):
                 return p
         return None
 
     @classmethod
     def play(cls, sound_type: str = "alert") -> None:
-        if not cls.enabled:
+        if not cls.enabled or not GLOBAL_CONFIG.get("notifications", {}).get("audio_enabled", True):
             return
 
         player = cls._get_player()
         if not player:
             return
 
-        sound_map = {
-            "alert": "/usr/share/sounds/freedesktop/stereo/dialog-warning.oga",
-            "info": "/usr/share/sounds/freedesktop/stereo/dialog-information.oga",
-            "complete": "/usr/share/sounds/freedesktop/stereo/complete.oga",
-        }
-        target = Path(sound_map.get(sound_type, sound_map["alert"]))
+        sound_map = GLOBAL_CONFIG.get(
+            "notifications",
+            {},
+        ).get(
+            "sound_map",
+            {
+                "alert": "/usr/share/sounds/freedesktop/stereo/dialog-warning.oga",
+                "info": "/usr/share/sounds/freedesktop/stereo/dialog-information.oga",
+                "complete": "/usr/share/sounds/freedesktop/stereo/complete.oga",
+            },
+        )
+        target = Path(sound_map.get(sound_type, sound_map.get("alert", "")))
         if not target.exists():
-            fallback = Path("/usr/share/sounds/freedesktop/stereo/bell.oga")
+            fallback_sound = GLOBAL_CONFIG.get(
+                "notifications",
+                {},
+            ).get("fallback_sound", "/usr/share/sounds/freedesktop/stereo/bell.oga")
+            fallback = Path(fallback_sound)
             if fallback.exists():
                 target = fallback
             else:
@@ -1030,15 +1054,16 @@ class DesktopNotifier:
 
     @classmethod
     def notify(cls, title: str, body: str, urgency: str = "normal") -> None:
-        if not cls.enabled:
+        if not cls.enabled or not GLOBAL_CONFIG.get("notifications", {}).get("desktop_enabled", True):
             return
         if not shutil.which("notify-send"):
             return
+        app_name = GLOBAL_CONFIG.get("notifications", {}).get("app_name", "Dusky Orchestrator")
         with suppress(OSError):
             subprocess.Popen(
                 [
                     "notify-send",
-                    "--app-name=Dusky Orchestrator",
+                    f"--app-name={app_name}",
                     f"--urgency={urgency}",
                     title,
                     body,
@@ -1199,54 +1224,60 @@ class SudoEngine:
     _mode: str = "none"  # none | root | nopasswd | password
     _registered_atexit: bool = False
 
-    ENV_KEEP = [
-        "HOME",
-        "USER",
-        "LOGNAME",
-        "SHELL",
-        "PATH",
-        "TERM",
-        "COLORTERM",
-        "LANG",
-        "LC_ALL",
-        "LC_CTYPE",
-        "TZ",
-        "XDG_RUNTIME_DIR",
-        "XDG_CONFIG_HOME",
-        "XDG_CACHE_HOME",
-        "XDG_STATE_HOME",
-        "XDG_DATA_HOME",
-        "XDG_SESSION_TYPE",
-        "XDG_CURRENT_DESKTOP",
-        "DBUS_SESSION_BUS_ADDRESS",
-        "DISPLAY",
-        "WAYLAND_DISPLAY",
-        "XAUTHORITY",
-        "SSH_AUTH_SOCK",
-        "SSH_AGENT_PID",
-        "SUDO_ASKPASS",
-        "PYTHONUNBUFFERED",
-        "PYTHONUTF8",
-        "PYTHONDONTWRITEBYTECODE",
-        "PAGER",
-        "SYSTEMD_PAGER",
-        "GIT_PAGER",
-        "EDITOR",
-        "VISUAL",
-        "QT_QPA_PLATFORMTHEME",
-        "GTK_THEME",
-        "XCURSOR_THEME",
-        "XCURSOR_SIZE",
-        "MOZ_ENABLE_WAYLAND",
-        "LIBVA_DRIVER_NAME",
-        "VDPAU_DRIVER",
-        "SDL_VIDEODRIVER",
-        "ZDOTDIR",
-        "HYPRLAND_INSTANCE_SIGNATURE",
-        "QT_QPA_PLATFORM",
-        "XDG_SESSION_ID",
-        "XDG_SEAT",
-    ]
+    ENV_KEEP = GLOBAL_CONFIG.get(
+        "sudo",
+        {},
+    ).get(
+        "env_keep",
+        [
+            "HOME",
+            "USER",
+            "LOGNAME",
+            "SHELL",
+            "PATH",
+            "TERM",
+            "COLORTERM",
+            "LANG",
+            "LC_ALL",
+            "LC_CTYPE",
+            "TZ",
+            "XDG_RUNTIME_DIR",
+            "XDG_CONFIG_HOME",
+            "XDG_CACHE_HOME",
+            "XDG_STATE_HOME",
+            "XDG_DATA_HOME",
+            "XDG_SESSION_TYPE",
+            "XDG_CURRENT_DESKTOP",
+            "DBUS_SESSION_BUS_ADDRESS",
+            "DISPLAY",
+            "WAYLAND_DISPLAY",
+            "XAUTHORITY",
+            "SSH_AUTH_SOCK",
+            "SSH_AGENT_PID",
+            "SUDO_ASKPASS",
+            "PYTHONUNBUFFERED",
+            "PYTHONUTF8",
+            "PYTHONDONTWRITEBYTECODE",
+            "PAGER",
+            "SYSTEMD_PAGER",
+            "GIT_PAGER",
+            "EDITOR",
+            "VISUAL",
+            "QT_QPA_PLATFORMTHEME",
+            "GTK_THEME",
+            "XCURSOR_THEME",
+            "XCURSOR_SIZE",
+            "MOZ_ENABLE_WAYLAND",
+            "LIBVA_DRIVER_NAME",
+            "VDPAU_DRIVER",
+            "SDL_VIDEODRIVER",
+            "ZDOTDIR",
+            "HYPRLAND_INSTANCE_SIGNATURE",
+            "QT_QPA_PLATFORM",
+            "XDG_SESSION_ID",
+            "XDG_SEAT",
+        ],
+    )
 
     @classmethod
     def mode_name(cls) -> str:
@@ -1303,7 +1334,8 @@ class SudoEngine:
             "sys.stdout.write('\\n')\n"
         )
 
-        fd, path = tempfile.mkstemp(prefix=".dusky_askpass_", dir=str(askpass_dir()))
+        prefix = GLOBAL_CONFIG.get("paths", {}).get("askpass_prefix", ".dusky_askpass_")
+        fd, path = tempfile.mkstemp(prefix=prefix, dir=str(askpass_dir()))
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(script)
         os.chmod(path, 0o700)
@@ -1311,16 +1343,17 @@ class SudoEngine:
 
     @classmethod
     def _remove_stale_sudoers_files(cls, env: dict[str, str]) -> None:
-        script = r"""
-for f in /etc/sudoers.d/99_dusky_*; do
+        prefix = GLOBAL_CONFIG.get("sudo", {}).get("dropin_prefix", "99_dusky_")
+        script = f"""
+for f in /etc/sudoers.d/{prefix}*; do
     [ -f "$f" ] || continue
-    pid=$(sed -n 's/^# pid=\([0-9]*\).*/\1/p' "$f" | head -n1)
-    expected_st=$(sed -n 's/.*starttime=\([0-9]*\).*/\1/p' "$f" | head -n1)
+    pid=$(sed -n 's/^# pid=\\([0-9]*\\).*/\\1/p' "$f" | head -n1)
+    expected_st=$(sed -n 's/.*starttime=\\([0-9]*\\).*/\\1/p' "$f" | head -n1)
     if [ -n "$pid" ]; then
         if ! kill -0 "$pid" 2>/dev/null; then
             rm -f "$f"
         elif [ -n "$expected_st" ] && [ -f "/proc/$pid/stat" ]; then
-            real_st=$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null)
+            real_st=$(awk '{{print $22}}' "/proc/$pid/stat" 2>/dev/null)
             if [ "$real_st" != "$expected_st" ]; then
                 rm -f "$f"
             fi
@@ -1346,7 +1379,8 @@ done
     def _write_sudoers_dropin(cls, env: dict[str, str]) -> None:
         username = target_user_pw().pw_name
         safe_user = re.sub(r"[^A-Za-z0-9._-]", "_", username)
-        path = Path(f"/etc/sudoers.d/99_dusky_{safe_user}_{os.getpid()}")
+        prefix = GLOBAL_CONFIG.get("sudo", {}).get("dropin_prefix", "99_dusky_")
+        path = Path(f"/etc/sudoers.d/{prefix}{safe_user}_{os.getpid()}")
         env_vars = " ".join(cls.ENV_KEEP)
 
         start_time = "0"
@@ -1356,9 +1390,10 @@ done
             if idx != -1:
                 start_time = stat_text[idx + 1:].split()[19]
 
+        timeout = GLOBAL_CONFIG.get("sudo", {}).get("timestamp_timeout", 15)
         content = (
             f"# pid={os.getpid()} starttime={start_time} ts={int(time.time())}\n"
-            f"Defaults:{username} timestamp_type=global, timestamp_timeout=15\n"
+            f"Defaults:{username} timestamp_type=global, timestamp_timeout={timeout}\n"
             f"Defaults:{username} env_keep += \"{env_vars} DUSKY_*\"\n"
         )
 
@@ -1579,9 +1614,10 @@ done
     @staticmethod
     async def maintain_heartbeat(error_callback=None) -> None:
         fail_count = 0
+        interval = GLOBAL_CONFIG.get("sudo", {}).get("heartbeat_interval", 45)
         try:
             while True:
-                await asyncio.sleep(45)
+                await asyncio.sleep(interval)
                 ok = await asyncio.to_thread(SudoEngine.refresh_sync)
                 if ok:
                     fail_count = 0
@@ -1598,15 +1634,29 @@ done
 # ==============================================================================
 def get_theme_path() -> Path:
     base_dir = user_home()
-    generated = base_dir / ".config/matugen/generated/dusky_tui.json"
-    if generated.exists():
-        return generated
+    theme_paths = GLOBAL_CONFIG.get(
+        "ui",
+        {},
+    ).get(
+        "theme_paths",
+        [
+            ".config/matugen/generated/dusky_tui.json",
+            ".config/matugen/generated_fresh/dusky_tui.json",
+        ],
+    )
 
-    generated_fresh = base_dir / ".config/matugen/generated_fresh/dusky_tui.json"
-    if generated_fresh.exists():
-        return generated_fresh
+    for rel_path in theme_paths:
+        p = Path(rel_path).expanduser()
+        p = p if p.is_absolute() else base_dir / p
+        if p.exists():
+            return p
 
-    return generated
+    fallback_p = (
+        Path(theme_paths[0]).expanduser()
+        if theme_paths
+        else Path(".config/matugen/generated/dusky_tui.json")
+    )
+    return fallback_p if fallback_p.is_absolute() else base_dir / fallback_p
 
 
 def _color_value(value: object) -> str | None:
@@ -1630,15 +1680,21 @@ def _pick_color(data: dict, names: list[str], fallback: str) -> str:
 
 
 def load_palette() -> dict[str, str]:
-    default_palette = {
-        "bg": "#0a1612",
-        "fg": "#d8e6df",
-        "accent": "#00e0b8",
-        "warning": "#a0d0cb",
-        "success": "#8dd2da",
-        "muted": "#1a2e28",
-        "error": "#ffb4ab",
-    }
+    default_palette = GLOBAL_CONFIG.get(
+        "ui",
+        {},
+    ).get(
+        "default_palette",
+        {
+            "bg": "#0a1612",
+            "fg": "#d8e6df",
+            "accent": "#00e0b8",
+            "warning": "#a0d0cb",
+            "success": "#8dd2da",
+            "muted": "#1a2e28",
+            "error": "#ffb4ab",
+        },
+    )
 
     theme_file = get_theme_path()
     if not theme_file.exists():
@@ -2276,10 +2332,12 @@ def load_profile(filepath: Path) -> ProfileConfig:
 
     policy = policy_data if isinstance(policy_data, dict) else {}
 
+    default_repo_url = GLOBAL_CONFIG.get(
+        "git",
+        {},
+    ).get("default_repo_url", "https://github.com/dusklinux/dusky")
     git_repo_url = str(
-        g_data.get("url")
-        or g_data.get("repo_url")
-        or "https://github.com/dusklinux/dusky"
+        g_data.get("url") or g_data.get("repo_url") or default_repo_url
     ).strip()
 
     return ProfileConfig(
@@ -2455,16 +2513,27 @@ def resolve_and_validate_manifest(profile: ProfileConfig) -> bool:
                     task.interpreter = shebang_interp
         else:
             suffix = task.resolved_path.suffix.lower()
-            if suffix == ".py":
-                task.interpreter = sys.executable
-            elif suffix == ".sh":
-                task.interpreter = shutil.which("bash") or "bash"
-            elif suffix == ".fish":
-                task.interpreter = shutil.which("fish") or "fish"
+            ext_map = GLOBAL_CONFIG.get(
+                "execution",
+                {},
+            ).get(
+                "extension_interpreters",
+                {
+                    ".py": sys.executable,
+                    ".sh": shutil.which("bash") or "bash",
+                    ".fish": shutil.which("fish") or "fish",
+                },
+            )
+
+            if suffix in ext_map:
+                task.interpreter = ext_map[suffix]
             elif executable:
                 task.interpreter = ""
             else:
-                task.interpreter = shutil.which("bash") or "bash"
+                task.interpreter = GLOBAL_CONFIG.get(
+                    "execution",
+                    {},
+                ).get("default_interpreter", shutil.which("bash") or "bash")
 
         if task.interpreter:
             interp = task.interpreter
@@ -2601,9 +2670,17 @@ class ConditionEvaluator:
             return self._gpu(value.lower())
 
         if kind == "service_active":
-            return self._run(["systemctl", "is-active", "--quiet", value])
+            cmd = GLOBAL_CONFIG.get("conditions", {}).get(
+                "service_active_cmd",
+                ["systemctl", "is-active", "--quiet"],
+            )
+            return self._run(cmd + [value])
         if kind == "user_service_active":
-            return self._run(["systemctl", "--user", "is-active", "--quiet", value])
+            cmd = GLOBAL_CONFIG.get("conditions", {}).get(
+                "user_service_active_cmd",
+                ["systemctl", "--user", "is-active", "--quiet"],
+            )
+            return self._run(cmd + [value])
 
         if kind == "env":
             return bool(os.environ.get(value))
@@ -2673,9 +2750,13 @@ class ConditionEvaluator:
         return False
 
     def _package_installed(self, name: str) -> bool:
-        if not shutil.which("pacman"):
+        pkg_cmd = GLOBAL_CONFIG.get("conditions", {}).get(
+            "package_check_cmd",
+            ["pacman", "-Qq"],
+        )
+        if not pkg_cmd or not shutil.which(pkg_cmd[0]):
             return False
-        return self._run(["pacman", "-Qq", name])
+        return self._run(pkg_cmd + [name])
 
     def _user_in_group(self, group: str) -> bool:
         user = target_user_pw().pw_name
@@ -2692,13 +2773,19 @@ class ConditionEvaluator:
 
         drm_path = Path("/sys/class/drm")
         if drm_path.exists():
-            vendor_map = {
-                "nvidia": "0x10de",
-                "intel": "0x8086",
-                "amd": "0x1002",
-                "vmware": "0x15ad",
-                "virtio": "0x1af4",
-            }
+            vendor_map = GLOBAL_CONFIG.get(
+                "conditions",
+                {},
+            ).get(
+                "gpu_vendor_map",
+                {
+                    "nvidia": "0x10de",
+                    "intel": "0x8086",
+                    "amd": "0x1002",
+                    "vmware": "0x15ad",
+                    "virtio": "0x1af4",
+                },
+            )
             target_vendor = vendor_map.get(kind)
             if target_vendor:
                 with suppress(OSError):
@@ -2746,32 +2833,42 @@ class ConditionEvaluator:
 # ==============================================================================
 # GIT SELF UPDATE
 # ==============================================================================
-GIT_UPSTREAM_BRANCH = "main"
-GIT_UPSTREAM_REF = "refs/dusky/upstream/main"
+GIT_UPSTREAM_BRANCH = GLOBAL_CONFIG.get("git", {}).get("upstream_branch", "main")
+GIT_UPSTREAM_REF = GLOBAL_CONFIG.get(
+    "git",
+    {},
+).get("upstream_ref", f"refs/dusky/upstream/{GIT_UPSTREAM_BRANCH}")
 
 
 def _git_env() -> dict[str, str]:
     env = os.environ.copy()
+    git_config = GLOBAL_CONFIG.get("git", {})
 
-    for key in (
-        "GIT_DIR",
-        "GIT_WORK_TREE",
-        "GIT_INDEX_FILE",
-        "GIT_LITERAL_PATHSPECS",
-        "GIT_ASKPASS",
-        "SSH_ASKPASS",
-    ):
+    strip_keys = git_config.get(
+        "env_strip",
+        [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_LITERAL_PATHSPECS",
+            "GIT_ASKPASS",
+            "SSH_ASKPASS",
+        ],
+    )
+    for key in strip_keys:
         env.pop(key, None)
 
-    env.update(
+    env_inject = git_config.get(
+        "env_inject",
         {
             "GIT_TERMINAL_PROMPT": "0",
             "GIT_SSH_COMMAND": "ssh -o BatchMode=yes",
             "GIT_PAGER": "cat",
             "PAGER": "cat",
             "GIT_OPTIONAL_LOCKS": "0",
-        }
+        },
     )
+    env.update(env_inject)
     return env
 
 
@@ -2971,7 +3068,10 @@ def _ensure_free_space(path: Path, required_bytes: int, context: str) -> bool:
     if required_bytes <= 0:
         return True
 
-    reserve = 64 * 1024 * 1024
+    reserve = GLOBAL_CONFIG.get(
+        "execution",
+        {},
+    ).get("disk_space_reserve_bytes", 64 * 1024 * 1024)
     free = _free_bytes(path)
 
     if free < required_bytes + reserve:
@@ -3495,8 +3595,10 @@ def _prompt_choice(
 
 def _fetch_upstream_main(base_cmd: list[str], remote: str) -> str:
     last_error: Exception | None = None
+    max_attempts = GLOBAL_CONFIG.get("git", {}).get("fetch_max_attempts", 5)
+    fetch_timeout = GLOBAL_CONFIG.get("git", {}).get("timeout_fetch", 90)
 
-    for attempt in range(1, 6):
+    for attempt in range(1, max_attempts + 1):
         try:
             _git_check(
                 base_cmd
@@ -3506,17 +3608,17 @@ def _fetch_upstream_main(base_cmd: list[str], remote: str) -> str:
                     remote,
                     f"+refs/heads/{GIT_UPSTREAM_BRANCH}:{GIT_UPSTREAM_REF}",
                 ],
-                timeout=90,
+                timeout=fetch_timeout,
             )
             return GIT_UPSTREAM_REF
         except Exception as e:
             last_error = e
-            if attempt < 5:
+            if attempt < max_attempts:
                 wait = 2 * attempt
-                sys.stdout.write(f"[WARN] Fetch attempt {attempt}/5 failed. Retrying in {wait}s...\n")
+                sys.stdout.write(f"[WARN] Fetch attempt {attempt}/{max_attempts} failed. Retrying in {wait}s...\n")
                 time.sleep(wait)
 
-    raise RuntimeError(f"git fetch failed after 5 attempts: {last_error}")
+    raise RuntimeError(f"git fetch failed after {max_attempts} attempts: {last_error}")
 
 
 def validate_updated_sources(my_path: Path, wrapper_path: Path) -> None:
@@ -3670,8 +3772,8 @@ def run_git_self_update(
 
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_root = backups_dir() / f"dusky_backup_{timestamp}_{remote_head[:7]}"
-        ensure_dir(backup_root, 0o700)
-        _clean_old_backups(backups_dir(), keep=10)
+        retention = GLOBAL_CONFIG.get("git", {}).get("backup_retention", 10)
+        _clean_old_backups(backups_dir(), keep=retention)
 
         collision_dir = backup_root / "untracked_collisions"
         needs_merge_dir = backup_root / "needs_merge"
@@ -3991,8 +4093,10 @@ class TaskSearchScreen(ModalScreen[str | None]):
         query_lower = query.lower().strip()
         query_no_space = query_lower.replace(" ", "")
 
+        limit = GLOBAL_CONFIG.get("ui", {}).get("search_result_limit", 200)
+
         if not query_lower:
-            scored = [(0, t) for t in self.tasks[:200]]
+            scored = [(0, t) for t in self.tasks[:limit]]
         else:
             scored_results: list[tuple[int, OrchestratorTask]] = []
             for item in self.tasks:
@@ -4036,7 +4140,7 @@ class TaskSearchScreen(ModalScreen[str | None]):
             scored = scored_results
 
         options: list[Option] = []
-        for _, item in scored[:200]:
+        for _, item in scored[:limit]:
             txt = Text()
             txt.append(f"{item.index:03d} ")
             txt.append_text(_status_badge(item.status))
@@ -4106,6 +4210,8 @@ class LogSearchScreen(ModalScreen[None]):
         if not q:
             return
 
+        limit = GLOBAL_CONFIG.get("ui", {}).get("search_result_limit", 200)
+
         options: list[Option] = []
         for i, line in enumerate(self.lines, start=1):
             if q in line.lower():
@@ -4113,7 +4219,7 @@ class LogSearchScreen(ModalScreen[None]):
                 txt.append(f"{i:05d} ", style="dim")
                 txt.append(line[:300])
                 options.append(Option(txt))
-                if len(options) >= 200:
+                if len(options) >= limit:
                     break
 
         ol.add_options(options)
@@ -4531,12 +4637,13 @@ class DuskyOrchestratorApp(App):
         self.conditions = ConditionEvaluator()
 
         self.tree_widget = Tree(f"{S('logo')} Execution Sequence")
+        max_lines = GLOBAL_CONFIG.get("ui", {}).get("max_log_lines", 6000)
         self.log_widget = RichLog(
             id="pty_log",
             highlight=False,
             markup=False,
             wrap=True,
-            max_lines=6000,
+            max_lines=max_lines,
         )
         self.progress_bar = ProgressBar(show_eta=False, show_percentage=False, id="progress_bar")
         self.status_label = Label("Initializing orchestrator sequence...", id="status_label")
@@ -4548,7 +4655,7 @@ class DuskyOrchestratorApp(App):
         self._total_paused_time: float = 0.0
         self._pause_start: float | None = None
         self._prompt_pause_level: int = 0
-        self.left_pane_width: int = 38
+        self.left_pane_width: int = GLOBAL_CONFIG.get("ui", {}).get("left_pane_width", 38)
 
         self.tree_nodes_map: dict[str, TreeNode] = {}
         self.logger = RunLogger(profile, self.run_id)
@@ -4590,13 +4697,14 @@ class DuskyOrchestratorApp(App):
 
                 with ContentSwitcher(id="log_switcher"):
                     yield self.log_widget
+                    max_lines = GLOBAL_CONFIG.get("ui", {}).get("max_log_lines", 6000)
                     for task in self.tasks:
                         yield RichLog(
                             id=f"log_{task.state_key}",
                             highlight=False,
                             markup=False,
                             wrap=True,
-                            max_lines=6000,
+                            max_lines=max_lines,
                         )
 
         yield AppFooter()
@@ -4737,7 +4845,9 @@ class DuskyOrchestratorApp(App):
             )
 
     def _set_pane_widths(self, width_pct: int) -> None:
-        self.left_pane_width = max(15, min(80, width_pct))
+        min_w = GLOBAL_CONFIG.get("ui", {}).get("min_left_pane_width", 15)
+        max_w = GLOBAL_CONFIG.get("ui", {}).get("max_left_pane_width", 80)
+        self.left_pane_width = max(min_w, min(max_w, width_pct))
         with suppress(Exception):
             self.query_one("#left_pane").styles.width = f"{self.left_pane_width}%"
             self.query_one("#right_pane").styles.width = f"{100 - self.left_pane_width}%"
@@ -4985,7 +5095,8 @@ class DuskyOrchestratorApp(App):
     def _append_log_line(self, key: str | None, line: str) -> None:
         dq = self._log_lines.get(key)
         if dq is None:
-            dq = deque(maxlen=5000)
+            max_deque = GLOBAL_CONFIG.get("ui", {}).get("max_deque_lines", 5000)
+            dq = deque(maxlen=max_deque)
             self._log_lines[key] = dq
         dq.append(line.rstrip())
 
@@ -5133,7 +5244,8 @@ class DuskyOrchestratorApp(App):
 
             now = time.monotonic()
             last = self._prompt_last.get(name, 0.0)
-            if now - last < 0.35:
+            cooldown = GLOBAL_CONFIG.get("prompts", {}).get("cooldown", 0.35)
+            if now - last < cooldown:
                 continue
 
             response: bytes | None = None
@@ -5209,8 +5321,10 @@ class DuskyOrchestratorApp(App):
             winsize = struct.pack("HHHH", size.lines, size.columns, 0, 0)
             fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
         except (OSError, ValueError):
+            fallback_cols = GLOBAL_CONFIG.get("ui", {}).get("fallback_pty_columns", 120)
+            fallback_lines = GLOBAL_CONFIG.get("ui", {}).get("fallback_pty_lines", 40)
             with suppress(OSError):
-                winsize = struct.pack("HHHH", 40, 120, 0, 0)
+                winsize = struct.pack("HHHH", fallback_lines, fallback_cols, 0, 0)
                 fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
 
     async def _kill_proc(self, proc: asyncio.subprocess.Process | None) -> None:
