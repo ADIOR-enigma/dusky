@@ -427,12 +427,6 @@ class NetworkManagerEngine(BaseEngine):
         state["status_action/restart_nm"] = "false"
         state["status_action/rescan"] = "false"
 
-        # DNS actions
-        state["dns_action/dns_dhcp"] = "false"
-        state["dns_action/dns_cloudflare"] = "false"
-        state["dns_action/dns_google"] = "false"
-        state["dns_action/dns_custom"] = self._dns_servers_str
-
         # Speed test actions
         state["speedtest_action/speedtest_full"] = "false"
         state["speedtest_action/speedtest_down"] = "false"
@@ -504,10 +498,6 @@ class NetworkManagerEngine(BaseEngine):
         # ---- Status tab actions ----
         if target_scope == "status_action":
             return self._handle_status_action(target_key)
-
-        # ---- DNS tab actions ----
-        if target_scope == "dns_action":
-            return self._handle_dns_action(target_key, new_value)
 
         # ---- Speed Test tab actions ----
         if target_scope == "speedtest_action":
@@ -681,79 +671,6 @@ class NetworkManagerEngine(BaseEngine):
         except Exception:
             pass
         return "DHCP"
-
-    def _handle_dns_action(self, key: str, value: str) -> tuple[bool, str, str]:
-        dns_script = self._find_script("omarchy-dns")
-        if shutil.which("omarchy-dns") or Path(dns_script).exists():
-            env = self._get_exec_env()
-            if key == "dns_dhcp":
-                cmd = [dns_script, "DHCP"]
-            elif key == "dns_cloudflare":
-                cmd = [dns_script, "Cloudflare"]
-            elif key == "dns_google":
-                cmd = [dns_script, "Google"]
-            elif key == "dns_custom":
-                if not value:
-                    return False, "Custom DNS servers string cannot be empty.", ""
-                self._dns_servers_str = value
-                cmd = [dns_script, "Custom"]
-            else:
-                return True, "OK", ""
-
-            try:
-                res = subprocess.run(
-                    cmd,
-                    input=(value + "\n") if key == "dns_custom" else None,
-                    capture_output=True, text=True, env=env, timeout=20
-                )
-                if res.returncode == 0:
-                    self.rescan_event.set()
-                    return True, f"DNS updated to {key.replace('dns_', '').upper()}.", res.stdout
-                else:
-                    err = res.stderr.strip()
-                    if "sudo" in err.lower() or "root" in err.lower() or "password" in err.lower():
-                        return False, "AUTH_REQUIRED", res.stderr
-                    return False, f"Failed: {err}", res.stderr
-            except Exception as e:
-                return False, f"Error setting DNS: {e}", str(e)
-
-        # Native nmcli DNS fallback
-        active = self._get_active_wifi_connection()
-        conn_target = active["uuid"] if active else None
-        if not conn_target:
-            for line in self._run_cmd(["nmcli", "-t", "-f", "UUID,STATE", "connection", "show", "--active"]).splitlines():
-                parts = _split_nmcli_line(line)
-                if len(parts) >= 2 and parts[1] in ("activated", "activating"):
-                    conn_target = parts[0]
-                    break
-
-        if not conn_target:
-            return False, "No active connection found to apply DNS.", ""
-
-        if key == "dns_dhcp":
-            cmd_mod = ["nmcli", "connection", "modify", conn_target, "ipv4.dns", "", "ipv4.ignore-auto-dns", "no"]
-            dns_lbl = "DHCP"
-        elif key == "dns_cloudflare":
-            cmd_mod = ["nmcli", "connection", "modify", conn_target, "ipv4.dns", "1.1.1.1 1.0.0.1", "ipv4.ignore-auto-dns", "yes"]
-            dns_lbl = "Cloudflare"
-        elif key == "dns_google":
-            cmd_mod = ["nmcli", "connection", "modify", conn_target, "ipv4.dns", "8.8.8.8 8.8.4.4", "ipv4.ignore-auto-dns", "yes"]
-            dns_lbl = "Google"
-        elif key == "dns_custom":
-            if not value:
-                return False, "Custom DNS servers string cannot be empty.", ""
-            self._dns_servers_str = value
-            cmd_mod = ["nmcli", "connection", "modify", conn_target, "ipv4.dns", value, "ipv4.ignore-auto-dns", "yes"]
-            dns_lbl = "Custom"
-        else:
-            return True, "OK", ""
-
-        res1 = subprocess.run(cmd_mod, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=10)
-        if res1.returncode == 0:
-            res2 = subprocess.run(["nmcli", "connection", "up", conn_target], capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=15)
-            self.rescan_event.set()
-            return True, f"DNS updated to {dns_lbl}.", res2.stdout
-        return False, f"Failed setting DNS: {res1.stderr.strip()}", res1.stderr
 
     def _handle_speedtest_action(self, key: str) -> tuple[bool, str, str]:
         if self._speedtest_running:

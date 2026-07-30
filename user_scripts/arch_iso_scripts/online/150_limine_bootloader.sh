@@ -2,7 +2,7 @@
 # ==============================================================================
 # MODULE: 007_limine_bootloader.sh
 # CONTEXT: Arch chroot environment
-# PURPOSE: Dynamic Limine Deployment (UEFI/BIOS, LUKS/Plain, CachyOS/Vanilla)
+# PURPOSE: Dynamic Limine Deployment (UEFI/BIOS, LUKS/Plain)
 # ==============================================================================
 
 set -euo pipefail
@@ -252,11 +252,11 @@ else
     limine bios-install "${BOOT_DISK}"
 fi
 
-# --- Configuration Generation (Vanilla vs CachyOS) ---
+# --- Configuration Generation ---
 CONF_FILE="/boot/limine.conf"
 
 if command -v limine-entry-tool >/dev/null 2>&1; then
-    log_info "CachyOS Environment Detected: Leveraging limine-entry-tool..."
+    log_info "limine-entry-tool detected: Leveraging automated configuration generator..."
 
     mkdir -p /etc/kernel
     printf '%s\n' "$CMDLINE_BASE" > /etc/kernel/cmdline
@@ -264,7 +264,7 @@ if command -v limine-entry-tool >/dev/null 2>&1; then
     limine-entry-tool >/dev/null
     log_success "Dynamic configuration generated via limine-entry-tool."
 else
-    log_info "Vanilla Arch Environment Detected: Generating dynamic static config..."
+    log_info "Generating dynamic static config..."
 
     if ! shopt -q nullglob; then
         shopt -s nullglob

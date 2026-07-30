@@ -2,9 +2,9 @@
 # ==============================================================================
 # pacman_repo_switch.sh
 #
-# Manages pacman's repository configuration, toggling a 4-state matrix between:
+# Manages pacman's repository configuration, toggling between:
 #   Network: OFFLINE (Local media file://) OR ONLINE (HTTPS Mirrors)
-#   Target:  Standard Arch Linux (x86_64)  OR CachyOS (x86_64_v3 Optimized)
+#   Target:  Standard Arch Linux (x86_64)
 #
 # Works correctly in BOTH:
 #   - Arch Linux ISO live environment and install chroot (already root)
@@ -13,8 +13,7 @@
 # Usage:
 #   ./pacman_repo_switch.sh                       # Interactive menu
 #   ./pacman_repo_switch.sh --online --arch       # Online standard Arch
-#   ./pacman_repo_switch.sh --online --cachyos    # Online CachyOS v3
-#   ./pacman_repo_switch.sh --offline --cachyos   # Offline CachyOS v3
+#   ./pacman_repo_switch.sh --offline --arch      # Offline standard Arch
 #   ./pacman_repo_switch.sh --help                # Show usage information
 #
 # ==============================================================================
@@ -84,12 +83,7 @@ else
     CLR_RESET=""
 fi
 
-# ==============================================================================
-# SECTION 4 — STATE VARIABLES
-# ==============================================================================
-
 NETWORK_MODE=""
-TARGET_OS="arch"
 
 # ==============================================================================
 # SECTION 5 — LOGGING HELPERS
@@ -207,7 +201,7 @@ backup_file() {
 # ==============================================================================
 
 switch_to_online() {
-    log_step "Switching to ONLINE Repositories (${TARGET_OS^^})"
+    log_step "Switching to ONLINE Repositories (ARCH LINUX)"
 
     local write_timestamp
     write_timestamp="$(date --utc '+%Y-%m-%d %H:%M:%S UTC')"
@@ -224,7 +218,7 @@ switch_to_online() {
 # /etc/pacman.conf — ONLINE MODE
 # ==============================================================================
 # Managed by: pacman_repo_switch.sh
-# State:      ONLINE (${TARGET_OS^^})
+# State:      ONLINE (ARCH LINUX)
 # Written:    ${write_timestamp}
 # ==============================================================================
 
@@ -243,32 +237,9 @@ LocalFileSigLevel = Optional
 
 ONLINE_PACMAN_CONF_EOF
 
-        # Dynamically inject the CachyOS block if the flag was provided
-        if [[ "${TARGET_OS}" == "cachyos" ]]; then
-            cat << 'CACHYOS_BLOCK_EOF'
-# Architecture must be auto for CachyOS repos on standard Arch
-Architecture = auto
+        echo "Architecture = auto"
+        echo ""
 
-[cachyos-v3]
-Include = /etc/pacman.d/cachyos-v3-mirrorlist
-
-[cachyos-core-v3]
-Include = /etc/pacman.d/cachyos-v3-mirrorlist
-
-[cachyos-extra-v3]
-Include = /etc/pacman.d/cachyos-v3-mirrorlist
-
-[cachyos]
-SigLevel = Optional TrustAll
-Include = /etc/pacman.d/cachyos-mirrorlist
-
-CACHYOS_BLOCK_EOF
-        else
-            echo "Architecture = auto"
-            echo ""
-        fi
-
-        # Standard Arch repos must always follow the custom repos
         cat << 'ARCH_BLOCK_EOF'
 [core]
 Include = /etc/pacman.d/mirrorlist
@@ -300,17 +271,6 @@ Server = https://mirror.theo546.fr/archlinux/$repo/os/x86_64
 Server = https://berlin.mirror.pkgbuild.com/$repo/os/x86_64
 ONLINE_MIRRORLIST_EOF
 
-    # Dynamically scaffold CachyOS mirrorlists to prevent `pacman -Syy` crashes later
-    if [[ "${TARGET_OS}" == "cachyos" ]]; then
-        log_info "Scaffolding base CachyOS mirrorlists..."
-        write_file_atomically "/etc/pacman.d/cachyos-mirrorlist" << 'EOF'
-Server = https://mirror.cachyos.org/repo/x86_64/$repo
-EOF
-        write_file_atomically "/etc/pacman.d/cachyos-v3-mirrorlist" << 'EOF'
-Server = https://mirror.cachyos.org/repo/x86_64_v3/$repo
-EOF
-    fi
-
     printf "\n%s%s[OK]%s  Online repository configuration applied.%s\n" \
         "${CLR_BOLD}" "${CLR_GREEN}" "${CLR_RESET}" "${CLR_RESET}"
 }
@@ -320,7 +280,7 @@ EOF
 # ==============================================================================
 
 switch_to_offline() {
-    log_step "Switching to OFFLINE Repositories (${TARGET_OS^^})"
+    log_step "Switching to OFFLINE Repositories (ARCH LINUX)"
 
     local write_timestamp
     write_timestamp="$(date --utc '+%Y-%m-%d %H:%M:%S UTC')"
@@ -352,7 +312,7 @@ OFFLINE_MIRRORLIST_EOF
 # /etc/pacman.conf — OFFLINE MODE
 # ==============================================================================
 # Managed by: pacman_repo_switch.sh
-# State:      OFFLINE (${TARGET_OS^^})
+# State:      OFFLINE (ARCH LINUX)
 # Written:    ${write_timestamp}
 
 [options]
@@ -376,13 +336,7 @@ LocalFileSigLevel = Optional
 
 OFFLINE_PACMAN_CONF_EOF
 
-        # CachyOS packages natively present as x86_64 to pacman.
-        # Architecture must remain auto to prevent $arch string corruption.
-        if [[ "${TARGET_OS}" == "cachyos" ]]; then
-            echo "Architecture = auto"
-        else
-            echo "Architecture = auto"
-        fi
+        echo "Architecture = auto"
 
         cat << OFFLINE_REPO_BLOCK_EOF
 
@@ -454,13 +408,11 @@ show_menu() {
     printf "\n"
     printf "  %s[1]%s  Online   — Standard Arch Linux\n" "${CLR_BOLD}" "${CLR_RESET}"
     printf "  %s[2]%s  Offline  — Standard Arch Linux\n" "${CLR_BOLD}" "${CLR_RESET}"
-    printf "  %s[3]%s  Online   — CachyOS (v3 Optimized)\n" "${CLR_BOLD}" "${CLR_RESET}"
-    printf "  %s[4]%s  Offline  — CachyOS (v3 Optimized)\n" "${CLR_BOLD}" "${CLR_RESET}"
     printf "  %s[q]%s  Quit     — no changes will be made\n\n" "${CLR_BOLD}" "${CLR_RESET}"
 
     local user_choice
     while true; do
-        printf "  Your choice [1-4/q]: "
+        printf "  Your choice [1-2/q]: "
 
         if ! read -r -n1 -t 60 user_choice; then
             printf "\n"
@@ -472,10 +424,8 @@ show_menu() {
         case "${user_choice}" in
             1) TARGET_OS="arch";    switch_to_online;  return 0 ;;
             2) TARGET_OS="arch";    switch_to_offline; return 0 ;;
-            3) TARGET_OS="cachyos"; switch_to_online;  return 0 ;;
-            4) TARGET_OS="cachyos"; switch_to_offline; return 0 ;;
             q|Q) log_info "Quit selected. No changes were made."; exit 0 ;;
-            *) log_warn "Invalid choice: '${user_choice}'. Please enter 1-4, or q." ;;
+            *) log_warn "Invalid choice: '${user_choice}'. Please enter 1, 2, or q." ;;
         esac
     done
 }
@@ -488,8 +438,6 @@ show_usage() {
     printf "\nUsage: %s [OPTIONS]\n\n" "${BASH_SOURCE[0]}"
     printf "  --online    Write online HTTPS configuration and sync.\n"
     printf "  --offline   Write offline local file:// configuration.\n"
-    printf "  --arch      Target standard Arch Linux architecture (default).\n"
-    printf "  --cachyos   Target CachyOS x86_64_v3 architecture & mirrors.\n"
     printf "  --help      Display this help text.\n\n"
     printf "  Requires root. If not root, the script will attempt to re-launch\n"
     printf "  itself automatically using 'sudo'.\n\n"
@@ -506,8 +454,7 @@ main() {
         case "$1" in
             --online)  NETWORK_MODE="online"; shift ;;
             --offline) NETWORK_MODE="offline"; shift ;;
-            --arch)    TARGET_OS="arch"; shift ;;
-            --cachyos|--cachy) TARGET_OS="cachyos"; shift ;;
+            --arch)    shift ;; # Ignored for backward compatibility
             --help|-h) show_usage; exit 0 ;;
             *)         log_error "Unknown argument: '$1'"; show_usage; exit 1 ;;
         esac

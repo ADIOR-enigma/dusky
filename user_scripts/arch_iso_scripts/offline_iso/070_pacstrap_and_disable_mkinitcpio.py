@@ -123,8 +123,7 @@ class HardwareScanner:
 def parse_args():
     parser = argparse.ArgumentParser(description="Pacstrap Hardware-Verified Installer")
     parser.add_argument("-a", "--auto", action="store_true", help="Run autonomously (no prompts)")
-    parser.add_argument("--arch", action="store_true", default=True, help="Target standard Arch Linux")
-    parser.add_argument("--cachyos", action="store_true", help="Target CachyOS")
+    parser.add_argument("--arch", action="store_true", help=argparse.SUPPRESS) # Backwards compatibility
     return parser.parse_args()
 
 def package_exists(pkg: str) -> bool:
@@ -206,10 +205,6 @@ def main():
         auto_mode = True
         Log.warn("Non-interactive session detected. Enabling autonomous mode.")
 
-    # 1. CACHYOS PRE-REQUISITE INJECTION
-    if args.cachyos:
-        Log.info("CachyOS architecture selected. Injecting required keyrings and mirrors...")
-        FINAL_PACKAGES.extend(["cachyos-keyring", "cachyos-mirrorlist", "cachyos-rate-mirrors"])
 
     # 2. CPU MICROCODE
     ucode = get_cpu_ucode()

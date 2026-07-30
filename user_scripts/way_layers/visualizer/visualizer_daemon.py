@@ -3189,7 +3189,42 @@ noise_reduction = {noise}
 # -----------------------------------------------------------------------------
 
 
+def deploy_config(force: bool = False) -> None:
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    default_config = Config.from_dict({}).to_dict()
+
+    if not CONFIG_FILE.exists() or force:
+        atomic_write_json(CONFIG_FILE, default_config)
+        print(f"[SUCCESS] Dusky Visualizer configuration deployed to {CONFIG_FILE}")
+    else:
+        existing = load_json_dict(CONFIG_FILE)
+        merged = {**default_config, **existing}
+        atomic_write_json(CONFIG_FILE, merged)
+        print(f"[SUCCESS] Dusky Visualizer configuration merged & verified at {CONFIG_FILE}")
+
+
 def main() -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Dusky Wayland Audio Visualizer Daemon")
+    parser.add_argument("--setup", "--deploy", action="store_true", help="Deploy default configuration and exit cleanly.")
+    parser.add_argument("--reset", action="store_true", help="Reset configuration file to factory defaults and exit.")
+    parser.add_argument("--config", action="store_true", help="Print path to configuration file.")
+
+    args, _ = parser.parse_known_args()
+
+    if args.setup:
+        deploy_config(force=False)
+        return 0
+
+    if args.reset:
+        deploy_config(force=True)
+        return 0
+
+    if args.config:
+        print(str(CONFIG_FILE))
+        return 0
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",

@@ -78,6 +78,9 @@ Media       | ttf-liberation        | Font family metric compatibility with Aria
 Media       | ttf-font-awesome      | Iconic font designed for Bootstrap - woff2 format
 Media       | woff2-font-awesome    | Iconic font designed for Bootstrap - woff2 format
 Media       | ttf-jetbrains-mono-nerd | Patched font JetBrains Mono from nerd fonts library
+Media       | otf-atkinsonhyperlegiblemono-nerd | Atkinson Hyperlegible Mono Nerd Font
+Media       | ttf-atkinson-hyperlegible | Atkinson Hyperlegible TTF Font
+Media       | otf-atkinson-hyperlegible | Atkinson Hyperlegible OTF Font
 Media       | awesome-terminal-fonts| fonts/icons for powerlines
 Media       | papirus-folders-git   | folder color themeing for file manager
 Media       | ttf-opensans          | Sans-serif typeface commissioned by Google

@@ -57,8 +57,34 @@ export GIT_OPTIONAL_LOCKS=0
 # Lock the session PID to ensure stash state files never collide
 export DUSKY_SESSION_ID="$$"
 
+# Capture initial active branch to preserve user working branch on exit/return
+export DUSKY_INITIAL_BRANCH="$(git branch --show-current 2>/dev/null || true)"
+
 # Guarantee UTF-8 character width mapping for Awk length() calculations
 export LC_ALL=en_US.UTF-8
+
+# Load dynamic Matugen UI colors from ~/.config/matugen/generated/dusky_tui.json
+_dusky_get_color() {
+    local key="$1"
+    local default="$2"
+    local json_file="$HOME/.config/matugen/generated/dusky_tui.json"
+    if [[ -f "$json_file" ]]; then
+        local val
+        val=$(grep -o "\"$key\": *\"[^\"]*\"" "$json_file" 2>/dev/null | cut -d'"' -f4)
+        if [[ -n "$val" ]]; then
+            echo "$val"
+            return
+        fi
+    fi
+    echo "$default"
+}
+
+export MATUGEN_BG="$(_dusky_get_color "bg" "#1d100a")"
+export MATUGEN_FG="$(_dusky_get_color "fg" "#f8ddd2")"
+export MATUGEN_ACCENT="$(_dusky_get_color "accent" "#ffb694")"
+export MATUGEN_MUTED="$(_dusky_get_color "muted" "#55433b")"
+export MATUGEN_SUCCESS="$(_dusky_get_color "success" "#f0be79")"
+export MATUGEN_ERROR="$(_dusky_get_color "error" "#ffb4ab")"
 
 # Purge global FZF options to ensure pristine rendering
 unset FZF_DEFAULT_OPTS
@@ -214,29 +240,35 @@ _dusky_git_checkout() {
         fi
     fi
     
-    # Force checkout allows jumping cleanly regardless of detached head states
-    git checkout --force "$hash" -- || true
+    # Force switch to detached HEAD allows jumping cleanly across past commits
+    git switch --force --detach "$hash" || true
 }
 export -f _dusky_git_checkout
 
 _dusky_git_return() {
     exec < /dev/null > /dev/null 2>&1
-    local main_branch
-    main_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')
-    
-    # Detached HEAD fallback detection logic
-    if [[ -z "$main_branch" ]]; then
-        for b in main master; do
-            if git show-ref --verify --quiet "refs/heads/$b"; then
-                main_branch="$b"
-                break
-            fi
-        done
+    local target_branch=""
+
+    # 1. Prefer returning to initial branch captured at launch
+    if [[ -n "$DUSKY_INITIAL_BRANCH" ]] && git show-ref --verify --quiet "refs/heads/$DUSKY_INITIAL_BRANCH"; then
+        target_branch="$DUSKY_INITIAL_BRANCH"
+    else
+        # 2. Fallback to origin/HEAD
+        target_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')
+        # 3. Fallback to main/master local branches
+        if [[ -z "$target_branch" ]]; then
+            for b in main master; do
+                if git show-ref --verify --quiet "refs/heads/$b"; then
+                    target_branch="$b"
+                    break
+                fi
+            done
+        fi
     fi
-    
+
     # Guard to prevent returning to void if somehow no branches exist
-    if [[ -n "$main_branch" ]]; then
-        git checkout --force "$main_branch" -- || true
+    if [[ -n "$target_branch" ]]; then
+        git switch --force "$target_branch" || true
         
         # RESTORE SHIELD: Auto-pop exactly what was stashed in this specific session
         if [[ -f "/tmp/dusky_time_machine_stash_${DUSKY_SESSION_ID}" ]]; then
@@ -264,6 +296,10 @@ _dusky_git_copy() {
     [[ -z "$hash" ]] && exit 0
     if command -v wl-copy >/dev/null 2>&1; then
         printf "%s" "$hash" | wl-copy || true
+    elif command -v xclip >/dev/null 2>&1; then
+        printf "%s" "$hash" | xclip -selection clipboard || true
+    elif command -v xsel >/dev/null 2>&1; then
+        printf "%s" "$hash" | xsel --clipboard || true
     fi
 }
 export -f _dusky_git_copy
@@ -293,7 +329,7 @@ main() {
         fi
     fi
 
-    # Launch FZF subprocess mapping
+    # Launch FZF subprocess mapping (FZF 0.74.1 Bleeding-Edge Edition)
     _dusky_git_list | fzf --ansi \
         --sync \
         "${fzf_args[@]}" \
@@ -304,9 +340,11 @@ main() {
         --no-sort \
         --no-hscroll \
         --ellipsis='' \
+        --highlight-line \
+        --ghost="Filter history by message, author, date, or hash..." \
         --prompt=" :: Time Machine ❯ " \
-        --pointer=">" \
-        --marker="✓" \
+        --pointer="❯ " \
+        --marker="✔ " \
         --layout=reverse \
         --border=rounded \
         --border-label=" 󰏖 Dusky Time Machine [F1 / Ctrl-O: Help] " \
@@ -321,11 +359,13 @@ main() {
         --bind="alt-c:execute-silent(_dusky_git_copy {1})+transform-prompt( [ -n \"{1}\" ] && echo \" :: Copied {1} ❯ \" || echo \" :: Time Machine ❯ \" )" \
         --bind="f1:execute(_dusky_git_help)" \
         --bind="ctrl-o:execute(_dusky_git_help)" \
-        --color="bg+:#1e1e2e,bg:#11111b,spinner:#f5e0dc" \
-        --color="fg:#cdd6f4,fg+:#cdd6f4,header:#89b4fa,info:#cba6f7" \
-        --color="pointer:#a6e3a1,marker:#f5e0dc,prompt:#cba6f7" \
-        --color="hl:#f38ba8,hl+:#f38ba8,border:#585b70,label:#89b4fa" \
+        --color="bg+:${MATUGEN_MUTED},bg:${MATUGEN_BG},spinner:${MATUGEN_ACCENT}" \
+        --color="fg:${MATUGEN_FG},fg+:${MATUGEN_FG},header:${MATUGEN_ACCENT},info:${MATUGEN_ACCENT}" \
+        --color="pointer:${MATUGEN_SUCCESS},marker:${MATUGEN_SUCCESS},prompt:${MATUGEN_ACCENT}" \
+        --color="hl:${MATUGEN_ACCENT},hl+:${MATUGEN_ACCENT},border:${MATUGEN_MUTED},label:${MATUGEN_ACCENT}" \
         --preview="_dusky_git_preview {1}" \
+        --preview-label=" 󰈔 Commit Differential (Delta) " \
+        --preview-label-pos=center \
         --preview-window="right,65%,border-left,wrap"
 
     # Clean Exit Payload

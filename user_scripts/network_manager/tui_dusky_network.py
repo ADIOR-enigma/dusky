@@ -16,9 +16,9 @@ DEFAULT_MODE = "auto"
 THEME_FILE = "~/.config/matugen/generated/dusky_tui.json"
 ENABLE_USER_PRESETS = False
 
-TABS = ["Networks", "Saved", "Status", "DNS", "Speed Test", "Hotspot"]
+TABS = ["Networks", "Saved", "Status", "Speed Test", "Hotspot"]
 
-SCHEMA = {0: [], 1: [], 2: [], 3: [], 4: [], 5: []}
+SCHEMA = {0: [], 1: [], 2: [], 3: [], 4: []}
 
 # ============================================================================
 #  Tab 0: Networks (populated from cache for instant startup)
@@ -398,9 +398,7 @@ def render_network_dashboard_view(app):
     grid.add_column(ratio=1)
     grid.add_row(p_conn, right_group)
 
-    footer = Text(" Switch tabs using [Tab] / [Shift+Tab] or [Alt+1..6] (Networks, Saved, Status, DNS, Speed Test, Hotspot)", style="dim italic")
-
-    return Group(grid, Align.center(footer))
+    return grid
 
 
 CUSTOM_VIEWS = {
@@ -411,62 +409,9 @@ CUSTOM_VIEWS = {
 }
 
 # ============================================================================
-#  Tab 3: DNS — DNS Provider Switching
+#  Tab 3: Speed Test — Fast.com speed test integration
 # ============================================================================
 SCHEMA[3].extend([
-    ConfigItem(
-        label="Current DNS Provider: DHCP",
-        key="dns_current",
-        scope="dns_info",
-        type_="action",
-        default=":",
-        group="DNS Information"
-    ),
-    ConfigItem(
-        label="▶ Switch to DHCP (Automatic)",
-        key="dns_dhcp",
-        scope="dns_action",
-        type_="bool",
-        default=False,
-        options=["trigger"],
-        group="Provider Selection",
-        extended_help="Resets DNS configuration to automatic DHCP from router."
-    ),
-    ConfigItem(
-        label="▶ Switch to Cloudflare (1.1.1.1)",
-        key="dns_cloudflare",
-        scope="dns_action",
-        type_="bool",
-        default=False,
-        options=["trigger"],
-        group="Provider Selection",
-        extended_help="Uses Cloudflare fast & private DNS (1.1.1.1 / 1.0.0.1)."
-    ),
-    ConfigItem(
-        label="▶ Switch to Google (8.8.8.8)",
-        key="dns_google",
-        scope="dns_action",
-        type_="bool",
-        default=False,
-        options=["trigger"],
-        group="Provider Selection",
-        extended_help="Uses Google Public DNS (8.8.8.8 / 8.8.4.4)."
-    ),
-    ConfigItem(
-        label="▶ Switch to Custom DNS Servers",
-        key="dns_custom",
-        scope="dns_action",
-        type_="string",
-        default="",
-        group="Provider Selection",
-        extended_help="Enter custom space/comma-separated IP addresses (e.g. 9.9.9.9 1.1.1.1)."
-    ),
-])
-
-# ============================================================================
-#  Tab 4: Speed Test — Fast.com speed test integration
-# ============================================================================
-SCHEMA[4].extend([
     ConfigItem(
         label="▶ Run Full Speed Test (Download + Upload)",
         key="speedtest_full",
@@ -524,9 +469,9 @@ SCHEMA[4].extend([
 ])
 
 # ============================================================================
-#  Tab 5: Hotspot
+#  Tab 4: Hotspot
 # ============================================================================
-SCHEMA[5].extend([
+SCHEMA[4].extend([
     ConfigItem(
         label="Hotspot SSID",
         key="hotspot_ssid",

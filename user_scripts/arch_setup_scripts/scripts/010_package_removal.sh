@@ -22,15 +22,6 @@ readonly -a REPO_TARGETS=(
   wofi
   polkit-kde-agent
   power-profiles-daemon
-  fluent-icon-theme-git
-  swww
-  papirus-folders-git
-  papirus-icon-theme-git
-  swaync
-  swayosd
-  fcitx5
-  fcitx5-gtk
-  fcitx5-qt
   network-manager-applet
   firewalld
 )

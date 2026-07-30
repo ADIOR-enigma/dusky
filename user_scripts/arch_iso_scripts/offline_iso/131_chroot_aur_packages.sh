@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#arch_iso_scripts/offline_iso/131_chroot_aur_packages.sh!/usr/bin/env bash
 # This script installs ALL PACKAGES from the Offline Repository. Inspect it manually to remove/add anything you want.
 # It installs packages only. It does not enable systemd services automatically.
 # ------------------------------------------------------------------------------
@@ -14,13 +14,11 @@ declare -ar pkgs_aur=(
   "adwaita-qt5"
   "adwsteamgtk"
   "otf-atkinson-hyperlegible-next"
-  "python-pywalfox"
   "hyprshade"
   "peaclock"
   "tray-tui"
   "xdg-terminal-exec"
   "paru"
-  "python-pywalfox"
 )
 
 
@@ -65,14 +63,11 @@ fi
 set -Eeuo pipefail
 shopt -s inherit_errexit
 
-TARGET_OS="arch"
-
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --cachyos|--cachy) TARGET_OS="cachyos"; shift ;;
-      --arch)            TARGET_OS="arch"; shift ;;
-      *)                 shift ;; # Safely ignore --auto or other unknown flags
+      --arch) shift ;; # Ignored for backward compatibility
+      *)      shift ;; # Safely ignore --auto or other unknown flags
     esac
   done
 }
@@ -255,13 +250,8 @@ ensure_keyring() {
   print_warn "Pacman keyring is not initialized. Initializing now..."
   pacman-key --init
 
-  if [[ "${TARGET_OS}" == "cachyos" ]]; then
-      print_info "Populating Arch Linux and CachyOS keyrings..."
-      pacman-key --populate archlinux cachyos
-  else
-      print_info "Populating standard Arch Linux keyring..."
-      pacman-key --populate archlinux
-  fi
+  print_info "Populating standard Arch Linux keyring..."
+  pacman-key --populate archlinux
 
   print_ok "Keyring initialized."
 }

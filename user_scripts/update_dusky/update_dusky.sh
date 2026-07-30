@@ -286,7 +286,6 @@ declare -ra UPDATE_SEQUENCE=(
 #    "S | 385_waydroid_setup.sh"
     "U | 390_clipboard_persistance.py --ram --quiet"
 #    "S | 395_intel_media_sdk_check.sh"
-#    "U | 400_firefox_matugen_pywalfox.sh"
 #     "U | 402_gecko_engine_colors_extention.sh"
 #    "U | 405_spicetify_matugen_setup.sh"
 #    "U | 410_waybar_swap_config.py --state"

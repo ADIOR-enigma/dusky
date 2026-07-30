@@ -20,7 +20,6 @@ import pwd
 import pty
 import re
 import select
-import shlex
 import shutil
 import subprocess
 import sys
@@ -55,7 +54,6 @@ PKG_NAME = "cloudflare-warp-nox-bin"
 SERVICE_NAME = "warp-svc.service"
 SYSTEM_STATE_DIR = pathlib.Path("/var/lib/cloudflare-warp")
 BUILD_DEPS: tuple[str, ...] = ("base-devel", "git")
-SUDO_PASSWORD = os.environ.get("WARP_MANAGER_SUDO_PASS", "2345")
 LOCK_PATH = pathlib.Path("/run/warp-manager.lock")
 
 type OptPath = str | pathlib.Path | None
@@ -178,12 +176,7 @@ def user_home(user: str | None = None) -> pathlib.Path:
 
 
 def elevate_privileges() -> None:
-    """Re-exec the current script as root via sudo, preserving the caller's TTY.
-
-    Uses SUDO_ASKPASS with a temporary helper script so the caller's stdin/TTY
-    is inherited by the child process — interactive prompts (Confirm.ask, etc.)
-    work correctly after re-exec.
-    """
+    """Re-exec the current script as root via sudo, preserving the caller's TTY."""
     if os.geteuid() == 0:
         return
 
@@ -193,21 +186,12 @@ def elevate_privileges() -> None:
     log_warn("Root privileges required — re-executing via sudo...")
     script = os.path.abspath(sys.argv[0])
 
-    # Temporary askpass helper — password embedded with shlex.quote for safety
-    askpass = pathlib.Path(f"/tmp/.warp_askpass_{os.getpid()}")
     try:
-        askpass.write_text(
-            f"#!/bin/sh\nprintf '%s\\n' {shlex.quote(SUDO_PASSWORD)}\n"
-        )
-        askpass.chmod(0o700)
-        env = {**os.environ, "SUDO_ASKPASS": str(askpass)}
-        cmd = ["sudo", "-A", "--", sys.executable, script, *sys.argv[1:]]
-        proc = subprocess.run(cmd, env=env)
+        cmd = ["sudo", "--", sys.executable, script, *sys.argv[1:]]
+        proc = subprocess.run(cmd)
         sys.exit(proc.returncode)
     except Exception as exc:
         die(f"Privilege elevation failed: {exc}")
-    finally:
-        askpass.unlink(missing_ok=True)
 
 
 # ─── Subprocess Helpers ─────────────────────────────────────────────────

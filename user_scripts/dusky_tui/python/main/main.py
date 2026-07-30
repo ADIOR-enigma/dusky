@@ -695,12 +695,25 @@ EXAMPLES:
             from python.engines.matugen import MatugenEngine
             return MatugenEngine(config_path=config_path)
 
+        elif e_type == "fontconfig":
+            from python.engines.fontconfig import FontconfigEngine
+            return FontconfigEngine(config_path=config_path)
+
+        elif e_type in ("toml", "toml_engine"):
+            from python.engines.toml import TomlEngine
+            return TomlEngine(config_path=config_path)
+
+        elif e_type == "systemd_dns":
+            from python.engines.dns_systemd import SystemdDnsEngine
+            return SystemdDnsEngine(config_path=config_path)
+
         else:
             print(f"[-] Fatal: Unknown ENGINE_TYPE '{e_type}' specified in schema '{schema_path.name}'.")
             print(
-                "[i] Supported engines are: 'lua', 'ini', 'bridged_ini', 'systemd', 'hyprlang', "
+                "[i] Supported engines are: 'lua', 'ini', 'bridged_ini', 'systemd', 'systemd_dns', 'hyprlang', "
                 "'trackpad', 'monitor', 'cmdline', 'systemd_boot', 'flatdotconfig', 'env', "
-                "'waybar', 'network', 'pkg_throttle', 'cpu_core', 'fstab', 'shell_fallback', 'json', 'dusky_sites', 'locale_gen', 'matugen'"
+                "'waybar', 'network', 'pkg_throttle', 'cpu_core', 'fstab', 'shell_fallback', 'json', "
+                "'dusky_sites', 'locale_gen', 'matugen', 'fontconfig'"
             )
             sys.exit(1)
 

@@ -109,15 +109,6 @@ def resolve_download_urls(pkg_names):
 Architecture = auto
 SigLevel = Never
 
-[cachyos-v3]
-Server = https://mirror.cachyos.org/repo/x86_64_v3/$repo
-[cachyos-core-v3]
-Server = https://mirror.cachyos.org/repo/x86_64_v3/$repo
-[cachyos-extra-v3]
-Server = https://mirror.cachyos.org/repo/x86_64_v3/$repo
-[cachyos]
-Server = https://mirror.cachyos.org/repo/x86_64/$repo
-
 [core]
 Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch
 [extra]

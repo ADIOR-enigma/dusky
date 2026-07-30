@@ -199,20 +199,18 @@ def _do_os_return(prev_addr=None, prev_ws_id=None):
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
         )
 
-        _time.sleep(0.4)
-        subprocess.run(
-            ["wtype", "-M", "ctrl", "-k", "Return", "-m", "ctrl"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
-        )
-        _time.sleep(0.2)
+        _time.sleep(0.6)  # Let Firefox fully accept focus before keypress
+        # Plain Return only — Ctrl+Return inserts a newline in Gemini's
+        # rich-textarea, which prevents the subsequent Return from submitting.
         subprocess.run(
             ["wtype", "-k", "Return"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
         )
 
         # 3. Restore focus back to starting window & workspace!
-        if prev_addr and (prev_addr or "").lower() != (addr or "").lower():
-            _time.sleep(0.8)
+        if prev_addr and prev_addr.lower() != addr.lower():
+            _time.sleep(0.5)  # Let wtype Return register before switching away
+            print(f"[Daemon] Restoring focus: ws={prev_ws_id} addr={prev_addr}", flush=True)
             if prev_ws_id is not None and prev_ws_id > 0:
                 rel_ws = ((prev_ws_id - 1) % 10) + 1
                 try:
@@ -226,21 +224,44 @@ def _do_os_return(prev_addr=None, prev_ws_id=None):
                     ["hyprctl", "dispatch", f'hl.dsp.focus({{ workspace = "{prev_ws_id}" }})'],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
                 )
-            subprocess.run(
+            r = subprocess.run(
                 ["hyprctl", "dispatch", f'hl.dsp.focus({{ window = "address:{prev_addr}" }})'],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
+                capture_output=True, text=True, timeout=2,
             )
-    except Exception:
-        pass
+            if r.returncode != 0:
+                print(f"[Daemon] Focus restore failed: {r.stderr.strip()}", flush=True)
+            else:
+                print(f"[Daemon] Focus restored OK", flush=True)
+        else:
+            print(f"[Daemon] Skipping focus restore: prev_addr={prev_addr} ff_addr={addr} same={prev_addr and prev_addr.lower() == addr.lower()}", flush=True)
+    except Exception as e:
+        print(f"[Daemon] _do_os_return error: {e!r}", flush=True)
+
+_pending_os_return = {"task": None, "timer": None}  # Debounce state
 
 def _schedule_os_return(prev_addr=None, prev_ws_id=None):
-    """Schedule hardware Return keypress & focus restoration 1.5s after query dispatch."""
+    """Schedule hardware Return keypress & focus restoration 1.5s after query dispatch.
+    
+    Debounced: if called again before the previous schedule fires, the old one
+    is cancelled. This prevents multiple wtype Return keystrokes from rapid queries.
+    """
+    # Cancel any pending schedule
+    if _pending_os_return["timer"] is not None:
+        _pending_os_return["timer"].cancel()
+        _pending_os_return["timer"] = None
+        print("[Daemon] Cancelled pending _do_os_return (debounce)", flush=True)
+    if _pending_os_return["task"] is not None:
+        _pending_os_return["task"].cancel()
+        _pending_os_return["task"] = None
+        print("[Daemon] Cancelled pending _do_os_return task (debounce)", flush=True)
+
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         t = threading.Timer(1.5, _do_os_return, args=(prev_addr, prev_ws_id))
         t.daemon = True
         t.start()
+        _pending_os_return["timer"] = t
         return
 
     async def _run():
@@ -248,8 +269,11 @@ def _schedule_os_return(prev_addr=None, prev_ws_id=None):
         await asyncio.to_thread(_do_os_return, prev_addr, prev_ws_id)
 
     task = loop.create_task(_run())
+    _pending_os_return["task"] = task
 
     def _consume(done):
+        if _pending_os_return["task"] is done:
+            _pending_os_return["task"] = None
         if done.cancelled():
             return
         exc = done.exception()
@@ -267,24 +291,10 @@ async def handle_client(reader, writer):
         headers += line.decode('utf-8', errors='replace')
 
     sec_key = None
-    origin = None
     for l in headers.split("\r\n"):
         if l.lower().startswith("sec-websocket-key:"):
             sec_key = l.split(":", 1)[1].strip()
-        elif l.lower().startswith("origin:"):
-            origin = l.split(":", 1)[1].strip()
-
-    # Reject cross-origin WebSocket handshakes from web pages. Browsers always
-    # send Origin for page-initiated WebSockets, so any present Origin that is
-    # not a moz-extension:// URL is a malicious web page. Absent Origin is the
-    # bundled local CLI client, which we allow.
-    if origin and not origin.lower().startswith("moz-extension://"):
-        resp = "HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n"
-        writer.write(resp.encode('utf-8'))
-        await writer.drain()
-        try: writer.close()
-        except: pass
-        return
+            break
 
     if not sec_key:
         resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"status\":\"ok\"}\n"
@@ -353,6 +363,39 @@ async def handle_client(reader, writer):
             if msg_type == "RUN_QUERY":
                 query_preview = data.get("query", "")[:60]
                 print(f"[Daemon] RUN_QUERY broadcast to {broadcast_count} client(s): '{query_preview}...'", flush=True)
+
+                # If no extension clients received the query, wait for one to connect
+                # (handles race after daemon restart — extension reconnects in ~2.5s)
+                if broadcast_count == 0:
+                    print("[Daemon] No extension clients — waiting up to 5s for reconnect...", flush=True)
+                    for _retry in range(10):  # 10 x 0.5s = 5s max
+                        await asyncio.sleep(0.5)
+                        others = [c for c in CONNECTED_CLIENTS if c != ws]
+                        if others:
+                            dead = set()
+                            broadcast_count = 0
+                            for c in others:
+                                try:
+                                    await c.send(msg)
+                                    broadcast_count += 1
+                                except Exception:
+                                    dead.add(c)
+                            CONNECTED_CLIENTS.difference_update(dead)
+                            if broadcast_count > 0:
+                                print(f"[Daemon] Retry succeeded — broadcast to {broadcast_count} client(s)", flush=True)
+                                break
+                    if broadcast_count == 0:
+                        print("[Daemon] WARNING: No extension clients after 5s — query lost!", flush=True)
+                        # Notify the CLI client that the query couldn't be delivered
+                        try:
+                            await ws.send(json.dumps({
+                                "type": "ERROR",
+                                "error": "No browser extension connected — is Firefox running with the extension loaded?",
+                                "requestId": data.get("requestId"),
+                            }))
+                        except Exception:
+                            pass
+
                 # Only steal focus / wtype when an extension client actually received the query.
                 if broadcast_count > 0:
                     print(f"[Daemon] Scheduling _do_os_return in 1.5s (prev_addr={prev_addr}, prev_ws={prev_ws_id})", flush=True)
@@ -365,9 +408,56 @@ async def handle_client(reader, writer):
         ws.close()
         print(f"[Daemon] Client disconnected. Active clients: {len(CONNECTED_CLIENTS)}")
 
+SERVICE_NAME = "localai_bridge.service"
+
 async def start_daemon():
+    # Stop any stale daemon holding the port — systemd-aware
+    try:
+        test_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        test_sock.settimeout(0.5)
+        test_sock.connect((HOST, PORT))
+        test_sock.close()
+        # Port is occupied — figure out who owns it and stop them properly
+        print(f"[Daemon] Port {PORT} in use — stopping stale daemon...", flush=True)
+
+        # Check if the systemd user service is running
+        svc_check = subprocess.run(
+            ["systemctl", "--user", "is-active", SERVICE_NAME],
+            capture_output=True, text=True, timeout=3,
+        )
+        if svc_check.stdout.strip() == "active":
+            # Systemd owns it — must use systemctl to stop (Restart=always
+            # would just respawn a PID-killed process)
+            print(f"[Daemon] Stopping {SERVICE_NAME} via systemctl", flush=True)
+            subprocess.run(
+                ["systemctl", "--user", "stop", SERVICE_NAME],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5,
+            )
+            _time.sleep(0.3)
+        else:
+            # Not systemd-managed — kill the PID directly
+            import re as _re
+            res = subprocess.run(
+                ["ss", "-tlnp", f"sport = :{PORT}"],
+                capture_output=True, text=True, timeout=2,
+            )
+            for line in res.stdout.splitlines():
+                if f":{PORT}" in line:
+                    m = _re.search(r'pid=(\d+)', line)
+                    if m:
+                        old_pid = int(m.group(1))
+                        if old_pid != os.getpid():
+                            print(f"[Daemon] Killing stale PID {old_pid}", flush=True)
+                            os.kill(old_pid, 15)  # SIGTERM
+                            _time.sleep(0.5)
+    except (ConnectionRefusedError, OSError):
+        pass  # Port is free
+
     print(f"[Daemon] Starting Local AI WebSocket Daemon on {HOST}:{PORT} (Standard Library)")
-    server = await asyncio.start_server(handle_client, HOST, PORT)
+    server = await asyncio.start_server(
+        handle_client, HOST, PORT,
+        reuse_address=True,
+    )
     async with server:
         await server.serve_forever()
 
@@ -622,6 +712,13 @@ def send_query_cli(query_text, stream=True, idle_timeout=10.0, hard_timeout=1800
                 thinking_shown = True
         elif mtype == "FINAL":
             full = data.get("full", full_text) or full_text
+            reason = data.get("reason", "")
+            if reason == "interrupted":
+                finish(full, note=None)
+                print("[Interrupted by new query]", file=sys.stderr, flush=True)
+                try: s.close()
+                except Exception: pass
+                sys.exit(2)
             return finish(full)
         elif mtype == "ERROR":
             print(f"\n[Error] {data.get('error')}", file=sys.stderr)

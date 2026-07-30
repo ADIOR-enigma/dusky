@@ -875,6 +875,35 @@ type = "exec"
 command = "kitty --class 325_hosts_files_block.sh --hold sh -c \"$HOME/user_scripts/arch_setup_scripts/scripts/325_hosts_files_block.sh\""
 terminal = false
 
+[[pages.layout]]
+type = "section"
+[pages.layout.properties]
+title = "DNS & Resolver"
+icon = ""
+description = ""
+
+[[pages.layout.items]]
+type = "button"
+[pages.layout.items.properties]
+title = "DNS & Resolver Configurator"
+description = "Systemd-resolved DNS, DNS-over-TLS & Presets"
+icon = "preferences-system-network-proxy-symbolic"
+
+[[pages.layout.items.properties.buttons]]
+icon = "document-edit-symbolic"
+button_text = "File"
+[pages.layout.items.properties.buttons.on_press]
+type = "exec"
+command = "$HOME/user_scripts/dusky_system/control_center/dusky_text_editor.py \"/etc/systemd/resolved.conf.d/99-dns-tui.conf\""
+
+[[pages.layout.items.properties.buttons]]
+icon = "preferences-system-network-proxy-symbolic"
+button_text = "TUI"
+style = "suggested"
+[pages.layout.items.properties.buttons.on_press]
+type = "exec"
+command = "foot --app-id=dusky_tui --hold python3 $HOME/user_scripts/network_manager/tui_dns.py"
+
 
 [[pages]]
 id = "hardware"
@@ -1964,6 +1993,28 @@ command = "kitty --class dusky_keybinds.sh --hold sh -c \"$HOME/user_scripts/hyp
 [[pages.layout.items.layout.items]]
 type = "button"
 [pages.layout.items.layout.items.properties]
+title = "Dusky Keys"
+description = "On-screen keypress visualizer"
+icon = "input-keyboard-symbolic"
+
+[[pages.layout.items.layout.items.properties.buttons]]
+icon = "document-edit-symbolic"
+button_text = "File"
+[pages.layout.items.layout.items.properties.buttons.on_press]
+type = "exec"
+command = "$HOME/user_scripts/dusky_system/control_center/dusky_text_editor.py \"$HOME/.config/dusky/settings/dusky_keys/config.toml\""
+
+[[pages.layout.items.layout.items.properties.buttons]]
+icon = "input-keyboard-symbolic"
+button_text = "TUI"
+style = "suggested"
+[pages.layout.items.layout.items.properties.buttons.on_press]
+type = "exec"
+command = "foot --app-id=dusky_tui --hold python3 $HOME/user_scripts/mako_osd/dusky_keys/tui_dusky_keys.py"
+
+[[pages.layout.items.layout.items]]
+type = "button"
+[pages.layout.items.layout.items.properties]
 title = "Input"
 description = "Edit input configuration"
 icon = "input-mouse-symbolic"
@@ -2134,6 +2185,28 @@ style = "suggested"
 [pages.layout.items.layout.items.properties.buttons.on_press]
 type = "exec"
 command = "foot --app-id=dusky_tui --hold python3 $HOME/user_scripts/hypr/visual/tui_appearance.py"
+
+[[pages.layout.items.layout.items]]
+type = "button"
+[pages.layout.items.layout.items.properties]
+title = "Font Manager"
+description = "System fonts, rendering & cache"
+icon = "preferences-desktop-font-symbolic"
+
+[[pages.layout.items.layout.items.properties.buttons]]
+icon = "document-edit-symbolic"
+button_text = "File"
+[pages.layout.items.layout.items.properties.buttons.on_press]
+type = "exec"
+command = "$HOME/user_scripts/dusky_system/control_center/dusky_text_editor.py \"$HOME/.config/fontconfig/conf.d/99-dusky-fonts.conf\""
+
+[[pages.layout.items.layout.items.properties.buttons]]
+icon = "preferences-desktop-font-symbolic"
+button_text = "TUI"
+style = "suggested"
+[pages.layout.items.layout.items.properties.buttons.on_press]
+type = "exec"
+command = "foot --app-id=dusky_tui --hold python3 $HOME/user_scripts/fonts/tui_fonts.py"
 
 [[pages.layout.items.layout.items]]
 type = "button"

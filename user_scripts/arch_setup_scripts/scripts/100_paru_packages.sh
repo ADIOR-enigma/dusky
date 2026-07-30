@@ -91,11 +91,7 @@ trap 'abort_with_signal SIGTERM 143' TERM
 
 declare -ar PACKAGES=(
   "wlogout"
-  "adwaita-qt6"
-  "adwaita-qt5"
   "adwsteamgtk"
-  "otf-atkinson-hyperlegible-next"
-  "python-pywalfox"
   "hyprshade"
   "peaclock"
   "tray-tui"

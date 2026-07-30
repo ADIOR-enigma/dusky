@@ -759,6 +759,48 @@
   const handleQuery = async (msg) => {
     if (!msg || msg.type !== "RUN_QUERY") return;
 
+    // --- BUSY GUARD: If AI is still generating/thinking from a previous query,
+    // stop it cleanly before accepting the new one. ---
+    if (currentRequestId && (isGenerating() || siteIsThinking() || hasStartedStreaming)) {
+      const oldReqId = currentRequestId;
+      console.log(`[LocalAI MAIN] Busy guard: AI still active for ${oldReqId}, stopping before new query`);
+
+      // 1. Emit FINAL with whatever we have so the old CLI client can exit cleanly
+      emit({ type: "FINAL", full: lastFullText || "", requestId: oldReqId, reason: "interrupted" });
+      stopObserver();
+
+      // 2. Click the stop button to halt current generation
+      const site = getSiteConfig();
+      let stopped = false;
+      if (site.stopButtonSelector) {
+        for (const sel of site.stopButtonSelector.split(",")) {
+          const stopBtn = document.querySelector(sel.trim());
+          if (stopBtn && isVisible(stopBtn)) {
+            stopBtn.click();
+            stopped = true;
+            console.log("[LocalAI MAIN] Clicked stop button to halt generation");
+            break;
+          }
+        }
+      }
+
+      // 3. Wait for AI to settle (stop button disappears, editor becomes available)
+      //    Max 10 seconds — if it doesn't settle, proceed anyway
+      const settleStart = Date.now();
+      while (Date.now() - settleStart < 10000) {
+        await new Promise(r => setTimeout(r, 300));
+        const stillGenerating = isGenerating() || siteIsThinking();
+        if (!stillGenerating) {
+          console.log(`[LocalAI MAIN] AI settled after ${Date.now() - settleStart}ms`);
+          break;
+        }
+      }
+
+      // Small extra pause for the UI to fully update after stopping
+      await new Promise(r => setTimeout(r, 500));
+    }
+
+    // --- Reset state for new query ---
     currentRequestId = msg.requestId || crypto.randomUUID();
     lastFullText = "";
     lastObservedText = "";

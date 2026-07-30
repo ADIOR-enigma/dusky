@@ -262,10 +262,8 @@ _configure_live_hooks() {
   cat << 'EOF' > "${PROFILE_DIR}/airootfs/root/.automated_script.sh"
 #!/usr/bin/env bash
 if [[ "$(tty)" == "/dev/tty1" ]]; then
-    _rootpw="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)"
-    echo "root:${_rootpw}" | chpasswd
-    printf '\n[INFO] Root password for THIS boot only: %s\n' "${_rootpw}"
-    echo -e "\e[1;32m[INFO]\e[0m Root password randomized for this boot (shown above). SSH is available."
+    echo "root:0000" | chpasswd
+    echo -e "\e[1;32m[INFO]\e[0m Root password set to 0000. SSH is available."
     echo -e "\e[1;34m[INFO]\e[0m Bootstrapping environment..."
     systemctl is-system-running >/dev/null 2>&1 || true
 
