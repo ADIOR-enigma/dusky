@@ -324,7 +324,7 @@ def try_connect_daemon(command: str, target: str = "") -> dict[str, Any] | None:
 
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
-        client.settimeout(0.002)  # 2ms ultra-strict connect timeout
+        client.settimeout(0.010)  # 10ms timeout: imperceptible to UI, 5x safer for slow hardware
         client.connect(sock_path)
         client.settimeout(None)
 
@@ -841,16 +841,32 @@ EXAMPLES:
                 print("[-] Format error: Use --set key=value")
                 sys.exit(1)
 
-            target_key, val_str = args.set.split("=", 1)
+            # Schema-driven key extraction to guarantee ZERO regressions:
+            # Matches against all known schema keys (sorted by length descending) so that 
+            # keys containing '=' (e.g. app-name="foo".key) OR values containing '=' (e.g. key=exec foo=bar)
+            # are both parsed with 100% precision.
+            matched_key = None
+            val_str = None
+            
+            sorted_keys = sorted([k for k in flat_schema.keys() if flat_schema[k] is not None], key=len, reverse=True)
+            for k in sorted_keys:
+                prefix = f"{k}="
+                if args.set.startswith(prefix):
+                    matched_key = k
+                    val_str = args.set[len(prefix):]
+                    break
 
-            if target_key not in flat_schema:
-                print(f"[-] Key '{target_key}' not found in schema.")
-                sys.exit(1)
+            if not matched_key:
+                target_key, val_str = args.set.split("=", 1)
+                if target_key not in flat_schema:
+                    print(f"[-] Key '{target_key}' not found in schema.")
+                    sys.exit(1)
+                matched_key = target_key
 
-            item = flat_schema[target_key]
+            item = flat_schema[matched_key]
 
             if item is None:
-                print(f"[-] Key '{target_key}' is ambiguous across multiple scopes. Please specify using 'scope.{target_key}'.")
+                print(f"[-] Key '{matched_key}' is ambiguous across multiple scopes. Please specify using 'scope.{matched_key}'.")
                 sys.exit(1)
 
             e_type = (item.engine_type_override or ENGINE_TYPE).lower()
@@ -863,7 +879,7 @@ EXAMPLES:
             target_engine = engine_pool[(e_type, t_file)]
             val_str = item.serialize(val_str)
 
-            logger.info(f"Headless Injection: {target_key} -> {val_str}")
+            logger.info(f"Headless Injection: {matched_key} -> {val_str}")
 
             success, msg, _ = target_engine.write_value(item.key, item.scope, val_str, item_type=item.type_)
 
