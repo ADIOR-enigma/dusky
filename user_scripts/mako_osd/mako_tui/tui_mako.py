@@ -686,6 +686,60 @@ SCHEMA = {
     # -------------------------------------------------------------------------
     5: [
         # =====================================================================
+        # GROUP: Custom Rules (User Defined Targets)
+        # =====================================================================
+        ConfigItem(
+            label="Custom Application", key="menu_custom_app", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Custom Rules (User Defined Targets)",
+            extended_help="**Custom Application Muter**\n\nSuppress notifications from any desktop application by entering its binary or application name."
+        ),
+        ConfigItem(
+            label="App Name", key="custom_app_target", scope="__UI_STATE__", type_="string", default="", parent_ref="menu_custom_app",
+            extended_help="**Target Application Name**\n\n**How to use:**\n1. Select **App Name** and press **Enter** (or click) to open the text prompt.\n2. Type the exact application name string (e.g. `vesktop`, `obsidian`, `my_script`, `rofi`).\n3. Press **Enter** to confirm.\n4. Toggle **Mute Application** below to **ON** to activate the rule."
+        ),
+        ConfigItem(
+            label="Invisible", key="invisible", scope='app-name="{custom_app_target}"', type_="bool", default=False, parent_ref="menu_custom_app",
+            extended_help="**Enable Custom App Silencer**\n\nWhen **ON** (`invisible=1`), Mako automatically suppresses screen popups from the application specified in **App Name** above."
+        ),
+        ConfigItem(
+            label="No History", key="history", scope='app-name="{custom_app_target}"', type_="bool", default=True, parent_ref="menu_custom_app",
+            extended_help="**Save to History**\n\nWhen OFF (`history=0`), notifications from this application bypass Mako's history log completely."
+        ),
+
+        ConfigItem(
+            label="Custom Title Pattern", key="menu_custom_title", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Custom Rules (User Defined Targets)",
+            extended_help="**Custom Title / Summary Regex Blocker**\n\nSuppress notifications whose title/summary matches a regular expression pattern."
+        ),
+        ConfigItem(
+            label="Title Regex", key="custom_title_target", scope="__UI_STATE__", type_="string", default="", parent_ref="menu_custom_title",
+            extended_help="**Target Title Regex Pattern**\n\n**How to use:**\n1. Select **Title Regex** and press **Enter** (or click) to open the text prompt.\n2. Type a POSIX extended regular expression matching notification titles (e.g. `[aA]dvertisement`, `[sS]pam`, `[uU]pdate`).\n3. Press **Enter** to confirm.\n4. Toggle **Mute Title Pattern** below to **ON** to activate the rule."
+        ),
+        ConfigItem(
+            label="Invisible", key="invisible", scope='summary~="{custom_title_target}"', type_="bool", default=False, parent_ref="menu_custom_title",
+            extended_help="**Enable Title Pattern Silencer**\n\nWhen **ON** (`invisible=1`), Mako automatically suppresses notifications whose title/summary matches the POSIX regular expression specified in **Title Regex** above."
+        ),
+        ConfigItem(
+            label="No History", key="history", scope='summary~="{custom_title_target}"', type_="bool", default=True, parent_ref="menu_custom_title",
+            extended_help="**Save to History**\n\nWhen OFF (`history=0`), notifications matching this title regex bypass the history log."
+        ),
+
+        ConfigItem(
+            label="Custom Body Pattern", key="menu_custom_body", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Custom Rules (User Defined Targets)",
+            extended_help="**Custom Body Content Regex Blocker**\n\nSuppress notifications whose body text matches a regular expression pattern."
+        ),
+        ConfigItem(
+            label="Body Regex", key="custom_body_target", scope="__UI_STATE__", type_="string", default="", parent_ref="menu_custom_body",
+            extended_help="**Target Body Regex Pattern**\n\n**How to use:**\n1. Select **Body Regex** and press **Enter** (or click) to open the text prompt.\n2. Type a POSIX extended regular expression matching notification body text (e.g. `[sS]pam`, `[oO]ffer`, `[pP]romotion`).\n3. Press **Enter** to confirm.\n4. Toggle **Mute Body Pattern** below to **ON** to activate the rule."
+        ),
+        ConfigItem(
+            label="Invisible", key="invisible", scope='body~="{custom_body_target}"', type_="bool", default=False, parent_ref="menu_custom_body",
+            extended_help="**Enable Body Pattern Silencer**\n\nWhen **ON** (`invisible=1`), Mako automatically suppresses notifications whose body content matches the POSIX regular expression specified in **Body Regex** above."
+        ),
+        ConfigItem(
+            label="No History", key="history", scope='body~="{custom_body_target}"', type_="bool", default=True, parent_ref="menu_custom_body",
+            extended_help="**Save to History**\n\nWhen OFF (`history=0`), notifications matching this body regex bypass the history log."
+        ),
+
+        # =====================================================================
         # GROUP: Communication & Messaging
         # =====================================================================
         ConfigItem(
@@ -698,7 +752,7 @@ SCHEMA = {
         ),
         ConfigItem(
             label="No History", key="history", scope='app-name="Discord"', type_="bool", default=True, parent_ref="menu_discord",
-            extended_help="**Save to History**\n\nWhen OFF (`history=0`), Discord notifications bypass the history log as well."
+            extended_help="**Save to History**\n\nWhen OFF (`history=0`), Discord notifications bypass the history log."
         ),
 
         ConfigItem(
@@ -708,6 +762,10 @@ SCHEMA = {
         ConfigItem(
             label="Invisible", key="invisible", scope='app-name="vesktop"', type_="bool", default=False, parent_ref="menu_vesktop",
             extended_help="**Hide Vesktop Alerts**\n\nWhen enabled (`invisible=1`), suppresses Vesktop popups."
+        ),
+        ConfigItem(
+            label="No History", key="history", scope='app-name="vesktop"', type_="bool", default=True, parent_ref="menu_vesktop",
+            extended_help="**Save to History**\n\nWhen OFF (`history=0`), Vesktop notifications bypass the history log."
         ),
 
         ConfigItem(
@@ -720,7 +778,7 @@ SCHEMA = {
         ),
         ConfigItem(
             label="No History", key="history", scope='app-name="telegram-desktop"', type_="bool", default=True, parent_ref="menu_telegram",
-            extended_help="**Save to History**\n\nWhen OFF (`history=0`), Telegram notifications are discarded without archiving."
+            extended_help="**Save to History**\n\nWhen OFF (`history=0`), Telegram notifications bypass the history log."
         ),
 
         ConfigItem(
@@ -731,6 +789,10 @@ SCHEMA = {
             label="Invisible", key="invisible", scope='app-name="Slack"', type_="bool", default=False, parent_ref="menu_slack",
             extended_help="**Hide Slack Alerts**\n\nWhen enabled (`invisible=1`), prevents Slack notifications from showing."
         ),
+        ConfigItem(
+            label="No History", key="history", scope='app-name="Slack"', type_="bool", default=True, parent_ref="menu_slack",
+            extended_help="**Save to History**\n\nWhen OFF (`history=0`), Slack notifications bypass the history log."
+        ),
 
         ConfigItem(
             label="Signal", key="menu_signal", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Communication",
@@ -739,6 +801,10 @@ SCHEMA = {
         ConfigItem(
             label="Invisible", key="invisible", scope='app-name="Signal"', type_="bool", default=False, parent_ref="menu_signal",
             extended_help="**Hide Signal Alerts**\n\nWhen enabled (`invisible=1`), suppresses Signal popups."
+        ),
+        ConfigItem(
+            label="No History", key="history", scope='app-name="Signal"', type_="bool", default=True, parent_ref="menu_signal",
+            extended_help="**Save to History**\n\nWhen OFF (`history=0`), Signal notifications bypass the history log."
         ),
 
         ConfigItem(
@@ -749,6 +815,10 @@ SCHEMA = {
             label="Invisible", key="invisible", scope='app-name="Element"', type_="bool", default=False, parent_ref="menu_element",
             extended_help="**Hide Element Alerts**\n\nWhen enabled (`invisible=1`), suppresses Element popups."
         ),
+        ConfigItem(
+            label="No History", key="history", scope='app-name="Element"', type_="bool", default=True, parent_ref="menu_element",
+            extended_help="**Save to History**\n\nWhen OFF (`history=0`), Element notifications bypass the history log."
+        ),
 
         ConfigItem(
             label="WhatsApp", key="menu_whatsapp", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Communication",
@@ -757,6 +827,10 @@ SCHEMA = {
         ConfigItem(
             label="Invisible", key="invisible", scope='app-name="WhatsApp"', type_="bool", default=False, parent_ref="menu_whatsapp",
             extended_help="**Hide WhatsApp Alerts**\n\nWhen enabled (`invisible=1`), suppresses WhatsApp popups."
+        ),
+        ConfigItem(
+            label="No History", key="history", scope='app-name="WhatsApp"', type_="bool", default=True, parent_ref="menu_whatsapp",
+            extended_help="**Save to History**\n\nWhen OFF (`history=0`), WhatsApp notifications bypass the history log."
         ),
 
         ConfigItem(
@@ -767,6 +841,10 @@ SCHEMA = {
             label="Invisible", key="invisible", scope='app-name="teams"', type_="bool", default=False, parent_ref="menu_teams",
             extended_help="**Hide Teams Alerts**\n\nWhen enabled (`invisible=1`), suppresses Teams popups."
         ),
+        ConfigItem(
+            label="No History", key="history", scope='app-name="teams"', type_="bool", default=True, parent_ref="menu_teams",
+            extended_help="**Save to History**\n\nWhen OFF (`history=0`), Teams notifications bypass the history log."
+        ),
 
         ConfigItem(
             label="Zoom", key="menu_zoom", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Communication",
@@ -776,6 +854,10 @@ SCHEMA = {
             label="Invisible", key="invisible", scope='app-name="zoom"', type_="bool", default=False, parent_ref="menu_zoom",
             extended_help="**Hide Zoom Alerts**\n\nWhen enabled (`invisible=1`), suppresses Zoom popups."
         ),
+        ConfigItem(
+            label="No History", key="history", scope='app-name="zoom"', type_="bool", default=True, parent_ref="menu_zoom",
+            extended_help="**Save to History**\n\nWhen OFF (`history=0`), Zoom notifications bypass the history log."
+        ),
 
         ConfigItem(
             label="Thunderbird", key="menu_thunderbird", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Communication",
@@ -784,6 +866,10 @@ SCHEMA = {
         ConfigItem(
             label="Invisible", key="invisible", scope='app-name="thunderbird"', type_="bool", default=False, parent_ref="menu_thunderbird",
             extended_help="**Hide Mail Alerts**\n\nWhen enabled (`invisible=1`), suppresses email popups."
+        ),
+        ConfigItem(
+            label="No History", key="history", scope='app-name="thunderbird"', type_="bool", default=True, parent_ref="menu_thunderbird",
+            extended_help="**Save to History**\n\nWhen OFF (`history=0`), Thunderbird notifications bypass the history log."
         ),
 
         # =====================================================================
@@ -799,7 +885,7 @@ SCHEMA = {
         ),
         ConfigItem(
             label="No History", key="history", scope='app-name="Antigravity"', type_="bool", default=True, parent_ref="menu_antigravity",
-            extended_help="**Save to History**\n\nWhen OFF (`history=0`), Antigravity notifications bypass history."
+            extended_help="**Save to History**\n\nWhen OFF (`history=0`), Antigravity notifications bypass the history log."
         ),
 
         ConfigItem(
@@ -812,7 +898,7 @@ SCHEMA = {
         ),
         ConfigItem(
             label="No History", key="history", scope='app-name="qBittorrent"', type_="bool", default=True, parent_ref="menu_qbittorrent",
-            extended_help="**Save to History**\n\nWhen OFF (`history=0`), torrent popups bypass history log."
+            extended_help="**Save to History**\n\nWhen OFF (`history=0`), qBittorrent notifications bypass the history log."
         ),
 
         ConfigItem(
@@ -823,6 +909,10 @@ SCHEMA = {
             label="Invisible", key="invisible", scope='app-name="Code"', type_="bool", default=False, parent_ref="menu_vscode",
             extended_help="**Hide VS Code Alerts**\n\nWhen enabled (`invisible=1`), suppresses popups from VS Code."
         ),
+        ConfigItem(
+            label="No History", key="history", scope='app-name="Code"', type_="bool", default=True, parent_ref="menu_vscode",
+            extended_help="**Save to History**\n\nWhen OFF (`history=0`), VS Code notifications bypass the history log."
+        ),
 
         ConfigItem(
             label="VSCodium", key="menu_vscodium", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Productivity",
@@ -832,6 +922,10 @@ SCHEMA = {
             label="Invisible", key="invisible", scope='app-name="vscodium"', type_="bool", default=False, parent_ref="menu_vscodium",
             extended_help="**Hide VSCodium Alerts**\n\nWhen enabled (`invisible=1`), suppresses popups from VSCodium."
         ),
+        ConfigItem(
+            label="No History", key="history", scope='app-name="vscodium"', type_="bool", default=True, parent_ref="menu_vscodium",
+            extended_help="**Save to History**\n\nWhen OFF (`history=0`), VSCodium notifications bypass the history log."
+        ),
 
         ConfigItem(
             label="Obsidian", key="menu_obsidian", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Productivity",
@@ -840,6 +934,10 @@ SCHEMA = {
         ConfigItem(
             label="Invisible", key="invisible", scope='app-name="obsidian"', type_="bool", default=False, parent_ref="menu_obsidian",
             extended_help="**Hide Obsidian Alerts**\n\nWhen enabled (`invisible=1`), suppresses Obsidian popups."
+        ),
+        ConfigItem(
+            label="No History", key="history", scope='app-name="obsidian"', type_="bool", default=True, parent_ref="menu_obsidian",
+            extended_help="**Save to History**\n\nWhen OFF (`history=0`), Obsidian notifications bypass the history log."
         ),
 
         # =====================================================================
@@ -853,6 +951,10 @@ SCHEMA = {
             label="Invisible", key="invisible", scope='app-name="Steam"', type_="bool", default=False, parent_ref="menu_steam",
             extended_help="**Hide Steam Alerts**\n\nWhen enabled (`invisible=1`), prevents Steam popups from disturbing gameplay."
         ),
+        ConfigItem(
+            label="No History", key="history", scope='app-name="Steam"', type_="bool", default=True, parent_ref="menu_steam",
+            extended_help="**Save to History**\n\nWhen OFF (`history=0`), Steam notifications bypass the history log."
+        ),
 
         ConfigItem(
             label="Spotify", key="menu_spotify_block", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Gaming & Media",
@@ -861,6 +963,10 @@ SCHEMA = {
         ConfigItem(
             label="Invisible", key="invisible", scope='app-name="Spotify"', type_="bool", default=False, parent_ref="menu_spotify_block",
             extended_help="**Hide Spotify Alerts**\n\nWhen enabled (`invisible=1`), suppresses Spotify track popups."
+        ),
+        ConfigItem(
+            label="No History", key="history", scope='app-name="Spotify"', type_="bool", default=True, parent_ref="menu_spotify_block",
+            extended_help="**Save to History**\n\nWhen OFF (`history=0`), Spotify track notifications bypass the history log."
         ),
 
         ConfigItem(
@@ -871,6 +977,10 @@ SCHEMA = {
             label="Invisible", key="invisible", scope='app-name="VLC media player"', type_="bool", default=False, parent_ref="menu_vlc_block",
             extended_help="**Hide VLC Alerts**\n\nWhen enabled (`invisible=1`), suppresses VLC popups."
         ),
+        ConfigItem(
+            label="No History", key="history", scope='app-name="VLC media player"', type_="bool", default=True, parent_ref="menu_vlc_block",
+            extended_help="**Save to History**\n\nWhen OFF (`history=0`), VLC notifications bypass the history log."
+        ),
 
         ConfigItem(
             label="mpv", key="menu_mpv_block", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Gaming & Media",
@@ -879,6 +989,10 @@ SCHEMA = {
         ConfigItem(
             label="Invisible", key="invisible", scope='app-name="mpv"', type_="bool", default=False, parent_ref="menu_mpv_block",
             extended_help="**Hide mpv Alerts**\n\nWhen enabled (`invisible=1`), suppresses mpv popups."
+        ),
+        ConfigItem(
+            label="No History", key="history", scope='app-name="mpv"', type_="bool", default=True, parent_ref="menu_mpv_block",
+            extended_help="**Save to History**\n\nWhen OFF (`history=0`), mpv notifications bypass the history log."
         ),
 
         # =====================================================================
@@ -892,6 +1006,10 @@ SCHEMA = {
             label="Invisible", key="invisible", scope='app-name="firefox"', type_="bool", default=False, parent_ref="menu_firefox",
             extended_help="**Hide Firefox Alerts**\n\nWhen enabled (`invisible=1`), suppresses web notification popups from Firefox."
         ),
+        ConfigItem(
+            label="No History", key="history", scope='app-name="firefox"', type_="bool", default=True, parent_ref="menu_firefox",
+            extended_help="**Save to History**\n\nWhen OFF (`history=0`), Firefox notifications bypass the history log."
+        ),
 
         ConfigItem(
             label="Google Chrome", key="menu_chrome", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Web Browsers",
@@ -900,6 +1018,10 @@ SCHEMA = {
         ConfigItem(
             label="Invisible", key="invisible", scope='app-name="Google-chrome"', type_="bool", default=False, parent_ref="menu_chrome",
             extended_help="**Hide Chrome Alerts**\n\nWhen enabled (`invisible=1`), suppresses popups from Chrome."
+        ),
+        ConfigItem(
+            label="No History", key="history", scope='app-name="Google-chrome"', type_="bool", default=True, parent_ref="menu_chrome",
+            extended_help="**Save to History**\n\nWhen OFF (`history=0`), Google Chrome notifications bypass the history log."
         ),
 
         ConfigItem(
@@ -910,6 +1032,10 @@ SCHEMA = {
             label="Invisible", key="invisible", scope='app-name="Brave-browser"', type_="bool", default=False, parent_ref="menu_brave",
             extended_help="**Hide Brave Alerts**\n\nWhen enabled (`invisible=1`), suppresses popups from Brave."
         ),
+        ConfigItem(
+            label="No History", key="history", scope='app-name="Brave-browser"', type_="bool", default=True, parent_ref="menu_brave",
+            extended_help="**Save to History**\n\nWhen OFF (`history=0`), Brave Browser notifications bypass the history log."
+        ),
 
         ConfigItem(
             label="Chromium", key="menu_chromium", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Web Browsers",
@@ -919,26 +1045,9 @@ SCHEMA = {
             label="Invisible", key="invisible", scope='app-name="chromium"', type_="bool", default=False, parent_ref="menu_chromium",
             extended_help="**Hide Chromium Alerts**\n\nWhen enabled (`invisible=1`), suppresses popups from Chromium."
         ),
-
-        # =====================================================================
-        # GROUP: Content Pattern Matching Rules
-        # =====================================================================
         ConfigItem(
-            label="Title Pattern", key="menu_custom_title", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Pattern Rules",
-            extended_help="**Regex Title / Summary Blocker**\n\nBlocks notifications whose summary/title matches a regular expression pattern."
-        ),
-        ConfigItem(
-            label="Invisible", key="invisible", scope='summary~="[aA]dvertisement"', type_="bool", default=False, parent_ref="menu_custom_title",
-            extended_help="**Mute Matching Titles**\n\nSuppresses notifications matching POSIX regex pattern `[summary~=\"[aA]dvertisement\"]`."
-        ),
-
-        ConfigItem(
-            label="Body Pattern", key="menu_custom_body", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Pattern Rules",
-            extended_help="**Regex Body Blocker**\n\nBlocks notifications whose body content matches a regular expression pattern."
-        ),
-        ConfigItem(
-            label="Invisible", key="invisible", scope='body~="[sS]pam"', type_="bool", default=False, parent_ref="menu_custom_body",
-            extended_help="**Mute Matching Body Content**\n\nSuppresses notifications matching POSIX regex pattern `[body~=\"[sS]pam\"]`."
+            label="No History", key="history", scope='app-name="chromium"', type_="bool", default=True, parent_ref="menu_chromium",
+            extended_help="**Save to History**\n\nWhen OFF (`history=0`), Chromium notifications bypass the history log."
         ),
     ],
 
