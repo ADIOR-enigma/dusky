@@ -277,7 +277,7 @@ def cache_dir() -> Path:
 
 @functools.cache
 def askpass_dir() -> Path:
-    return ensure_dir(cache_dir() / "askpass", 0o700)
+    return ensure_dir(runtime_dir() / "askpass", 0o700)
 
 
 def lock_path() -> Path:
@@ -409,6 +409,7 @@ class ProfileConfig:
     git_dir: str = "~/dusky"
     git_work_tree: str = "~/"
     git_remote: str = "origin"
+    git_repo_url: str = "https://github.com/dusklinux/dusky"
     search_dirs: list[str] = field(default_factory=list)
     conflict_resolutions: dict[str, str] = field(default_factory=dict)
     tasks: list[OrchestratorTask] = field(default_factory=list)
@@ -435,7 +436,7 @@ def now_iso() -> str:
 
 
 def now_ts() -> str:
-    return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
 def file_checksum(path: Path) -> str:
@@ -505,7 +506,9 @@ class StateStore:
             )
             """
         )
-        with suppress(sqlite3.OperationalError):
+        cur = self.conn.execute("PRAGMA table_info(state);")
+        columns = [row[1] for row in cur.fetchall()]
+        if "duration" not in columns:
             self.conn.execute("ALTER TABLE state ADD COLUMN duration REAL DEFAULT 0.0;")
         self.conn.commit()
 
@@ -514,10 +517,11 @@ class StateStore:
         return {str(k): str(v) for k, v in cur.fetchall()}
 
     def durations(self) -> dict[str, float]:
-        with suppress(sqlite3.OperationalError):
-            cur = self.conn.execute("SELECT state_key, duration FROM state")
-            return {str(k): float(v or 0.0) for k, v in cur.fetchall()}
-        return {}
+        cur = self.conn.execute("PRAGMA table_info(state);")
+        if "duration" not in [row[1] for row in cur.fetchall()]:
+            return {}
+        cur = self.conn.execute("SELECT state_key, duration FROM state")
+        return {str(k): float(v or 0.0) for k, v in cur.fetchall()}
 
     @classmethod
     def is_done(cls, status: str | None) -> bool:
@@ -552,7 +556,8 @@ class StateStore:
     def reset(self) -> None:
         with suppress(Exception):
             self.conn.close()
-        self.path.unlink(missing_ok=True)
+        for suffix in ("", "-wal", "-shm"):
+            Path(f"{self.path}{suffix}").unlink(missing_ok=True)
 
     def close(self) -> None:
         with suppress(Exception):
@@ -560,9 +565,10 @@ class StateStore:
 
 
 def reset_state_for_profile(profile: ProfileConfig) -> None:
-    path = state_dir() / f"{safe_filename(profile.name)}.db"
-    path.unlink(missing_ok=True)
-    print(f"Reset state for {profile.name} at {path}")
+    base_path = state_dir() / f"{safe_filename(profile.name)}.db"
+    for suffix in ("", "-wal", "-shm"):
+        Path(f"{base_path}{suffix}").unlink(missing_ok=True)
+    print(f"Reset state for {profile.name} at {base_path}")
 
 
 class OnceStore:
@@ -1191,6 +1197,7 @@ class SudoEngine:
     _askpass_path: Path | None = None
     _sudoers_path: Path | None = None
     _mode: str = "none"  # none | root | nopasswd | password
+    _registered_atexit: bool = False
 
     ENV_KEEP = [
         "HOME",
@@ -1235,6 +1242,10 @@ class SudoEngine:
         "VDPAU_DRIVER",
         "SDL_VIDEODRIVER",
         "ZDOTDIR",
+        "HYPRLAND_INSTANCE_SIGNATURE",
+        "QT_QPA_PLATFORM",
+        "XDG_SESSION_ID",
+        "XDG_SEAT",
     ]
 
     @classmethod
@@ -1303,9 +1314,19 @@ class SudoEngine:
         script = r"""
 for f in /etc/sudoers.d/99_dusky_*; do
     [ -f "$f" ] || continue
-    pid=$(sed -n 's/^# pid=//p' "$f" | head -n1)
-    if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
-        rm -f "$f"
+    pid=$(sed -n 's/^# pid=\([0-9]*\).*/\1/p' "$f" | head -n1)
+    expected_st=$(sed -n 's/.*starttime=\([0-9]*\).*/\1/p' "$f" | head -n1)
+    if [ -n "$pid" ]; then
+        if ! kill -0 "$pid" 2>/dev/null; then
+            rm -f "$f"
+        elif [ -n "$expected_st" ] && [ -f "/proc/$pid/stat" ]; then
+            real_st=$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null)
+            if [ "$real_st" != "$expected_st" ]; then
+                rm -f "$f"
+            fi
+        elif [ -f "/proc/$pid/cmdline" ] && ! grep -q -e "orchestrator" -e "python" "/proc/$pid/cmdline" 2>/dev/null; then
+            rm -f "$f"
+        fi
     fi
 done
 """
@@ -1327,8 +1348,16 @@ done
         safe_user = re.sub(r"[^A-Za-z0-9._-]", "_", username)
         path = Path(f"/etc/sudoers.d/99_dusky_{safe_user}_{os.getpid()}")
         env_vars = " ".join(cls.ENV_KEEP)
+
+        start_time = "0"
+        with suppress(OSError, IndexError):
+            stat_text = Path(f"/proc/{os.getpid()}/stat").read_text(encoding="ascii", errors="ignore")
+            idx = stat_text.rfind(")")
+            if idx != -1:
+                start_time = stat_text[idx + 1:].split()[19]
+
         content = (
-            f"# pid={os.getpid()} ts={int(time.time())}\n"
+            f"# pid={os.getpid()} starttime={start_time} ts={int(time.time())}\n"
             f"Defaults:{username} timestamp_type=global, timestamp_timeout=15\n"
             f"Defaults:{username} env_keep += \"{env_vars} DUSKY_*\"\n"
         )
@@ -1412,7 +1441,10 @@ done
             cls._password = password
             cls._askpass_path = askpass
             cls._mode = "password"
-            atexit.register(cls.cleanup)
+            os.environ["SUDO_ASKPASS"] = str(askpass)
+            if not cls._registered_atexit:
+                atexit.register(cls.cleanup)
+                cls._registered_atexit = True
             cls._remove_stale_sudoers_files(env)
             cls._write_sudoers_dropin(env)
             return True, ""
@@ -1884,6 +1916,28 @@ Input {{
     border: tall {p['accent']};
     color: {p['fg']};
 }}
+
+AppFooter {{
+    dock: bottom;
+    height: 1;
+    background: {p['bg']};
+    color: {p['fg']};
+    padding: 0 1;
+}}
+
+.footer-shortcut {{
+    color: {p['accent']};
+    margin-right: 2;
+    text-style: bold;
+}}
+
+.footer-sep {{
+    color: {p['muted']};
+}}
+
+#footer_status {{
+    color: {p['warning']};
+}}
 """
 
 
@@ -2055,6 +2109,12 @@ def parse_task_table(table: dict, index: int) -> OrchestratorTask:
     else:
         args = []
 
+    if not args and " " in cmd:
+        cmd_tokens = shlex.split(cmd)
+        if cmd_tokens:
+            cmd = cmd_tokens[0]
+            args = cmd_tokens[1:]
+
     flags = str(table.get("flags", ""))
     ignore_fail = bool(table.get("ignore_fail", False))
 
@@ -2125,7 +2185,11 @@ def parse_task_table(table: dict, index: int) -> OrchestratorTask:
             once = True
             once_scope = "global"
         elif f.startswith("if:"):
-            condition = flag.strip()[3:]
+            cond_val = flag.strip()[3:]
+            if condition is None:
+                condition = cond_val
+            else:
+                condition = f"{condition},{cond_val}"
         elif f.startswith("timeout:"):
             with suppress(ValueError):
                 timeout = float(flag.strip()[8:])
@@ -2212,6 +2276,12 @@ def load_profile(filepath: Path) -> ProfileConfig:
 
     policy = policy_data if isinstance(policy_data, dict) else {}
 
+    git_repo_url = str(
+        g_data.get("url")
+        or g_data.get("repo_url")
+        or "https://github.com/dusklinux/dusky"
+    ).strip()
+
     return ProfileConfig(
         filepath=filepath,
         name=str(p_data.get("name", filepath.stem)).strip(),
@@ -2221,6 +2291,7 @@ def load_profile(filepath: Path) -> ProfileConfig:
         git_dir=str(g_data.get("git_dir", "~/dusky")).strip(),
         git_work_tree=str(g_data.get("work_tree", "~/")).strip(),
         git_remote=str(g_data.get("remote", "origin")).strip(),
+        git_repo_url=git_repo_url,
         search_dirs=search_dirs,
         conflict_resolutions={
             str(k).strip(): str(v).strip()
@@ -2612,29 +2683,64 @@ class ConditionEvaluator:
         return group in groups.split()
 
     def _gpu(self, kind: str) -> bool:
+        if kind == "nvidia" and Path("/sys/module/nvidia").exists():
+            return True
+        if kind == "intel" and (Path("/sys/module/i915").exists() or Path("/sys/module/xe").exists()):
+            return True
+        if kind == "amd" and (Path("/sys/module/amdgpu").exists() or Path("/sys/module/radeon").exists()):
+            return True
+
+        drm_path = Path("/sys/class/drm")
+        if drm_path.exists():
+            vendor_map = {
+                "nvidia": "0x10de",
+                "intel": "0x8086",
+                "amd": "0x1002",
+                "vmware": "0x15ad",
+                "virtio": "0x1af4",
+            }
+            target_vendor = vendor_map.get(kind)
+            if target_vendor:
+                with suppress(OSError):
+                    for card in drm_path.glob("card[0-9]*"):
+                        device_dir = card / "device"
+                        if not device_dir.exists():
+                            continue
+                        driver_link = device_dir / "driver"
+                        if driver_link.exists():
+                            with suppress(OSError):
+                                if driver_link.resolve().name == "simpledrm":
+                                    continue
+                        vendor_file = device_dir / "vendor"
+                        if vendor_file.exists():
+                            if vendor_file.read_text(encoding="utf-8").strip().lower() == target_vendor:
+                                return True
+
         if kind == "nvidia":
-            return Path("/sys/module/nvidia").exists() or self._lspci_contains("nvidia")
+            return self._lspci_vga("nvidia")
         if kind == "intel":
-            return (
-                Path("/sys/module/i915").exists()
-                or Path("/sys/module/xe").exists()
-                or self._lspci_contains("intel")
-            )
+            return self._lspci_vga("intel")
         if kind == "amd":
             return (
-                Path("/sys/module/amdgpu").exists()
-                or self._lspci_contains("amd")
-                or self._lspci_contains("ati")
-                or self._lspci_contains("radeon")
-                or self._lspci_contains("advanced micro devices")
+                self._lspci_vga("amd")
+                or self._lspci_vga("ati")
+                or self._lspci_vga("radeon")
+                or self._lspci_vga("advanced micro devices")
             )
         return False
 
-    def _lspci_contains(self, needle: str) -> bool:
+    def _lspci_vga(self, needle: str) -> bool:
         if not shutil.which("lspci"):
             return False
         out = self._output(["lspci"])
-        return needle.lower() in out.lower()
+        needle_lower = needle.lower()
+        pattern = re.compile(rf"\b{re.escape(needle_lower)}\b", re.IGNORECASE)
+        for line in out.splitlines():
+            line_lower = line.lower()
+            if any(ctrl in line_lower for ctrl in ("vga", "3d", "display")):
+                if pattern.search(line_lower):
+                    return True
+        return False
 
 
 # ==============================================================================
@@ -2688,9 +2794,19 @@ def _git_check(cmd: list[str], timeout: int = 60) -> str:
 
 def _proc_holds_file(path: Path) -> bool:
     try:
-        real = path.resolve()
+        real = path.resolve(strict=True)
     except Exception:
         return False
+
+    if shutil.which("fuser"):
+        with suppress(Exception):
+            res = subprocess.run(
+                ["fuser", "-s", str(real)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=3,
+            )
+            return res.returncode == 0
 
     proc_dir = Path("/proc")
     if not proc_dir.exists():
@@ -3361,6 +3477,7 @@ def _prompt_choice(
         return yes_choice
 
     if not sys.stdin.isatty():
+        sys.stderr.write("[WARN] Non-interactive environment detected. Defaulting to safe choice.\n")
         return default
 
     for line in lines:
@@ -3452,7 +3569,7 @@ def run_git_self_update(
 
     if repo_state == "absent":
         sys.stdout.write(f"[GIT] Bare repository not found at: {git_dir}\n")
-        repo_url = getattr(profile, "git_repo_url", "https://github.com/dusklinux/dusky")
+        repo_url = profile.git_repo_url or "https://github.com/dusklinux/dusky"
         if not repo_url:
             repo_url = "https://github.com/dusklinux/dusky"
 
@@ -3498,12 +3615,13 @@ def run_git_self_update(
             if preserve_profile and profile and not any(a == "--profile" or a.startswith("--profile=") or a == "-p" for a in args):
                 args.extend(["--profile", profile.filepath.stem])
 
-            try:
-                if wrapper_path.is_file():
-                    with suppress(OSError):
-                        os.chmod(wrapper_path, 0o755)
+            if wrapper_path.is_file():
+                with suppress(OSError):
+                    os.chmod(wrapper_path, 0o755)
+                with suppress(OSError):
                     os.execv(str(wrapper_path), [str(wrapper_path)] + args)
 
+            try:
                 os.execv(sys.executable, [sys.executable, str(my_path)] + args)
             except OSError as e:
                 sys.stderr.write(f"[FATAL] Failed to restart orchestrator: {e}\n")
@@ -3772,12 +3890,13 @@ def run_git_self_update(
         if preserve_profile and profile and not any(a == "--profile" or a.startswith("--profile=") or a == "-p" for a in args):
             args.extend(["--profile", profile.filepath.stem])
 
-        try:
-            if wrapper_path.is_file():
-                with suppress(OSError):
-                    os.chmod(wrapper_path, 0o755)
+        if wrapper_path.is_file():
+            with suppress(OSError):
+                os.chmod(wrapper_path, 0o755)
+            with suppress(OSError):
                 os.execv(str(wrapper_path), [str(wrapper_path)] + args)
 
+        try:
             os.execv(sys.executable, [sys.executable, str(my_path)] + args)
         except OSError as e:
             sys.stderr.write(f"[FATAL] Failed to restart orchestrator after update: {e}\n")
@@ -4447,6 +4566,7 @@ class DuskyOrchestratorApp(App):
 
         self._prompt_counts: dict[str, int] = {}
         self._prompt_last: dict[str, float] = {}
+        self._prompt_buffer: str = ""
 
         self._durations: list[float] = []
         self._always_handled: set[str] = set()
@@ -4478,6 +4598,8 @@ class DuskyOrchestratorApp(App):
                             wrap=True,
                             max_lines=6000,
                         )
+
+        yield AppFooter()
 
     def on_mount(self) -> None:
         with suppress(Exception):
@@ -4671,10 +4793,10 @@ class DuskyOrchestratorApp(App):
         if isinstance(self.screen, ConfirmQuitScreen):
             return
 
-        def on_quit_decision(result: str | None) -> None:
+        async def on_quit_decision(result: str | None) -> None:
             if result == "abort":
                 self.log_system("User requested sequence termination.", is_err=True)
-                self._kill_active_child_sync()
+                await self._kill_active_child_async()
                 self.exit(0)
 
         self.push_screen(ConfirmQuitScreen(), on_quit_decision)
@@ -4691,7 +4813,7 @@ class DuskyOrchestratorApp(App):
         if isinstance(self.screen, ModalScreen):
             return
 
-        if self.current_pty_master is not None:
+        if self.current_pty_master is not None and self.active_task and self.active_task.interactive:
             if event.key == "ctrl+f":
                 self.action_open_search()
                 event.stop()
@@ -4997,7 +5119,8 @@ class DuskyOrchestratorApp(App):
         if self.active_task is None or self.active_task.interactive:
             return
 
-        tail = text[-1024:]
+        self._prompt_buffer = (getattr(self, "_prompt_buffer", "") + text)[-4096:]
+        tail = self._prompt_buffer
 
         for name, pattern, kind in PROMPT_RULES:
             if not pattern.search(tail):
@@ -5031,6 +5154,7 @@ class DuskyOrchestratorApp(App):
 
             self._prompt_counts[name] = count + 1
             self._prompt_last[name] = now
+            self._prompt_buffer = ""
 
             if name != "sudo_password" and count < 5:
                 self.log_system(f"Auto-responded to prompt: {name}")
@@ -5123,6 +5247,24 @@ class DuskyOrchestratorApp(App):
             with suppress(ProcessLookupError, PermissionError, OSError):
                 os.kill(pid, signal.SIGKILL)
 
+    async def _kill_active_child_async(self) -> None:
+        pid = self.active_child_pid
+        if pid is None:
+            return
+
+        if self.active_child_group:
+            with suppress(ProcessLookupError, PermissionError, OSError):
+                os.killpg(pid, signal.SIGTERM)
+            await asyncio.sleep(0.2)
+            with suppress(ProcessLookupError, PermissionError, OSError):
+                os.killpg(pid, signal.SIGKILL)
+        else:
+            with suppress(ProcessLookupError, PermissionError, OSError):
+                os.kill(pid, signal.SIGTERM)
+            await asyncio.sleep(0.2)
+            with suppress(ProcessLookupError, PermissionError, OSError):
+                os.kill(pid, signal.SIGKILL)
+
     def _task_env(self, task: OrchestratorTask) -> dict[str, str]:
         env = os.environ.copy()
 
@@ -5130,14 +5272,12 @@ class DuskyOrchestratorApp(App):
             "LD_PRELOAD",
             "LD_AUDIT",
             "LD_DEBUG",
-            "LD_LIBRARY_PATH",
             "LD_ORIGIN_PATH",
             "LD_PROFILE",
             "LD_SHOW_AUXV",
             "LD_USE_LOAD_BIAS",
             "PYTHONSTARTUP",
             "PYTHONHOME",
-            "PYTHONPATH",
             "PERL5LIB",
             "RUBYLIB",
             "NODE_OPTIONS",
@@ -5260,6 +5400,10 @@ class DuskyOrchestratorApp(App):
             "LIBVA_DRIVER_NAME",
             "VDPAU_DRIVER",
             "SDL_VIDEODRIVER",
+            "HYPRLAND_INSTANCE_SIGNATURE",
+            "QT_QPA_PLATFORM",
+            "XDG_SESSION_ID",
+            "XDG_SEAT",
         ]
 
         env_pairs = [f"{k}={full_env[k]}" for k in critical_keys if k in full_env]
@@ -5327,13 +5471,6 @@ class DuskyOrchestratorApp(App):
         line_buffer = ""
 
         try:
-            def _set_controlling_tty():
-                os.setsid()
-                try:
-                    fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
-                except OSError:
-                    pass
-
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdin=slave_fd,
@@ -5341,7 +5478,7 @@ class DuskyOrchestratorApp(App):
                 stderr=slave_fd,
                 env=env,
                 close_fds=True,
-                preexec_fn=_set_controlling_tty,
+                start_new_session=True,
             )
 
             with suppress(OSError):
@@ -5388,10 +5525,10 @@ class DuskyOrchestratorApp(App):
 
                     line_buffer += text
 
-                    if len(line_buffer) > 1_000_000:
+                    if len(line_buffer) > 32768:
                         with suppress(Exception):
-                            self.handle_pty_line(line_buffer[:1_000_000], last_lines)
-                        line_buffer = line_buffer[-100_000:]
+                            self.handle_pty_line(line_buffer[:32768], last_lines)
+                        line_buffer = line_buffer[-4096:]
 
                     while True:
                         m = SINGLE_NEWLINE_RE.search(line_buffer)
@@ -5523,9 +5660,12 @@ class DuskyOrchestratorApp(App):
                 print(f"Executing: {clean_cmd}\n")
                 sys.stdout.flush()
 
-                res = subprocess.run(cmd, env=env)
+                res = await asyncio.to_thread(subprocess.run, cmd, env=env)
                 code = res.returncode
                 return code == 0, code, "interactive session"
+
+            except KeyboardInterrupt:
+                return False, 130, "interactive session interrupted by user"
 
             except Exception as e:
                 return False, None, str(e)
@@ -5548,15 +5688,17 @@ class DuskyOrchestratorApp(App):
                 await asyncio.sleep(0.4)
 
     async def _ensure_sudo(self) -> bool:
-        if not self.has_sudo:
-            return True
-
         ok = SudoEngine.refresh_sync()
         if ok:
+            self.has_sudo = True
             return True
 
         self.log_system("Sudo credentials expired. Re-authentication required.", is_err=True)
-        return await self.push_screen_wait(SudoPasswordScreen())
+        res = await self.push_screen_wait(SudoPasswordScreen())
+        if res:
+            self.has_sudo = True
+            return True
+        return False
 
     async def _execute_task_cmd(
         self,
@@ -5853,9 +5995,8 @@ class DuskyOrchestratorApp(App):
         try:
             while True:
                 handled: set[str] = set()
-                ran_any = False
-
-                for pass_idx in range(MAX_DEFER_PASSES):
+                
+                while True:
                     ran_this_pass = False
 
                     for task in self.tasks:
@@ -5882,21 +6023,12 @@ class DuskyOrchestratorApp(App):
                             continue
 
                         if task.condition and not self.conditions.check(task.condition):
-                            if pass_idx < MAX_DEFER_PASSES - 1:
-                                self.log_system(
-                                    f"Condition not met yet; deferring: {task.script_name} ({task.condition})"
-                                )
-                                continue
-
                             self.log_system(
-                                f"Condition not met, skipping: {task.script_name} ({task.condition})"
+                                f"Condition not met yet; deferring: {task.script_name} ({task.condition})"
                             )
-                            self.finish_task(task, "skipped_condition", None, f"condition:{task.condition}")
-                            handled.add(key)
                             continue
 
                         ran_this_pass = True
-                        ran_any = True
 
                         outcome = await self._run_task_with_policy(task)
                         handled.add(key)
@@ -6320,8 +6452,11 @@ def main() -> None:
     once_store = OnceStore()
     has_sudo = any(
         t.mode == "S"
-        and not StateStore.is_done(statuses.get(t.state_key))
         and not (t.once and once_store.marker_valid(t, selected_profile.name))
+        and (
+            t.always
+            or not StateStore.is_done(statuses.get(t.state_key))
+        )
         for t in selected_profile.tasks
     )
     once_store.close()
