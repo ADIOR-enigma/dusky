@@ -190,6 +190,9 @@ heartbeat_interval = 45
 # Sudoers timestamp timeout in minutes written to temporary /etc/sudoers.d/ drop-ins
 timestamp_timeout = 15
 
+# System directory where temporary sudoers drop-in files are written
+sudoers_dir = "/etc/sudoers.d"
+
 # Filename prefix used for temporary /etc/sudoers.d/ drop-in files
 dropin_prefix = "99_dusky_"
 

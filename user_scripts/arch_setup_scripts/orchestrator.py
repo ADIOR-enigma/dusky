@@ -351,9 +351,9 @@ def _build_prompt_rules() -> list[tuple[str, re.Pattern[str], str]]:
         ("aur_proceed", r"(?i)(Proceed with installation\?|Continue building\?|Continue installing\?|::\s*Proceed with (?:installation|download|build).*\?\s*\[Y/n\])", "yes"),
         ("generic_yes", r"(?i)\[Y/n\]|\(Y/n\)|\[y/N\]|\(y/N\)", "yes"),
     ]
-    config_rules = GLOBAL_CONFIG.get("prompts", {}).get("rules", [])
+    config_rules = GLOBAL_CONFIG.get("prompts", {}).get("rules", None)
     rules = []
-    items_to_parse = config_rules if config_rules else default_rules
+    items_to_parse = config_rules if config_rules is not None else default_rules
     for item in items_to_parse:
         if isinstance(item, dict):
             name, pattern, kind = item["name"], item["pattern"], item["kind"]
@@ -1344,8 +1344,9 @@ class SudoEngine:
     @classmethod
     def _remove_stale_sudoers_files(cls, env: dict[str, str]) -> None:
         prefix = GLOBAL_CONFIG.get("sudo", {}).get("dropin_prefix", "99_dusky_")
+        sudoers_dir = GLOBAL_CONFIG.get("sudo", {}).get("sudoers_dir", "/etc/sudoers.d")
         script = f"""
-for f in /etc/sudoers.d/{prefix}*; do
+for f in {sudoers_dir}/{prefix}*; do
     [ -f "$f" ] || continue
     pid=$(sed -n 's/^# pid=\\([0-9]*\\).*/\\1/p' "$f" | head -n1)
     expected_st=$(sed -n 's/.*starttime=\\([0-9]*\\).*/\\1/p' "$f" | head -n1)
@@ -1380,7 +1381,8 @@ done
         username = target_user_pw().pw_name
         safe_user = re.sub(r"[^A-Za-z0-9._-]", "_", username)
         prefix = GLOBAL_CONFIG.get("sudo", {}).get("dropin_prefix", "99_dusky_")
-        path = Path(f"/etc/sudoers.d/{prefix}{safe_user}_{os.getpid()}")
+        sudoers_dir = GLOBAL_CONFIG.get("sudo", {}).get("sudoers_dir", "/etc/sudoers.d")
+        path = Path(f"{sudoers_dir}/{prefix}{safe_user}_{os.getpid()}")
         env_vars = " ".join(cls.ENV_KEEP)
 
         start_time = "0"
@@ -1398,7 +1400,7 @@ done
         )
 
         shell_cmd = (
-            "mkdir -p /etc/sudoers.d && "
+            f"mkdir -p {sudoers_dir} && "
             f"umask 077 && cat > {shlex.quote(str(path))} && "
             f"chmod 0440 {shlex.quote(str(path))}"
         )
@@ -1595,9 +1597,10 @@ done
         if sys.stdin.isatty():
             import getpass
 
+            target_user = target_user_pw().pw_name
             for attempt in range(1, 4):
                 try:
-                    password = getpass.getpass(f"[sudo] password for {getpass.getuser()}: ")
+                    password = getpass.getpass(f"[sudo] password for {target_user}: ")
                 except (EOFError, KeyboardInterrupt):
                     sys.stderr.write("\n[FATAL] Sudo authentication cancelled.\n")
                     return False
@@ -2042,7 +2045,7 @@ OptionList {{
 # ==============================================================================
 def parse_task_entry(raw_entry: str, index: int) -> OrchestratorTask:
     raw = raw_entry.strip()
-    parts = [p.strip() for p in raw.split("|")]
+    parts = [p.strip() for p in raw.split("|", 2)]
 
     if len(parts) == 1:
         mode, flags, cmd = "U", "", parts[0]
