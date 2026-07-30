@@ -44,6 +44,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from importlib import metadata as importlib_metadata
 from pathlib import Path
+from typing import Any
 
 try:
     from rich.console import Console
@@ -73,7 +74,9 @@ except ImportError as exc:
 
 VERSION = "19.0.0"
 SCRIPT_DIR: Path = Path(__file__).resolve().parent
-PROFILES_DIR: Path = SCRIPT_DIR / "profiles"
+PROFILES_DIR: Path = Path(
+    os.environ.get("DUSKY_PROFILES_DIR", SCRIPT_DIR / "profiles")
+).resolve()
 
 
 def load_global_config() -> dict:
@@ -798,7 +801,11 @@ ORDER BY profile, script_name, args_key
 # ==============================================================================
 class RunLogger:
     def __init__(self, profile: ProfileConfig, run_id: str):
-        self.enabled = False
+        log_config = GLOBAL_CONFIG.get("logging", {})
+        self.enabled = log_config.get("enabled", True)
+        self.write_task_logs = log_config.get("write_task_logs", True)
+        self.write_reports = log_config.get("write_reports", True)
+
         self.root: Path | None = None
         self.main_path: Path | None = None
         self._main = None
@@ -806,7 +813,7 @@ class RunLogger:
         self._task_counts: dict[str, int] = {}
         self.run_id = run_id
 
-        if not GLOBAL_CONFIG.get("logging", {}).get("enabled", True):
+        if not self.enabled:
             return
 
         try:
@@ -815,7 +822,6 @@ class RunLogger:
             ensure_dir(self.root, 0o700)
             self.main_path = self.root / "orchestrator.log"
             self._main = open(self.main_path, "a", encoding="utf-8", errors="replace")
-            self.enabled = True
             self.system(f"Logging started for profile: {profile.name}")
             self.system(f"Run ID: {run_id}")
         except OSError as e:
@@ -835,7 +841,7 @@ class RunLogger:
         return self.root / f"{task.index:03d}_{safe_filename(task.script_name)}.log"
 
     def open_task(self, task: OrchestratorTask, cmd: list[str]) -> None:
-        if not self.enabled:
+        if not self.enabled or not self.write_task_logs:
             return
 
         if task.state_key in self._task_files:
@@ -862,7 +868,7 @@ class RunLogger:
             self._task_counts[task.state_key] = 0
 
     def write_task(self, task: OrchestratorTask, line: str) -> None:
-        if not self.enabled:
+        if not self.enabled or not self.write_task_logs:
             return
         f = self._task_files.get(task.state_key)
         if f is None:
@@ -881,7 +887,7 @@ class RunLogger:
         exit_code: int | None = None,
         duration: float = 0.0,
     ) -> None:
-        if not self.enabled:
+        if not self.enabled or not self.write_task_logs:
             return
         f = self._task_files.pop(task.state_key, None)
         if f is None:
@@ -901,7 +907,7 @@ class RunLogger:
         statuses: dict[str, str],
         counters: dict[str, int],
     ) -> None:
-        if not self.enabled or self.root is None:
+        if not self.enabled or not self.write_reports or self.root is None:
             return
 
         report = {
@@ -5777,12 +5783,15 @@ class DuskyOrchestratorApp(App):
                 print(f"Executing: {clean_cmd}\n")
                 sys.stdout.flush()
 
-                res = await asyncio.to_thread(subprocess.run, cmd, env=env)
-                code = res.returncode
-                return code == 0, code, "interactive session"
-
-            except KeyboardInterrupt:
-                return False, 130, "interactive session interrupted by user"
+                old_int = signal.signal(signal.SIGINT, signal.SIG_IGN)
+                try:
+                    res = await asyncio.to_thread(subprocess.run, cmd, env=env)
+                    code = res.returncode
+                    if code == -signal.SIGINT or code == 130:
+                        return False, 130, "interactive session interrupted by user"
+                    return code == 0, code, "interactive session"
+                finally:
+                    signal.signal(signal.SIGINT, old_int)
 
             except Exception as e:
                 return False, None, str(e)

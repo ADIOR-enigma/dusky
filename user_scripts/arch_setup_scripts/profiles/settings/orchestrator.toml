@@ -108,6 +108,12 @@ backups_subdir = "dusky_backups"
 # Set to true for normal per-run log recording
 enabled = true
 
+# Toggle writing individual per-task output log files (useful for massive sequences)
+write_task_logs = true
+
+# Toggle writing the JSON/Markdown final report files summarizing the run
+write_reports = true
+
 
 # ------------------------------------------------------------------------------
 # EXECUTION & DATABASE TUNING
