@@ -2249,19 +2249,21 @@ Tooltip {
         Canonical state lookup supporting:
           - scope/key
           - scope.key
+          - DEFAULT/key
+          - DEFAULT.key
           - key
         """
         if not state:
             return None
 
-        if item.scope and item.scope != "DEFAULT":
-            candidates = (
-                f"{item.scope}/{item.key}",
-                f"{item.scope}.{item.key}",
-                item.key,
-            )
-        else:
-            candidates = (item.key,)
+        scope = item.scope or "DEFAULT"
+        candidates = (
+            f"{scope}/{item.key}",
+            f"{scope}.{item.key}",
+            f"DEFAULT/{item.key}",
+            f"DEFAULT.{item.key}",
+            item.key,
+        )
 
         for candidate in candidates:
             if candidate in state:
