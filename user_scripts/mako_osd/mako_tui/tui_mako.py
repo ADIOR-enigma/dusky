@@ -686,36 +686,10 @@ SCHEMA = {
     # -------------------------------------------------------------------------
     5: [
         # =====================================================================
-        # GROUP: Applications (Pre-configured Silencers)
+        # GROUP: Communication & Messaging
         # =====================================================================
         ConfigItem(
-            label="Antigravity", key="menu_antigravity", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Applications",
-            extended_help="**Google Antigravity Silencer**\n\nMutes notifications originating from Antigravity agent or CLI."
-        ),
-        ConfigItem(
-            label="Invisible", key="invisible", scope='app-name="Antigravity"', type_="bool", default=False, parent_ref="menu_antigravity",
-            extended_help="**Hide Antigravity Alerts**\n\nWhen enabled (`invisible=1`), prevents Antigravity notifications from popping up."
-        ),
-        ConfigItem(
-            label="No History", key="history", scope='app-name="Antigravity"', type_="bool", default=True, parent_ref="menu_antigravity",
-            extended_help="**Save to History**\n\nWhen OFF (`history=0`), Antigravity notifications bypass history."
-        ),
-
-        ConfigItem(
-            label="qBittorrent", key="menu_qbittorrent", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Applications",
-            extended_help="**qBittorrent Silencer**\n\nMutes download completion and torrent notifications."
-        ),
-        ConfigItem(
-            label="Invisible", key="invisible", scope='app-name="qBittorrent"', type_="bool", default=False, parent_ref="menu_qbittorrent",
-            extended_help="**Hide qBittorrent Alerts**\n\nWhen enabled (`invisible=1`), prevents qBittorrent notifications from appearing."
-        ),
-        ConfigItem(
-            label="No History", key="history", scope='app-name="qBittorrent"', type_="bool", default=True, parent_ref="menu_qbittorrent",
-            extended_help="**Save to History**\n\nWhen OFF (`history=0`), torrent popups bypass history log."
-        ),
-
-        ConfigItem(
-            label="Discord", key="menu_discord", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Applications",
+            label="Discord", key="menu_discord", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Communication",
             extended_help="**Discord Silencer**\n\nMutes notifications originating from Discord."
         ),
         ConfigItem(
@@ -728,7 +702,16 @@ SCHEMA = {
         ),
 
         ConfigItem(
-            label="Telegram", key="menu_telegram", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Applications",
+            label="Vesktop", key="menu_vesktop", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Communication",
+            extended_help="**Vesktop Silencer**\n\nMutes notifications originating from Vesktop Discord client."
+        ),
+        ConfigItem(
+            label="Invisible", key="invisible", scope='app-name="vesktop"', type_="bool", default=False, parent_ref="menu_vesktop",
+            extended_help="**Hide Vesktop Alerts**\n\nWhen enabled (`invisible=1`), suppresses Vesktop popups."
+        ),
+
+        ConfigItem(
+            label="Telegram", key="menu_telegram", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Communication",
             extended_help="**Telegram Desktop Silencer**\n\nMutes notifications originating from Telegram Desktop."
         ),
         ConfigItem(
@@ -741,69 +724,61 @@ SCHEMA = {
         ),
 
         ConfigItem(
-            label="Slack", key="menu_slack", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Applications",
+            label="Slack", key="menu_slack", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Communication",
             extended_help="**Slack Silencer**\n\nMutes notifications originating from Slack."
         ),
         ConfigItem(
             label="Invisible", key="invisible", scope='app-name="Slack"', type_="bool", default=False, parent_ref="menu_slack",
             extended_help="**Hide Slack Alerts**\n\nWhen enabled (`invisible=1`), prevents Slack notifications from showing."
         ),
+
         ConfigItem(
-            label="No History", key="history", scope='app-name="Slack"', type_="bool", default=True, parent_ref="menu_slack",
-            extended_help="**Save to History**\n\nWhen OFF (`history=0`), Slack popups are completely suppressed."
+            label="Signal", key="menu_signal", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Communication",
+            extended_help="**Signal Desktop Silencer**\n\nMutes notifications originating from Signal Messenger."
+        ),
+        ConfigItem(
+            label="Invisible", key="invisible", scope='app-name="Signal"', type_="bool", default=False, parent_ref="menu_signal",
+            extended_help="**Hide Signal Alerts**\n\nWhen enabled (`invisible=1`), suppresses Signal popups."
         ),
 
         ConfigItem(
-            label="Steam", key="menu_steam", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Applications",
-            extended_help="**Steam Silencer**\n\nMutes notifications originating from Steam."
+            label="Element", key="menu_element", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Communication",
+            extended_help="**Element Matrix Silencer**\n\nMutes notifications originating from Element Matrix client."
         ),
         ConfigItem(
-            label="Invisible", key="invisible", scope='app-name="Steam"', type_="bool", default=False, parent_ref="menu_steam",
-            extended_help="**Hide Steam Alerts**\n\nWhen enabled (`invisible=1`), prevents Steam popups from disturbing gameplay."
-        ),
-        ConfigItem(
-            label="No History", key="history", scope='app-name="Steam"', type_="bool", default=True, parent_ref="menu_steam",
-            extended_help="**Save to History**\n\nWhen OFF (`history=0`), Steam popups bypass the history log."
+            label="Invisible", key="invisible", scope='app-name="Element"', type_="bool", default=False, parent_ref="menu_element",
+            extended_help="**Hide Element Alerts**\n\nWhen enabled (`invisible=1`), suppresses Element popups."
         ),
 
         ConfigItem(
-            label="VS Code", key="menu_vscode", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Applications",
-            extended_help="**VS Code / Codium Silencer**\n\nMutes notifications originating from Visual Studio Code or VSCodium."
+            label="WhatsApp", key="menu_whatsapp", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Communication",
+            extended_help="**WhatsApp Web / Desktop Silencer**\n\nMutes notifications originating from WhatsApp."
         ),
         ConfigItem(
-            label="Invisible", key="invisible", scope='app-name="Code"', type_="bool", default=False, parent_ref="menu_vscode",
-            extended_help="**Hide VS Code Alerts**\n\nWhen enabled (`invisible=1`), suppresses popups from VS Code."
-        ),
-
-        ConfigItem(
-            label="Obsidian", key="menu_obsidian", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Applications",
-            extended_help="**Obsidian Silencer**\n\nMutes notifications originating from Obsidian markdown note editor."
-        ),
-        ConfigItem(
-            label="Invisible", key="invisible", scope='app-name="obsidian"', type_="bool", default=False, parent_ref="menu_obsidian",
-            extended_help="**Hide Obsidian Alerts**\n\nWhen enabled (`invisible=1`), suppresses Obsidian popups."
+            label="Invisible", key="invisible", scope='app-name="WhatsApp"', type_="bool", default=False, parent_ref="menu_whatsapp",
+            extended_help="**Hide WhatsApp Alerts**\n\nWhen enabled (`invisible=1`), suppresses WhatsApp popups."
         ),
 
         ConfigItem(
-            label="Firefox", key="menu_firefox", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Applications",
-            extended_help="**Firefox Silencer**\n\nMutes web notifications originating from Firefox."
+            label="Teams", key="menu_teams", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Communication",
+            extended_help="**Microsoft Teams Silencer**\n\nMutes notifications originating from Microsoft Teams."
         ),
         ConfigItem(
-            label="Invisible", key="invisible", scope='app-name="firefox"', type_="bool", default=False, parent_ref="menu_firefox",
-            extended_help="**Hide Firefox Alerts**\n\nWhen enabled (`invisible=1`), suppresses web notification popups from Firefox."
-        ),
-
-        ConfigItem(
-            label="Chrome", key="menu_chrome", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Applications",
-            extended_help="**Google Chrome Silencer**\n\nMutes notifications originating from Google Chrome."
-        ),
-        ConfigItem(
-            label="Invisible", key="invisible", scope='app-name="Google-chrome"', type_="bool", default=False, parent_ref="menu_chrome",
-            extended_help="**Hide Chrome Alerts**\n\nWhen enabled (`invisible=1`), suppresses popups from Chrome."
+            label="Invisible", key="invisible", scope='app-name="teams"', type_="bool", default=False, parent_ref="menu_teams",
+            extended_help="**Hide Teams Alerts**\n\nWhen enabled (`invisible=1`), suppresses Teams popups."
         ),
 
         ConfigItem(
-            label="Thunderbird", key="menu_thunderbird", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Applications",
+            label="Zoom", key="menu_zoom", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Communication",
+            extended_help="**Zoom Silencer**\n\nMutes notifications originating from Zoom."
+        ),
+        ConfigItem(
+            label="Invisible", key="invisible", scope='app-name="zoom"', type_="bool", default=False, parent_ref="menu_zoom",
+            extended_help="**Hide Zoom Alerts**\n\nWhen enabled (`invisible=1`), suppresses Zoom popups."
+        ),
+
+        ConfigItem(
+            label="Thunderbird", key="menu_thunderbird", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Communication",
             extended_help="**Thunderbird Email Silencer**\n\nMutes notifications originating from Thunderbird mail client."
         ),
         ConfigItem(
@@ -812,37 +787,144 @@ SCHEMA = {
         ),
 
         # =====================================================================
-        # GROUP: Custom Criteria Rules
+        # GROUP: Productivity & Tools
         # =====================================================================
         ConfigItem(
-            label="Custom App 1", key="menu_custom_app1", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Custom Rules",
-            extended_help="**Custom Application Muter**\n\nMutes any application by exact app-name string."
+            label="Antigravity", key="menu_antigravity", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Productivity",
+            extended_help="**Google Antigravity Silencer**\n\nMutes notifications originating from Antigravity agent or CLI."
         ),
         ConfigItem(
-            label="Invisible", key="invisible", scope='app-name="custom_app_1"', type_="bool", default=False, parent_ref="menu_custom_app1",
-            extended_help="**Mute Target App**\n\nSuppresses alerts matching criteria `[app-name=\"custom_app_1\"]`."
-        ),
-
-        ConfigItem(
-            label="Custom App 2", key="menu_custom_app2", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Custom Rules",
-            extended_help="**Second Custom Application Muter**\n\nMutes a second application by app-name string."
+            label="Invisible", key="invisible", scope='app-name="Antigravity"', type_="bool", default=False, parent_ref="menu_antigravity",
+            extended_help="**Hide Antigravity Alerts**\n\nWhen enabled (`invisible=1`), prevents Antigravity notifications from popping up."
         ),
         ConfigItem(
-            label="Invisible", key="invisible", scope='app-name="custom_app_2"', type_="bool", default=False, parent_ref="menu_custom_app2",
-            extended_help="**Mute Target App**\n\nSuppresses alerts matching criteria `[app-name=\"custom_app_2\"]`."
+            label="No History", key="history", scope='app-name="Antigravity"', type_="bool", default=True, parent_ref="menu_antigravity",
+            extended_help="**Save to History**\n\nWhen OFF (`history=0`), Antigravity notifications bypass history."
         ),
 
         ConfigItem(
-            label="Custom App 3", key="menu_custom_app3", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Custom Rules",
-            extended_help="**Third Custom Application Muter**\n\nMutes a third application by app-name string."
+            label="qBittorrent", key="menu_qbittorrent", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Productivity",
+            extended_help="**qBittorrent Silencer**\n\nMutes download completion and torrent notifications."
         ),
         ConfigItem(
-            label="Invisible", key="invisible", scope='app-name="custom_app_3"', type_="bool", default=False, parent_ref="menu_custom_app3",
-            extended_help="**Mute Target App**\n\nSuppresses alerts matching criteria `[app-name=\"custom_app_3\"]`."
+            label="Invisible", key="invisible", scope='app-name="qBittorrent"', type_="bool", default=False, parent_ref="menu_qbittorrent",
+            extended_help="**Hide qBittorrent Alerts**\n\nWhen enabled (`invisible=1`), prevents qBittorrent notifications from appearing."
+        ),
+        ConfigItem(
+            label="No History", key="history", scope='app-name="qBittorrent"', type_="bool", default=True, parent_ref="menu_qbittorrent",
+            extended_help="**Save to History**\n\nWhen OFF (`history=0`), torrent popups bypass history log."
         ),
 
         ConfigItem(
-            label="Title Pattern", key="menu_custom_title", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Custom Rules",
+            label="VS Code", key="menu_vscode", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Productivity",
+            extended_help="**VS Code / Codium Silencer**\n\nMutes notifications originating from Visual Studio Code or VSCodium."
+        ),
+        ConfigItem(
+            label="Invisible", key="invisible", scope='app-name="Code"', type_="bool", default=False, parent_ref="menu_vscode",
+            extended_help="**Hide VS Code Alerts**\n\nWhen enabled (`invisible=1`), suppresses popups from VS Code."
+        ),
+
+        ConfigItem(
+            label="VSCodium", key="menu_vscodium", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Productivity",
+            extended_help="**VSCodium Silencer**\n\nMutes notifications originating from VSCodium IDE."
+        ),
+        ConfigItem(
+            label="Invisible", key="invisible", scope='app-name="vscodium"', type_="bool", default=False, parent_ref="menu_vscodium",
+            extended_help="**Hide VSCodium Alerts**\n\nWhen enabled (`invisible=1`), suppresses popups from VSCodium."
+        ),
+
+        ConfigItem(
+            label="Obsidian", key="menu_obsidian", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Productivity",
+            extended_help="**Obsidian Silencer**\n\nMutes notifications originating from Obsidian markdown note editor."
+        ),
+        ConfigItem(
+            label="Invisible", key="invisible", scope='app-name="obsidian"', type_="bool", default=False, parent_ref="menu_obsidian",
+            extended_help="**Hide Obsidian Alerts**\n\nWhen enabled (`invisible=1`), suppresses Obsidian popups."
+        ),
+
+        # =====================================================================
+        # GROUP: Gaming & Media
+        # =====================================================================
+        ConfigItem(
+            label="Steam", key="menu_steam", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Gaming & Media",
+            extended_help="**Steam Silencer**\n\nMutes notifications originating from Steam."
+        ),
+        ConfigItem(
+            label="Invisible", key="invisible", scope='app-name="Steam"', type_="bool", default=False, parent_ref="menu_steam",
+            extended_help="**Hide Steam Alerts**\n\nWhen enabled (`invisible=1`), prevents Steam popups from disturbing gameplay."
+        ),
+
+        ConfigItem(
+            label="Spotify", key="menu_spotify_block", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Gaming & Media",
+            extended_help="**Spotify Silencer**\n\nMutes track-change popups originating from Spotify."
+        ),
+        ConfigItem(
+            label="Invisible", key="invisible", scope='app-name="Spotify"', type_="bool", default=False, parent_ref="menu_spotify_block",
+            extended_help="**Hide Spotify Alerts**\n\nWhen enabled (`invisible=1`), suppresses Spotify track popups."
+        ),
+
+        ConfigItem(
+            label="VLC", key="menu_vlc_block", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Gaming & Media",
+            extended_help="**VLC Media Player Silencer**\n\nMutes notifications originating from VLC."
+        ),
+        ConfigItem(
+            label="Invisible", key="invisible", scope='app-name="VLC media player"', type_="bool", default=False, parent_ref="menu_vlc_block",
+            extended_help="**Hide VLC Alerts**\n\nWhen enabled (`invisible=1`), suppresses VLC popups."
+        ),
+
+        ConfigItem(
+            label="mpv", key="menu_mpv_block", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Gaming & Media",
+            extended_help="**mpv Player Silencer**\n\nMutes notifications originating from mpv media player."
+        ),
+        ConfigItem(
+            label="Invisible", key="invisible", scope='app-name="mpv"', type_="bool", default=False, parent_ref="menu_mpv_block",
+            extended_help="**Hide mpv Alerts**\n\nWhen enabled (`invisible=1`), suppresses mpv popups."
+        ),
+
+        # =====================================================================
+        # GROUP: Web Browsers
+        # =====================================================================
+        ConfigItem(
+            label="Firefox", key="menu_firefox", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Web Browsers",
+            extended_help="**Firefox Silencer**\n\nMutes web notifications originating from Firefox."
+        ),
+        ConfigItem(
+            label="Invisible", key="invisible", scope='app-name="firefox"', type_="bool", default=False, parent_ref="menu_firefox",
+            extended_help="**Hide Firefox Alerts**\n\nWhen enabled (`invisible=1`), suppresses web notification popups from Firefox."
+        ),
+
+        ConfigItem(
+            label="Google Chrome", key="menu_chrome", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Web Browsers",
+            extended_help="**Google Chrome Silencer**\n\nMutes notifications originating from Google Chrome."
+        ),
+        ConfigItem(
+            label="Invisible", key="invisible", scope='app-name="Google-chrome"', type_="bool", default=False, parent_ref="menu_chrome",
+            extended_help="**Hide Chrome Alerts**\n\nWhen enabled (`invisible=1`), suppresses popups from Chrome."
+        ),
+
+        ConfigItem(
+            label="Brave Browser", key="menu_brave", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Web Browsers",
+            extended_help="**Brave Browser Silencer**\n\nMutes notifications originating from Brave Browser."
+        ),
+        ConfigItem(
+            label="Invisible", key="invisible", scope='app-name="Brave-browser"', type_="bool", default=False, parent_ref="menu_brave",
+            extended_help="**Hide Brave Alerts**\n\nWhen enabled (`invisible=1`), suppresses popups from Brave."
+        ),
+
+        ConfigItem(
+            label="Chromium", key="menu_chromium", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Web Browsers",
+            extended_help="**Chromium Silencer**\n\nMutes notifications originating from Chromium."
+        ),
+        ConfigItem(
+            label="Invisible", key="invisible", scope='app-name="chromium"', type_="bool", default=False, parent_ref="menu_chromium",
+            extended_help="**Hide Chromium Alerts**\n\nWhen enabled (`invisible=1`), suppresses popups from Chromium."
+        ),
+
+        # =====================================================================
+        # GROUP: Content Pattern Matching Rules
+        # =====================================================================
+        ConfigItem(
+            label="Title Pattern", key="menu_custom_title", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Pattern Rules",
             extended_help="**Regex Title / Summary Blocker**\n\nBlocks notifications whose summary/title matches a regular expression pattern."
         ),
         ConfigItem(
@@ -851,7 +933,7 @@ SCHEMA = {
         ),
 
         ConfigItem(
-            label="Body Pattern", key="menu_custom_body", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Custom Rules",
+            label="Body Pattern", key="menu_custom_body", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Pattern Rules",
             extended_help="**Regex Body Blocker**\n\nBlocks notifications whose body content matches a regular expression pattern."
         ),
         ConfigItem(
