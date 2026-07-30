@@ -54,39 +54,6 @@ trim() {
     printf '%s' "$s"
 }
 
-# Stage the CPU restore scripts and their dusky_tui library dependency to a
-# root-owned path so the root dusky_cpu.service never executes user-writable code.
-# The scripts import python.frontend.core_types / python.engines.* from
-# "$(dirname "$(dirname "$(dirname __file__)")")/dusky_tui"; with the scripts at
-# /usr/local/lib/dusky/cpu/ that resolves to /usr/local/lib/dusky_tui.
-stage_cpu_restore_payload() {
-    local service_source="$1"
-    local cpu_src="${service_source%/service/dusky_cpu.service}"
-    local tui_src="${cpu_src%/performance/cpu}/dusky_tui"
-    local lib_base="/usr/local/lib/dusky"
-    local cpu_dst="${lib_base}/cpu"
-    local tui_dst="/usr/local/lib/dusky_tui"
-
-    if [[ ! -d "$cpu_src" ]]; then
-        log_error "CPU scripts source not found: $cpu_src"
-        return 1
-    fi
-    if [[ ! -d "$tui_src" ]]; then
-        log_error "dusky_tui library source not found: $tui_src"
-        return 1
-    fi
-
-    log_info "Staging root-owned CPU restore payload to ${cpu_dst} and ${tui_dst}..."
-    rm -rf -- "$cpu_dst" "$tui_dst"
-    install -d -m 755 -- "$lib_base" "$cpu_dst" "$tui_dst"
-    cp -a -- "$cpu_src/." "$cpu_dst/"
-    cp -a -- "$tui_src/." "$tui_dst/"
-    chown -R root:root "$cpu_dst" "$tui_dst"
-    find "$cpu_dst" "$tui_dst" -type d -exec chmod 0755 {} +
-    find "$cpu_dst" "$tui_dst" -type f -exec chmod 0644 {} +
-    log_success "Root-owned CPU restore payload staged."
-}
-
 install_and_manage() {
     local source_path="$1"
     local default_action="$2"
@@ -121,14 +88,6 @@ install_and_manage() {
     # 2. Installation (Atomic Copy)
     log_info "Installing to $target_file..."
     install -D -m 644 -- "$source_path" "$target_file"
-
-    # 2b. Stage the root-owned runtime payload the CPU restore service executes.
-    if [[ "$service_name" == "dusky_cpu.service" ]]; then
-        if ! stage_cpu_restore_payload "$source_path"; then
-            log_error "Failed to stage root-owned CPU restore payload; skipping ${service_name}."
-            return 0
-        fi
-    fi
 
     # 3. Reload Daemon
     systemctl daemon-reload
