@@ -1178,6 +1178,18 @@ class ConfigOptionList(OptionList):
             if self.tooltip is not None:
                 self.tooltip = None
 
+    def on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
+        if hasattr(super(), "on_mouse_scroll_down"):
+            super().on_mouse_scroll_down(event)
+        else:
+            self.scroll_down(animate=False)
+
+    def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
+        if hasattr(super(), "on_mouse_scroll_up"):
+            super().on_mouse_scroll_up(event)
+        else:
+            self.scroll_up(animate=False)
+
     def watch_scroll_y(self, old_value: float, new_value: float) -> None:
         if hasattr(super(), "watch_scroll_y"):
             super().watch_scroll_y(old_value, new_value)
@@ -1644,6 +1656,7 @@ Screen { background: $background; }
 
 #content-area { height: 1fr; layout: horizontal; }
 ContentSwitcher { width: 1fr; height: 1fr; background: transparent; }
+ContentSwitcher > Vertical { width: 100%; height: 100%; background: transparent; }
 
 #help-panel {
     width: 35%; height: 100%; min-width: 25; border-left: solid $primary;
@@ -1693,7 +1706,6 @@ ScrollIndicator:hover { color: $foreground; }
     width: 100%;
     height: auto;
     layout: vertical;
-    layer: overlay;
 }
 
 #local-search {
@@ -3674,6 +3686,11 @@ Tooltip {
                 )
 
                 ol.last_highlighted_id = event.option_id
+
+                if hasattr(ol, "scroll_to_highlight"):
+                    ol.scroll_to_highlight()
+                elif hasattr(ol, "scroll_to_option") and curr_idx is not None:
+                    ol.scroll_to_option(curr_idx)
 
             except OptionDoesNotExist:
                 pass
