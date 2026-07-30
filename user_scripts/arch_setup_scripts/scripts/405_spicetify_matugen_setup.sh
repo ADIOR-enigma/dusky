@@ -106,8 +106,9 @@ fix_spotify_permissions() {
         log_success "Permissions OK ($spotify_path)."
     else
         log_warn "Fixing permissions for $spotify_path..."
-        if sudo chmod a+wr "${spotify_path}" && \
-           sudo chmod -R a+wr "${spotify_path}/Apps"; then
+        if sudo chown -R "$USER" "${spotify_path}" && \
+           sudo chmod -R u+rwX "${spotify_path}" && \
+           sudo chmod -R u+rwX "${spotify_path}/Apps"; then
             log_success "Permissions granted."
         else
             die "Failed to grant permissions."
@@ -263,8 +264,9 @@ nuke_cache_and_heal() {
 
     local path="$1"
     if [[ -d "${path}" ]]; then
-        sudo chmod a+wr "${path}"
-        sudo chmod -R a+wr "${path}/Apps"
+        sudo chown -R "$USER" "${path}"
+        sudo chmod -R u+rwX "${path}"
+        sudo chmod -R u+rwX "${path}/Apps"
     fi
     
     # Validation check to regenerate 'offline.bnk' missing after cache wipe
