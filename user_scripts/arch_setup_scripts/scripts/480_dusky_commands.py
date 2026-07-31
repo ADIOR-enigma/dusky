@@ -114,6 +114,7 @@ class FleetCommand:
 SETUP_COMMANDS: list[FleetCommand] = [
     FleetCommand(Mode.USER, 'gsettings set org.gnome.desktop.interface icon-theme "Papirus"', "Set GNOME Icon Theme"),
     FleetCommand(Mode.USER, 'gsettings set org.gnome.desktop.interface gtk-theme "adw-gtk3"', "Set GNOME GTK Theme"),
+    # FleetCommand(Mode.USER, 'gsettings set org.cinnamon.desktop.default-applications.terminal exec "kitty"', "Set Cinnamon Default Terminal"),
     FleetCommand(Mode.USER, 'mkdir -p "$HOME/.config/gtk-3.0" "$HOME/.config/gtk-4.0"', "Create GTK Config Directories"),
     FleetCommand(Mode.USER, 'ln -nfs "$HOME/.config/matugen/generated/gtk-3.css" "$HOME/.config/gtk-3.0/gtk.css"', "Link Matugen GTK-3 CSS"),
     FleetCommand(Mode.USER, 'ln -nfs "$HOME/.config/matugen/generated/gtk-4.css" "$HOME/.config/gtk-4.0/gtk.css"', "Link Matugen GTK-4 CSS"),
@@ -131,15 +132,23 @@ SETUP_COMMANDS: list[FleetCommand] = [
     FleetCommand(Mode.USER, 'systemctl --user daemon-reload && systemctl --user restart dusky_quickpanal.service || true', "Reload & Restart Quickpanel Service"),
     FleetCommand(Mode.USER, '"$HOME/user_scripts/dusky_system/reload_cc/cc_restart.sh" --quiet >/dev/null 2>&1 < /dev/null &', "Background Restart Control Center"),
     FleetCommand(Mode.USER, '"$HOME/user_scripts/dusky_system/quickpanals/reload_quickpanal.sh/" --quiet >/dev/null 2>&1 < /dev/null &', "Background Reload Quickpanel"),
+    # --- System Services ---
+    # FleetCommand(Mode.USER, 'systemctl --user disable dusky.service || true', "Disable Legacy Dusky Service"),
+    # FleetCommand(Mode.SUDO, 'systemctl enable --now tlp.service || true', "Enable TLP Power Management Service"),
 ]
 
 # ------------------------------------------------------------------------------
 # Stage 2: Pre-System-Update Stage (legacy dusky_commands_before.sh)
 # ------------------------------------------------------------------------------
 BEFORE_COMMANDS: list[FleetCommand] = [
+    # --- UI & Theming ---
+    # FleetCommand(Mode.USER, "gsettings set org.gnome.desktop.interface icon-theme 'Papirus'", "Set GNOME Icon Theme"),
+    # for nemo right click
+    # FleetCommand(Mode.USER, "gsettings set org.cinnamon.desktop.default-applications.terminal exec 'kitty'", "Set Cinnamon Default Terminal"),
     FleetCommand(Mode.USER, 'mkdir -p ~/.config/opencode/themes || true', "Create Opencode Themes Directory"),
     FleetCommand(Mode.USER, 'mkdir -p ~/.config/Kvantum/matugen || true', "Create Kvantum Matugen Directory"),
     FleetCommand(Mode.USER, 'systemctl --user disable --now dusky_sliders.service || true', "Disable Legacy Sliders Service"),
+    # --- Remove old dusky_snaapshot timer (typo) before re-deploying dusky_snapshot ---
     FleetCommand(
         Mode.SUDO,
         'systemctl stop dusky_snaapshot.timer dusky_snaapshot.service 2>/dev/null; systemctl disable dusky_snaapshot.timer 2>/dev/null; true',
@@ -147,12 +156,21 @@ BEFORE_COMMANDS: list[FleetCommand] = [
     ),
     FleetCommand(Mode.SUDO, 'rm -f /etc/systemd/system/dusky_snaapshot.service /etc/systemd/system/dusky_snaapshot.timer', "Remove Legacy Typo Snapshot Unit Files"),
     FleetCommand(Mode.SUDO, 'systemctl daemon-reload', "Systemd System Daemon Reload"),
+    # --- System Services ---
+    # FleetCommand(Mode.USER, 'systemctl --user disable dusky.service || true', "Disable Legacy Dusky Service"),
+    # FleetCommand(Mode.SUDO, 'systemctl enable --now tlp.service || true', "Enable TLP Power Management Service"),
 ]
 
 # ------------------------------------------------------------------------------
 # Stage 3: Post-System-Update Stage (legacy dusky_commands_after.sh)
 # ------------------------------------------------------------------------------
 AFTER_COMMANDS: list[FleetCommand] = [
+    # --- UI & Theming ---
+    # FleetCommand(Mode.USER, "gsettings set org.gnome.desktop.interface icon-theme 'Papirus'", "Set GNOME Icon Theme"),
+    # FleetCommand(Mode.USER, "gsettings set org.cinnamon.desktop.default-applications.terminal exec 'kitty'", "Set Cinnamon Default Terminal"),
+    # --- System Services ---
+    # FleetCommand(Mode.USER, 'systemctl --user disable dusky.service || true', "Disable Legacy Dusky Service"),
+    # FleetCommand(Mode.SUDO, 'systemctl enable --now tlp.service || true', "Enable TLP Power Management Service"),
     FleetCommand(Mode.USER, 'hyprctl reload', "Reload Hyprland Configuration"),
     FleetCommand(Mode.USER, 'systemctl --user enable --now mako.service || true', "Enable & Start Mako Notification Daemon"),
     FleetCommand(Mode.SUDO, 'systemctl enable --now ufw.service || true', "Enable & Start UFW Firewall Service"),
