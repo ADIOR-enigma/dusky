@@ -392,6 +392,9 @@ def process_unit_action(
             msg += f" | Suggestions: {', '.join(suggestions)}"
         return ProcessingResult(unit_name=norm_name, category=category, status=UnitStatus.MISSING, message=msg)
 
+    if st.status_enum == UnitStatus.MASKED:
+        return ProcessingResult(unit_name=norm_name, category=category, status=UnitStatus.MASKED, message="Unit is masked (Skipped)")
+
     # Interactive prompt evaluation
     should_execute = True
     if interactive and sys.stdin.isatty():
@@ -409,15 +412,27 @@ def process_unit_action(
                 status=st.status_enum,
                 message="Already enabled & active" if st.active_state == "active" else "Already enabled",
             )
-        cmd_flags = ["enable"]
-        if now:
-            cmd_flags.append("--now")
+        if st.status_enum == UnitStatus.STATIC:
+            if st.active_state == "active":
+                return ProcessingResult(unit_name=norm_name, category=category, status=UnitStatus.STATIC, message="Static unit (Already active)")
+            if not now:
+                return ProcessingResult(unit_name=norm_name, category=category, status=UnitStatus.STATIC, message="Static unit (Cannot enable without --now start)")
+            cmd_flags = ["start"]
+        else:
+            cmd_flags = ["enable"]
+            if now:
+                cmd_flags.append("--now")
     else:  # disable
         if st.status_enum == UnitStatus.DISABLED and st.active_state == "inactive":
             return ProcessingResult(unit_name=norm_name, category=category, status=UnitStatus.DISABLED, message="Already disabled & inactive")
-        cmd_flags = ["disable"]
-        if now:
-            cmd_flags.append("--now")
+        if st.status_enum == UnitStatus.STATIC:
+            if st.active_state == "inactive":
+                return ProcessingResult(unit_name=norm_name, category=category, status=UnitStatus.STATIC, message="Static unit (Already inactive)")
+            cmd_flags = ["stop"]
+        else:
+            cmd_flags = ["disable"]
+            if now:
+                cmd_flags.append("--now")
 
     cmd_flags.append(norm_name)
     cmd, env = build_systemctl_cmd(scope, cmd_flags, ctx=ctx, read_only=False)
@@ -430,23 +445,38 @@ def process_unit_action(
             message=f"[DRY-RUN] Would execute: {' '.join(cmd)}",
         )
 
-    proc = subprocess.run(cmd, capture_output=True, env=env, text=True, timeout=20)
-    if proc.returncode == 0:
-        msg = f"Successfully {action}d" + (" & started" if now and action == "enable" else (" & stopped" if now else ""))
-        return ProcessingResult(
-            unit_name=norm_name,
-            category=category,
-            status=UnitStatus.ENABLED_ACTIVE if action == "enable" and now else UnitStatus.DISABLED,
-            message=msg,
-            output=proc.stdout.strip(),
-        )
-    else:
+    try:
+        proc = subprocess.run(cmd, capture_output=True, env=env, text=True, timeout=20)
+        if proc.returncode == 0:
+            msg = f"Successfully {action}d" + (" & started" if now and action == "enable" else (" & stopped" if now else ""))
+            return ProcessingResult(
+                unit_name=norm_name,
+                category=category,
+                status=UnitStatus.ENABLED_ACTIVE if action == "enable" and now else UnitStatus.DISABLED,
+                message=msg,
+                output=proc.stdout.strip(),
+            )
+        else:
+            return ProcessingResult(
+                unit_name=norm_name,
+                category=category,
+                status=UnitStatus.ERROR,
+                message=f"Failed to {action}",
+                output=proc.stderr.strip() or proc.stdout.strip(),
+            )
+    except subprocess.TimeoutExpired:
         return ProcessingResult(
             unit_name=norm_name,
             category=category,
             status=UnitStatus.ERROR,
-            message=f"Failed to {action}",
-            output=proc.stderr.strip() or proc.stdout.strip(),
+            message="Execution timed out (20s limit reached)",
+        )
+    except Exception as e:
+        return ProcessingResult(
+            unit_name=norm_name,
+            category=category,
+            status=UnitStatus.ERROR,
+            message=f"Execution error: {e}",
         )
 
 
@@ -684,19 +714,21 @@ def main() -> None:
             targeted_categories.discard(Category.SYSTEM_CORE)
             targeted_categories.discard(Category.SYSTEM_AUR)
             if not targeted_categories:
+                if args.dbus_reload:
+                    reload_dbus(dry_run=args.dry_run, ctx=ctx)
                 return
 
     # Build target service tuples: (ServiceConfig, scope, category)
     unit_targets: list[tuple[ServiceConfig, Scope, Category]] = []
 
     if Category.SYSTEM_CORE in targeted_categories:
-        unit_targets.extend([(cfg, Scope.SYSTEM, Category.SYSTEM_CORE) for cfg in SYSTEM_SERVICES if args.all or cfg.enabled_by_default or args.interactive])
+        unit_targets.extend([(cfg, Scope.SYSTEM, Category.SYSTEM_CORE) for cfg in SYSTEM_SERVICES if args.status or args.all or cfg.enabled_by_default or args.interactive])
     if Category.SYSTEM_AUR in targeted_categories:
-        unit_targets.extend([(cfg, Scope.SYSTEM, Category.SYSTEM_AUR) for cfg in AUR_SYSTEM_SERVICES if args.all or cfg.enabled_by_default or args.interactive])
+        unit_targets.extend([(cfg, Scope.SYSTEM, Category.SYSTEM_AUR) for cfg in AUR_SYSTEM_SERVICES if args.status or args.all or cfg.enabled_by_default or args.interactive])
     if Category.USER_CORE in targeted_categories:
-        unit_targets.extend([(cfg, Scope.USER, Category.USER_CORE) for cfg in USER_SERVICES if args.all or cfg.enabled_by_default or args.interactive])
+        unit_targets.extend([(cfg, Scope.USER, Category.USER_CORE) for cfg in USER_SERVICES if args.status or args.all or cfg.enabled_by_default or args.interactive])
     if Category.USER_AUR in targeted_categories:
-        unit_targets.extend([(cfg, Scope.USER, Category.USER_AUR) for cfg in AUR_USER_SERVICES if args.all or cfg.enabled_by_default or args.interactive])
+        unit_targets.extend([(cfg, Scope.USER, Category.USER_AUR) for cfg in AUR_USER_SERVICES if args.status or args.all or cfg.enabled_by_default or args.interactive])
 
     # Status Inspection Mode
     if args.status:
