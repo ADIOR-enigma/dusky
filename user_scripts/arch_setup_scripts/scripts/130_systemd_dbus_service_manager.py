@@ -134,11 +134,12 @@ class UserContext:
 
 
 def get_user_context() -> UserContext:
-    """Resolves real non-root user details safely with strict existence verification."""
+    """Resolves real non-root user details prioritizing active privilege escalation context (headless safe)."""
     is_root = os.geteuid() == 0
     real_uid = os.getuid()
 
     if is_root:
+        # 1. Immediate Privilege Escalation Environment Variables MUST take precedence
         escalation_uid = os.environ.get("SUDO_UID") or os.environ.get("PKEXEC_UID")
         if escalation_uid and escalation_uid.isdigit():
             real_uid = int(escalation_uid)
@@ -148,9 +149,13 @@ def get_user_context() -> UserContext:
             except KeyError:
                 pass
         else:
+            # 2. Fallback to Absolute Truth via PAM / logind
             try:
-                real_uid = pwd.getpwnam(os.getlogin()).pw_uid
-            except (OSError, KeyError):
+                loginuid_raw = Path("/proc/self/loginuid").read_text(encoding="utf-8").strip()
+                loginuid = int(loginuid_raw)
+                if loginuid != 4294967295:  # (unsigned -1) means unset
+                    real_uid = loginuid
+            except (FileNotFoundError, ValueError, OSError):
                 pass
 
     try:
