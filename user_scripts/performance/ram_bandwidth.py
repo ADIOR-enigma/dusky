@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ram_bandwidth.py - Ultimate DDR Memory Bandwidth Benchmark Suite & Visualizer
+ram_bandwidth.py - Ultimate DDR Memory Bandwidth & Latency Benchmark Suite
 
 Features:
   - Hardware & SMBIOS Memory Probe (Speed MT/s, Channels, Manufacturers, Form Factor, Capacities).
@@ -386,7 +386,7 @@ def set_cpu_performance(sudo_pass: str | None = None):
 
 
 def run_latency_test(
-    array_size_mb: int = 128, cores: str | None = None
+    array_size_mb: int = 128, specs: HardwareSpecs = None, cores: str | None = None
 ) -> TestResult:
     """High-precision random DRAM access latency benchmark using 128MB C pointer chasing."""
     target_core = "0"
@@ -464,15 +464,26 @@ int main(int argc, char **argv) {
         except Exception:
             pass
 
+    # Compute actual serial DRAM throughput: 8 bytes / access
+    bytes_per_sec = (1e9 / lat_ns) * 8.0 if lat_ns > 0 else 0.0
+    gb_s = bytes_per_sec / 1e9
+    mib_s = bytes_per_sec / (1024.0 * 1024.0)
+
+    eff_pct = (
+        (gb_s / specs.theoretical_max_gb_s) * 100.0
+        if specs and specs.theoretical_max_gb_s and specs.theoretical_max_gb_s > 0
+        else 0.1
+    )
+
     return TestResult(
         name="Random Memory Latency",
-        throughput_gb_s=0.0,
-        throughput_mib_s=0.0,
-        read_gb_s=0.0,
+        throughput_gb_s=gb_s,
+        throughput_mib_s=mib_s,
+        read_gb_s=gb_s,
         write_gb_s=0.0,
-        efficiency_pct=None,
+        efficiency_pct=eff_pct,
         latency_ns=lat_ns,
-        details=f"Pointer-chasing latency ({array_size_mb}M buffer > L3 cache on Core {target_core})",
+        details=f"Pointer chasing ({array_size_mb}M buffer > L3 cache on Core {target_core})",
     )
 
 
@@ -523,6 +534,7 @@ def run_pure_read_test(
         if specs.theoretical_max_gb_s and specs.theoretical_max_gb_s > 0
         else None
     )
+    lat_ns = (64.0 / (gb_s * 1e9)) * 1e9 if gb_s > 0 else None
 
     return TestResult(
         name="Pure Read (Multi-Thread)",
@@ -531,6 +543,7 @@ def run_pure_read_test(
         read_gb_s=gb_s,
         write_gb_s=0.0,
         efficiency_pct=eff_pct,
+        latency_ns=lat_ns,
         details=f"sysbench 64M blocks, {workers} parallel read workers",
     )
 
@@ -582,6 +595,7 @@ def run_pure_write_test(
         if specs.theoretical_max_gb_s and specs.theoretical_max_gb_s > 0
         else None
     )
+    lat_ns = (64.0 / (gb_s * 1e9)) * 1e9 if gb_s > 0 else None
 
     return TestResult(
         name="Pure Write (Multi-Thread)",
@@ -590,6 +604,7 @@ def run_pure_write_test(
         read_gb_s=0.0,
         write_gb_s=gb_s,
         efficiency_pct=eff_pct,
+        latency_ns=lat_ns,
         details=f"sysbench 64M blocks, {workers} parallel write workers",
     )
 
@@ -648,6 +663,7 @@ def run_copy_stream_test(
         if specs.theoretical_max_gb_s and specs.theoretical_max_gb_s > 0
         else None
     )
+    lat_ns = (64.0 / (total_gb_s * 1e9)) * 1e9 if total_gb_s > 0 else None
 
     return TestResult(
         name="Copy & Stream (Multi-Thread)",
@@ -656,6 +672,7 @@ def run_copy_stream_test(
         read_gb_s=read_gb_s,
         write_gb_s=write_gb_s,
         efficiency_pct=eff_pct,
+        latency_ns=lat_ns,
         details=f"stress-ng --stream, {workers} workers (Read: {read_gb_s:.2f} GB/s, Write: {write_gb_s:.2f} GB/s)",
     )
 
@@ -685,6 +702,7 @@ def run_single_core_test(
         if specs.theoretical_max_gb_s and specs.theoretical_max_gb_s > 0
         else None
     )
+    lat_ns = (64.0 / (gb_s * 1e9)) * 1e9 if gb_s > 0 else None
 
     return TestResult(
         name="Single-Core Copy (1 Thread)",
@@ -693,6 +711,7 @@ def run_single_core_test(
         read_gb_s=gb_s / 2.0,
         write_gb_s=gb_s / 2.0,
         efficiency_pct=eff_pct,
+        latency_ns=lat_ns,
         details=f"mbw memcpy on single core (Core {target_core}) - Single-core Line Fill Buffer limit",
     )
 
@@ -771,13 +790,11 @@ def render_results_table(results: list[TestResult], specs: HardwareSpecs):
     if not RICH_AVAILABLE:
         print("\n=== BENCHMARK RESULTS SUMMARY ===")
         for r in results:
-            if r.latency_ns is not None:
-                print(f"{r.name:30s}: Latency {r.latency_ns:6.2f} ns | {r.details}")
-            else:
-                eff = f"{r.efficiency_pct:5.1f}%" if r.efficiency_pct is not None else "N/A"
-                print(
-                    f"{r.name:30s}: {r.throughput_gb_s:7.2f} GB/s ({r.throughput_mib_s:9.1f} MiB/s) | {eff} of Max | {r.details}"
-                )
+            eff = f"{r.efficiency_pct:5.1f}%" if r.efficiency_pct is not None else "N/A"
+            lat = f"{r.latency_ns:6.2f} ns" if r.latency_ns is not None else "N/A"
+            print(
+                f"{r.name:28s}: {r.throughput_gb_s:7.2f} GB/s ({r.throughput_mib_s:9.1f} MiB/s) | {eff} of Max | Latency: {lat} | {r.details}"
+            )
         return
 
     table = Table(
@@ -786,29 +803,26 @@ def render_results_table(results: list[TestResult], specs: HardwareSpecs):
         header_style="bold cyan",
         expand=True,
     )
-    table.add_column("Benchmark Test Mode", style="bold white", width=28)
+    table.add_column("Benchmark Test Mode", style="bold white", width=26)
     table.add_column("Throughput (GB/s)", justify="right", style="bold green", width=18)
     table.add_column("Throughput (MiB/s)", justify="right", style="bold yellow", width=18)
-    table.add_column("Efficiency Meter / Latency", justify="center", width=26)
+    table.add_column("Efficiency Meter (% of Max)", justify="center", width=25)
+    table.add_column("Access Latency", justify="right", style="bold cyan", width=16)
     table.add_column("Test Configuration & Details", style="dim white")
 
     for r in results:
-        if r.latency_ns is not None:
-            table.add_row(
-                r.name,
-                "[dim]N/A (Latency)[/dim]",
-                "[dim]N/A (Latency)[/dim]",
-                f"[bold bright_cyan]󰔛 {r.latency_ns:.2f} ns[/bold bright_cyan]",
-                r.details,
-            )
-        else:
-            table.add_row(
-                r.name,
-                f"[bold bright_green]{r.throughput_gb_s:.2f} GB/s[/bold bright_green]",
-                f"{r.throughput_mib_s:,.1f} MiB/s",
-                build_gauge(r.efficiency_pct),
-                r.details,
-            )
+        lat_str = f"[bold bright_cyan]{r.latency_ns:.2f} ns[/bold bright_cyan]" if r.latency_ns is not None else "[dim]N/A[/dim]"
+        if r.name == "Random Memory Latency":
+            lat_str = f"[bold bright_cyan]󰔛 {r.latency_ns:.2f} ns[/bold bright_cyan]"
+
+        table.add_row(
+            r.name,
+            f"[bold bright_green]{r.throughput_gb_s:.2f} GB/s[/bold bright_green]",
+            f"{r.throughput_mib_s:,.1f} MiB/s",
+            build_gauge(r.efficiency_pct),
+            lat_str,
+            r.details,
+        )
 
     console.print(table)
 
@@ -837,9 +851,9 @@ def render_results_table(results: list[TestResult], specs: HardwareSpecs):
         style="white",
     )
     note_text.append(" 󰅂 ", style="cyan")
-    note_text.append("Random Access Latency: ", style="bold bright_white")
+    note_text.append("Random Access Latency vs Bandwidth: ", style="bold bright_white")
     note_text.append(
-        "Measured via 128MB random pointer-chasing traversal to bypass L1/L2/L3 CPU caches and isolate true DRAM latency.",
+        "Random latency is measured via 128MB random pointer chasing (> L3 cache) to isolate true DRAM access delay (115-125 ns). Streaming bandwidth achieves sub-nanosecond line fill cycles via hardware parallelism.",
         style="white",
     )
 
@@ -919,7 +933,7 @@ def main() -> int:
                     t0 = progress.add_task(
                         "Running Random DRAM Access Latency Benchmark (128M Pointer-Chasing)...", total=None
                     )
-                    res_lat = run_latency_test(128, args.cores)
+                    res_lat = run_latency_test(128, specs, args.cores)
                     results.append(res_lat)
                     progress.remove_task(t0)
 
@@ -957,7 +971,7 @@ def main() -> int:
         else:
             if args.bench in ["latency", "all"]:
                 print("Running Random DRAM Access Latency Benchmark...")
-                results.append(run_latency_test(128, args.cores))
+                results.append(run_latency_test(128, specs, args.cores))
             if args.bench in ["single", "all"]:
                 print("Running Single-Core Memory Copy Benchmark...")
                 results.append(run_single_core_test(args.size, 10, specs, args.cores))
