@@ -155,8 +155,8 @@ def get_online_cpu_count() -> int:
 
 def check_and_install_deps(sudo_pass: str | None = None) -> None:
     """Ensure required benchmark tools are installed via pacman/paru."""
-    required_tools = ["sysbench", "stress-ng", "dmidecode"]
-    missing_tools = [t for t in required_tools if not tool_exists(t)]
+    required_tools = ["sysbench", "stress-ng", "dmidecode", "ttf-nerd-fonts-symbols"]
+    missing_tools = [t for t in required_tools if not tool_exists(t) and t != "ttf-nerd-fonts-symbols"]
 
     if not tool_exists("mbw"):
         missing_tools.append("mbw")
@@ -304,7 +304,7 @@ def detect_hardware_specs(sudo_pass: str | None = None) -> HardwareSpecs:
 
 @contextlib.contextmanager
 def set_cpu_performance(sudo_pass: str | None = None):
-    """Set CPU scaling governor to performance and enable hardware boost on Intel/AMD."""
+    """Quietly set CPU scaling governor to performance and restore upon context exit."""
     original_governors: dict[str, str] = {}
     original_intel_no_turbo: str | None = None
     original_amd_boost: str | None = None
@@ -355,13 +355,6 @@ def set_cpu_performance(sudo_pass: str | None = None):
         except Exception:
             pass
 
-    if RICH_AVAILABLE:
-        console.print(
-            "[bold yellow]⚡ Setting CPU scaling governor to 'performance' mode (Turbo/Boost active)...[/bold yellow]"
-        )
-    else:
-        print("Setting CPU scaling governor to 'performance' mode (Turbo/Boost active)...")
-
     apply_settings("performance", "0", "1")
     try:
         yield
@@ -387,8 +380,6 @@ def set_cpu_performance(sudo_pass: str | None = None):
                 run_sudo_cmd(["python3", "-c", "\n".join(py_restore)], sudo_pass=sudo_pass)
             except Exception:
                 pass
-        if RICH_AVAILABLE:
-            console.print("[dim]✓ Restored original CPU governor settings.[/dim]")
 
 
 def run_pure_read_test(
@@ -613,19 +604,19 @@ def run_single_core_test(
 
 
 def build_gauge(pct: float | None, width: int = 14) -> str:
-    """Render a clean, universal progress meter without font rendering artifacts."""
+    """Render a seamless solid-block progress meter with 100% matched height and width."""
     if pct is None:
         return "[dim]N/A[/dim]"
     clamped = max(0.0, min(100.0, pct))
     filled = int(round((clamped / 100.0) * width))
     empty = width - filled
 
-    color = "bright_green" if clamped >= 75.0 else ("bright_yellow" if clamped >= 45.0 else "bright_cyan")
-    bar = f"[{color}]" + "█" * filled + f"[/{color}][dim white]" + "━" * empty + f"[/dim white] [bold white]{clamped:5.1f}%[/bold white]"
+    fill_color = "bright_green" if clamped >= 75.0 else ("bright_yellow" if clamped >= 45.0 else "bright_cyan")
+    bar = f"[{fill_color}]" + "█" * filled + f"[/{fill_color}][bright_black]" + "█" * empty + f"[/bright_black] [bold white]{clamped:5.1f}%[/bold white]"
     return bar
 
 
-def render_header(specs: HardwareSpecs):
+def render_header(specs: HardwareSpecs, governor_active: bool = True):
     speed_str = (
         f"{specs.configured_speed_mts} MT/s" if specs.configured_speed_mts else "Unknown MT/s"
     )
@@ -646,6 +637,11 @@ def render_header(specs: HardwareSpecs):
     )
     mfg_str = specs.manufacturer or "Generic DRAM"
     form_str = specs.form_factor or "System Memory"
+    gov_str = (
+        "[bold green]Performance Mode[/bold green] (Hardware Turbo/Boost Active)"
+        if governor_active
+        else "[dim]Standard Governor[/dim]"
+    )
 
     if not RICH_AVAILABLE:
         print(f"=== RAM BANDWIDTH BENCHMARK SUITE ===")
@@ -662,6 +658,7 @@ def render_header(specs: HardwareSpecs):
 
     table.add_row("Processor Model", f"[bold white]{specs.cpu_model}[/bold white]")
     table.add_row("Logical CPU Cores", f"[bold green]{specs.online_cpus}[/bold green] cores online")
+    table.add_row("CPU Scaling & Frequency", gov_str)
     table.add_row("Installed Memory Capacity", f"[bold bright_magenta]{ram_cap_str}[/bold bright_magenta]")
     table.add_row("Memory Technology & Speed", f"[bold yellow]{specs.mem_type}[/bold yellow] @ [bold bright_yellow]{speed_str}[/bold bright_yellow]")
     table.add_row("Channel & Slot Topology", f"{dimm_str} ({mfg_str} {form_str})")
@@ -669,7 +666,7 @@ def render_header(specs: HardwareSpecs):
 
     panel = Panel(
         table,
-        title="[bold white on blue] 🚀 SYSTEM HARDWARE & MEMORY ARCHITECTURE [/bold white on blue]",
+        title="[bold white on blue] 󰍛 SYSTEM HARDWARE & MEMORY ARCHITECTURE [/bold white on blue]",
         border_style="bright_blue",
         padding=(0, 1),
     )
@@ -687,7 +684,7 @@ def render_results_table(results: list[TestResult], specs: HardwareSpecs):
         return
 
     table = Table(
-        title="📊 RAM Bandwidth Benchmark Summary",
+        title="󰓅 RAM Bandwidth Benchmark Summary",
         box=box.ROUNDED,
         header_style="bold cyan",
         expand=True,
@@ -710,8 +707,8 @@ def render_results_table(results: list[TestResult], specs: HardwareSpecs):
     console.print(table)
 
     note_text = Text()
-    note_text.append("💡 Microarchitectural Performance Insights:\n", style="bold yellow")
-    note_text.append(" • ", style="cyan")
+    note_text.append("󰨣 Microarchitectural Performance Insights:\n", style="bold yellow")
+    note_text.append(" 󰅂 ", style="cyan")
     if specs.theoretical_max_gb_s:
         note_text.append(f"Theoretical Max Peak for your memory bus is ", style="white")
         note_text.append(f"{specs.theoretical_max_gb_s:.2f} GB/s.\n", style="bold green")
@@ -721,13 +718,13 @@ def render_results_table(results: list[TestResult], specs: HardwareSpecs):
             style="white",
         )
 
-    note_text.append(" • ", style="cyan")
+    note_text.append(" 󰅂 ", style="cyan")
     note_text.append("Single-Core Throughput Limit: ", style="bold bright_white")
     note_text.append(
         "A single CPU core is hardware-capped (~13-20 GB/s) due to finite per-core Line Fill Buffer (LFB) request queues.\n",
         style="white",
     )
-    note_text.append(" • ", style="cyan")
+    note_text.append(" 󰅂 ", style="cyan")
     note_text.append("Pure Read / Write Scaling: ", style="bold bright_white")
     note_text.append(
         f"To reach maximum DRAM bus saturation (60-80+ GB/s), memory requests must be issued in parallel across multiple CPU cores ({specs.online_cpus} active).",
@@ -736,7 +733,7 @@ def render_results_table(results: list[TestResult], specs: HardwareSpecs):
 
     panel = Panel(
         note_text,
-        title="[bold cyan]Understanding Single-Thread vs Multi-Thread RAM Bandwidth[/bold cyan]",
+        title="[bold cyan]󰨣 Understanding Single-Thread vs Multi-Thread RAM Bandwidth[/bold cyan]",
         border_style="cyan",
     )
     console.print(panel)
@@ -789,7 +786,7 @@ def main() -> int:
     check_and_install_deps(sudo_pass)
     specs = detect_hardware_specs(sudo_pass)
 
-    render_header(specs)
+    render_header(specs, governor_active=not args.no_governor)
 
     workers = args.workers or specs.online_cpus
     results: list[TestResult] = []
