@@ -14,11 +14,15 @@ Replaces and consolidates:
 
 Features & Architecture:
   - Declarative ServiceConfig data structures with default enable/disable toggles
-  - PAM/logind-aware UserContext resolution (/proc/self/loginuid & SUDO_UID)
+  - Headless JSON execution without requiring python-rich in CI/CD pipelines
+  - PAM/logind & Escalation Context UserContext resolution (SUDO_UID precedence)
   - Sudo environment tunneling via /usr/bin/env preserving XDG_RUNTIME_DIR/DBus
-  - Reconstructed child args preventing double-execution of user targets in child
+  - Reconstructed child args & --child-fork preventing duplicate headers & executions
   - True O(1) bulk systemctl dictionary parser with Id & Names alias resolution
-  - Python 3.14+ Asyncio TaskGroup concurrent execution engine with proc.kill() cleanup
+  - Python 3.14+ Asyncio TaskGroup concurrent execution with Semaphore(5) DBus throttling
+  - Non-blocking thread offloading (asyncio.to_thread) for directory searches
+  - Clean SIGTERM process termination (proc.terminate()) for sudo child processes
+  - Built-in TimeoutError handling (Python 3.14 unified syntax)
   - Robust UTF-8/binary decode fallback (errors='replace') for malformed unit logs
   - Extended systemd start timeout handling (95s limit matching systemd defaults)
   - Precedence status tracking: BAD, MASKED, FAILED, STATIC, ACTIVATING, MISSING
@@ -44,20 +48,27 @@ from pathlib import Path
 from typing import Final, Literal, NamedTuple
 
 # Rich Presentation Imports Guard
+RICH_AVAILABLE = False
 try:
     from rich.console import Console
     from rich.panel import Panel
     from rich.prompt import Confirm
     from rich.table import Table
     from rich.text import Text
+    RICH_AVAILABLE = True
+    console = Console()
+    error_console = Console(stderr=True)
 except ImportError:
-    print("ERROR: The 'rich' python library is required.", file=sys.stderr)
-    print("Install it via: sudo pacman -S python-rich", file=sys.stderr)
-    sys.exit(1)
+    Console = Panel = Confirm = Table = Text = None  # type: ignore
+    console = error_console = None  # type: ignore
 
-# Initialize Rich Consoles
-console = Console()
-error_console = Console(stderr=True)
+
+def check_ui_deps(is_json: bool) -> None:
+    """Enforces Rich UI requirement only if not running in JSON mode."""
+    if not RICH_AVAILABLE and not is_json:
+        print("ERROR: The 'rich' python library is required for interactive/UI mode.", file=sys.stderr)
+        print("Install it via: sudo pacman -S python-rich", file=sys.stderr)
+        sys.exit(1)
 
 
 # ==============================================================================
@@ -221,32 +232,37 @@ class UserContext:
 # ==============================================================================
 
 def resolve_user_context() -> UserContext:
-    """Resolves real non-root user details safely across sudo/doas/pkexec/su contexts."""
+    """Resolves real non-root user details prioritizing active privilege escalation context."""
     is_root = os.geteuid() == 0
     real_uid = os.getuid()
 
     if is_root:
-        # 1. Absolute Truth via PAM / logind
-        try:
-            loginuid_raw = Path("/proc/self/loginuid").read_text(encoding="utf-8").strip()
-            loginuid = int(loginuid_raw)
-            if loginuid != 4294967295:  # (unsigned -1) means unset
-                real_uid = loginuid
-        except (FileNotFoundError, ValueError, OSError):
-            # 2. Fallback to privilege escalation environment variables
-            escalation_uid = os.environ.get("SUDO_UID") or os.environ.get("PKEXEC_UID")
-            if escalation_uid and escalation_uid.isdigit():
-                real_uid = int(escalation_uid)
-            elif "DOAS_USER" in os.environ:
-                try:
-                    real_uid = pwd.getpwnam(os.environ["DOAS_USER"]).pw_uid
-                except KeyError:
-                    pass
+        # 1. Immediate Privilege Escalation Environment Variables MUST take precedence
+        escalation_uid = os.environ.get("SUDO_UID") or os.environ.get("PKEXEC_UID")
+        if escalation_uid and escalation_uid.isdigit():
+            real_uid = int(escalation_uid)
+        elif "DOAS_USER" in os.environ:
+            try:
+                real_uid = pwd.getpwnam(os.environ["DOAS_USER"]).pw_uid
+            except KeyError:
+                pass
+        else:
+            # 2. Fallback to Absolute Truth via PAM / logind
+            try:
+                loginuid_raw = Path("/proc/self/loginuid").read_text(encoding="utf-8").strip()
+                loginuid = int(loginuid_raw)
+                if loginuid != 4294967295:  # (unsigned -1) means unset
+                    real_uid = loginuid
+            except (FileNotFoundError, ValueError, OSError):
+                pass
 
     try:
         pw = pwd.getpwuid(real_uid)
     except KeyError:
-        error_console.print(f"[bold red][ERROR][/bold red] Fatal: Resolved UID {real_uid} does not map to a valid user.")
+        if error_console:
+            error_console.print(f"[bold red][ERROR][/bold red] Fatal: Resolved UID {real_uid} does not map to a valid user.")
+        else:
+            print(f"ERROR: Fatal: Resolved UID {real_uid} does not map to a valid user.", file=sys.stderr)
         sys.exit(1)
 
     return UserContext(
@@ -418,7 +434,7 @@ def query_bulk_unit_states(targets: list[UnitTarget], ctx: UserContext) -> list[
 
 
 # ==============================================================================
-# 7. ASYNCHRONOUS CONCURRENT EXECUTION ENGINE
+# 7. ASYNCHRONOUS CONCURRENT EXECUTION ENGINE WITH SEMAPHORE THROTTLING
 # ==============================================================================
 
 async def process_unit_action_async(
@@ -428,96 +444,99 @@ async def process_unit_action_async(
     now: bool,
     dry_run: bool,
     ctx: UserContext,
+    semaphore: asyncio.Semaphore,
 ) -> ProcessingResult:
-    """Asynchronously enables or disables a pre-queried unit with proc.kill() cleanup."""
-    norm_name = normalize_unit_name(target.config.name)
-    category = target.category
+    """Asynchronously modifies unit state securely, utilizing semaphores to prevent DBus flooding."""
+    async with semaphore:
+        norm_name = normalize_unit_name(target.config.name)
+        category = target.category
 
-    if not st.exists:
-        suggestions = suggest_missing_unit(norm_name, target.scope, ctx)
-        msg = f"Unit not found (Package not installed) | Suggestions: {', '.join(suggestions)}" if suggestions else "Unit not found (Package not installed)"
-        return ProcessingResult(unit_name=norm_name, category=category, status=UnitStatus.MISSING, message=msg)
+        if not st.exists:
+            # Offload blocking filesystem search to background thread
+            suggestions = await asyncio.to_thread(suggest_missing_unit, norm_name, target.scope, ctx)
+            msg = f"Unit not found (Package not installed) | Suggestions: {', '.join(suggestions)}" if suggestions else "Unit not found (Package not installed)"
+            return ProcessingResult(unit_name=norm_name, category=category, status=UnitStatus.MISSING, message=msg)
 
-    if st.status_enum == UnitStatus.MASKED:
-        return ProcessingResult(unit_name=norm_name, category=category, status=UnitStatus.MASKED, message="Unit is masked (Skipped)")
-    if st.status_enum == UnitStatus.BAD:
-        return ProcessingResult(unit_name=norm_name, category=category, status=UnitStatus.BAD, message="Unit file is bad/invalid")
+        if st.status_enum == UnitStatus.MASKED:
+            return ProcessingResult(unit_name=norm_name, category=category, status=UnitStatus.MASKED, message="Unit is masked (Skipped)")
+        if st.status_enum == UnitStatus.BAD:
+            return ProcessingResult(unit_name=norm_name, category=category, status=UnitStatus.BAD, message="Unit file is bad/invalid")
 
-    if action == "enable":
-        if st.status_enum == UnitStatus.ENABLED_ACTIVE or (st.status_enum == UnitStatus.ENABLED_INACTIVE and not now):
-            return ProcessingResult(
-                unit_name=norm_name,
-                category=category,
-                status=st.status_enum,
-                message="Already enabled & active" if st.active_state == "active" else "Already enabled",
-            )
-        if st.status_enum == UnitStatus.STATIC:
-            if st.active_state == "active":
-                return ProcessingResult(unit_name=norm_name, category=category, status=UnitStatus.STATIC, message="Static unit (Already active)")
-            if not now:
-                return ProcessingResult(unit_name=norm_name, category=category, status=UnitStatus.STATIC, message="Static unit (Cannot enable without --now start)")
-            cmd_flags = ["start", norm_name]
-        else:
-            cmd_flags = ["enable", "--now", norm_name] if now else ["enable", norm_name]
-    else:  # disable
-        if st.status_enum == UnitStatus.DISABLED and st.active_state == "inactive":
-            return ProcessingResult(unit_name=norm_name, category=category, status=UnitStatus.DISABLED, message="Already disabled & inactive")
-        if st.status_enum == UnitStatus.STATIC:
-            if st.active_state == "inactive":
-                return ProcessingResult(unit_name=norm_name, category=category, status=UnitStatus.STATIC, message="Static unit (Already inactive)")
-            cmd_flags = ["stop", norm_name]
-        else:
-            cmd_flags = ["disable", "--now", norm_name] if now else ["disable", norm_name]
-
-    try:
-        cmd, env = build_systemctl_cmd(target.scope, cmd_flags, ctx=ctx, read_only=False)
-    except RuntimeError as e:
-        return ProcessingResult(unit_name=norm_name, category=category, status=UnitStatus.ERROR, message=str(e))
-
-    if dry_run:
-        return ProcessingResult(
-            unit_name=norm_name,
-            category=category,
-            status=UnitStatus.ENABLED_ACTIVE if action == "enable" else UnitStatus.DISABLED,
-            message=f"[DRY-RUN] Would execute: {shlex.join(cmd)}",
-        )
-
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env
-        )
-        try:
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=95)
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            return ProcessingResult(unit_name=norm_name, category=category, status=UnitStatus.ERROR, message="Execution timed out (95s limit reached), process killed.")
-
-        output_text = (stderr_bytes.decode(errors="replace").strip() + "\n" + stdout_bytes.decode(errors="replace").strip()).strip()
-
-        if proc.returncode == 0:
+        if action == "enable":
+            if st.status_enum == UnitStatus.ENABLED_ACTIVE or (st.status_enum == UnitStatus.ENABLED_INACTIVE and not now):
+                return ProcessingResult(
+                    unit_name=norm_name,
+                    category=category,
+                    status=st.status_enum,
+                    message="Already enabled & active" if st.active_state == "active" else "Already enabled",
+                )
             if st.status_enum == UnitStatus.STATIC:
-                msg = f"Successfully {'started' if now and action == 'enable' else 'stopped'} (Static Unit)"
+                if st.active_state == "active":
+                    return ProcessingResult(unit_name=norm_name, category=category, status=UnitStatus.STATIC, message="Static unit (Already active)")
+                if not now:
+                    return ProcessingResult(unit_name=norm_name, category=category, status=UnitStatus.STATIC, message="Static unit (Cannot enable without --now start)")
+                cmd_flags = ["start", norm_name]
             else:
-                msg = f"Successfully {action}d" + (" & started" if now and action == "enable" else (" & stopped" if now else ""))
+                cmd_flags = ["enable", "--now", norm_name] if now else ["enable", norm_name]
+        else:  # disable
+            if st.status_enum == UnitStatus.DISABLED and st.active_state == "inactive":
+                return ProcessingResult(unit_name=norm_name, category=category, status=UnitStatus.DISABLED, message="Already disabled & inactive")
+            if st.status_enum == UnitStatus.STATIC:
+                if st.active_state == "inactive":
+                    return ProcessingResult(unit_name=norm_name, category=category, status=UnitStatus.STATIC, message="Static unit (Already inactive)")
+                cmd_flags = ["stop", norm_name]
+            else:
+                cmd_flags = ["disable", "--now", norm_name] if now else ["disable", norm_name]
 
+        try:
+            cmd, env = build_systemctl_cmd(target.scope, cmd_flags, ctx=ctx, read_only=False)
+        except RuntimeError as e:
+            return ProcessingResult(unit_name=norm_name, category=category, status=UnitStatus.ERROR, message=str(e))
+
+        if dry_run:
             return ProcessingResult(
                 unit_name=norm_name,
                 category=category,
-                status=UnitStatus.ENABLED_ACTIVE if action == "enable" and now else UnitStatus.DISABLED,
-                message=msg,
-                output=output_text,
+                status=UnitStatus.ENABLED_ACTIVE if action == "enable" else UnitStatus.DISABLED,
+                message=f"[DRY-RUN] Would execute: {shlex.join(cmd)}",
             )
-        else:
-            return ProcessingResult(
-                unit_name=norm_name,
-                category=category,
-                status=UnitStatus.ERROR,
-                message=f"Failed to {action}",
-                output=output_text,
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env
             )
-    except Exception as e:
-        return ProcessingResult(unit_name=norm_name, category=category, status=UnitStatus.ERROR, message=f"Execution error: {e}")
+            try:
+                stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=95)
+            except TimeoutError:  # Python 3.11+ / 3.14 built-in TimeoutError
+                proc.terminate()  # SIGTERM allows sudo to cleanly terminate children without orphaning systemctl
+                await proc.wait()
+                return ProcessingResult(unit_name=norm_name, category=category, status=UnitStatus.ERROR, message="Execution timed out (95s limit reached), process terminated.")
+
+            output_text = (stderr_bytes.decode(errors="replace").strip() + "\n" + stdout_bytes.decode(errors="replace").strip()).strip()
+
+            if proc.returncode == 0:
+                if st.status_enum == UnitStatus.STATIC:
+                    msg = f"Successfully {'started' if now and action == 'enable' else 'stopped'} (Static Unit)"
+                else:
+                    msg = f"Successfully {action}d" + (" & started" if now and action == "enable" else (" & stopped" if now else ""))
+
+                return ProcessingResult(
+                    unit_name=norm_name,
+                    category=category,
+                    status=UnitStatus.ENABLED_ACTIVE if action == "enable" and now else UnitStatus.DISABLED,
+                    message=msg,
+                    output=output_text,
+                )
+            else:
+                return ProcessingResult(
+                    unit_name=norm_name,
+                    category=category,
+                    status=UnitStatus.ERROR,
+                    message=f"Failed to {action}",
+                    output=output_text,
+                )
+        except Exception as e:
+            return ProcessingResult(unit_name=norm_name, category=category, status=UnitStatus.ERROR, message=f"Execution error: {e}")
 
 
 async def execute_operations(
@@ -528,10 +547,11 @@ async def execute_operations(
     dry_run: bool,
     ctx: UserContext,
 ) -> list[ProcessingResult]:
-    """Manages concurrent execution of systemd operations via Python 3.14 TaskGroup."""
+    """Manages concurrent execution of systemd operations via Python 3.14 TaskGroup & DBus throttling."""
+    semaphore = asyncio.Semaphore(5)
     async with asyncio.TaskGroup() as tg:
         tasks = [
-            tg.create_task(process_unit_action_async(target, st, action, now, dry_run, ctx))
+            tg.create_task(process_unit_action_async(target, st, action, now, dry_run, ctx, semaphore))
             for target, st in zip(targets, states)
         ]
     return [task.result() for task in tasks]
@@ -551,17 +571,21 @@ def reload_dbus(scope: Scope, dry_run: bool, ctx: UserContext) -> None:
 
     scope_str = "System" if scope == Scope.SYSTEM else "User"
     if dry_run:
-        console.print(f"[bold yellow][DRY-RUN][/bold yellow] Would execute {scope_str} DBus reload: {' '.join(cmd)}")
+        if console:
+            console.print(f"[bold yellow][DRY-RUN][/bold yellow] Would execute {scope_str} DBus reload: {' '.join(cmd)}")
         return
 
     try:
         res = subprocess.run(cmd, capture_output=True, env=env, text=True, timeout=10)
         if res.returncode == 0:
-            console.print(f"[bold green][OK][/bold green] {scope_str} DBus configuration reloaded via busctl.")
+            if console:
+                console.print(f"[bold green][OK][/bold green] {scope_str} DBus configuration reloaded via busctl.")
         else:
-            console.print(f"[bold yellow][WARN][/bold yellow] {scope_str} DBus reload skipped or failed: {res.stderr.strip()}")
+            if console:
+                console.print(f"[bold yellow][WARN][/bold yellow] {scope_str} DBus reload skipped or failed: {res.stderr.strip()}")
     except Exception as e:
-        console.print(f"[bold red][ERR][/bold red] {scope_str} DBus reload failed: {e}")
+        if console:
+            console.print(f"[bold red][ERR][/bold red] {scope_str} DBus reload failed: {e}")
 
 
 def daemon_reload(scope: Scope, dry_run: bool, ctx: UserContext) -> None:
@@ -569,22 +593,27 @@ def daemon_reload(scope: Scope, dry_run: bool, ctx: UserContext) -> None:
     try:
         cmd, env = build_systemctl_cmd(scope, ["daemon-reload"], ctx=ctx, read_only=False)
     except RuntimeError as e:
-        console.print(f"[bold red][ERR][/bold red] Cannot reload daemon: {e}")
+        if console:
+            console.print(f"[bold red][ERR][/bold red] Cannot reload daemon: {e}")
         return
 
     scope_str = "System" if scope == Scope.SYSTEM else "User"
     if dry_run:
-        console.print(f"[bold yellow][DRY-RUN][/bold yellow] Would run {scope_str} daemon-reload: {' '.join(cmd)}")
+        if console:
+            console.print(f"[bold yellow][DRY-RUN][/bold yellow] Would run {scope_str} daemon-reload: {' '.join(cmd)}")
         return
 
     try:
         res = subprocess.run(cmd, capture_output=True, env=env, text=True, timeout=20)
         if res.returncode == 0:
-            console.print(f"[bold green][OK][/bold green] Executed {scope_str} daemon-reload.")
+            if console:
+                console.print(f"[bold green][OK][/bold green] Executed {scope_str} daemon-reload.")
         else:
-            console.print(f"[bold red][ERR][/bold red] Failed {scope_str} daemon-reload: {res.stdout.strip()}")
+            if console:
+                console.print(f"[bold red][ERR][/bold red] Failed {scope_str} daemon-reload: {res.stdout.strip()}")
     except Exception as e:
-        console.print(f"[bold red][ERR][/bold red] Failed {scope_str} daemon-reload: {e}")
+        if console:
+            console.print(f"[bold red][ERR][/bold red] Failed {scope_str} daemon-reload: {e}")
 
 
 # ==============================================================================
@@ -593,6 +622,8 @@ def daemon_reload(scope: Scope, dry_run: bool, ctx: UserContext) -> None:
 
 def render_header(ctx: UserContext) -> None:
     """Renders the main Dusky Service Deployer header panel."""
+    if not console:
+        return
     header_text = Text()
     header_text.append("⚡ DUSKY SERVICE DEPLOYER (290_dusky_service_deployer.py) ⚡\n", style="bold cyan")
     header_text.append("Context: Hyprland / UWSM | Kernel: ", style="dim white")
@@ -604,6 +635,8 @@ def render_header(ctx: UserContext) -> None:
 
 def render_status_table(states: list[UnitState]) -> None:
     """Renders a summary table of all service statuses."""
+    if not console:
+        return
     table = Table(title="Dusky Deployed Systemd Services Overview", show_header=True, header_style="bold magenta", expand=True)
 
     table.add_column("Scope", style="dim", width=8)
@@ -678,6 +711,9 @@ def export_json_status(states: list[UnitState]) -> None:
 
 def render_results(results: list[ProcessingResult]) -> None:
     """Displays action execution results categorized neatly."""
+    if not console:
+        return
+
     success_count = 0
     skip_count = 0
     missing_count = 0
@@ -739,18 +775,23 @@ def main() -> None:
     parser.add_argument("--daemon-reload", action="store_true", help="Issue daemon-reload after processing services")
     parser.add_argument("--dbus-reload", action="store_true", help="Issue DBus configuration reload via busctl")
     parser.add_argument("--json", action="store_true", help="Output status matrix as JSON (used with --status)")
+    parser.add_argument("--child-fork", action="store_true", help=argparse.SUPPRESS)  # Internal flag to prevent UI duplication
 
     args = parser.parse_args()
+    check_ui_deps(args.json)
 
     # Pre-execution sanity check
     if not shutil.which("systemctl"):
         if not args.json:
-            error_console.print("[bold red][ERROR][/bold red] Systemd (systemctl) not found. This script requires systemd.")
+            if error_console:
+                error_console.print("[bold red][ERROR][/bold red] Systemd (systemctl) not found. This script requires systemd.")
+            else:
+                print("ERROR: Systemd (systemctl) not found.", file=sys.stderr)
         sys.exit(1)
 
     ctx = resolve_user_context()
 
-    if not args.json:
+    if not args.json and not args.child_fork:
         render_header(ctx)
 
     # Determine targeted categories
@@ -773,18 +814,18 @@ def main() -> None:
             Category.USER_AUR,
         }
 
-    # Subprocess Escalation Fork for System Services (Reconstructed args prevent double-execution)
+    # Subprocess Escalation Fork for System Services
     requires_system_scope = any(cat in (Category.SYSTEM_CORE, Category.SYSTEM_AUR) for cat in targeted_categories)
     child_json_data: list[dict] = []
 
     if requires_system_scope and not ctx.is_root and not args.status and not args.dry_run:
         escalator = get_escalator()
         if escalator:
-            if not args.json:
+            if not args.json and console:
                 console.print(f"[bold blue][INFO][/bold blue] System services require root privileges. Forking via {escalator}...")
 
             script_path = Path(__file__).resolve().as_posix()
-            child_args = [sys.executable, script_path]
+            child_args = [sys.executable, script_path, "--child-fork"]
 
             if Category.SYSTEM_CORE in targeted_categories:
                 child_args.append("--system")
@@ -818,20 +859,30 @@ def main() -> None:
             else:
                 res = subprocess.run(sudo_cmd, check=False)
                 if res.returncode != 0:
-                    error_console.print("[bold red][ERROR][/bold red] Privilege escalation failed or aborted.")
+                    if error_console:
+                        error_console.print("[bold red][ERROR][/bold red] Privilege escalation failed or aborted.")
+                    else:
+                        print("ERROR: Privilege escalation failed or aborted.", file=sys.stderr)
                     sys.exit(res.returncode)
 
             # Strip system categories from the parent process so they aren't executed twice
             targeted_categories.discard(Category.SYSTEM_CORE)
             targeted_categories.discard(Category.SYSTEM_AUR)
+
             if not targeted_categories:
                 if args.json and child_json_data:
                     print(json.dumps(child_json_data, indent=2))
-                elif args.dbus_reload:
+
+                if args.daemon_reload:
+                    daemon_reload(Scope.USER, dry_run=args.dry_run, ctx=ctx)
+                if args.dbus_reload:
                     reload_dbus(Scope.USER, dry_run=args.dry_run, ctx=ctx)
                 return
         elif not args.json:
-            error_console.print("[bold red][ERROR][/bold red] Privilege escalation tool missing. System services skipped.")
+            if error_console:
+                error_console.print("[bold red][ERROR][/bold red] Privilege escalation tool missing. System services skipped.")
+            else:
+                print("ERROR: Privilege escalation tool missing.", file=sys.stderr)
 
     # Target Mapping
     unit_targets: list[UnitTarget] = []
@@ -845,7 +896,7 @@ def main() -> None:
     if Category.USER_AUR in targeted_categories:
         unit_targets.extend([UnitTarget(cfg, Scope.USER, Category.USER_AUR) for cfg in AUR_USER_SERVICES if args.status or args.all or cfg.enabled_by_default or args.interactive])
 
-    if not args.json and not args.status:
+    if not args.json and not args.status and console:
         console.print("\n[bold cyan]Querying systemd unit states in bulk...[/bold cyan]")
 
     states_list = query_bulk_unit_states(unit_targets, ctx=ctx)
@@ -867,7 +918,7 @@ def main() -> None:
     interactive = args.interactive and not args.default and not args.json
 
     for target, st in zip(unit_targets, states_list):
-        if interactive and sys.stdin.isatty():
+        if interactive and sys.stdin.isatty() and Confirm:
             if st.exists and st.status_enum not in (UnitStatus.MASKED, UnitStatus.BAD):
                 prompt = f"Execute [bold cyan]{action_type}[/bold cyan] for [bold yellow]{normalize_unit_name(target.config.name)}[/bold yellow]?"
                 if not Confirm.ask(prompt, default=target.config.enabled_by_default if action_type == "enable" else False):
@@ -875,7 +926,7 @@ def main() -> None:
         approved_targets.append(target)
         approved_states.append(st)
 
-    if not args.json:
+    if not args.json and console:
         console.print(f"\n[bold cyan]Executing '{action_type}' concurrently for {len(approved_targets)} services...[/bold cyan]")
         if args.dry_run:
             console.print("[bold yellow]*** DRY-RUN MODE ACTIVE - No changes will be made ***[/bold yellow]\n")
@@ -891,7 +942,7 @@ def main() -> None:
 
     # Perform daemon-reload or dbus-reload
     if args.daemon_reload:
-        if not args.json:
+        if not args.json and console:
             console.print("\n[bold cyan]Triggering daemon-reload...[/bold cyan]")
         if any(t.scope == Scope.SYSTEM for t in unit_targets):
             daemon_reload(Scope.SYSTEM, dry_run=args.dry_run, ctx=ctx)
@@ -899,7 +950,7 @@ def main() -> None:
             daemon_reload(Scope.USER, dry_run=args.dry_run, ctx=ctx)
 
     if args.dbus_reload:
-        if not args.json:
+        if not args.json and console:
             console.print("\n[bold cyan]Triggering dbus-reload...[/bold cyan]")
         if any(t.scope == Scope.SYSTEM for t in unit_targets):
             reload_dbus(Scope.SYSTEM, dry_run=args.dry_run, ctx=ctx)
@@ -911,5 +962,8 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        console.print("\n[bold red][ABORTED][/bold red] Interrupted by user (SIGINT).")
+        if console:
+            console.print("\n[bold red][ABORTED][/bold red] Interrupted by user (SIGINT).")
+        else:
+            print("\n[ABORTED] Interrupted by user (SIGINT).", file=sys.stderr)
         sys.exit(130)
