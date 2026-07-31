@@ -10,18 +10,18 @@ Description: Atomically installs, symlinks, and manages user and system-level
 
 Features:
   - Declarative configuration blocks at top of script.
-  - Native Python 3.14+ (pathlib, dataclasses, regex, typing).
+  - Native Python 3.14+ (pathlib, dataclasses, typing).
   - Rich terminal presentation (styled logs, panels, progress tables).
   - Multi-mode support: --all, --user, --dbus, --system.
   - Non-interactive mode (--default / -y).
   - Dry-run mode (--dry-run / -n).
   - Live unit inspection (--status / -st).
-  - Complete uninstall/reversion mode (--uninstall).
+  - Complete uninstall/reversion mode (--uninstall) with O(1) batching.
   - Split Execution Architecture (unprivileged user execution + isolated sudo sub-process).
-  - XDG_DATA_HOME and XDG_CONFIG_HOME specification compliance.
-  - CWE-377 mitigated secure atomic file creation (tempfile.mkstemp + os.close + os.replace).
+  - PYTHONPATH environment preservation for sudo sub-process module import resolution.
+  - CWE-377 mitigated atomic file creation (tempfile.mkstemp + os.fdopen + os.replace).
   - Cryptographically random symlink substitution (secrets.token_hex).
-  - Absolute script path resolution for secure sudo subprocess forking.
+  - Robust JSON / JSONL state parsing with LoadState tracking.
 ===============================================================================
 """
 
@@ -30,7 +30,6 @@ import datetime
 import json
 import os
 import pwd
-import re
 import secrets
 import shutil
 import subprocess
@@ -191,13 +190,22 @@ def get_user_data_dir(ctx: UserContext) -> Path:
 
 def expand_path(raw_path: str, ctx: UserContext) -> Path:
     """Deterministically expands paths without executing arbitrary env injections."""
-    path_str = raw_path.replace("$XDG_DATA_HOME", str(get_user_data_dir(ctx)))
-    path_str = path_str.replace("$XDG_CONFIG_HOME", str(get_user_config_dir(ctx)))
+    replacements = {
+        "$XDG_DATA_HOME": str(get_user_data_dir(ctx)),
+        "${XDG_DATA_HOME}": str(get_user_data_dir(ctx)),
+        "$XDG_CONFIG_HOME": str(get_user_config_dir(ctx)),
+        "${XDG_CONFIG_HOME}": str(get_user_config_dir(ctx)),
+        "$HOME": str(ctx.home),
+        "${HOME}": str(ctx.home),
+        "~/": f"{ctx.home}/",
+    }
 
-    path_str = re.sub(r'\$(HOME\b|{HOME})', str(ctx.home), path_str)
-    if path_str.startswith("~/"):
-        path_str = path_str.replace("~", str(ctx.home), 1)
-    elif path_str.startswith("/root/") and ctx.username != "root":
+    path_str = raw_path
+    for var, val in replacements.items():
+        if var in path_str:
+            path_str = path_str.replace(var, val)
+
+    if path_str.startswith("/root/") and ctx.username != "root":
         path_str = os.path.join(str(ctx.home), path_str[6:])
 
     final_path = Path(os.path.normpath(os.path.expanduser(path_str)))
@@ -223,7 +231,7 @@ def get_user_ipc_env(ctx: UserContext) -> dict[str, str]:
     if not runtime_dir.exists():
         log_warn(f"Runtime dir {runtime_dir} missing! Is user logged in or linger enabled?")
 
-    return {
+    env = {
         "PATH": os.environ.get("PATH", "/usr/local/sbin:/usr/local/bin:/usr/bin"),
         "USER": ctx.username,
         "HOME": str(ctx.home),
@@ -231,6 +239,12 @@ def get_user_ipc_env(ctx: UserContext) -> dict[str, str]:
         "XDG_RUNTIME_DIR": str(runtime_dir),
         "DBUS_SESSION_BUS_ADDRESS": f"unix:path={runtime_dir}/bus",
     }
+
+    for xdg_var in ("XDG_CONFIG_HOME", "XDG_DATA_HOME"):
+        if xdg_var in os.environ:
+            env[xdg_var] = os.environ[xdg_var]
+
+    return env
 
 
 def log_info(msg: str) -> None:
@@ -327,7 +341,7 @@ def process_service_batch(
     dry_run: bool,
     ctx: UserContext,
 ) -> None:
-    """Installs and manages systemd service units (Secure Atomic Replacement - CWE-377 mitigated)."""
+    """Installs and manages systemd service units (Strict Atomic Replacement - CWE-377 mitigated)."""
     scope = "User" if is_user else "System"
     console.print(f"\n[bold magenta]--- Processing {scope} Services ---[/bold magenta]")
 
@@ -339,7 +353,7 @@ def process_service_batch(
     installed_units: list[ServiceConfig] = []
     valid_extensions = {".service", ".timer", ".socket", ".target"}
 
-    # Phase 1: Installation (Secure Atomic Replacement - CWE-377 Mitigated)
+    # Phase 1: Installation (Strict Atomic Replacement)
     for cfg in configs:
         src_path = expand_path(cfg.source_path, ctx)
         service_name = src_path.name
@@ -349,7 +363,7 @@ def process_service_batch(
         log_info(f"Processing: [bold cyan]{service_name}[/bold cyan]")
 
         if src_path.suffix not in valid_extensions:
-            log_error(f"Invalid unit extension '{src_path.suffix}'. Must be a valid Systemd type. Skipping.")
+            log_error(f"Invalid unit extension '{src_path.suffix}'. Skipping.")
             continue
 
         if not src_path.exists():
@@ -361,18 +375,21 @@ def process_service_batch(
         if dry_run:
             log_info(f"[Dry-Run] Atomic secure copy {src_path} -> {target_file} (mode=0644)")
         else:
+            temp_file = None
             try:
+                # CWE-377 Fix: Write raw bytes directly to open descriptor to prevent TOCTOU and metadata leaks
                 fd, temp_path_str = tempfile.mkstemp(dir=target_dir, prefix=f".{service_name}.", suffix=".tmp")
-                os.close(fd)
                 temp_file = Path(temp_path_str)
 
-                shutil.copy2(src_path, temp_file)
+                with os.fdopen(fd, "wb") as f:
+                    f.write(src_path.read_bytes())
+
                 os.chmod(temp_file, 0o644)
                 os.replace(temp_file, target_file)
                 log_success(f"Installed {service_name}")
             except Exception as e:
                 log_error(f"Failed to atomically install {service_name}: {e}")
-                if not dry_run and 'temp_file' in locals() and temp_file.exists():
+                if not dry_run and temp_file and temp_file.exists():
                     temp_file.unlink(missing_ok=True)
                 continue
 
@@ -386,7 +403,7 @@ def process_service_batch(
     log_info(f"Reloading {scope.lower()} systemd daemon...")
     run_systemctl(["daemon-reload"], is_user=is_user, dry_run=dry_run, ctx=ctx)
 
-    # Phase 3: Bulk Action Assessment
+    # Phase 3: Action Assessment
     enable_units: list[str] = []
     disable_units: list[str] = []
 
@@ -394,7 +411,6 @@ def process_service_batch(
         service_name = Path(cfg.source_path).name
         action_str = cfg.default_action.strip().lower()
         if action_str not in ("enable", "disable"):
-            log_warn(f"Invalid default action '{cfg.default_action}' for {service_name}. Defaulting to 'disable'.")
             action_str = "disable"
 
         default_is_enable = (action_str == "enable")
@@ -417,18 +433,16 @@ def process_service_batch(
         else:
             disable_units.append(service_name)
 
-    # Phase 4: Individual Systemd Execution (Resilient to partial failures)
+    # Phase 4: Bulk Systemd Execution (O(1) highly optimized batch calls)
     if enable_units:
         log_info(f"Enabling & Starting ({len(enable_units)} units)...")
-        for unit in enable_units:
-            if run_systemctl(["enable", "--now", unit], is_user=is_user, dry_run=dry_run, ctx=ctx):
-                log_success(f"Active: {unit}")
+        if run_systemctl(["enable", "--now"] + enable_units, is_user=is_user, dry_run=dry_run, ctx=ctx):
+            log_success(f"Successfully activated: {', '.join(enable_units)}")
 
     if disable_units:
         log_info(f"Disabling & Stopping ({len(disable_units)} units)...")
-        for unit in disable_units:
-            if run_systemctl(["disable", "--now", unit], is_user=is_user, dry_run=dry_run, ctx=ctx):
-                log_success(f"Inactive: {unit}")
+        if run_systemctl(["disable", "--now"] + disable_units, is_user=is_user, dry_run=dry_run, ctx=ctx):
+            log_success(f"Successfully deactivated: {', '.join(disable_units)}")
 
 
 def process_symlinks(
@@ -516,7 +530,7 @@ def process_symlinks(
 
 
 def display_status(ctx: UserContext) -> None:
-    """Renders a comprehensive Rich Table utilizing systemd JSON state parsing."""
+    """Renders a comprehensive Rich Table utilizing systemd JSON / JSONL state parsing."""
     table = Table(title="Systemd & DBus Services Status Overview", title_style="bold cyan")
     table.add_column("Unit / Service", style="bold white")
     table.add_column("Type", style="magenta")
@@ -528,7 +542,7 @@ def display_status(ctx: UserContext) -> None:
     def get_bulk_states(units: list[str], is_user: bool) -> dict[str, tuple[str, str]]:
         if not units:
             return {}
-        cmd = ["systemctl", "show", "--output=json", "--property=Id,ActiveState,UnitFileState"] + units
+        cmd = ["systemctl", "show", "--output=json", "--property=Id,ActiveState,UnitFileState,LoadState"] + units
         if is_user:
             cmd.insert(1, "--user")
 
@@ -539,23 +553,32 @@ def display_status(ctx: UserContext) -> None:
             return {}
 
         states: dict[str, tuple[str, str]] = {}
-        if not res.stdout.strip():
+        out = res.stdout.strip()
+        if not out:
             return states
 
-        try:
-            data = json.loads(res.stdout)
-            if isinstance(data, dict):
-                data = [data]
-
-            for item in data:
-                unit_id = item.get("Id") or "unknown"
-                if unit_id != "unknown":
-                    states[unit_id] = (
-                        item.get("ActiveState") or "unknown",
-                        item.get("UnitFileState") or "unknown"
-                    )
-        except json.JSONDecodeError:
-            log_error("Failed to parse systemctl JSON output.")
+        # Parse JSON Array or JSON Lines (JSONL)
+        lines = out.splitlines() if not out.startswith("[") else [out]
+        for line in lines:
+            line_str = line.strip()
+            if not line_str:
+                continue
+            try:
+                items = json.loads(line_str)
+                if isinstance(items, dict):
+                    items = [items]
+                for item in items:
+                    unit_id = item.get("Id") or "unknown"
+                    if unit_id != "unknown":
+                        if item.get("LoadState") == "not-found":
+                            states[unit_id] = ("not-found", "not-found")
+                        else:
+                            states[unit_id] = (
+                                item.get("ActiveState") or "unknown",
+                                item.get("UnitFileState") or "unknown",
+                            )
+            except json.JSONDecodeError:
+                pass
 
         return states
 
@@ -591,24 +614,28 @@ def display_status(ctx: UserContext) -> None:
 
 
 def uninstall_all(ctx: UserContext, dry_run: bool, scope: Literal["user", "system", "all"] = "all") -> None:
-    """Stops, disables, and removes installed units and symlinks with scope routing."""
+    """Stops, disables, and removes installed units and symlinks with O(1) batch execution."""
     console.print(f"\n[bold red]--- Reverting Configured Services ({scope.upper()}) ---[/bold red]")
 
     if scope in ("user", "all"):
         user_target_dir = get_user_config_dir(ctx) / "systemd" / "user"
+        user_units_to_disable: list[str] = []
+
         for cfg in USER_SERVICES:
             src_name = Path(cfg.source_path).name
             target = user_target_dir / src_name
-
             if target.is_symlink() or target.exists():
-                log_info(f"Stopping & disabling: {src_name}")
-                run_systemctl(["disable", "--now", src_name], is_user=True, dry_run=dry_run, ctx=ctx)
+                user_units_to_disable.append(src_name)
                 log_info(f"Removing {target}")
                 if not dry_run:
                     try:
                         target.unlink(missing_ok=True)
                     except Exception as e:
                         log_error(f"Failed to remove {target}: {e}")
+
+        if user_units_to_disable:
+            log_info(f"Stopping & disabling user units: {', '.join(user_units_to_disable)}")
+            run_systemctl(["disable", "--now"] + user_units_to_disable, is_user=True, dry_run=dry_run, ctx=ctx)
 
         run_systemctl(["daemon-reload"], is_user=True, dry_run=dry_run, ctx=ctx)
 
@@ -626,19 +653,22 @@ def uninstall_all(ctx: UserContext, dry_run: bool, scope: Literal["user", "syste
         if not ctx.is_root:
             log_warn("Skipping system uninstall. Root privileges required.")
         else:
+            sys_units_to_disable: list[str] = []
             for cfg in SYSTEM_SERVICES:
                 src_name = Path(cfg.source_path).name
                 target = SYSTEMD_SYSTEM_DIR / src_name
-
                 if target.is_symlink() or target.exists():
-                    log_info(f"Stopping & disabling: {src_name}")
-                    run_systemctl(["disable", "--now", src_name], is_user=False, dry_run=dry_run, ctx=ctx)
+                    sys_units_to_disable.append(src_name)
                     log_info(f"Removing {target}")
                     if not dry_run:
                         try:
                             target.unlink(missing_ok=True)
                         except Exception as e:
                             log_error(f"Failed to remove {target}: {e}")
+
+            if sys_units_to_disable:
+                log_info(f"Stopping & disabling system units: {', '.join(sys_units_to_disable)}")
+                run_systemctl(["disable", "--now"] + sys_units_to_disable, is_user=False, dry_run=dry_run, ctx=ctx)
 
             run_systemctl(["daemon-reload"], is_user=False, dry_run=dry_run, ctx=ctx)
 
@@ -710,7 +740,8 @@ def main() -> None:
         if scope in ("all", "user") and args.all and not ctx.is_root and not args.dry_run:
             if shutil.which("sudo"):
                 log_info("Forking system uninstallation via sudo...")
-                subprocess.run(["sudo", sys.executable, script_path, "--uninstall", "--system"], check=False)
+                python_path = os.pathsep.join(sys.path)
+                subprocess.run(["sudo", "env", f"PYTHONPATH={python_path}", sys.executable, script_path, "--uninstall", "--system"], check=False)
         return
 
     # Subprocess Split Execution for System Scope
@@ -718,7 +749,8 @@ def main() -> None:
         log_info("System services require root privileges.")
         if sys.stdin.isatty() and shutil.which("sudo"):
             log_info("Forking system service installation securely via sudo...")
-            sudo_cmd = ["sudo", sys.executable, script_path, "--system"]
+            python_path = os.pathsep.join(sys.path)
+            sudo_cmd = ["sudo", "env", f"PYTHONPATH={python_path}", sys.executable, script_path, "--system"]
             if args.default:
                 sudo_cmd.append("-y")
             try:
