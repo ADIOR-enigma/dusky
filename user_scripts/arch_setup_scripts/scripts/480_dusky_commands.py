@@ -10,19 +10,19 @@
               dusky_commands_before.sh, and dusky_commands_after.sh into a
               unified, feature-complete Python 3.14 orchestrator.
 
- Features & Architecture (Synthesized from 130 & 290 Reference Scripts):
+ Features & Architecture (Synthesized & Hardened):
    - Declarative stage configuration blocks (BEFORE, SETUP, AFTER).
-   - Headless & Rich UI Dual Presentation (RICH_AVAILABLE guard & fallback).
+   - Headless & Rich UI Dual Presentation (RICH_AVAILABLE guard & native file console).
    - Machine-readable JSON output mode (--json).
    - UserContext resolution supporting privilege escalation (SUDO_UID / loginuid).
-   - IPC environment tunneling (XDG_RUNTIME_DIR & DBus protection).
+   - Inline Sudo & IPC environment tunneling (XDG_RUNTIME_DIR & DBus protection).
    - Non-blocking flock concurrency control.
    - Idempotent state tracking with 100% hash parity with original bash scripts.
-   - Sudo pre-flight authentication & background keepalive loop.
+   - Sudo pre-flight authentication with 60s timeout guard & background keepalive loop.
+   - Combined stream capture (stderr=subprocess.STDOUT) with errors='replace'.
    - Execution modes: --before (-b), --setup (-s), --after (-a), --all (-A).
    - Interactive mode (-i / --interactive) & Non-interactive mode (-y / --default).
    - Dry-run mode (-n / --dry-run), Force re-run (-f / --force), Status matrix (-st / --status).
-   - Captured execution output on failure & final Execution Summary panel.
 ===============================================================================
 """
 
@@ -42,7 +42,8 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
-from enum import Enum, auto
+from enum import Enum
+from functools import cached_property
 from pathlib import Path
 from typing import NamedTuple, Sequence
 
@@ -79,17 +80,13 @@ class Mode(Enum):
     SUDO = "S"   # Runs as root via sudo
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class FleetCommand:
     mode: Mode
     cmd: str
     description: str = ""
 
-    @property
-    def mode_str(self) -> str:
-        return self.mode.value
-
-    @property
+    @cached_property
     def state_hash(self) -> str:
         # Maintain 100% SHA256 string parity with original bash scripts: sha256("MODE | COMMAND")
         raw_entry = f"{self.mode.value} | {self.cmd}"
@@ -233,8 +230,12 @@ def get_user_ipc_env(ctx: UserContext) -> dict[str, str]:
         "HOME": str(ctx.home),
         "LANG": os.environ.get("LANG", "en_US.UTF-8"),
         "XDG_RUNTIME_DIR": str(runtime_dir),
-        "DBUS_SESSION_BUS_ADDRESS": f"unix:path={runtime_dir}/bus",
     }
+
+    dbus_path = runtime_dir / "bus"
+    if dbus_path.exists():
+        env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={dbus_path}"
+
     for xdg_var in ("XDG_CONFIG_HOME", "XDG_DATA_HOME"):
         if xdg_var in os.environ:
             env[xdg_var] = os.environ[xdg_var]
@@ -271,16 +272,19 @@ class Logger:
         self.is_json = is_json
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self._file = open(self.log_path, "a", encoding="utf-8")
-        self.write_plain(f"--- Dusky Commands Session Started: {time.strftime('%Y-%m-%d %H:%M:%S')} ---")
 
-    def write_plain(self, message: str) -> None:
-        clean_text = re.sub(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])", "", message)
-        clean_text = re.sub(r"\[/?(?:bold|dim|italic|underline|uppercase|cyan|blue|green|yellow|red|magenta|purple|white)[^\]]*\]", "", clean_text)
-        self._file.write(f"{clean_text}\n")
-        self._file.flush()
+        # Native Rich file console for pure plain-text file logging without regex volatility
+        if RICH_AVAILABLE:
+            self.file_console = Console(file=self._file, force_terminal=False, color_system=None)
+        else:
+            self.file_console = None
+
+        self.log("INFO", f"--- Dusky Commands Session Started: {time.strftime('%Y-%m-%d %H:%M:%S')} ---")
 
     def log(self, level: str, message: str) -> None:
         timestamp = time.strftime("%H:%M:%S")
+
+        # Console Output (Terminal)
         if not self.is_json and console:
             match level.upper():
                 case "INFO":
@@ -299,7 +303,15 @@ class Logger:
                 case _:
                     console.print(f"[{level}] {message}")
 
-        self.write_plain(f"[{timestamp}] [{level}] {message}")
+        # File Logging (Plain Text)
+        clean_msg = re.sub(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])", "", message)
+        rich_markup = f"[bold][{level}][/bold] {clean_msg}"
+        if self.file_console:
+            self.file_console.print(f"[{timestamp}] {rich_markup}")
+        else:
+            plain = re.sub(r"\[/?(?:bold|dim|italic|underline|uppercase|cyan|blue|green|yellow|red|magenta|purple|white)[^\]]*\]", "", rich_markup)
+            self._file.write(f"[{timestamp}] {plain}\n")
+            self._file.flush()
 
     def close(self) -> None:
         if not self._file.closed:
@@ -313,13 +325,19 @@ class SudoKeepAlive(threading.Thread):
         super().__init__(daemon=True)
         self.interval = interval
         self.stop_event = threading.Event()
+        self.escalator = get_escalator()
 
     def run(self) -> None:
-        escalator = get_escalator()
         while not self.stop_event.is_set():
             if self.stop_event.wait(self.interval):
                 break
-            subprocess.run([escalator, "-n", "true"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                if self.escalator == "sudo":
+                    subprocess.run(["sudo", "-v", "-n"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                else:
+                    subprocess.run([self.escalator, "-n", "true"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except FileNotFoundError:
+                break
 
     def stop(self) -> None:
         self.stop_event.set()
@@ -385,13 +403,22 @@ class FleetPatcherEngine:
             self.logger.log("INFO", "Root privileges required for upcoming patches. Authenticating...")
 
         escalator = get_escalator()
-        res = subprocess.run([escalator, "-n", "true"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if res.returncode != 0:
-            auth_res = subprocess.run([escalator, "-v"])
-            if auth_res.returncode != 0:
-                if self.logger:
-                    self.logger.log("ERROR", "Sudo authentication failed. Cannot apply root patches.")
-                return False
+        try:
+            res = subprocess.run([escalator, "-n", "true"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if res.returncode != 0:
+                auth_res = subprocess.run([escalator, "-v"], timeout=60)
+                if auth_res.returncode != 0:
+                    if self.logger:
+                        self.logger.log("ERROR", f"{escalator.capitalize()} authentication failed. Cannot apply root patches.")
+                    return False
+        except FileNotFoundError:
+            if self.logger:
+                self.logger.log("ERROR", f"Privilege escalator '{escalator}' not found on system.")
+            return False
+        except subprocess.TimeoutExpired:
+            if self.logger:
+                self.logger.log("ERROR", f"{escalator.capitalize()} authentication timed out.")
+            return False
 
         self.sudo_keepalive = SudoKeepAlive()
         self.sudo_keepalive.start()
@@ -440,9 +467,8 @@ class FleetPatcherEngine:
                 results.append(CommandResult(stage_name, cmd_obj, ExecutionStatus.SKIPPED, "Already applied"))
                 continue
 
-            # Interactive Prompting (if enabled)
             if interactive and not use_defaults and not self.is_json and sys.stdin.isatty() and Confirm:
-                prompt_msg = f"Execute [{cmd_obj.mode_str}] patch '{cmd_obj.description or cmd_obj.cmd}'?"
+                prompt_msg = f"Execute [{cmd_obj.mode.value}] patch '{cmd_obj.description or cmd_obj.cmd}'?"
                 if not Confirm.ask(prompt_msg, default=True):
                     if self.logger:
                         self.logger.log("INFO", f"[{idx}/{total}] Skipped by user: {cmd_obj.cmd}")
@@ -451,33 +477,41 @@ class FleetPatcherEngine:
 
             if dry_run:
                 if self.logger:
-                    self.logger.log("RUN", f"[{idx}/{total}] [DRY-RUN] Would apply [{cmd_obj.mode_str}]: {cmd_obj.cmd}")
+                    self.logger.log("RUN", f"[{idx}/{total}] [DRY-RUN] Would apply [{cmd_obj.mode.value}]: {cmd_obj.cmd}")
                 results.append(CommandResult(stage_name, cmd_obj, ExecutionStatus.DRY_RUN, "Dry-run simulation"))
                 continue
 
             if self.logger:
-                self.logger.log("RUN", f"[{idx}/{total}] Applying [{cmd_obj.mode_str}]: {cmd_obj.cmd}")
+                self.logger.log("RUN", f"[{idx}/{total}] Applying [{cmd_obj.mode.value}]: {cmd_obj.cmd}")
 
+            # Inline IPC environment variables for sudo subshells to bypass /etc/sudoers env_reset
             if cmd_obj.mode == Mode.SUDO:
-                exec_cmd = [escalator, "bash", "-c", f"set -eo pipefail; {cmd_obj.cmd}"]
+                inline_env = " ".join(f'{k}="{v}"' for k, v in env.items() if k in ["XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"])
+                exec_cmd = [escalator, "bash", "-c", f"{inline_env} set -eo pipefail; {cmd_obj.cmd}"]
             else:
                 exec_cmd = ["bash", "-c", f"set -eo pipefail; {cmd_obj.cmd}"]
 
-            res = subprocess.run(exec_cmd, capture_output=True, env=env, text=True)
-            output_text = (res.stderr.strip() + "\n" + res.stdout.strip()).strip()
+            try:
+                res = subprocess.run(exec_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True, errors="replace")
+                output_text = res.stdout.strip() if res.stdout else ""
 
-            if res.returncode == 0:
-                self.record_completed(cmd_hash)
+                if res.returncode == 0:
+                    self.record_completed(cmd_hash)
+                    if self.logger:
+                        self.logger.log("SUCCESS", "Patch applied successfully.")
+                    results.append(CommandResult(stage_name, cmd_obj, ExecutionStatus.SUCCESS, "Patch applied successfully", output_text))
+                else:
+                    if self.logger:
+                        self.logger.log("WARN", f"Patch failed with exit code {res.returncode}: {cmd_obj.cmd}")
+                        if output_text and not self.is_json and console:
+                            console.print(f"         └─ [red]{output_text}[/red]")
+                        self.logger.log("WARN", "Continuing orchestration sequence despite failure...")
+                    results.append(CommandResult(stage_name, cmd_obj, ExecutionStatus.FAILED, f"Failed with exit code {res.returncode}", output_text))
+
+            except Exception as e:
                 if self.logger:
-                    self.logger.log("SUCCESS", "Patch applied successfully.")
-                results.append(CommandResult(stage_name, cmd_obj, ExecutionStatus.SUCCESS, "Patch applied successfully", output_text))
-            else:
-                if self.logger:
-                    self.logger.log("WARN", f"Patch failed with exit code {res.returncode}: {cmd_obj.cmd}")
-                    if output_text and not self.is_json and console:
-                        console.print(f"         └─ [red]{output_text}[/red]")
-                    self.logger.log("WARN", "Continuing orchestration sequence despite failure...")
-                results.append(CommandResult(stage_name, cmd_obj, ExecutionStatus.FAILED, f"Failed with exit code {res.returncode}", output_text))
+                    self.logger.log("ERROR", f"Subprocess execution crashed: {e}")
+                results.append(CommandResult(stage_name, cmd_obj, ExecutionStatus.FAILED, f"Exception: {e}", ""))
 
         return results
 
@@ -608,8 +642,8 @@ def main() -> None:
 
     ctx = resolve_user_context()
 
-    # Security Check: Prevent running directly as root
-    if ctx.is_root and not os.environ.get("SUDO_UID"):
+    # Security Check: Prevent running directly as root without an underlying real user
+    if ctx.uid == 0:
         if not args.json and error_console:
             error_console.print("[bold red]CRITICAL ERROR: Do NOT run this script directly as root! Run as normal user.[/bold red]")
         else:
@@ -666,7 +700,7 @@ def main() -> None:
                 for c in STAGES.get(st, []):
                     json_data.append({
                         "stage": st,
-                        "mode": c.mode_str,
+                        "mode": c.mode.value,
                         "cmd": c.cmd,
                         "description": c.description,
                         "hash": c.state_hash,
@@ -710,7 +744,7 @@ def main() -> None:
             json_res = [
                 {
                     "stage": r.stage,
-                    "mode": r.command.mode_str,
+                    "mode": r.command.mode.value,
                     "cmd": r.command.cmd,
                     "status": r.status.value,
                     "message": r.message,
