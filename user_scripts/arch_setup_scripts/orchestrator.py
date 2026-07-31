@@ -499,7 +499,7 @@ class StateStore:
 
     def __init__(self, profile: ProfileConfig):
         self.path = state_dir() / f"{safe_filename(profile.name)}.db"
-        self.conn = sqlite3.connect(self.path)
+        self.conn = sqlite3.connect(self.path, check_same_thread=False)
         busy_timeout = GLOBAL_CONFIG.get("execution", {}).get("db_busy_timeout", 5000)
         self.conn.execute("PRAGMA journal_mode=WAL;")
         self.conn.execute("PRAGMA synchronous=NORMAL;")
@@ -586,7 +586,7 @@ def reset_state_for_profile(profile: ProfileConfig) -> None:
 class OnceStore:
     def __init__(self) -> None:
         self.path = state_dir() / "once.db"
-        self.conn = sqlite3.connect(self.path)
+        self.conn = sqlite3.connect(self.path, check_same_thread=False)
         busy_timeout = GLOBAL_CONFIG.get("execution", {}).get("db_busy_timeout", 5000)
         self.conn.execute("PRAGMA journal_mode=WAL;")
         self.conn.execute("PRAGMA synchronous=NORMAL;")
@@ -2871,7 +2871,7 @@ def _git_env() -> dict[str, str]:
         "env_inject",
         {
             "GIT_TERMINAL_PROMPT": "0",
-            "GIT_SSH_COMMAND": "ssh -o BatchMode=yes",
+            "GIT_SSH_COMMAND": "ssh" if "SSH_AUTH_SOCK" in os.environ else "ssh -o BatchMode=yes",
             "GIT_PAGER": "cat",
             "PAGER": "cat",
             "GIT_OPTIONAL_LOCKS": "0",
@@ -2899,10 +2899,9 @@ def _git_check(cmd: list[str], timeout: int = 60) -> str:
 
 
 def _proc_holds_file(path: Path) -> bool:
-    try:
+    real = path
+    with suppress(Exception):
         real = path.resolve(strict=True)
-    except Exception:
-        return False
 
     if shutil.which("fuser"):
         with suppress(Exception):
