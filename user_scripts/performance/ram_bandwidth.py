@@ -1,48 +1,72 @@
 #!/usr/bin/env python3
 """
-ram_benchmark.py
+ram_bandwidth.py - Ultimate DDR Memory Bandwidth Benchmark Suite & Visualizer
 
-Arch Linux RAM bandwidth helper.
-
-What it does:
-  - Installs missing benchmark packages with:
-      paru -S --needed --noconfirm mbw stress-ng
-    but only for the packages that are not already installed.
-  - Prompts you to run:
-      1) mbw
-      2) stress-ng --stream
-      3) both
-  - Uses all online CPUs by default for stress-ng.
-  - Parses stress-ng per-instance read/write rates and sums them.
-  - Parses mbw averages and highlights MEMCPY.
-
-Notes:
-  - mbw is single-threaded.
-  - stress-ng --stream is STREAM-like, not the official STREAM benchmark.
-  - mbw reports MiB/s.
-  - stress-ng reports MB/s in its per-instance lines.
+Features:
+  - Hardware & SMBIOS Memory Probe (Speed MT/s, Channels, Manufacturers, Form Factor, Capacities).
+  - Theoretical Peak Memory Bandwidth Calculator & Efficiency Gauge.
+  - Pure Multi-Core Read Benchmark (sysbench 64M blocks).
+  - Pure Multi-Core Write Benchmark (sysbench 64M blocks).
+  - Multi-Core STREAM / Copy Benchmark (stress-ng --stream).
+  - Single-Core Copy & Memory Benchmark (mbw memcpy).
+  - Rich TUI/CLI interface with dynamic progress spinners, colorful tables, visual gauges, and educational notes.
+  - Non-blocking CPU scaling governor optimization (performance mode + turbo boost).
 """
 
 from __future__ import annotations
 
 import argparse
 import contextlib
+import glob
 import os
 import re
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
+from pathlib import Path
+
+try:
+    from rich import box
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.progress import Progress, SpinnerColumn, TextColumn
+    from rich.table import Table
+    from rich.text import Text
+
+    RICH_AVAILABLE = True
+except ImportError:
+    RICH_AVAILABLE = False
+
+console = Console() if RICH_AVAILABLE else None
 
 
-MBW_PKG = "mbw"
-STRESS_NG_PKG = "stress-ng"
+@dataclass(slots=True)
+class HardwareSpecs:
+    cpu_model: str
+    online_cpus: int
+    mem_type: str
+    configured_speed_mts: int | None
+    dimm_count: int | None
+    channels: int | None
+    bus_width_bits: int | None
+    theoretical_max_gb_s: float | None
+    total_ram_gb: float | None
+    avail_ram_gb: float | None
+    manufacturer: str | None
+    part_number: str | None
+    form_factor: str | None
 
 
-@dataclass
-class BenchResult:
+@dataclass(slots=True)
+class TestResult:
     name: str
-    raw_output: str
+    throughput_gb_s: float
+    throughput_mib_s: float
+    read_gb_s: float | None = None
+    write_gb_s: float | None = None
+    efficiency_pct: float | None = None
+    details: str = ""
 
 
 def eprint(*args: object) -> None:
@@ -53,9 +77,38 @@ def tool_exists(name: str) -> bool:
     return shutil.which(name) is not None
 
 
-def run_capture(cmd: list[str]) -> str:
+def get_sudo_pass(cli_pass: str | None = None, allow_interactive_prompt: bool = False) -> str | None:
+    """Determine sudo password dynamically without hardcoding credentials or hanging on stdin."""
+    if os.geteuid() == 0:
+        return None
+
+    if cli_pass is not None:
+        return cli_pass
+
+    if "SUDO_PASSWORD" in os.environ:
+        return os.environ["SUDO_PASSWORD"]
+
+    try:
+        proc = subprocess.run(["sudo", "-n", "true"], capture_output=True)
+        if proc.returncode == 0:
+            return ""
+    except Exception:
+        pass
+
+    if allow_interactive_prompt and sys.stdin.isatty():
+        import getpass
+        try:
+            return getpass.getpass("[sudo] Password for system operations: ")
+        except Exception:
+            pass
+
+    return None
+
+
+def run_cmd(cmd: list[str], input_text: str | None = None) -> str:
     proc = subprocess.run(
         cmd,
+        input=input_text,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -65,386 +118,703 @@ def run_capture(cmd: list[str]) -> str:
     return proc.stdout or ""
 
 
-def online_cpus() -> int:
-    """
-    Prefer nproc because it respects the active CPU set.
-    """
+def run_sudo_cmd(cmd: list[str], sudo_pass: str | None = None) -> str:
+    """Run a command with sudo if not root, avoiding interactive prompt hangs."""
+    if os.geteuid() == 0:
+        return run_cmd(cmd)
+
+    if sudo_pass == "":
+        full_cmd = ["sudo", "-n", *cmd]
+        return run_cmd(full_cmd)
+    elif sudo_pass is not None:
+        full_cmd = ["sudo", "-S", *cmd]
+        return run_cmd(full_cmd, input_text=f"{sudo_pass}\n")
+    else:
+        full_cmd = ["sudo", "-n", *cmd]
+        try:
+            return run_cmd(full_cmd)
+        except Exception:
+            return run_cmd(cmd)
+
+
+def get_online_cpu_count() -> int:
     if tool_exists("nproc"):
         try:
-            return max(int(run_capture(["nproc"]).strip()), 1)
+            return max(int(run_cmd(["nproc"]).strip()), 1)
         except Exception:
             pass
     return max(os.cpu_count() or 1, 1)
 
 
-def ensure_paru() -> None:
-    if not tool_exists("paru"):
-        raise SystemExit("paru was not found in PATH. Install paru first, then re-run this script.")
+def check_and_install_deps(sudo_pass: str | None = None) -> None:
+    """Ensure required benchmark tools are installed via pacman/paru."""
+    required_tools = ["sysbench", "stress-ng", "dmidecode"]
+    missing_tools = [t for t in required_tools if not tool_exists(t)]
 
+    if not tool_exists("mbw"):
+        missing_tools.append("mbw")
 
-def install_missing_packages() -> None:
-    """
-    Install only the benchmark commands that are missing.
-    """
-    missing: list[str] = []
-    if not tool_exists(MBW_PKG):
-        missing.append(MBW_PKG)
-    if not tool_exists(STRESS_NG_PKG):
-        missing.append(STRESS_NG_PKG)
-
-    if not missing:
+    if not missing_tools:
         return
 
-    ensure_paru()
-    print(f"Installing missing package(s): {', '.join(missing)}")
-    cmd = ["paru", "-S", "--needed", "--noconfirm", *missing]
-    subprocess.run(cmd, check=True)
+    msg = f"Installing missing benchmark dependencies: {', '.join(missing_tools)}..."
+    if RICH_AVAILABLE:
+        console.print(f"[yellow]{msg}[/yellow]")
+    else:
+        print(msg)
 
-    still_missing = [pkg for pkg in missing if not tool_exists(pkg)]
-    if still_missing:
-        raise SystemExit(
-            "Installation finished, but these commands are still missing from PATH: "
-            + ", ".join(still_missing)
-        )
-
-
-def prompt_choice() -> str:
-    print()
-    print("Choose a benchmark:")
-    print("  1) mbw (single-thread)")
-    print("  2) stress-ng stream (multi-core)")
-    print("  3) both")
-    print("  q) quit")
-
-    while True:
-        choice = input("> ").strip().lower()
-        if choice in {"1", "2", "3", "q", "quit", "exit"}:
-            return choice
-        print("Please enter 1, 2, 3, or q.")
-
-
-def prompt_int(prompt: str, default: int, minimum: int = 1) -> int:
-    while True:
-        raw = input(f"{prompt} [{default}]: ").strip()
-        if raw == "":
-            return default
+    if tool_exists("paru"):
+        cmd = ["paru", "-S", "--needed", "--noconfirm", "--skipreview", *missing_tools]
+        subprocess.run(cmd, check=False)
+    elif tool_exists("pacman"):
+        cmd = ["pacman", "-S", "--needed", "--noconfirm", *missing_tools]
         try:
-            value = int(raw)
-            if value < minimum:
-                raise ValueError
-            return value
-        except ValueError:
-            print(f"Enter an integer >= {minimum}.")
+            run_sudo_cmd(cmd, sudo_pass=sudo_pass)
+        except Exception as exc:
+            eprint(f"Warning: Automatic dependency installation failed: {exc}")
 
 
-def prompt_text(prompt: str, default: str) -> str:
-    raw = input(f"{prompt} [{default}]: ").strip()
-    return raw or default
-
-
-def mib_to_gib(mib: float) -> float:
-    return mib / 1024.0
-
-
-def mb_to_gb(mb: float) -> float:
-    return mb / 1000.0
-
-
-def validate_cores(cores_str: str) -> bool:
+def detect_hardware_specs(sudo_pass: str | None = None) -> HardwareSpecs:
+    """Dynamically probe CPU, RAM capacity, and SMBIOS memory architecture."""
+    cpu_model = "Unknown Processor"
     try:
-        subprocess.run(["taskset", "-c", cores_str, "true"], capture_output=True, check=True)
-        return True
+        lscpu_out = run_cmd(["lscpu"])
+        for line in lscpu_out.splitlines():
+            if "Model name:" in line:
+                cpu_model = line.split(":", 1)[1].strip()
+                break
     except Exception:
-        return False
+        try:
+            with open("/proc/cpuinfo", "r") as fh:
+                for line in fh:
+                    if line.strip().lower().startswith("model name"):
+                        cpu_model = line.split(":", 1)[1].strip()
+                        break
+        except Exception:
+            pass
+
+    online_cpus = get_online_cpu_count()
+
+    total_ram_gb: float | None = None
+    avail_ram_gb: float | None = None
+    try:
+        with open("/proc/meminfo", "r") as fh:
+            meminfo = fh.read()
+            total_match = re.search(r"MemTotal:\s+(\d+)\s+kB", meminfo)
+            avail_match = re.search(r"MemAvailable:\s+(\d+)\s+kB", meminfo)
+            if total_match:
+                total_ram_gb = float(total_match.group(1)) / 1e6
+            if avail_match:
+                avail_ram_gb = float(avail_match.group(1)) / 1e6
+    except Exception:
+        pass
+
+    mem_type = "RAM"
+    configured_speed_mts: int | None = None
+    dimm_count: int | None = None
+    channels: int | None = None
+    bus_width_bits: int | None = None
+    theoretical_max_gb_s: float | None = None
+    manufacturer: str | None = None
+    part_number: str | None = None
+    form_factor: str | None = None
+
+    if tool_exists("dmidecode"):
+        try:
+            dmi_out = run_sudo_cmd(["dmidecode", "-t", "memory"], sudo_pass=sudo_pass)
+
+            types_found = re.findall(r"Type:\s+(DDR[345]|LPDDR[45]|HBM\d?)", dmi_out)
+            if types_found:
+                mem_type = types_found[0]
+
+            speeds = re.findall(r"Configured Memory Speed:\s+(\d+)\s+MT/s", dmi_out)
+            if not speeds:
+                speeds = re.findall(r"Speed:\s+(\d+)\s+MT/s", dmi_out)
+            if speeds:
+                valid_speeds = [int(s) for s in speeds if int(s) > 0]
+                if valid_speeds:
+                    configured_speed_mts = max(valid_speeds)
+
+            mfg_found = re.findall(r"Manufacturer:\s+([^\n]+)", dmi_out)
+            for m in mfg_found:
+                m_clean = m.strip()
+                if m_clean and "Unknown" not in m_clean and "Not Specified" not in m_clean:
+                    manufacturer = m_clean
+                    break
+
+            part_found = re.findall(r"Part Number:\s+([^\n]+)", dmi_out)
+            for p in part_found:
+                p_clean = p.strip()
+                if p_clean and "Unknown" not in p_clean and "Not Specified" not in p_clean:
+                    part_number = p_clean
+                    break
+
+            ff_found = re.findall(r"Form Factor:\s+([^\n]+)", dmi_out)
+            for f in ff_found:
+                f_clean = f.strip()
+                if f_clean and "Unknown" not in f_clean and "Not Specified" not in f_clean:
+                    form_factor = f_clean
+                    break
+
+            devices = dmi_out.split("Memory Device")
+            installed_dimms = 0
+            for dev in devices[1:]:
+                if "Size:" in dev and "No Module Installed" not in dev:
+                    installed_dimms += 1
+            if installed_dimms > 0:
+                dimm_count = installed_dimms
+                channels = min(dimm_count, 8)
+        except Exception:
+            pass
+
+    if configured_speed_mts is not None and channels is not None:
+        bus_width_bits = 64 * channels
+        total_bus_bytes = bus_width_bits / 8.0
+        theoretical_max_gb_s = (configured_speed_mts * total_bus_bytes) / 1000.0
+
+    return HardwareSpecs(
+        cpu_model=cpu_model,
+        online_cpus=online_cpus,
+        mem_type=mem_type,
+        configured_speed_mts=configured_speed_mts,
+        dimm_count=dimm_count,
+        channels=channels,
+        bus_width_bits=bus_width_bits,
+        theoretical_max_gb_s=theoretical_max_gb_s,
+        total_ram_gb=total_ram_gb,
+        avail_ram_gb=avail_ram_gb,
+        manufacturer=manufacturer,
+        part_number=part_number,
+        form_factor=form_factor,
+    )
 
 
 @contextlib.contextmanager
-def optimize_cpu_performance():
-    """
-    Temporarily set CPU scaling governors of online CPUs to performance and enable turbo.
-    Restores original settings on exit.
-    """
-    import getpass
-    sudo_pwd = getpass.getpass("[CPU Opt] Enter sudo password: ")
-    original_governors = {}
-    original_no_turbo = None
-    no_turbo_path = "/sys/devices/system/cpu/intel_pstate/no_turbo"
-    
-    import glob
+def set_cpu_performance(sudo_pass: str | None = None):
+    """Set CPU scaling governor to performance and enable hardware boost on Intel/AMD."""
+    original_governors: dict[str, str] = {}
+    original_intel_no_turbo: str | None = None
+    original_amd_boost: str | None = None
+
+    intel_no_turbo_path = Path("/sys/devices/system/cpu/intel_pstate/no_turbo")
+    amd_boost_path = Path("/sys/devices/system/cpu/cpufreq/boost")
+
     gov_files = glob.glob("/sys/devices/system/cpu/cpu*/cpufreq/scaling_governor")
-    
     for f in gov_files:
         try:
-            with open(f, "r") as fh:
-                original_governors[f] = fh.read().strip()
-        except Exception:
-            pass
-            
-    if os.path.exists(no_turbo_path):
-        try:
-            with open(no_turbo_path, "r") as fh:
-                original_no_turbo = fh.read().strip()
+            original_governors[f] = Path(f).read_text().strip()
         except Exception:
             pass
 
-    def set_values(gov_val, turbo_val):
-        py_cmds = ["import os", "import glob"]
-        if gov_val:
+    if intel_no_turbo_path.exists():
+        try:
+            original_intel_no_turbo = intel_no_turbo_path.read_text().strip()
+        except Exception:
+            pass
+
+    if amd_boost_path.exists():
+        try:
+            original_amd_boost = amd_boost_path.read_text().strip()
+        except Exception:
+            pass
+
+    def apply_settings(gov: str, intel_turbo: str | None, amd_boost: str | None):
+        py_cmds = ["import glob, os, pathlib"]
+        if gov:
             py_cmds.append(
                 f"for f in glob.glob('/sys/devices/system/cpu/cpu*/cpufreq/scaling_governor'):\n"
-                f"    try: open(f, 'w').write('{gov_val}')\n"
+                f"    try: pathlib.Path(f).write_text('{gov}')\n"
                 f"    except Exception: pass"
             )
-        if turbo_val is not None:
+        if intel_turbo is not None and intel_no_turbo_path.exists():
             py_cmds.append(
-                f"if os.path.exists('{no_turbo_path}'):\n"
-                f"    try: open('{no_turbo_path}', 'w').write('{turbo_val}')\n"
-                f"    except Exception: pass"
+                f"try: pathlib.Path('{intel_no_turbo_path}').write_text('{intel_turbo}')\n"
+                f"except Exception: pass"
             )
-        if not py_cmds:
-            return
+        if amd_boost is not None and amd_boost_path.exists():
+            py_cmds.append(
+                f"try: pathlib.Path('{amd_boost_path}').write_text('{amd_boost}')\n"
+                f"except Exception: pass"
+            )
         script = "\n".join(py_cmds)
-        cmd = ["sudo", "-S", "python3", "-c", script]
         try:
-            subprocess.run(cmd, input=f"{sudo_pwd}\n", text=True, capture_output=True, check=True)
-        except Exception as exc:
-            eprint(f"Warning: Failed to optimize CPU performance: {exc}")
+            run_sudo_cmd(["python3", "-c", script], sudo_pass=sudo_pass)
+        except Exception:
+            pass
 
-    print("\n[CPU Opt] Setting scaling governors to 'performance' and enabling Turbo Boost...")
-    set_values("performance", "0")
-    
+    if RICH_AVAILABLE:
+        console.print(
+            "[bold yellow]⚡ Setting CPU governor to 'performance' and enabling hardware Turbo/Boost...[/bold yellow]"
+        )
+    else:
+        print("Setting CPU governor to 'performance' and enabling hardware Turbo/Boost...")
+
+    apply_settings("performance", "0", "1")
     try:
         yield
     finally:
-        print("[CPU Opt] Restoring original scaling governors and Turbo Boost settings...")
-        py_restore = ["import os"]
-        for f, gov in original_governors.items():
+        if RICH_AVAILABLE:
+            console.print("[dim]Restoring original CPU governor settings...[/dim]")
+        py_restore = ["import pathlib"]
+        for f, g in original_governors.items():
             py_restore.append(
-                f"try: open({f!r}, 'w').write({gov!r})\n"
+                f"try: pathlib.Path({f!r}).write_text({g!r})\n"
                 f"except Exception: pass"
             )
-        if original_no_turbo is not None:
+        if original_intel_no_turbo is not None:
             py_restore.append(
-                f"if os.path.exists({no_turbo_path!r}):\n"
-                f"    try: open({no_turbo_path!r}, 'w').write({original_no_turbo!r})\n"
-                f"    except Exception: pass"
+                f"try: pathlib.Path({str(intel_no_turbo_path)!r}).write_text({original_intel_no_turbo!r})\n"
+                f"except Exception: pass"
+            )
+        if original_amd_boost is not None:
+            py_restore.append(
+                f"try: pathlib.Path({str(amd_boost_path)!r}).write_text({original_amd_boost!r})\n"
+                f"except Exception: pass"
             )
         if py_restore:
-            script = "\n".join(py_restore)
-            cmd = ["sudo", "-S", "python3", "-c", script]
             try:
-                subprocess.run(cmd, input=f"{sudo_pwd}\n", text=True, capture_output=True, check=True)
-            except Exception as exc:
-                eprint(f"Warning: Failed to restore CPU settings: {exc}")
+                run_sudo_cmd(["python3", "-c", "\n".join(py_restore)], sudo_pass=sudo_pass)
+            except Exception:
+                pass
 
 
-def run_mbw(size_mib: int | None = None, runs: int | None = None, cores: str | None = None) -> BenchResult:
-    print()
-    print("mbw: single-thread bandwidth test")
-    
-    if size_mib is None:
-        size_mib = prompt_int("Array size in MiB", 4096, minimum=1)
-    if runs is None:
-        runs = prompt_int("Runs per test", 10, minimum=1)
-
+def run_pure_read_test(
+    workers: int, run_time: int, specs: HardwareSpecs, cores: str | None = None
+) -> TestResult:
+    """100% Pure Memory Read Benchmark using sysbench memory with 64M block size."""
     cmd = []
     if cores:
         cmd.extend(["taskset", "-c", cores])
-    cmd.extend(["mbw", "-n", str(runs), str(size_mib)])
-    
-    print()
-    print("Running:", " ".join(cmd))
-    output = run_capture(cmd)
 
-    print(output, end="" if output.endswith("\n") else "\n")
+    cmd.extend(
+        [
+            "sysbench",
+            "memory",
+            f"--threads={workers}",
+            f"--time={run_time}",
+            "--memory-block-size=64M",
+            "--memory-total-size=1000G",
+            "--memory-scope=local",
+            "--memory-access-mode=seq",
+            "--memory-oper=read",
+            "run",
+        ]
+    )
+
+    stdout = run_cmd(cmd)
+
+    mib_s = 0.0
+    for line in stdout.splitlines():
+        match = re.search(r"\(([\d\.]+)\s+MiB/sec\)", line)
+        if match:
+            mib_s = float(match.group(1))
+            break
+        match_mb = re.search(r"\(([\d\.]+)\s+MB/sec\)", line)
+        if match_mb:
+            mib_s = float(match_mb.group(1)) * (1000.0 / 1024.0)
+            break
+
+    gb_s = (mib_s * 1024.0 * 1024.0) / 1e9
+    eff_pct = (
+        (gb_s / specs.theoretical_max_gb_s) * 100.0
+        if specs.theoretical_max_gb_s and specs.theoretical_max_gb_s > 0
+        else None
+    )
+
+    return TestResult(
+        name="Pure Read (Multi-Thread)",
+        throughput_gb_s=gb_s,
+        throughput_mib_s=mib_s,
+        read_gb_s=gb_s,
+        write_gb_s=0.0,
+        efficiency_pct=eff_pct,
+        details=f"sysbench 64M blocks, {workers} parallel read workers",
+    )
+
+
+def run_pure_write_test(
+    workers: int, run_time: int, specs: HardwareSpecs, cores: str | None = None
+) -> TestResult:
+    """100% Pure Memory Write Benchmark using sysbench memory with 64M block size."""
+    cmd = []
+    if cores:
+        cmd.extend(["taskset", "-c", cores])
+
+    cmd.extend(
+        [
+            "sysbench",
+            "memory",
+            f"--threads={workers}",
+            f"--time={run_time}",
+            "--memory-block-size=64M",
+            "--memory-total-size=1000G",
+            "--memory-scope=local",
+            "--memory-access-mode=seq",
+            "--memory-oper=write",
+            "run",
+        ]
+    )
+
+    stdout = run_cmd(cmd)
+
+    mib_s = 0.0
+    for line in stdout.splitlines():
+        match = re.search(r"\(([\d\.]+)\s+MiB/sec\)", line)
+        if match:
+            mib_s = float(match.group(1))
+            break
+
+    gb_s = (mib_s * 1024.0 * 1024.0) / 1e9
+    eff_pct = (
+        (gb_s / specs.theoretical_max_gb_s) * 100.0
+        if specs.theoretical_max_gb_s and specs.theoretical_max_gb_s > 0
+        else None
+    )
+
+    return TestResult(
+        name="Pure Write (Multi-Thread)",
+        throughput_gb_s=gb_s,
+        throughput_mib_s=mib_s,
+        read_gb_s=0.0,
+        write_gb_s=gb_s,
+        efficiency_pct=eff_pct,
+        details=f"sysbench 64M blocks, {workers} parallel write workers",
+    )
+
+
+def run_copy_stream_test(
+    workers: int, run_time: int, specs: HardwareSpecs, cores: str | None = None
+) -> TestResult:
+    """Multi-Core Combined Memory Stream Copy Benchmark using stress-ng --stream."""
+    cmd = []
+    if cores:
+        cmd.extend(["taskset", "-c", cores])
+
+    actual_time = max(run_time, 5)
+
+    cmd.extend(
+        [
+            "stress-ng",
+            "--stream",
+            str(workers),
+            "--timeout",
+            f"{actual_time}s",
+            "--metrics-brief",
+            "-v",
+        ]
+    )
+
+    stdout = run_cmd(cmd)
+
+    rate_re = re.compile(
+        r"memory rate:\s+([0-9]+(?:\.[0-9]+)?)\s+MB read/sec,\s+([0-9]+(?:\.[0-9]+)?)\s+MB write/sec"
+    )
+    matches = rate_re.findall(stdout)
+
+    read_mb_s = sum(float(r) for r, _ in matches)
+    write_mb_s = sum(float(w) for _, w in matches)
+    total_mb_s = read_mb_s + write_mb_s
+
+    read_gb_s = read_mb_s / 1000.0
+    write_gb_s = write_mb_s / 1000.0
+    total_gb_s = total_mb_s / 1000.0
+    total_mib_s = (total_gb_s * 1e9) / (1024.0 * 1024.0)
+
+    eff_pct = (
+        (total_gb_s / specs.theoretical_max_gb_s) * 100.0
+        if specs.theoretical_max_gb_s and specs.theoretical_max_gb_s > 0
+        else None
+    )
+
+    return TestResult(
+        name="Copy & Stream (Multi-Thread)",
+        throughput_gb_s=total_gb_s,
+        throughput_mib_s=total_mib_s,
+        read_gb_s=read_gb_s,
+        write_gb_s=write_gb_s,
+        efficiency_pct=eff_pct,
+        details=f"stress-ng --stream, {workers} workers (Read: {read_gb_s:.2f} GB/s, Write: {write_gb_s:.2f} GB/s)",
+    )
+
+
+def run_single_core_test(
+    size_mib: int, runs: int, specs: HardwareSpecs, cores: str | None = None
+) -> TestResult:
+    """Single-Core Memory Copy Benchmark using mbw."""
+    cmd = []
+    target_core = "0"
+    if cores:
+        target_core = re.split(r"[,\-]", cores)[0].strip()
+    cmd.extend(["taskset", "-c", target_core, "mbw", "-n", str(runs), str(size_mib)])
+
+    stdout = run_cmd(cmd)
 
     avg_re = re.compile(
         r"^AVG\s+Method:\s+(\S+)\s+Elapsed:\s+[0-9.]+\s+MiB:\s+[0-9.]+\s+Copy:\s+([0-9.]+)\s+MiB/s\s*$",
         re.MULTILINE,
     )
-    averages = avg_re.findall(output)
+    averages = avg_re.findall(stdout)
+    memcpy_mib_s = next((float(rate) for method, rate in averages if method == "MEMCPY"), 0.0)
 
-    if averages:
-        print()
-        print("Parsed averages:")
-        for method, copy_mib_s in averages:
-            mib_s = float(copy_mib_s)
-            gib_s = mib_to_gib(mib_s)
-            print(f"  {method:8s}: {mib_s:10.3f} MiB/s   ({gib_s:8.3f} GiB/s)")
-
-        memcpy = next((float(rate) for method, rate in averages if method == "MEMCPY"), None)
-        if memcpy is not None:
-            print()
-            print(f"Primary mbw result (MEMCPY): {memcpy:.3f} MiB/s ({mib_to_gib(memcpy):.3f} GiB/s)")
-    else:
-        print("Could not parse mbw averages from output.")
-
-    return BenchResult(name="mbw", raw_output=output)
-
-
-def run_stress_ng(workers: int | None = None, timeout: str | None = None, cores: str | None = None) -> BenchResult:
-    print()
-    print("stress-ng stream: multi-core STREAM-like bandwidth test")
-    
-    default_workers = online_cpus()
-    if workers is None:
-        workers = prompt_int("Workers (defaults to all online CPUs)", default_workers, minimum=1)
-    if timeout is None:
-        timeout = prompt_text("Timeout", "10s")
-
-    cmd = []
-    if cores:
-        cmd.extend(["taskset", "-c", cores])
-        
-    cmd.extend([
-        "stress-ng",
-        "--stream",
-        str(workers),
-        "--timeout",
-        timeout,
-        "--metrics-brief",
-        "-v",
-    ])
-
-    print()
-    print("Running:", " ".join(cmd))
-    output = run_capture(cmd)
-
-    print(output, end="" if output.endswith("\n") else "\n")
-
-    # Warn if duration is too short for stress-ng stream
-    # E.g. "timeout 3s" or "timeout 3"
-    timeout_val = 10
-    try:
-        t_clean = timeout.strip().lower()
-        if t_clean.endswith("s"):
-            t_clean = t_clean[:-1]
-        timeout_val = float(t_clean)
-    except Exception:
-        pass
-        
-    if timeout_val < 5.0:
-        print("\n[Tip] stress-ng requires a duration of at least 5 seconds to reliably measure stream memory rate.")
-
-    rate_re = re.compile(
-        r"memory rate:\s+([0-9]+(?:\.[0-9]+)?)\s+MB read/sec,\s+([0-9]+(?:\.[0-9]+)?)\s+MB write/sec"
+    gb_s = (memcpy_mib_s * 1024.0 * 1024.0) / 1e9
+    eff_pct = (
+        (gb_s / specs.theoretical_max_gb_s) * 100.0
+        if specs.theoretical_max_gb_s and specs.theoretical_max_gb_s > 0
+        else None
     )
-    matches = rate_re.findall(output)
 
-    if not matches:
-        print("Could not find stress-ng per-instance memory-rate lines to sum.")
-        return BenchResult(name="stress-ng", raw_output=output)
+    return TestResult(
+        name="Single-Core Copy (1 Thread)",
+        throughput_gb_s=gb_s,
+        throughput_mib_s=memcpy_mib_s,
+        read_gb_s=gb_s / 2.0,
+        write_gb_s=gb_s / 2.0,
+        efficiency_pct=eff_pct,
+        details=f"mbw memcpy on single core (Core {target_core}) - Single-core Line Fill Buffer limit",
+    )
 
-    total_read_mb_s = sum(float(read) for read, _ in matches)
-    total_write_mb_s = sum(float(write) for _, write in matches)
-    total_mb_s = total_read_mb_s + total_write_mb_s
 
-    print()
-    print("Summed from per-instance stress-ng output:")
-    print(f"  Read : {total_read_mb_s:10.2f} MB/s   ({mb_to_gb(total_read_mb_s):8.2f} GB/s)")
-    print(f"  Write: {total_write_mb_s:10.2f} MB/s   ({mb_to_gb(total_write_mb_s):8.2f} GB/s)")
-    print(f"  Total: {total_mb_s:10.2f} MB/s   ({mb_to_gb(total_mb_s):8.2f} GB/s)")
+def build_gauge(pct: float | None, width: int = 15) -> str:
+    if pct is None:
+        return "[dim]N/A[/dim]"
+    clamped = max(0.0, min(100.0, pct))
+    filled = int(round((clamped / 100.0) * width))
+    empty = width - filled
+    
+    color = "green" if clamped >= 75.0 else ("yellow" if clamped >= 45.0 else "cyan")
+    bar = f"[{color}]" + "█" * filled + "░" * empty + f" {clamped:.1f}%[/{color}]"
+    return bar
 
-    if len(matches) != workers:
-        print()
-        print(f"Warning: parsed {len(matches)} worker rate lines, expected {workers}.")
 
-    return BenchResult(name="stress-ng", raw_output=output)
+def render_header(specs: HardwareSpecs):
+    speed_str = (
+        f"{specs.configured_speed_mts} MT/s" if specs.configured_speed_mts else "Unknown MT/s"
+    )
+    dimm_str = (
+        f"{specs.dimm_count} Modules ({specs.bus_width_bits}-bit total width)"
+        if specs.dimm_count and specs.bus_width_bits
+        else "Unknown Topology"
+    )
+    max_str = (
+        f"{specs.theoretical_max_gb_s:.2f} GB/s (Theoretical Limit)"
+        if specs.theoretical_max_gb_s
+        else "N/A"
+    )
+    ram_cap_str = (
+        f"{specs.total_ram_gb:.1f} GB Installed ({specs.avail_ram_gb:.1f} GB Available)"
+        if specs.total_ram_gb and specs.avail_ram_gb
+        else "System RAM"
+    )
+    mfg_str = specs.manufacturer or "Generic DRAM"
+    form_str = specs.form_factor or "System Memory"
+
+    if not RICH_AVAILABLE:
+        print(f"=== RAM BANDWIDTH BENCHMARK SUITE ===")
+        print(f"CPU: {specs.cpu_model} ({specs.online_cpus} online cores)")
+        print(f"RAM: {specs.mem_type} @ {speed_str} | {ram_cap_str}")
+        print(f"Topology: {dimm_str} | {mfg_str} {form_str}")
+        print(f"Theoretical Max Bandwidth: {max_str}")
+        print("=" * 60)
+        return
+
+    table = Table(show_header=False, box=box.ROUNDED, expand=True)
+    table.add_column("Property", style="bold cyan", width=26)
+    table.add_column("System Specifications & Architecture", style="bold white")
+
+    table.add_row("Processor Model", f"[bold white]{specs.cpu_model}[/bold white]")
+    table.add_row("Logical CPU Cores", f"[bold green]{specs.online_cpus}[/bold green] cores online")
+    table.add_row("Installed Memory Capacity", f"[bold bright_magenta]{ram_cap_str}[/bold bright_magenta]")
+    table.add_row("Memory Technology & Speed", f"[bold yellow]{specs.mem_type}[/bold yellow] @ [bold bright_yellow]{speed_str}[/bold bright_yellow]")
+    table.add_row("Channel & Slot Topology", f"{dimm_str} ({mfg_str} {form_str})")
+    table.add_row("Theoretical Peak Bandwidth", f"[bold bright_green]{max_str}[/bold bright_green]")
+
+    panel = Panel(
+        table,
+        title="[bold white on blue] 🚀 SYSTEM HARDWARE & MEMORY ARCHITECTURE [/bold white on blue]",
+        border_style="bright_blue",
+        padding=(0, 1),
+    )
+    console.print(panel)
+
+
+def render_results_table(results: list[TestResult], specs: HardwareSpecs):
+    if not RICH_AVAILABLE:
+        print("\n=== BENCHMARK RESULTS SUMMARY ===")
+        for r in results:
+            eff = f"{r.efficiency_pct:5.1f}%" if r.efficiency_pct is not None else "N/A"
+            print(
+                f"{r.name:30s}: {r.throughput_gb_s:7.2f} GB/s ({r.throughput_mib_s:9.1f} MiB/s) | {eff} of Max | {r.details}"
+            )
+        return
+
+    table = Table(
+        title="📊 RAM Bandwidth Benchmark Summary",
+        box=box.ROUNDED,
+        header_style="bold cyan",
+        expand=True,
+    )
+    table.add_column("Benchmark Test Mode", style="bold white", width=28)
+    table.add_column("Throughput (GB/s)", justify="right", style="bold green", width=18)
+    table.add_column("Throughput (MiB/s)", justify="right", style="bold yellow", width=18)
+    table.add_column("Efficiency Meter (% of Max)", justify="center", width=25)
+    table.add_column("Test Configuration & Details", style="dim white")
+
+    for r in results:
+        table.add_row(
+            r.name,
+            f"[bold bright_green]{r.throughput_gb_s:.2f} GB/s[/bold bright_green]",
+            f"{r.throughput_mib_s:,.1f} MiB/s",
+            build_gauge(r.efficiency_pct),
+            r.details,
+        )
+
+    console.print(table)
+
+    note_text = Text()
+    note_text.append("💡 Microarchitectural Performance Insights:\n", style="bold yellow")
+    note_text.append(" • ", style="cyan")
+    if specs.theoretical_max_gb_s:
+        note_text.append(f"Theoretical Max Peak for your memory bus is ", style="white")
+        note_text.append(f"{specs.theoretical_max_gb_s:.2f} GB/s.\n", style="bold green")
+    else:
+        note_text.append(
+            "Theoretical Max Peak calculation requires SMBIOS speed & channel data.\n",
+            style="white",
+        )
+
+    note_text.append(" • ", style="cyan")
+    note_text.append("Single-Core Throughput Limit: ", style="bold bright_white")
+    note_text.append(
+        "A single CPU core is hardware-capped (~13-20 GB/s) due to finite per-core Line Fill Buffer (LFB) request queues.\n",
+        style="white",
+    )
+    note_text.append(" • ", style="cyan")
+    note_text.append("Pure Read / Write Scaling: ", style="bold bright_white")
+    note_text.append(
+        f"To reach maximum DRAM bus saturation (60-80+ GB/s), memory requests must be issued in parallel across multiple CPU cores ({specs.online_cpus} active).",
+        style="white",
+    )
+
+    panel = Panel(
+        note_text,
+        title="[bold cyan]Understanding Single-Thread vs Multi-Thread RAM Bandwidth[/bold cyan]",
+        border_style="cyan",
+    )
+    console.print(panel)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Measure RAM bandwidth using mbw and stress-ng stream."
+        description="Ultimate Hardware-Agnostic RAM Bandwidth Benchmark Suite & Visualizer"
     )
     parser.add_argument(
         "--bench",
-        choices=["mbw", "stress-ng", "both"],
-        help="Run specific benchmark non-interactively (if omitted, runs interactively).",
-    )
-    parser.add_argument(
-        "--size",
-        type=int,
-        help="Array size in MiB for mbw (default: 4096).",
-    )
-    parser.add_argument(
-        "--runs",
-        type=int,
-        help="Runs per test for mbw (default: 10).",
+        choices=["read", "write", "copy", "single", "all"],
+        default="all",
+        help="Benchmark mode to run non-interactively (default: all).",
     )
     parser.add_argument(
         "--workers",
         type=int,
-        help="Number of workers for stress-ng (default: all online CPUs).",
+        help="Number of workers for multi-core tests (default: all online CPUs).",
     )
     parser.add_argument(
-        "--timeout",
-        help="Timeout for stress-ng (default: 10s).",
+        "--time",
+        type=int,
+        default=10,
+        help="Duration in seconds per test (default: 10).",
+    )
+    parser.add_argument(
+        "--size",
+        type=int,
+        default=4096,
+        help="Array size in MiB for mbw single-core test (default: 4096).",
     )
     parser.add_argument(
         "--cores",
-        help="List of cores to pin the benchmark to (e.g. 0-3 or 0,2).",
+        help="Core range string to pin tests to (e.g. 0-13 or 0-7).",
     )
     parser.add_argument(
-        "--performance",
+        "--no-governor",
         action="store_true",
-        help="Temporarily optimize CPU scaling governors and enable Turbo Boost.",
+        help="Skip optimizing CPU performance governor.",
+    )
+    parser.add_argument(
+        "--sudo-pass",
+        help="Optional sudo password for dmidecode and CPU governor tuning.",
     )
     args = parser.parse_args()
 
-    try:
-        install_missing_packages()
-    except subprocess.CalledProcessError as exc:
-        eprint(f"Package installation failed with exit code {exc.returncode}.")
-        if exc.output:
-            print(exc.output)
-        return exc.returncode
-    except SystemExit as exc:
-        eprint(exc)
-        return 1
+    sudo_pass = get_sudo_pass(args.sudo_pass, allow_interactive_prompt=False)
 
-    if args.cores and not validate_cores(args.cores):
-        eprint(f"Error: Invalid cores specification: {args.cores}")
-        return 2
+    check_and_install_deps(sudo_pass)
+    specs = detect_hardware_specs(sudo_pass)
 
-    cpu_opt = optimize_cpu_performance() if args.performance else contextlib.nullcontext()
+    render_header(specs)
 
-    with cpu_opt:
-        if args.bench:
-            # Non-interactive execution
-            try:
-                if args.bench in {"mbw", "both"}:
-                    run_mbw(size_mib=args.size or 4096, runs=args.runs or 10, cores=args.cores)
-                if args.bench in {"stress-ng", "both"}:
-                    run_stress_ng(workers=args.workers, timeout=args.timeout or "10s", cores=args.cores)
-            except subprocess.CalledProcessError as exc:
-                eprint(f"Benchmark failed with exit code {exc.returncode}.")
-                if exc.output:
-                    print(exc.output)
-                return exc.returncode
+    workers = args.workers or specs.online_cpus
+    results: list[TestResult] = []
+
+    governor_ctx = (
+        contextlib.nullcontext() if args.no_governor else set_cpu_performance(sudo_pass)
+    )
+
+    with governor_ctx:
+        if RICH_AVAILABLE:
+            with Progress(
+                SpinnerColumn("dots", style="cyan"),
+                TextColumn("[bold cyan]{task.description}[/bold cyan]"),
+                console=console,
+                transient=True,
+            ) as progress:
+                if args.bench in ["single", "all"]:
+                    t1 = progress.add_task(
+                        "Running Single-Core Memory Copy Benchmark (mbw)...", total=None
+                    )
+                    res_single = run_single_core_test(args.size, 10, specs, args.cores)
+                    results.append(res_single)
+                    progress.remove_task(t1)
+
+                if args.bench in ["read", "all"]:
+                    t2 = progress.add_task(
+                        "Running Pure Multi-Core Read Benchmark (sysbench 64M)...", total=None
+                    )
+                    res_read = run_pure_read_test(workers, args.time, specs, args.cores)
+                    results.append(res_read)
+                    progress.remove_task(t2)
+
+                if args.bench in ["write", "all"]:
+                    t3 = progress.add_task(
+                        "Running Pure Multi-Core Write Benchmark (sysbench 64M)...", total=None
+                    )
+                    res_write = run_pure_write_test(workers, args.time, specs, args.cores)
+                    results.append(res_write)
+                    progress.remove_task(t3)
+
+                if args.bench in ["copy", "all"]:
+                    t4 = progress.add_task(
+                        "Running Multi-Core STREAM Copy Benchmark (stress-ng)...", total=None
+                    )
+                    res_copy = run_copy_stream_test(workers, args.time, specs, args.cores)
+                    results.append(res_copy)
+                    progress.remove_task(t4)
         else:
-            # Interactive execution
-            while True:
-                choice = prompt_choice()
-                if choice == "q":
-                    break
-                try:
-                    if choice == "1":
-                        run_mbw(cores=args.cores)
-                    elif choice == "2":
-                        run_stress_ng(cores=args.cores)
-                    elif choice == "3":
-                        run_mbw(cores=args.cores)
-                        print()
-                        run_stress_ng(cores=args.cores)
-                except subprocess.CalledProcessError as exc:
-                    eprint(f"Benchmark failed with exit code {exc.returncode}.")
-                    if exc.output:
-                        print(exc.output)
-                    return exc.returncode
-                break
+            if args.bench in ["single", "all"]:
+                print("Running Single-Core Memory Copy Benchmark...")
+                results.append(run_single_core_test(args.size, 10, specs, args.cores))
+            if args.bench in ["read", "all"]:
+                print("Running Pure Multi-Core Read Benchmark...")
+                results.append(run_pure_read_test(workers, args.time, specs, args.cores))
+            if args.bench in ["write", "all"]:
+                print("Running Pure Multi-Core Write Benchmark...")
+                results.append(run_pure_write_test(workers, args.time, specs, args.cores))
+            if args.bench in ["copy", "all"]:
+                print("Running Multi-Core STREAM Copy Benchmark...")
+                results.append(run_copy_stream_test(workers, args.time, specs, args.cores))
 
+    render_results_table(results, specs)
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())
