@@ -77,10 +77,10 @@ def tool_exists(name: str) -> bool:
     return shutil.which(name) is not None
 
 
-def get_sudo_pass(cli_pass: str | None = None, allow_interactive_prompt: bool = False) -> str | None:
-    """Determine sudo password dynamically without hardcoding credentials or hanging on stdin."""
+def get_sudo_pass(cli_pass: str | None = None, allow_interactive_prompt: bool = True) -> str | None:
+    """Determine sudo password dynamically without hardcoding credentials."""
     if os.geteuid() == 0:
-        return None
+        return None  # Running directly as root
 
     if cli_pass is not None:
         return cli_pass
@@ -88,6 +88,7 @@ def get_sudo_pass(cli_pass: str | None = None, allow_interactive_prompt: bool = 
     if "SUDO_PASSWORD" in os.environ:
         return os.environ["SUDO_PASSWORD"]
 
+    # Test if passwordless sudo is configured
     try:
         proc = subprocess.run(["sudo", "-n", "true"], capture_output=True)
         if proc.returncode == 0:
@@ -119,7 +120,7 @@ def run_cmd(cmd: list[str], input_text: str | None = None) -> str:
 
 
 def run_sudo_cmd(cmd: list[str], sudo_pass: str | None = None) -> str:
-    """Run a command with sudo if not root, avoiding interactive prompt hangs."""
+    """Run a command with sudo if not root, supporting both password and interactive TTY execution."""
     if os.geteuid() == 0:
         return run_cmd(cmd)
 
@@ -129,6 +130,12 @@ def run_sudo_cmd(cmd: list[str], sudo_pass: str | None = None) -> str:
     elif sudo_pass is not None:
         full_cmd = ["sudo", "-S", *cmd]
         return run_cmd(full_cmd, input_text=f"{sudo_pass}\n")
+    elif sys.stdin.isatty():
+        # Let sudo prompt for password natively in an interactive terminal session
+        proc = subprocess.run(["sudo", *cmd], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        if proc.returncode != 0:
+            raise subprocess.CalledProcessError(proc.returncode, ["sudo", *cmd], output=proc.stdout)
+        return proc.stdout or ""
     else:
         full_cmd = ["sudo", "-n", *cmd]
         try:
@@ -230,6 +237,10 @@ def detect_hardware_specs(sudo_pass: str | None = None) -> HardwareSpecs:
             speeds = re.findall(r"Configured Memory Speed:\s+(\d+)\s+MT/s", dmi_out)
             if not speeds:
                 speeds = re.findall(r"Speed:\s+(\d+)\s+MT/s", dmi_out)
+            if not speeds:
+                speeds = re.findall(r"Configured Clock Speed:\s+(\d+)\s+MHz", dmi_out)
+            if not speeds:
+                speeds = re.findall(r"Speed:\s+(\d+)\s+MHz", dmi_out)
             if speeds:
                 valid_speeds = [int(s) for s in speeds if int(s) > 0]
                 if valid_speeds:
@@ -260,10 +271,12 @@ def detect_hardware_specs(sudo_pass: str | None = None) -> HardwareSpecs:
             installed_dimms = 0
             for dev in devices[1:]:
                 if "Size:" in dev and "No Module Installed" not in dev:
-                    installed_dimms += 1
+                    size_match = re.search(r"Size:\s+(\d+)\s+(MB|GB|GiB)", dev)
+                    if size_match and int(size_match.group(1)) > 0:
+                        installed_dimms += 1
             if installed_dimms > 0:
                 dimm_count = installed_dimms
-                channels = min(dimm_count, 8)
+                channels = max(1, min(dimm_count, 8))
         except Exception:
             pass
 
@@ -405,13 +418,18 @@ def run_pure_read_test(
 
     mib_s = 0.0
     for line in stdout.splitlines():
-        match = re.search(r"\(([\d\.]+)\s+MiB/sec\)", line)
+        match = re.search(r"\(([\d\.]+)\s+([KMGT]?i?B)/sec\)", line, re.IGNORECASE)
         if match:
-            mib_s = float(match.group(1))
-            break
-        match_mb = re.search(r"\(([\d\.]+)\s+MB/sec\)", line)
-        if match_mb:
-            mib_s = float(match_mb.group(1)) * (1000.0 / 1024.0)
+            val = float(match.group(1))
+            unit = match.group(2).upper()
+            if "G" in unit:
+                mib_s = val * 1024.0 if "GI" in unit else val * (1000.0 * 1000.0 * 1000.0) / (1024.0 * 1024.0)
+            elif "M" in unit:
+                mib_s = val if "MI" in unit else val * 1000000.0 / (1024.0 * 1024.0)
+            elif "K" in unit:
+                mib_s = val / 1024.0
+            else:
+                mib_s = val / (1024.0 * 1024.0)
             break
 
     gb_s = (mib_s * 1024.0 * 1024.0) / 1e9
@@ -459,9 +477,18 @@ def run_pure_write_test(
 
     mib_s = 0.0
     for line in stdout.splitlines():
-        match = re.search(r"\(([\d\.]+)\s+MiB/sec\)", line)
+        match = re.search(r"\(([\d\.]+)\s+([KMGT]?i?B)/sec\)", line, re.IGNORECASE)
         if match:
-            mib_s = float(match.group(1))
+            val = float(match.group(1))
+            unit = match.group(2).upper()
+            if "G" in unit:
+                mib_s = val * 1024.0 if "GI" in unit else val * (1000.0 * 1000.0 * 1000.0) / (1024.0 * 1024.0)
+            elif "M" in unit:
+                mib_s = val if "MI" in unit else val * 1000000.0 / (1024.0 * 1024.0)
+            elif "K" in unit:
+                mib_s = val / 1024.0
+            else:
+                mib_s = val / (1024.0 * 1024.0)
             break
 
     gb_s = (mib_s * 1024.0 * 1024.0) / 1e9
@@ -507,12 +534,23 @@ def run_copy_stream_test(
     stdout = run_cmd(cmd)
 
     rate_re = re.compile(
-        r"memory rate:\s+([0-9]+(?:\.[0-9]+)?)\s+MB read/sec,\s+([0-9]+(?:\.[0-9]+)?)\s+MB write/sec"
+        r"memory rate:\s+([0-9]+(?:\.[0-9]+)?)\s+([KMGT]?B)\s+read/sec,\s+([0-9]+(?:\.[0-9]+)?)\s+([KMGT]?B)\s+write/sec",
+        re.IGNORECASE,
     )
     matches = rate_re.findall(stdout)
 
-    read_mb_s = sum(float(r) for r, _ in matches)
-    write_mb_s = sum(float(w) for _, w in matches)
+    read_mb_s = 0.0
+    write_mb_s = 0.0
+    for r_val, r_unit, w_val, w_unit in matches:
+        r_f = float(r_val)
+        w_f = float(w_val)
+        if "G" in r_unit.upper():
+            r_f *= 1000.0
+        if "G" in w_unit.upper():
+            w_f *= 1000.0
+        read_mb_s += r_f
+        write_mb_s += w_f
+
     total_mb_s = read_mb_s + write_mb_s
 
     read_gb_s = read_mb_s / 1000.0
@@ -550,7 +588,7 @@ def run_single_core_test(
     stdout = run_cmd(cmd)
 
     avg_re = re.compile(
-        r"^AVG\s+Method:\s+(\S+)\s+Elapsed:\s+[0-9.]+\s+MiB:\s+[0-9.]+\s+Copy:\s+([0-9.]+)\s+MiB/s\s*$",
+        r"^AVG\s+Method:\s+(\S+).+?Copy:\s+([0-9.]+)\s+MiB/s",
         re.MULTILINE,
     )
     averages = avg_re.findall(stdout)
@@ -745,7 +783,8 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    sudo_pass = get_sudo_pass(args.sudo_pass, allow_interactive_prompt=False)
+    # Pass allow_interactive_prompt=True so get_sudo_pass prompts when run interactively in a TTY!
+    sudo_pass = get_sudo_pass(args.sudo_pass, allow_interactive_prompt=True)
 
     check_and_install_deps(sudo_pass)
     specs = detect_hardware_specs(sudo_pass)
