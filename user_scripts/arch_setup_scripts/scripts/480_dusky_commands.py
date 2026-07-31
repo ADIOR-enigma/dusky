@@ -8,17 +8,18 @@
  Location:    ~/user_scripts/arch_setup_scripts/scripts/
  Description: Consolidates and modernizes 480_dusky_commands.sh,
               dusky_commands_before.sh, and dusky_commands_after.sh into a
-              unified, feature-complete Python 3.14 orchestrator.
+              unified, hardened, feature-complete Python 3.14 orchestrator.
 
- Features & Architecture (Synthesized & Hardened):
+ Features & Security Architecture:
    - Declarative stage configuration blocks (BEFORE, SETUP, AFTER).
+   - 100% SHA256 string parity with original bash scripts.
    - Headless & Rich UI Dual Presentation (RICH_AVAILABLE guard & native file console).
    - Machine-readable JSON output mode (--json).
    - UserContext resolution supporting privilege escalation (SUDO_UID / loginuid).
-   - Inline Sudo & IPC environment tunneling (XDG_RUNTIME_DIR & DBus protection).
-   - Non-blocking flock concurrency control.
-   - Idempotent state tracking with 100% hash parity with original bash scripts.
-   - Sudo pre-flight authentication with 60s timeout guard & background keepalive loop.
+   - Inline Sudo & Hyprland/Wayland IPC environment tunneling with shlex quoting.
+   - Secure lockfile directory isolation (~/.local/state/dusky fallback over /tmp).
+   - Active process tracking & clean SIGTERM/SIGKILL child process termination on exit.
+   - Cached escalator resolution (@cache) & background keepalive daemon loop.
    - Combined stream capture (stderr=subprocess.STDOUT) with errors='replace'.
    - Execution modes: --before (-b), --setup (-s), --after (-a), --all (-A).
    - Interactive mode (-i / --interactive) & Non-interactive mode (-y / --default).
@@ -35,17 +36,19 @@ import json
 import os
 import pwd
 import re
+import shlex
 import shutil
 import signal
 import subprocess
 import sys
 import threading
 import time
+import traceback
 from dataclasses import dataclass
 from enum import Enum
-from functools import cached_property
+from functools import cache, cached_property
 from pathlib import Path
-from typing import NamedTuple, Sequence
+from typing import Any, NamedTuple, Sequence
 
 # --- Rich UI Presentation Guard ---
 RICH_AVAILABLE = False
@@ -59,7 +62,7 @@ try:
     console = Console()
     error_console = Console(stderr=True)
 except ImportError:
-    Console = Panel = Confirm = Table = Text = None  # type: ignore
+    Console = Panel = Confirm = Table = Text = Any  # type: ignore
     console = error_console = None  # type: ignore
 
 
@@ -85,11 +88,15 @@ class FleetCommand:
     mode: Mode
     cmd: str
     description: str = ""
+    id_salt: str = ""  # Optional salt for explicit disambiguation if needed
 
     @cached_property
     def state_hash(self) -> str:
         # Maintain 100% SHA256 string parity with original bash scripts: sha256("MODE | COMMAND")
-        raw_entry = f"{self.mode.value} | {self.cmd}"
+        if self.id_salt:
+            raw_entry = f"{self.mode.value} | {self.id_salt} | {self.cmd}"
+        else:
+            raw_entry = f"{self.mode.value} | {self.cmd}"
         return hashlib.sha256(raw_entry.encode("utf-8")).hexdigest()
 
 
@@ -216,6 +223,7 @@ def resolve_user_context() -> UserContext:
     )
 
 
+@cache
 def get_escalator() -> str:
     """Resolves available privilege escalation tool (sudo, doas, or pkexec)."""
     return shutil.which("sudo") or shutil.which("doas") or shutil.which("pkexec") or "sudo"
@@ -236,7 +244,11 @@ def get_user_ipc_env(ctx: UserContext) -> dict[str, str]:
     if dbus_path.exists():
         env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={dbus_path}"
 
-    for xdg_var in ("XDG_CONFIG_HOME", "XDG_DATA_HOME"):
+    # Preserve critical XDG, Wayland, and Hyprland IPC variables
+    for xdg_var in (
+        "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_SESSION_TYPE",
+        "WAYLAND_DISPLAY", "DISPLAY", "HYPRLAND_INSTANCE_SIGNATURE", "SSH_AUTH_SOCK"
+    ):
         if xdg_var in os.environ:
             env[xdg_var] = os.environ[xdg_var]
 
@@ -309,9 +321,16 @@ class Logger:
         if self.file_console:
             self.file_console.print(f"[{timestamp}] {rich_markup}")
         else:
-            plain = re.sub(r"\[/?(?:bold|dim|italic|underline|uppercase|cyan|blue|green|yellow|red|magenta|purple|white)[^\]]*\]", "", rich_markup)
+            if Text is not Any:
+                plain = Text.from_markup(rich_markup).plain
+            else:
+                plain = re.sub(r"\[/?(?:bold|dim|italic|underline|uppercase|cyan|blue|green|yellow|red|magenta|purple|white)[^\]]*\]", "", rich_markup)
             self._file.write(f"[{timestamp}] {plain}\n")
             self._file.flush()
+            try:
+                os.fsync(self._file.fileno())
+            except OSError:
+                pass
 
     def close(self) -> None:
         if not self._file.closed:
@@ -334,8 +353,8 @@ class SudoKeepAlive(threading.Thread):
             try:
                 if self.escalator == "sudo":
                     subprocess.run(["sudo", "-v", "-n"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                else:
-                    subprocess.run([self.escalator, "-n", "true"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                elif self.escalator == "doas":
+                    subprocess.run(["doas", "-C", "true"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except FileNotFoundError:
                 break
 
@@ -352,21 +371,21 @@ class FleetPatcherEngine:
         self.ctx = ctx
         self.is_json = is_json
         self.state_dir = ctx.home / ".local/state/dusky"
+        self.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.state_file = self.state_dir / "patch_history.state"
 
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         self.log_file = ctx.home / "Documents" / "logs" / f"dusky_patcher_{timestamp}.log"
 
         xdg_runtime = os.environ.get("XDG_RUNTIME_DIR")
-        lock_dir = Path(xdg_runtime) if xdg_runtime else Path(f"/run/user/{ctx.uid}")
-        if not lock_dir.exists():
-            lock_dir = Path("/tmp")
+        lock_dir = Path(xdg_runtime) if xdg_runtime and Path(xdg_runtime).exists() else self.state_dir
         self.lock_file = lock_dir / "dusky_fleet_patcher.lock"
 
         self.lock_fd: int | None = None
         self.completed_patches: set[str] = set()
         self.logger: Logger | None = None
         self.sudo_keepalive: SudoKeepAlive | None = None
+        self.active_process: subprocess.Popen | None = None
 
     def acquire_lock(self) -> None:
         try:
@@ -484,34 +503,42 @@ class FleetPatcherEngine:
             if self.logger:
                 self.logger.log("RUN", f"[{idx}/{total}] Applying [{cmd_obj.mode.value}]: {cmd_obj.cmd}")
 
-            # Inline IPC environment variables for sudo subshells to bypass /etc/sudoers env_reset
+            # Inline IPC environment variables for sudo subshells with shlex quoting to prevent env_reset stripping
             if cmd_obj.mode == Mode.SUDO:
-                inline_env = " ".join(f'{k}="{v}"' for k, v in env.items() if k in ["XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"])
+                safe_vars = ["XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "WAYLAND_DISPLAY", "HYPRLAND_INSTANCE_SIGNATURE"]
+                inline_env = " ".join(f'{k}={shlex.quote(v)}' for k, v in env.items() if k in safe_vars)
+                inline_env += f" HOME={shlex.quote(str(self.ctx.home))} USER={shlex.quote(self.ctx.username)}"
                 exec_cmd = [escalator, "bash", "-c", f"{inline_env} set -eo pipefail; {cmd_obj.cmd}"]
             else:
                 exec_cmd = ["bash", "-c", f"set -eo pipefail; {cmd_obj.cmd}"]
 
             try:
-                res = subprocess.run(exec_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True, errors="replace")
-                output_text = res.stdout.strip() if res.stdout else ""
+                self.active_process = subprocess.Popen(
+                    exec_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True, errors="replace"
+                )
+                stdout_data, _ = self.active_process.communicate()
+                ret_code = self.active_process.returncode
+                output_text = stdout_data.strip() if stdout_data else ""
 
-                if res.returncode == 0:
+                if ret_code == 0:
                     self.record_completed(cmd_hash)
                     if self.logger:
                         self.logger.log("SUCCESS", "Patch applied successfully.")
                     results.append(CommandResult(stage_name, cmd_obj, ExecutionStatus.SUCCESS, "Patch applied successfully", output_text))
                 else:
                     if self.logger:
-                        self.logger.log("WARN", f"Patch failed with exit code {res.returncode}: {cmd_obj.cmd}")
+                        self.logger.log("WARN", f"Patch failed with exit code {ret_code}: {cmd_obj.cmd}")
                         if output_text and not self.is_json and console:
                             console.print(f"         └─ [red]{output_text}[/red]")
                         self.logger.log("WARN", "Continuing orchestration sequence despite failure...")
-                    results.append(CommandResult(stage_name, cmd_obj, ExecutionStatus.FAILED, f"Failed with exit code {res.returncode}", output_text))
+                    results.append(CommandResult(stage_name, cmd_obj, ExecutionStatus.FAILED, f"Failed with exit code {ret_code}", output_text))
 
             except Exception as e:
                 if self.logger:
-                    self.logger.log("ERROR", f"Subprocess execution crashed: {e}")
+                    self.logger.log("ERROR", f"Subprocess execution crashed:\n{traceback.format_exc()}")
                 results.append(CommandResult(stage_name, cmd_obj, ExecutionStatus.FAILED, f"Exception: {e}", ""))
+            finally:
+                self.active_process = None
 
         return results
 
@@ -717,6 +744,15 @@ def main() -> None:
         render_header(ctx, selected_stages)
 
     def handle_exit(signum, frame):
+        if engine.active_process:
+            try:
+                engine.active_process.terminate()
+                engine.active_process.wait(timeout=2.0)
+            except (subprocess.TimeoutExpired, OSError):
+                try:
+                    engine.active_process.kill()
+                except OSError:
+                    pass
         engine.cleanup()
         if not args.json and console:
             console.print("\n[bold red][ABORTED][/bold red] Interrupted by signal.")
