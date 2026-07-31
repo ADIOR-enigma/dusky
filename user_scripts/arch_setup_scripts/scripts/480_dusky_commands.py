@@ -8,22 +8,21 @@
  Location:    ~/user_scripts/arch_setup_scripts/scripts/
  Description: Consolidates and modernizes 480_dusky_commands.sh,
               dusky_commands_before.sh, and dusky_commands_after.sh into a
-              unified, hardened, feature-complete Python 3.14 orchestrator.
+              unified, bulletproof Python 3.14 orchestrator.
 
  Features & Security Architecture:
    - Declarative stage configuration blocks (BEFORE, SETUP, AFTER).
-   - 100% SHA256 string parity with original bash scripts.
+   - 100% SHA256 state hash parity with original bash scripts.
+   - Atomic state file persistence (os.replace) preventing corruption on reboot.
    - Headless & Rich UI Dual Presentation (RICH_AVAILABLE guard & native file console).
-   - Machine-readable JSON output mode (--json).
+   - Machine-readable JSON output mode (--json) with stderr excepthook guard.
    - UserContext resolution supporting privilege escalation (SUDO_UID / loginuid).
-   - Inline Sudo & Hyprland/Wayland IPC environment tunneling with shlex quoting.
-   - Secure lockfile directory isolation (~/.local/state/dusky fallback over /tmp).
-   - Active process tracking & clean SIGTERM/SIGKILL child process termination on exit.
-   - Cached escalator resolution (@cache) & background keepalive daemon loop.
-   - Combined stream capture (stderr=subprocess.STDOUT) with errors='replace'.
-   - Execution modes: --before (-b), --setup (-s), --after (-a), --all (-A).
-   - Interactive mode (-i / --interactive) & Non-interactive mode (-y / --default).
-   - Dry-run mode (-n / --dry-run), Force re-run (-f / --force), Status matrix (-st / --status).
+   - Native Sudo /usr/bin/env IPC environment tunneling without privilege bleed.
+   - Process Group isolation (start_new_session=True) & pgid > 1 system safety guard.
+   - EPERM-safe root process kill fallback via privilege escalator.
+   - Fully detached background task I/O (>/dev/null 2>&1 < /dev/null &) preventing pipe hangs.
+   - Secure POSIX lockfile isolation without TOCTOU unlink races.
+   - Signal handler de-escalation (SystemExit propagation to try...finally cleanup).
 ===============================================================================
 """
 
@@ -36,7 +35,6 @@ import json
 import os
 import pwd
 import re
-import shlex
 import shutil
 import signal
 import subprocess
@@ -46,9 +44,19 @@ import time
 import traceback
 from dataclasses import dataclass
 from enum import Enum
-from functools import cache, cached_property
+from functools import cache
 from pathlib import Path
 from typing import Any, NamedTuple, Sequence
+
+
+def _json_excepthook(exc_type: type, exc_value: BaseException, exc_traceback: Any) -> None:
+    """Enforces strict JSON output to STDERR to prevent stdout pipeline corruption."""
+    if issubclass(exc_type, (KeyboardInterrupt, SystemExit)):
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+    err_msg = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+    print(json.dumps({"status": "fatal", "error": str(exc_value), "traceback": err_msg}), file=sys.stderr)
+
 
 # --- Rich UI Presentation Guard ---
 RICH_AVAILABLE = False
@@ -62,7 +70,7 @@ try:
     console = Console()
     error_console = Console(stderr=True)
 except ImportError:
-    Console = Panel = Confirm = Table = Text = Any  # type: ignore
+    Console = Panel = Confirm = Table = Text = type("Mock", (), {})  # type: ignore
     console = error_console = None  # type: ignore
 
 
@@ -90,7 +98,7 @@ class FleetCommand:
     description: str = ""
     id_salt: str = ""  # Optional salt for explicit disambiguation if needed
 
-    @cached_property
+    @property
     def state_hash(self) -> str:
         # Maintain 100% SHA256 string parity with original bash scripts: sha256("MODE | COMMAND")
         if self.id_salt:
@@ -121,8 +129,8 @@ SETUP_COMMANDS: list[FleetCommand] = [
         "Compile Wayland Click-Away Shared Library"
     ),
     FleetCommand(Mode.USER, 'systemctl --user daemon-reload && systemctl --user restart dusky_quickpanal.service || true', "Reload & Restart Quickpanel Service"),
-    FleetCommand(Mode.USER, '"$HOME/user_scripts/dusky_system/reload_cc/cc_restart.sh" --quiet &', "Background Restart Control Center"),
-    FleetCommand(Mode.USER, '"$HOME/user_scripts/dusky_system/quickpanals/reload_quickpanal.sh/" --quiet &', "Background Reload Quickpanel"),
+    FleetCommand(Mode.USER, '"$HOME/user_scripts/dusky_system/reload_cc/cc_restart.sh" --quiet >/dev/null 2>&1 < /dev/null &', "Background Restart Control Center"),
+    FleetCommand(Mode.USER, '"$HOME/user_scripts/dusky_system/quickpanals/reload_quickpanal.sh/" --quiet >/dev/null 2>&1 < /dev/null &', "Background Reload Quickpanel"),
 ]
 
 # ------------------------------------------------------------------------------
@@ -182,7 +190,7 @@ class UserContext:
     is_root: bool
 
 
-def resolve_user_context() -> UserContext:
+def resolve_user_context(is_json: bool = False) -> UserContext:
     """Resolves real non-root user details prioritizing active privilege escalation context."""
     is_root = os.geteuid() == 0
     real_uid = os.getuid()
@@ -208,7 +216,9 @@ def resolve_user_context() -> UserContext:
     try:
         pw = pwd.getpwuid(real_uid)
     except KeyError:
-        if error_console:
+        if is_json:
+            print(json.dumps({"status": "fatal", "error": f"Resolved UID {real_uid} does not map to a valid user."}), file=sys.stderr)
+        elif error_console:
             error_console.print(f"[bold red][ERROR][/bold red] Fatal: Resolved UID {real_uid} does not map to a valid user.")
         else:
             print(f"ERROR: Fatal: Resolved UID {real_uid} does not map to a valid user.", file=sys.stderr)
@@ -225,8 +235,15 @@ def resolve_user_context() -> UserContext:
 
 @cache
 def get_escalator() -> str:
-    """Resolves available privilege escalation tool (sudo, doas, or pkexec)."""
-    return shutil.which("sudo") or shutil.which("doas") or shutil.which("pkexec") or "sudo"
+    """Resolves available privilege escalation tool (sudo or doas)."""
+    escalator = shutil.which("sudo") or shutil.which("doas")
+    if not escalator:
+        if error_console:
+            error_console.print("[bold red]CRITICAL ERROR: Neither 'sudo' nor 'doas' found on system.[/bold red]")
+        else:
+            print("CRITICAL ERROR: Neither 'sudo' nor 'doas' found on system.", file=sys.stderr)
+        sys.exit(1)
+    return escalator
 
 
 def get_user_ipc_env(ctx: UserContext) -> dict[str, str]:
@@ -321,16 +338,12 @@ class Logger:
         if self.file_console:
             self.file_console.print(f"[{timestamp}] {rich_markup}")
         else:
-            if Text is not Any:
+            if Text is not Any and hasattr(Text, "from_markup"):
                 plain = Text.from_markup(rich_markup).plain
             else:
                 plain = re.sub(r"\[/?(?:bold|dim|italic|underline|uppercase|cyan|blue|green|yellow|red|magenta|purple|white)[^\]]*\]", "", rich_markup)
             self._file.write(f"[{timestamp}] {plain}\n")
             self._file.flush()
-            try:
-                os.fsync(self._file.fileno())
-            except OSError:
-                pass
 
     def close(self) -> None:
         if not self._file.closed:
@@ -344,7 +357,7 @@ class SudoKeepAlive(threading.Thread):
         super().__init__(daemon=True)
         self.interval = interval
         self.stop_event = threading.Event()
-        self.escalator = get_escalator()
+        self.escalator = Path(get_escalator()).name
 
     def run(self) -> None:
         while not self.stop_event.is_set():
@@ -352,10 +365,10 @@ class SudoKeepAlive(threading.Thread):
                 break
             try:
                 if self.escalator == "sudo":
-                    subprocess.run(["sudo", "-v", "-n"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    subprocess.run(["sudo", "-v", "-n"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
                 elif self.escalator == "doas":
-                    subprocess.run(["doas", "-C", "true"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            except FileNotFoundError:
+                    subprocess.run(["doas", "true"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            except OSError:
                 break
 
     def stop(self) -> None:
@@ -408,14 +421,26 @@ class FleetPatcherEngine:
                         self.completed_patches.add(stripped)
 
     def record_completed(self, cmd_hash: str) -> None:
+        """Atomic state write via temporary file replacement preventing corruption on reboot."""
         self.completed_patches.add(cmd_hash)
-        self.state_dir.mkdir(parents=True, exist_ok=True)
-        with open(self.state_file, "a", encoding="utf-8") as f:
-            f.write(f"{cmd_hash}\n")
+        self.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+        tmp_file = self.state_file.with_suffix(".state.tmp")
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(self.completed_patches) + "\n")
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except OSError:
+                pass
+        os.replace(tmp_file, self.state_file)
 
     def ensure_sudo(self, pending_commands: Sequence[FleetCommand]) -> bool:
         needs_sudo = any(cmd.mode == Mode.SUDO and cmd.state_hash not in self.completed_patches for cmd in pending_commands)
         if not needs_sudo:
+            return True
+
+        if self.sudo_keepalive and self.sudo_keepalive.is_alive():
             return True
 
         if self.logger:
@@ -428,7 +453,7 @@ class FleetPatcherEngine:
                 auth_res = subprocess.run([escalator, "-v"], timeout=60)
                 if auth_res.returncode != 0:
                     if self.logger:
-                        self.logger.log("ERROR", f"{escalator.capitalize()} authentication failed. Cannot apply root patches.")
+                        self.logger.log("ERROR", f"{Path(escalator).name.capitalize()} authentication failed. Cannot apply root patches.")
                     return False
         except FileNotFoundError:
             if self.logger:
@@ -436,7 +461,7 @@ class FleetPatcherEngine:
             return False
         except subprocess.TimeoutExpired:
             if self.logger:
-                self.logger.log("ERROR", f"{escalator.capitalize()} authentication timed out.")
+                self.logger.log("ERROR", f"{Path(escalator).name.capitalize()} authentication timed out.")
             return False
 
         self.sudo_keepalive = SudoKeepAlive()
@@ -503,18 +528,23 @@ class FleetPatcherEngine:
             if self.logger:
                 self.logger.log("RUN", f"[{idx}/{total}] Applying [{cmd_obj.mode.value}]: {cmd_obj.cmd}")
 
-            # Inline IPC environment variables for sudo subshells with shlex quoting to prevent env_reset stripping
+            # Sterile IPC environment array for /usr/bin/env wrapper
+            safe_vars = ["XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "WAYLAND_DISPLAY", "HYPRLAND_INSTANCE_SIGNATURE"]
+            env_assigns = [f"{k}={v}" for k, v in env.items() if k in safe_vars]
+
             if cmd_obj.mode == Mode.SUDO:
-                safe_vars = ["XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "WAYLAND_DISPLAY", "HYPRLAND_INSTANCE_SIGNATURE"]
-                inline_env = " ".join(f'{k}={shlex.quote(v)}' for k, v in env.items() if k in safe_vars)
-                inline_env += f" HOME={shlex.quote(str(self.ctx.home))} USER={shlex.quote(self.ctx.username)}"
-                exec_cmd = [escalator, "bash", "-c", f"{inline_env} set -eo pipefail; {cmd_obj.cmd}"]
+                # Strictly isolate SUDO execution environments. DO NOT pass USER and HOME to root sessions.
+                sudo_args = [escalator, "--non-interactive"] if Path(escalator).name == "sudo" else [escalator]
+                exec_cmd = [*sudo_args, "/usr/bin/env", *env_assigns, "bash", "-c", f"set -eo pipefail; {cmd_obj.cmd}"]
             else:
+                # Inject User directories strictly for unprivileged executions
+                env_assigns.extend([f"HOME={self.ctx.home}", f"USER={self.ctx.username}"])
                 exec_cmd = ["bash", "-c", f"set -eo pipefail; {cmd_obj.cmd}"]
 
             try:
+                # start_new_session=True creates a new Process Group so child process trees can be cleanly terminated on exit
                 self.active_process = subprocess.Popen(
-                    exec_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True, errors="replace"
+                    exec_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True, errors="replace", start_new_session=True
                 )
                 stdout_data, _ = self.active_process.communicate()
                 ret_code = self.active_process.returncode
@@ -545,12 +575,33 @@ class FleetPatcherEngine:
     def cleanup(self) -> None:
         if self.sudo_keepalive:
             self.sudo_keepalive.stop()
+
+        # Kill the entire Process Group with strict boundary guards (pgid > 1) to prevent system-wide signal nukes
+        if self.active_process:
+            try:
+                pgid = os.getpgid(self.active_process.pid)
+                if pgid > 1:
+                    try:
+                        os.killpg(pgid, signal.SIGTERM)
+                        self.active_process.wait(timeout=2.0)
+                    except PermissionError:
+                        subprocess.run([get_escalator(), "-n", "kill", "-TERM", f"-{pgid}"], check=False, stderr=subprocess.DEVNULL)
+                    except (ProcessLookupError, subprocess.TimeoutExpired, OSError):
+                        try:
+                            os.killpg(pgid, signal.SIGKILL)
+                        except PermissionError:
+                            subprocess.run([get_escalator(), "-n", "kill", "-KILL", f"-{pgid}"], check=False, stderr=subprocess.DEVNULL)
+            except OSError:
+                pass
+
         if self.logger:
             self.logger.close()
+
         if self.lock_fd is not None:
             try:
                 fcntl.flock(self.lock_fd, fcntl.LOCK_UN)
                 os.close(self.lock_fd)
+                # POSIX lockfile safety: Do NOT unlink lock_file to avoid TOCTOU race conditions
             except OSError:
                 pass
 
@@ -665,9 +716,13 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+
+    if args.json:
+        sys.excepthook = _json_excepthook
+
     check_ui_deps(args.json)
 
-    ctx = resolve_user_context()
+    ctx = resolve_user_context(is_json=args.json)
 
     # Security Check: Prevent running directly as root without an underlying real user
     if ctx.uid == 0:
@@ -744,19 +799,7 @@ def main() -> None:
         render_header(ctx, selected_stages)
 
     def handle_exit(signum, frame):
-        if engine.active_process:
-            try:
-                engine.active_process.terminate()
-                engine.active_process.wait(timeout=2.0)
-            except (subprocess.TimeoutExpired, OSError):
-                try:
-                    engine.active_process.kill()
-                except OSError:
-                    pass
-        engine.cleanup()
-        if not args.json and console:
-            console.print("\n[bold red][ABORTED][/bold red] Interrupted by signal.")
-        sys.exit(128 + signum)
+        raise SystemExit(128 + signum)
 
     signal.signal(signal.SIGINT, handle_exit)
     signal.signal(signal.SIGTERM, handle_exit)
@@ -793,6 +836,12 @@ def main() -> None:
             render_execution_summary(all_results)
             if engine.logger:
                 engine.logger.log("SUCCESS", "All requested fleet patches completed and verified.")
+    except (SystemExit, KeyboardInterrupt) as e:
+        if not args.json and console:
+            console.print("\n[bold red][ABORTED][/bold red] Interrupted by user/system signal.")
+        elif args.json:
+            print(json.dumps({"status": "aborted", "message": "Interrupted by signal"}), file=sys.stderr)
+        sys.exit(e.code if isinstance(e, SystemExit) else 130)
     finally:
         engine.cleanup()
 
