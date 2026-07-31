@@ -81,13 +81,13 @@ USER_SERVICES: list[ServiceConfig] = [
     # Dusky OSD Router (Default: Disable)
     ServiceConfig("$HOME/user_scripts/mako_osd/osd_router/osd_lock.service", "disable"),
     # Dusky RAM Monitor (Default: Enable)
-    ServiceConfig("$HOME/user_scripts/performance/swap_and_ram_monitor_service/dusky_ram_monitor.service", "enable"),
+    ServiceConfig("$HOME/user_scripts/performance/swap_and_ram_monitor_service/dusky_ram_monitor.service", "disable"),
     # Dusky Audio Visualizer (Default: Disable)
     ServiceConfig("$HOME/user_scripts/way_layers/visualizer/dusky_visualizer.service", "disable"),
     # Dusky Screentime Tracker (Default: Disable)
     ServiceConfig("$HOME/user_scripts/screentime/dusky_screentime.service", "disable"),
     # Dusky TUI Pre-warming Daemon (Default: Enable)
-    ServiceConfig("$HOME/user_scripts/dusky_tui/python/service/dusky_tui.service", "enable"),
+    ServiceConfig("$HOME/user_scripts/dusky_tui/python/service/dusky_tui.service", "disable"),
 ]
 
 # ------------------------------------------------------------------------------

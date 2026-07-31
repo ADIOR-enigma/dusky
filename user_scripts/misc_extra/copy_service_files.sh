@@ -53,7 +53,7 @@ readonly SERVICES_CONFIG=(
 
 
     # dusky TUI pre-warming daemon
-    "$HOME/user_scripts/dusky_tui/python/service/dusky_tui.service | enabled"
+    "$HOME/user_scripts/dusky_tui/python/service/dusky_tui.service | disable"
 )
 
 # XDG Standard: ~/.config/systemd/user
