@@ -758,13 +758,13 @@ class StateStore:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                task.name,
+                task.state_key,
                 status,
                 task.name,
-                "",
+                task.checksum,
                 exit_code,
                 note,
-                datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                now_iso(),
                 duration,
             ),
         )
@@ -2476,10 +2476,10 @@ def resolve_and_validate_manifest(profile: ProfileConfig, tasks: list[DuskyTask]
             )
             default_interp = GLOBAL_CONFIG.get("execution", {}).get("default_interpreter", "bash")
 
-            if suffix in ext_map:
-                resolved_interpreter = [ext_map[suffix]]
-            elif extracted_interpreter:
+            if extracted_interpreter:
                 resolved_interpreter = extracted_interpreter
+            elif suffix in ext_map:
+                resolved_interpreter = [ext_map[suffix]]
             elif has_py_ext or has_py_shebang:
                 needs_python = True
                 resolved_interpreter = extracted_interpreter or [sys.executable]
