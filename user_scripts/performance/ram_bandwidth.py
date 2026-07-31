@@ -357,17 +357,15 @@ def set_cpu_performance(sudo_pass: str | None = None):
 
     if RICH_AVAILABLE:
         console.print(
-            "[bold yellow]⚡ Setting CPU governor to 'performance' and enabling hardware Turbo/Boost...[/bold yellow]"
+            "[bold yellow]⚡ Setting CPU scaling governor to 'performance' mode (Turbo/Boost active)...[/bold yellow]"
         )
     else:
-        print("Setting CPU governor to 'performance' and enabling hardware Turbo/Boost...")
+        print("Setting CPU scaling governor to 'performance' mode (Turbo/Boost active)...")
 
     apply_settings("performance", "0", "1")
     try:
         yield
     finally:
-        if RICH_AVAILABLE:
-            console.print("[dim]Restoring original CPU governor settings...[/dim]")
         py_restore = ["import pathlib"]
         for f, g in original_governors.items():
             py_restore.append(
@@ -389,6 +387,8 @@ def set_cpu_performance(sudo_pass: str | None = None):
                 run_sudo_cmd(["python3", "-c", "\n".join(py_restore)], sudo_pass=sudo_pass)
             except Exception:
                 pass
+        if RICH_AVAILABLE:
+            console.print("[dim]✓ Restored original CPU governor settings.[/dim]")
 
 
 def run_pure_read_test(
@@ -612,15 +612,16 @@ def run_single_core_test(
     )
 
 
-def build_gauge(pct: float | None, width: int = 15) -> str:
+def build_gauge(pct: float | None, width: int = 14) -> str:
+    """Render a clean, universal progress meter without font rendering artifacts."""
     if pct is None:
         return "[dim]N/A[/dim]"
     clamped = max(0.0, min(100.0, pct))
     filled = int(round((clamped / 100.0) * width))
     empty = width - filled
-    
-    color = "green" if clamped >= 75.0 else ("yellow" if clamped >= 45.0 else "cyan")
-    bar = f"[{color}]" + "█" * filled + "░" * empty + f" {clamped:.1f}%[/{color}]"
+
+    color = "bright_green" if clamped >= 75.0 else ("bright_yellow" if clamped >= 45.0 else "bright_cyan")
+    bar = f"[{color}]" + "█" * filled + f"[/{color}][dim white]" + "━" * empty + f"[/dim white] [bold white]{clamped:5.1f}%[/bold white]"
     return bar
 
 
@@ -694,7 +695,7 @@ def render_results_table(results: list[TestResult], specs: HardwareSpecs):
     table.add_column("Benchmark Test Mode", style="bold white", width=28)
     table.add_column("Throughput (GB/s)", justify="right", style="bold green", width=18)
     table.add_column("Throughput (MiB/s)", justify="right", style="bold yellow", width=18)
-    table.add_column("Efficiency Meter (% of Max)", justify="center", width=25)
+    table.add_column("Efficiency Meter (% of Max)", justify="center", width=26)
     table.add_column("Test Configuration & Details", style="dim white")
 
     for r in results:
@@ -783,7 +784,6 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    # Pass allow_interactive_prompt=True so get_sudo_pass prompts when run interactively in a TTY!
     sudo_pass = get_sudo_pass(args.sudo_pass, allow_interactive_prompt=True)
 
     check_and_install_deps(sudo_pass)
@@ -851,7 +851,8 @@ def main() -> int:
                 print("Running Multi-Core STREAM Copy Benchmark...")
                 results.append(run_copy_stream_test(workers, args.time, specs, args.cores))
 
-    render_results_table(results, specs)
+        render_results_table(results, specs)
+
     return 0
 
 
