@@ -80,9 +80,9 @@ die() {
 }
 
 notify() {
-    local title="${1:-Visual Performance}"
+    local title="${1:-Blur ON}"
     local message="${2:-}"
-    local icon="${3:-preferences-desktop-display}"
+    local icon="${3:-display-symbolic}"
 
     command -v notify-send &>/dev/null && notify-send \
         --app-name=hypr-visuals \
@@ -216,8 +216,8 @@ if [[ "$TARGET_STATE" == "on" ]]; then
     NEW_MAKO_PROGRESS_ALPHA="$MAKO_PROGRESS_ALPHA_ON"
     NEW_MAKO_OSD_BG_ALPHA="$MAKO_OSD_BG_ALPHA_ON"
     
-    NOTIFY_TITLE="Blur & Effects"
-    NOTIFY_MSG="ON"
+    NOTIFY_TITLE="Blur ON"
+    NOTIFY_MSG=""
     STATE_STRING="True"
 else
     NEW_ENABLED="false"
@@ -232,8 +232,8 @@ else
     NEW_MAKO_PROGRESS_ALPHA="$MAKO_PROGRESS_ALPHA_OFF"
     NEW_MAKO_OSD_BG_ALPHA="$MAKO_OSD_BG_ALPHA_OFF"
     
-    NOTIFY_TITLE="Blur & Effects"
-    NOTIFY_MSG="OFF"
+    NOTIFY_TITLE="Blur OFF"
+    NOTIFY_MSG=""
     STATE_STRING="False"
 fi
 
@@ -317,6 +317,6 @@ command -v makoctl &>/dev/null && { makoctl reload &>/dev/null || true; }
 command -v pkill &>/dev/null && { pkill -SIGUSR2 waybar || true; }
 
 # --- User Feedback ---
-notify "$NOTIFY_TITLE" "$NOTIFY_MSG" "preferences-desktop-display"
+notify "$NOTIFY_TITLE" "$NOTIFY_MSG" "display-symbolic"
 
 exit 0
