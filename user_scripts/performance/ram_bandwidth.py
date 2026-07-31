@@ -5,6 +5,7 @@ ram_bandwidth.py - Ultimate DDR Memory Bandwidth Benchmark Suite & Visualizer
 Features:
   - Hardware & SMBIOS Memory Probe (Speed MT/s, Channels, Manufacturers, Form Factor, Capacities).
   - Theoretical Peak Memory Bandwidth Calculator & Efficiency Gauge.
+  - High-Precision Random DRAM Access Latency Benchmark (128MB C pointer-chasing).
   - Pure Multi-Core Read Benchmark (sysbench 64M blocks).
   - Pure Multi-Core Write Benchmark (sysbench 64M blocks).
   - Multi-Core STREAM / Copy Benchmark (stress-ng --stream).
@@ -23,6 +24,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -66,6 +68,7 @@ class TestResult:
     read_gb_s: float | None = None
     write_gb_s: float | None = None
     efficiency_pct: float | None = None
+    latency_ns: float | None = None
     details: str = ""
 
 
@@ -155,8 +158,8 @@ def get_online_cpu_count() -> int:
 
 def check_and_install_deps(sudo_pass: str | None = None) -> None:
     """Ensure required benchmark tools are installed via pacman/paru."""
-    required_tools = ["sysbench", "stress-ng", "dmidecode", "ttf-nerd-fonts-symbols"]
-    missing_tools = [t for t in required_tools if not tool_exists(t) and t != "ttf-nerd-fonts-symbols"]
+    required_tools = ["sysbench", "stress-ng", "dmidecode"]
+    missing_tools = [t for t in required_tools if not tool_exists(t)]
 
     if not tool_exists("mbw"):
         missing_tools.append("mbw")
@@ -380,6 +383,97 @@ def set_cpu_performance(sudo_pass: str | None = None):
                 run_sudo_cmd(["python3", "-c", "\n".join(py_restore)], sudo_pass=sudo_pass)
             except Exception:
                 pass
+
+
+def run_latency_test(
+    array_size_mb: int = 128, cores: str | None = None
+) -> TestResult:
+    """High-precision random DRAM access latency benchmark using 128MB C pointer chasing."""
+    target_core = "0"
+    if cores:
+        target_core = re.split(r"[,\-]", cores)[0].strip()
+
+    lat_ns: float = 0.0
+    compiler = tool_exists("gcc") or tool_exists("clang")
+
+    if compiler:
+        cc = "gcc" if tool_exists("gcc") else "clang"
+        c_code = r"""
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+#include <stdint.h>
+
+int main(int argc, char **argv) {
+    size_t size_bytes = 128 * 1024 * 1024;
+    if (argc > 1) size_bytes = (size_t)atoll(argv[1]) * 1024 * 1024;
+    size_t count = size_bytes / sizeof(size_t);
+    size_t *arr = (size_t *)malloc(size_bytes);
+    size_t *indices = (size_t *)malloc(count * sizeof(size_t));
+    if (!arr || !indices) return 1;
+
+    for (size_t i = 0; i < count; i++) indices[i] = i;
+
+    uint64_t state = 123456789ULL;
+    for (size_t i = count - 1; i > 0; i--) {
+        state = state * 6364136223846793005ULL + 1442695040888963407ULL;
+        size_t j = state % (i + 1);
+        size_t tmp = indices[i];
+        indices[i] = indices[j];
+        indices[j] = tmp;
+    }
+
+    for (size_t i = 0; i < count - 1; i++) {
+        arr[indices[i]] = indices[i+1];
+    }
+    arr[indices[count-1]] = indices[0];
+    free(indices);
+
+    size_t curr = 0;
+    for (size_t i = 0; i < 1000000; i++) curr = arr[curr];
+
+    struct timespec ts1, ts2;
+    size_t jumps = 20000000;
+    clock_gettime(CLOCK_MONOTONIC, &ts1);
+    for (size_t i = 0; i < jumps; i++) {
+        curr = arr[curr];
+    }
+    clock_gettime(CLOCK_MONOTONIC, &ts2);
+
+    double nsec = (ts2.tv_sec - ts1.tv_sec) * 1e9 + (ts2.tv_nsec - ts1.tv_nsec);
+    double ns_per_access = nsec / (double)jumps;
+    printf("%.2f\n", ns_per_access);
+
+    if (curr == 0xdeadbeef) printf("%zu", curr);
+    free(arr);
+    return 0;
+}
+"""
+        try:
+            with tempfile.NamedTemporaryFile("w", suffix=".c", delete=False) as f:
+                f.write(c_code)
+                c_path = f.name
+
+            bin_path = c_path + ".bin"
+            subprocess.run([cc, "-O3", c_path, "-o", bin_path], check=True, capture_output=True)
+            cmd = ["taskset", "-c", target_core, bin_path, str(array_size_mb)]
+            out = run_cmd(cmd).strip()
+            lat_ns = float(out)
+            os.unlink(c_path)
+            os.unlink(bin_path)
+        except Exception:
+            pass
+
+    return TestResult(
+        name="Random Memory Latency",
+        throughput_gb_s=0.0,
+        throughput_mib_s=0.0,
+        read_gb_s=0.0,
+        write_gb_s=0.0,
+        efficiency_pct=None,
+        latency_ns=lat_ns,
+        details=f"Pointer-chasing latency ({array_size_mb}M buffer > L3 cache on Core {target_core})",
+    )
 
 
 def run_pure_read_test(
@@ -677,14 +771,17 @@ def render_results_table(results: list[TestResult], specs: HardwareSpecs):
     if not RICH_AVAILABLE:
         print("\n=== BENCHMARK RESULTS SUMMARY ===")
         for r in results:
-            eff = f"{r.efficiency_pct:5.1f}%" if r.efficiency_pct is not None else "N/A"
-            print(
-                f"{r.name:30s}: {r.throughput_gb_s:7.2f} GB/s ({r.throughput_mib_s:9.1f} MiB/s) | {eff} of Max | {r.details}"
-            )
+            if r.latency_ns is not None:
+                print(f"{r.name:30s}: Latency {r.latency_ns:6.2f} ns | {r.details}")
+            else:
+                eff = f"{r.efficiency_pct:5.1f}%" if r.efficiency_pct is not None else "N/A"
+                print(
+                    f"{r.name:30s}: {r.throughput_gb_s:7.2f} GB/s ({r.throughput_mib_s:9.1f} MiB/s) | {eff} of Max | {r.details}"
+                )
         return
 
     table = Table(
-        title="󰓅 RAM Bandwidth Benchmark Summary",
+        title="󰓅 RAM Bandwidth & Latency Benchmark Summary",
         box=box.ROUNDED,
         header_style="bold cyan",
         expand=True,
@@ -692,17 +789,26 @@ def render_results_table(results: list[TestResult], specs: HardwareSpecs):
     table.add_column("Benchmark Test Mode", style="bold white", width=28)
     table.add_column("Throughput (GB/s)", justify="right", style="bold green", width=18)
     table.add_column("Throughput (MiB/s)", justify="right", style="bold yellow", width=18)
-    table.add_column("Efficiency Meter (% of Max)", justify="center", width=26)
+    table.add_column("Efficiency Meter / Latency", justify="center", width=26)
     table.add_column("Test Configuration & Details", style="dim white")
 
     for r in results:
-        table.add_row(
-            r.name,
-            f"[bold bright_green]{r.throughput_gb_s:.2f} GB/s[/bold bright_green]",
-            f"{r.throughput_mib_s:,.1f} MiB/s",
-            build_gauge(r.efficiency_pct),
-            r.details,
-        )
+        if r.latency_ns is not None:
+            table.add_row(
+                r.name,
+                "[dim]N/A (Latency)[/dim]",
+                "[dim]N/A (Latency)[/dim]",
+                f"[bold bright_cyan]󰔛 {r.latency_ns:.2f} ns[/bold bright_cyan]",
+                r.details,
+            )
+        else:
+            table.add_row(
+                r.name,
+                f"[bold bright_green]{r.throughput_gb_s:.2f} GB/s[/bold bright_green]",
+                f"{r.throughput_mib_s:,.1f} MiB/s",
+                build_gauge(r.efficiency_pct),
+                r.details,
+            )
 
     console.print(table)
 
@@ -727,13 +833,19 @@ def render_results_table(results: list[TestResult], specs: HardwareSpecs):
     note_text.append(" 󰅂 ", style="cyan")
     note_text.append("Pure Read / Write Scaling: ", style="bold bright_white")
     note_text.append(
-        f"To reach maximum DRAM bus saturation (60-80+ GB/s), memory requests must be issued in parallel across multiple CPU cores ({specs.online_cpus} active).",
+        f"To reach maximum DRAM bus saturation (60-80+ GB/s), memory requests must be issued in parallel across multiple CPU cores ({specs.online_cpus} active).\n",
+        style="white",
+    )
+    note_text.append(" 󰅂 ", style="cyan")
+    note_text.append("Random Access Latency: ", style="bold bright_white")
+    note_text.append(
+        "Measured via 128MB random pointer-chasing traversal to bypass L1/L2/L3 CPU caches and isolate true DRAM latency.",
         style="white",
     )
 
     panel = Panel(
         note_text,
-        title="[bold cyan]󰨣 Understanding Single-Thread vs Multi-Thread RAM Bandwidth[/bold cyan]",
+        title="[bold cyan]󰨣 Understanding Single-Thread vs Multi-Thread RAM Bandwidth & Latency[/bold cyan]",
         border_style="cyan",
     )
     console.print(panel)
@@ -741,11 +853,11 @@ def render_results_table(results: list[TestResult], specs: HardwareSpecs):
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Ultimate Hardware-Agnostic RAM Bandwidth Benchmark Suite & Visualizer"
+        description="Ultimate Hardware-Agnostic RAM Bandwidth & Latency Benchmark Suite"
     )
     parser.add_argument(
         "--bench",
-        choices=["read", "write", "copy", "single", "all"],
+        choices=["read", "write", "copy", "single", "latency", "all"],
         default="all",
         help="Benchmark mode to run non-interactively (default: all).",
     )
@@ -803,6 +915,14 @@ def main() -> int:
                 console=console,
                 transient=True,
             ) as progress:
+                if args.bench in ["latency", "all"]:
+                    t0 = progress.add_task(
+                        "Running Random DRAM Access Latency Benchmark (128M Pointer-Chasing)...", total=None
+                    )
+                    res_lat = run_latency_test(128, args.cores)
+                    results.append(res_lat)
+                    progress.remove_task(t0)
+
                 if args.bench in ["single", "all"]:
                     t1 = progress.add_task(
                         "Running Single-Core Memory Copy Benchmark (mbw)...", total=None
@@ -835,6 +955,9 @@ def main() -> int:
                     results.append(res_copy)
                     progress.remove_task(t4)
         else:
+            if args.bench in ["latency", "all"]:
+                print("Running Random DRAM Access Latency Benchmark...")
+                results.append(run_latency_test(128, args.cores))
             if args.bench in ["single", "all"]:
                 print("Running Single-Core Memory Copy Benchmark...")
                 results.append(run_single_core_test(args.size, 10, specs, args.cores))
