@@ -1161,6 +1161,7 @@ class DuskyOrchestratorApp(App):
                     stdout=slave_fd,
                     stderr=slave_fd,
                     close_fds=True,
+                    start_new_session=True,
                 )
                 os.close(slave_fd)
 
@@ -1212,7 +1213,7 @@ class DuskyOrchestratorApp(App):
                             self.logger.write_task(task, stripped)
 
                     except (OSError, BlockingIOError):
-                        if proc.returncode is not None:
+                        if proc.poll() is not None:
                             break
                         await asyncio.sleep(0.05)
 
