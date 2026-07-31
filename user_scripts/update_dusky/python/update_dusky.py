@@ -3533,6 +3533,9 @@ class DuskyApp(App):
         self.sleep_inhibitor: SleepInhibitor | None = None
         self.heartbeat_task: asyncio.Task | None = None
         self.condition_evaluator = ConditionEvaluator()
+        self.run_id: str = RUN_TIMESTAMP
+        self.run_logger: RunLogger | None = None
+        self.once_store: OnceStore | None = None
 
     def compose(self) -> ComposeResult:
         yield Static(f" 🦅 DUSKY PIPELINE ENGINE (v{VERSION} — {self.profile.name})", classes="header-panel")
@@ -3565,6 +3568,8 @@ class DuskyApp(App):
 
         self.sleep_inhibitor = SleepInhibitor(enabled=True)
         self.state_store = StateStore(self.profile)
+        self.run_logger = RunLogger(self.profile, self.run_id)
+        self.once_store = OnceStore()
 
         if self.has_sudo:
             self.heartbeat_task = asyncio.create_task(
@@ -3582,6 +3587,10 @@ class DuskyApp(App):
             self.sleep_inhibitor.close()
         if self.state_store:
             self.state_store.close()
+        if self.run_logger:
+            self.run_logger.close()
+        if self.once_store:
+            self.once_store.close()
 
     def log_main(self, message: str) -> None:
         self.query_one("#log-main", RichLog).write(message)
@@ -3789,12 +3798,13 @@ class DuskyApp(App):
                 async with asyncio.timeout(timeout if timeout > 0 else None):
                     code = await proc.wait()
                     try:
-                        await asyncio.wait_for(asyncio.shield(read_task), timeout=2.0)
-                    except (TimeoutError, asyncio.TimeoutError):
+                        async with asyncio.timeout(2.0):
+                            await asyncio.shield(read_task)
+                    except TimeoutError:
                         read_task.cancel()
                     return code == 0, code
 
-            except (TimeoutError, asyncio.TimeoutError):
+            except TimeoutError:
                 with suppress(ProcessLookupError, PermissionError, OSError):
                     os.killpg(proc.pid, signal.SIGKILL)
                 read_task.cancel()
