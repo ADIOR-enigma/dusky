@@ -452,7 +452,7 @@ done
         )
 
         shell_cmd = (
-            f"mkdir -p {sudoers_dir} && "
+            f"mkdir -p {shlex.quote(str(sudoers_dir))} && "
             f"umask 077 && cat > {shlex.quote(str(path))} && "
             f"chmod 0440 {shlex.quote(str(path))}"
         )
@@ -2571,19 +2571,24 @@ class GitEngine:
     async def _run_raw(self, *args: str, timeout_sec: int = 0) -> tuple[int, str, str]:
         cmd = self.git_cmd_base + list(args)
         try:
-            coro = asyncio.create_subprocess_exec(
+            proc = await asyncio.create_subprocess_exec(
                 *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=_git_env()
             )
             if timeout_sec > 0:
-                proc = await asyncio.wait_for(coro, timeout=timeout_sec)
+                try:
+                    async with asyncio.timeout(timeout_sec):
+                        stdout, stderr = await proc.communicate()
+                except TimeoutError:
+                    with suppress(ProcessLookupError, OSError):
+                        proc.kill()
+                        await proc.wait()
+                    return 124, "", "timeout"
             else:
-                proc = await coro
-            stdout, stderr = await proc.communicate()
+                stdout, stderr = await proc.communicate()
+
             return (proc.returncode,
                     stdout.decode('utf-8', errors='replace').strip(),
                     stderr.decode('utf-8', errors='replace').strip())
-        except asyncio.TimeoutError:
-            return 124, "", "timeout"
         except Exception as e:
             return 1, "", str(e)
 
@@ -2960,6 +2965,20 @@ class GitEngine:
         except Exception:
             return None
 
+        def _sync_copy_file(src_p: Path, dest_p: Path) -> bool:
+            try:
+                dest_p.parent.mkdir(parents=True, exist_ok=True)
+                if src_p.is_symlink():
+                    target = os.readlink(src_p)
+                    if dest_p.is_symlink() or dest_p.exists():
+                        dest_p.unlink(missing_ok=True)
+                    os.symlink(target, dest_p)
+                else:
+                    shutil.copy2(src_p, dest_p, follow_symlinks=False)
+                return True
+            except OSError:
+                return False
+
         for path in change_paths:
             st = change_status.get(path, "?")
             src = WORK_TREE / path
@@ -2969,18 +2988,12 @@ class GitEngine:
                         mf.write(f"status={st} has_copy=0 path={path}\n")
                 continue
             dest = backup_dir / path
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                proc = await asyncio.create_subprocess_exec('cp', '-a', '--reflink=auto', str(src), str(dest))
-                await proc.wait()
-                if proc.returncode != 0:
-                    self._tlog(f"[bold {THEME['error']}]Backup failed for: {escape(path)}[/]", task_idx, True)
-                    return None
-                with open(manifest, "a") as mf:
-                    mf.write(f"status={st} has_copy=1 path={path}\n")
-            except Exception as e:
-                self._tlog(f"[bold {THEME['error']}]Exception backing up {escape(path)}: {escape(str(e))}[/]", task_idx, True)
+            ok = await asyncio.to_thread(_sync_copy_file, src, dest)
+            if not ok:
+                self._tlog(f"[bold {THEME['error']}]Backup failed for: {escape(path)}[/]", task_idx, True)
                 return None
+            with open(manifest, "a") as mf:
+                mf.write(f"status={st} has_copy=1 path={path}\n")
 
         self._tlog(f"[bold {THEME['success']}]Backed up {len(change_paths)} tracked change(s) → {backup_dir}[/]", task_idx, True)
         return backup_dir
@@ -3010,20 +3023,28 @@ class GitEngine:
             info.write_text(f"Dusky full tracked-tree backup\nCreated: {RUN_TIMESTAMP}\nHEAD: {head.strip()}\n")
             info.chmod(0o600)
 
-        copied = 0
-        for path in tracked:
-            src = WORK_TREE / path
-            if not (src.exists() or src.is_symlink()):
-                continue
-            dest = backup_dir / path
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                proc = await asyncio.create_subprocess_exec('cp', '-a', '--reflink=auto', str(src), str(dest))
-                await proc.wait()
-                if proc.returncode == 0:
-                    copied += 1
-            except Exception:
-                pass
+        def _sync_copy_tree(tracked_files, work_tree, b_dir):
+            success_count = 0
+            for p in tracked_files:
+                s = work_tree / p
+                d = b_dir / p
+                if not (s.exists() or s.is_symlink()):
+                    continue
+                d.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    if s.is_symlink():
+                        target = os.readlink(s)
+                        if d.is_symlink() or d.exists():
+                            d.unlink(missing_ok=True)
+                        os.symlink(target, d)
+                    else:
+                        shutil.copy2(s, d, follow_symlinks=False)
+                    success_count += 1
+                except OSError:
+                    pass
+            return success_count
+
+        copied = await asyncio.to_thread(_sync_copy_tree, tracked, WORK_TREE, backup_dir)
 
         self._tlog(f"[bold {THEME['success']}]Full tracked-tree backup: {backup_dir} ({copied} file(s))[/]", task_idx, True)
         return backup_dir
@@ -3313,7 +3334,7 @@ class GitEngine:
                 for line in log_out.split('\n')[:10]:
                     self._tlog(f"      {escape(line)}", idx)
 
-            rc, diff_out, _ = await self._run_raw('diff', f'{local_head}..{remote_head}')
+            rc, diff_out, _ = await self._run_raw('diff', '--no-color', '--no-ext-diff', f'{local_head}..{remote_head}')
             if diff_out.strip():
                 self._tlog(f"\n[bold {THEME['warning']}]Differential Divergence Detected:[/]\n", idx)
                 self.app.log_task(Syntax(diff_out, "diff", theme="monokai", background_color="default", word_wrap=True), idx)  # type: ignore
@@ -3633,7 +3654,7 @@ class DuskyApp(App):
             else:
                 response = b"\r"
 
-            with suppress(OSError):
+            with suppress(BlockingIOError, OSError):
                 os.write(self.current_pty_master, response)
 
             self._prompt_counts[name] = count + 1
@@ -3664,6 +3685,7 @@ class DuskyApp(App):
             return False, None
 
         self.current_pty_master = master_fd
+        os.set_blocking(master_fd, False)
         self._set_pty_size(slave_fd)
 
         transport: asyncio.Transport | None = None
@@ -3727,8 +3749,10 @@ class DuskyApp(App):
                     line_buffer += text
 
                     if len(line_buffer) > 32768:
-                        self.log_task(Text.from_ansi(line_buffer[:32768]), task_index)
-                        line_buffer = line_buffer[-4096:]
+                        last_nl = line_buffer.rfind('\n', 0, 32768)
+                        cut_idx = last_nl + 1 if last_nl != -1 else 32768
+                        self.log_task(Text.from_ansi(line_buffer[:cut_idx]), task_index)
+                        line_buffer = line_buffer[cut_idx:]
 
                     while True:
                         m = SINGLE_NEWLINE_RE.search(line_buffer)
@@ -4006,7 +4030,7 @@ class DuskyApp(App):
 
             data = self._pty_key_bytes(event)
             if data:
-                with suppress(OSError):
+                with suppress(BlockingIOError, OSError):
                     os.write(self.current_pty_master, data)
                 event.stop()
 
