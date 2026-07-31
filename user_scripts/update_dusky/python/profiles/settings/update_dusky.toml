@@ -19,6 +19,9 @@ ascii_mode = false
 # Initial width percentage of the left task sidebar (15 to 80)
 sidebar_width = 35
 
+# Maximum line buffer limit for TUI RichLog widgets (prevents unbounded memory growth)
+max_log_lines = 6000
+
 # Ordered list of relative or absolute paths to search for Matugen-generated TUI theme JSON files
 theme_paths = [
     ".config/matugen/generated/dusky_tui.json",
@@ -68,11 +71,17 @@ namespace = "dusky-updater"
 # Single-instance lock filename created inside the runtime directory
 lock_file = "lock"
 
+# Prefix used for temporary askpass helper scripts inside askpass directory
+askpass_prefix = ".dusky_askpass_"
+
 # Subdirectory under documents_dir where execution log files are stored
 logs_subdir = "logs"
 
 # Subdirectory under documents_dir where Git update backups are saved
 backups_subdir = "dusky_backups"
+
+# Persistent state subdirectory under documents_dir where SQLite StateStore and OnceStore reside
+state_subdir = "state"
 
 # Automatic retention policy: delete log files older than this many days (0 to disable)
 log_retention_days = 14
@@ -105,6 +114,9 @@ disk_min_free_mb = 100
 # Reserve free disk space in megabytes when making file copies or CoW backups
 disk_copy_reserve_mb = 64
 
+# SQLite WAL database busy timeout in milliseconds
+db_busy_timeout = 5000
+
 # Default interpreter for extensionless scripts or unmapped file suffixes
 default_interpreter = "bash"
 
@@ -128,6 +140,14 @@ service_active_cmd = ["systemctl", "is-active", "--quiet"]
 # Command array used to check if a systemd user service is active
 user_service_active_cmd = ["systemctl", "--user", "is-active", "--quiet"]
 
+# Map of GPU vendor keywords to PCI vendor hex strings for hardware condition checks
+[conditions.gpu_vendor_map]
+nvidia = "0x10de"
+intel = "0x8086"
+amd = "0x1002"
+vmware = "0x15ad"
+virtio = "0x1af4"
+
 
 # ------------------------------------------------------------------------------
 # NOTIFICATIONS & AUDIO ALERTS
@@ -139,6 +159,21 @@ desktop_enabled = true
 # Application name displayed in desktop notification banners
 app_name = "Dusky Updater"
 
+# Toggle audio sound cues on pipeline completion or alert
+audio_enabled = true
+
+# Prioritized list of audio player binaries to use for sound playback
+audio_players = ["pw-play", "paplay"]
+
+# Fallback audio file path if configured sound file is missing
+fallback_sound = "/usr/share/sounds/freedesktop/stereo/bell.oga"
+
+# Sound file mapping for pipeline event sound cues
+[notifications.sound_map]
+alert = "/usr/share/sounds/freedesktop/stereo/dialog-warning.oga"
+info = "/usr/share/sounds/freedesktop/stereo/dialog-information.oga"
+complete = "/usr/share/sounds/freedesktop/stereo/complete.oga"
+
 
 # ------------------------------------------------------------------------------
 # SUDO & PRIVILEGE ESCALATION
@@ -146,6 +181,15 @@ app_name = "Dusky Updater"
 [sudo]
 # Background sudo credential keep-alive ping interval in seconds
 heartbeat_interval = 60
+
+# Prefix for PID-scoped temporary sudoers drop-in files
+dropin_prefix = "99_dusky_"
+
+# System sudoers drop-in directory
+sudoers_dir = "/etc/sudoers.d"
+
+# Sudo timestamp timeout in minutes
+timestamp_timeout = 15
 
 # Environment variables preserved during sudo escalation
 env_keep = [
@@ -180,6 +224,17 @@ clone_timeout = 120
 
 # Maximum git clone retry attempts on network failures
 clone_max_attempts = 5
+
+# Keys stripped from environment during git subprocess invocations to prevent hangs
+env_strip = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_LITERAL_PATHSPECS", "GIT_ASKPASS", "SSH_ASKPASS"]
+
+# Environment variables injected during git subprocess execution
+[git.env_inject]
+GIT_TERMINAL_PROMPT = "0"
+GIT_SSH_COMMAND = "ssh -o BatchMode=yes"
+GIT_PAGER = "cat"
+PAGER = "cat"
+GIT_OPTIONAL_LOCKS = "0"
 
 
 # ------------------------------------------------------------------------------

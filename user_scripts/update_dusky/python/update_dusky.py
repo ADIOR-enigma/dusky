@@ -4,28 +4,39 @@
 # ==============================================================================
 import argparse
 import asyncio
+import atexit
+import base64
+import codecs
 import datetime
 import fcntl
+import functools
+import hashlib
 import importlib
 import importlib.util
 import json
 import os
+import pty
 import pwd
 import re
+import select
 import shlex
 import shutil
 import signal
 import site
+import sqlite3
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
+import termios
 import time
 import tomllib
+import uuid
 from collections import deque
 from contextlib import contextmanager, nullcontext, suppress
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Literal, Optional
@@ -117,39 +128,1356 @@ def runtime_dir() -> Path:
     return candidate
 
 
+def state_dir() -> Path:
+    p = _documents_subdir("state_subdir", "state")
+    ensure_secure_dir(p)
+    return p
+
+
 def lock_path() -> Path:
     lock_file = GLOBAL_CONFIG.get("paths", {}).get("lock_file", "lock")
     return runtime_dir() / lock_file
 
 
-# ==============================================================================
-#  PRE-FLIGHT BOOTSTRAP & DEPENDENCY RESOLUTION
-# ==============================================================================
-def verify_sudo() -> bool:
-    if not shutil.which("sudo"):
-        sys.stdout.write("\033[1;31m[FATAL]\033[0m sudo is required by UPDATE_SEQUENCE but is not installed or not in PATH.\n")
-        return False
+from importlib import metadata as importlib_metadata
 
-    sys.stdout.write("\033[1;36m[DUSKY PRE-FLIGHT]\033[0m Securing administrative kernel privileges...\n")
 
+def version_tuple(value: str) -> tuple[int, ...]:
+    parts: list[int] = []
+    for part in re.split(r"[^0-9]+", value.strip()):
+        if part:
+            parts.append(int(part))
+    return tuple(parts)
+
+
+def check_runtime_versions() -> None:
+    if sys.version_info < (3, 14):
+        sys.stderr.write("\033[1;31m[FATAL]\033[0m Python 3.14+ is required.\n")
+        sys.exit(1)
     try:
-        rc = subprocess.run(['sudo', '-n', 'true'], capture_output=True).returncode
-        if rc == 0:
-            return True
+        textual_version = importlib_metadata.version("textual")
+        parsed = (version_tuple(textual_version) + (0, 0, 0))[:3]
+        if parsed < (8, 2, 8):
+            sys.stderr.write(
+                f"\033[1;31m[FATAL]\033[0m Textual 8.2.8+ is required. Installed: {textual_version}\n"
+            )
+            sys.exit(1)
     except Exception:
         pass
 
-    if sys.stdin.isatty():
+
+check_runtime_versions()
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def now_ts() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def file_checksum(path: Path) -> str:
+    try:
+        h = hashlib.blake2b(digest_size=16)
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return ""
+
+
+@functools.cache
+def target_user_pw() -> pwd.struct_passwd:
+    if os.geteuid() == 0:
+        sudo_user = os.environ.get("SUDO_USER")
+        if sudo_user and sudo_user != "root":
+            with suppress(KeyError):
+                return pwd.getpwnam(sudo_user)
+        return pwd.getpwuid(0)
+    return pwd.getpwuid(os.getuid())
+
+
+def askpass_dir() -> Path:
+    p = runtime_dir() / "askpass"
+    p.mkdir(parents=True, exist_ok=True)
+    with suppress(OSError):
+        p.chmod(0o700)
+    return p
+
+
+def S(key: str) -> str:
+    ASCII_SYMBOLS = {"logo": "DUSKY", "completed": "OK", "running": "RUN", "failed": "ERR", "skipped": "SKIP", "pending": "...", "sep": "|"}
+    UNICODE_SYMBOLS = {"logo": "🦅", "completed": "✓", "running": "◉", "failed": "✗", "skipped": "-", "pending": "○", "sep": "│"}
+    return ASCII_SYMBOLS.get(key, key) if ASCII_MODE else UNICODE_SYMBOLS.get(key, key)
+
+
+# ==============================================================================
+#  REGEX & AUTO-RESPONDER CONSTANTS
+# ==============================================================================
+_INTERACTIVE_RE = re.compile(
+    r"^\s*#\s*dusky_interactive\s*=\s*(?:true|1)\b",
+    re.IGNORECASE,
+)
+_HEX_COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
+ANSI_STRIP_REGEX = re.compile(
+    r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x1b]*(?:\x07|\x1B\\))"
+)
+PCT_REGEX = re.compile(r"(?<!\d)(?:100(?:\.0+)?|\d{1,2}(?:\.\d+)?)%")
+SPEED_ETA_REGEX = re.compile(
+    r"Total\s*\(\s*\d+\s*/\s*\d+\s*\).*?(\d+(?:\.\d+)?\s*[KMG]?i?B/s)\s+([\d:]+)",
+    re.IGNORECASE,
+)
+ALT_SPEED_ETA_REGEX = re.compile(
+    r"(\d+(?:\.\d+)?\s*[KMG]?i?B/s)\s+([\d:]+)",
+    re.IGNORECASE,
+)
+BRACKET_NEWLINE_RE = re.compile(r"[\r\n]+")
+SINGLE_NEWLINE_RE = re.compile(r"[\r\n]")
+
+
+def _build_prompt_rules() -> list[tuple[str, re.Pattern[str], str]]:
+    default_rules = [
+        ("sudo_password", r"(?i)(\[sudo\] password for [^:]+:|^\s*Password:\s*$|sudo: a password is required|Password:\s*$)", "password"),
+        ("pgp_import", r"(?i)(::\s*Import PGP key.*\?\s*\[Y/n\]|::\s*Append key\?.*\[Y/n\]|Import PGP key.*\?\s*\[Y/n\])", "yes"),
+        ("pacman_proceed", r"(?i)::\s*(Proceed with (?:installation|download|upgrade)|Continue (?:installation|download|upgrade)).*\?\s*\[Y/n\]", "yes"),
+        ("pacman_replace", r"(?i)::\s*Replace\s+.*\?\s*\[Y/n\]", "yes"),
+        ("pacman_remove_conflict", r"(?i)::\s*Remove conflicting file.*\?\s*\[Y/n\]", "yes"),
+        ("aur_proceed", r"(?i)(Proceed with installation\?|Continue building\?|Continue installing\?|::\s*Proceed with (?:installation|download|build).*\?\s*\[Y/n\])", "yes"),
+        ("generic_yes", r"(?i)\[Y/n\]|\(Y/n\)|\[y/N\]|\(y/N\)", "yes"),
+    ]
+    config_rules = GLOBAL_CONFIG.get("prompts", {}).get("rules", None)
+    rules = []
+    items_to_parse = config_rules if config_rules is not None else default_rules
+    for item in items_to_parse:
+        if isinstance(item, dict):
+            name, pattern, kind = item["name"], item["pattern"], item["kind"]
+        else:
+            name, pattern, kind = item
+        rules.append((name, re.compile(pattern, re.MULTILINE), kind))
+    return rules
+
+
+PROMPT_RULES: list[tuple[str, re.Pattern[str], str]] = _build_prompt_rules()
+
+
+# ==============================================================================
+#  ADVANCED PRIVILEGE ESCALATION ENGINE (SUDOENGINE)
+# ==============================================================================
+class SudoEngine:
+    _password: str | None = None
+    _askpass_path: Path | None = None
+    _sudoers_path: Path | None = None
+    _mode: str = "none"  # none | root | nopasswd | password
+    _registered_atexit: bool = False
+
+    ENV_KEEP = GLOBAL_CONFIG.get(
+        "sudo",
+        {},
+    ).get(
+        "env_keep",
+        [
+            "HOME",
+            "USER",
+            "LOGNAME",
+            "SHELL",
+            "PATH",
+            "TERM",
+            "COLORTERM",
+            "LANG",
+            "LC_ALL",
+            "LC_CTYPE",
+            "TZ",
+            "XDG_RUNTIME_DIR",
+            "XDG_CONFIG_HOME",
+            "XDG_CACHE_HOME",
+            "XDG_STATE_HOME",
+            "XDG_DATA_HOME",
+            "XDG_SESSION_TYPE",
+            "XDG_CURRENT_DESKTOP",
+            "DBUS_SESSION_BUS_ADDRESS",
+            "DISPLAY",
+            "WAYLAND_DISPLAY",
+            "XAUTHORITY",
+            "SSH_AUTH_SOCK",
+            "SSH_AGENT_PID",
+            "SUDO_ASKPASS",
+            "PYTHONUNBUFFERED",
+            "PYTHONUTF8",
+            "PYTHONDONTWRITEBYTECODE",
+            "PAGER",
+            "SYSTEMD_PAGER",
+            "GIT_PAGER",
+            "EDITOR",
+            "VISUAL",
+            "QT_QPA_PLATFORMTHEME",
+            "GTK_THEME",
+            "XCURSOR_THEME",
+            "XCURSOR_SIZE",
+            "MOZ_ENABLE_WAYLAND",
+            "LIBVA_DRIVER_NAME",
+            "VDPAU_DRIVER",
+            "SDL_VIDEODRIVER",
+            "ZDOTDIR",
+            "HYPRLAND_INSTANCE_SIGNATURE",
+            "QT_QPA_PLATFORM",
+            "XDG_SESSION_ID",
+            "XDG_SEAT",
+        ],
+    )
+
+    @classmethod
+    def mode_name(cls) -> str:
+        return cls._mode
+
+    @classmethod
+    def _remove_stale_askpass_files(cls) -> None:
+        with suppress(OSError):
+            for p in askpass_dir().glob(".dusky_askpass_*"):
+                with suppress(OSError):
+                    p.unlink(missing_ok=True)
+            for p in runtime_dir().glob(".dusky_askpass_*"):
+                with suppress(OSError):
+                    p.unlink(missing_ok=True)
+
+    @classmethod
+    def cleanup(cls) -> None:
+        if cls._sudoers_path is not None:
+            env = os.environ.copy()
+            if cls._askpass_path is not None:
+                env["SUDO_ASKPASS"] = str(cls._askpass_path)
+
+            for cmd in (
+                ["sudo", "-n", "rm", "-f", str(cls._sudoers_path)],
+                ["sudo", "-A", "rm", "-f", str(cls._sudoers_path)],
+            ):
+                try:
+                    res = subprocess.run(
+                        cmd,
+                        env=env,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=5,
+                    )
+                    if res.returncode == 0:
+                        break
+                except Exception:
+                    pass
+
+        if cls._askpass_path is not None:
+            with suppress(OSError):
+                cls._askpass_path.unlink(missing_ok=True)
+
+        cls._askpass_path = None
+        cls._sudoers_path = None
+
+    @classmethod
+    def _write_askpass(cls, password: str) -> Path:
+        encoded = base64.b64encode(password.encode("utf-8")).decode("ascii")
+        interpreter = sys.executable or shutil.which("python3") or "/usr/bin/env python3"
+        script = (
+            f"#!{interpreter}\n"
+            "import base64, sys\n"
+            f"sys.stdout.write(base64.b64decode('{encoded}').decode('utf-8'))\n"
+            "sys.stdout.write('\\n')\n"
+        )
+
+        prefix = GLOBAL_CONFIG.get("paths", {}).get("askpass_prefix", ".dusky_askpass_")
+        fd, path = tempfile.mkstemp(prefix=prefix, dir=str(askpass_dir()))
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(script)
+        os.chmod(path, 0o700)
+        return Path(path)
+
+    @classmethod
+    def _remove_stale_sudoers_files(cls, env: dict[str, str]) -> None:
+        prefix = GLOBAL_CONFIG.get("sudo", {}).get("dropin_prefix", "99_dusky_")
+        sudoers_dir = GLOBAL_CONFIG.get("sudo", {}).get("sudoers_dir", "/etc/sudoers.d")
+        script = f"""
+for f in {sudoers_dir}/{prefix}*; do
+    [ -f "$f" ] || continue
+    pid=$(sed -n 's/^# pid=\\([0-9]*\\).*/\\1/p' "$f" | head -n1)
+    expected_st=$(sed -n 's/.*starttime=\\([0-9]*\\).*/\\1/p' "$f" | head -n1)
+    if [ -n "$pid" ]; then
+        if ! kill -0 "$pid" 2>/dev/null; then
+            rm -f "$f"
+        elif [ -n "$expected_st" ] && [ -f "/proc/$pid/stat" ]; then
+            real_st=$(awk '{{print $22}}' "/proc/$pid/stat" 2>/dev/null)
+            if [ "$real_st" != "$expected_st" ]; then
+                rm -f "$f"
+            fi
+        elif [ -f "/proc/$pid/cmdline" ] && ! grep -q -e "dusky" -e "update_dusky" -e "orchestrator" -e "python" "/proc/$pid/cmdline" 2>/dev/null; then
+            rm -f "$f"
+        fi
+    fi
+done
+"""
+        with suppress(Exception):
+            subprocess.run(
+                ["sudo", "-A", "sh"],
+                input=script,
+                text=True,
+                env=env,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+
+    @classmethod
+    def _write_sudoers_dropin(cls, env: dict[str, str]) -> None:
+        username = pwd.getpwuid(os.getuid()).pw_name
+        safe_user = re.sub(r"[^A-Za-z0-9._-]", "_", username)
+        prefix = GLOBAL_CONFIG.get("sudo", {}).get("dropin_prefix", "99_dusky_")
+        sudoers_dir = GLOBAL_CONFIG.get("sudo", {}).get("sudoers_dir", "/etc/sudoers.d")
+        path = Path(f"{sudoers_dir}/{prefix}{safe_user}_{os.getpid()}")
+        env_vars = " ".join(cls.ENV_KEEP)
+
+        start_time = "0"
+        with suppress(OSError, IndexError):
+            stat_text = Path(f"/proc/{os.getpid()}/stat").read_text(encoding="ascii", errors="ignore")
+            idx = stat_text.rfind(")")
+            if idx != -1:
+                start_time = stat_text[idx + 1:].split()[19]
+
+        timeout = GLOBAL_CONFIG.get("sudo", {}).get("timestamp_timeout", 15)
+        content = (
+            f"# pid={os.getpid()} starttime={start_time} ts={int(time.time())}\n"
+            f"Defaults:{username} timestamp_type=global, timestamp_timeout={timeout}\n"
+            f"Defaults:{username} env_keep += \"{env_vars} DUSKY_*\"\n"
+        )
+
+        shell_cmd = (
+            f"mkdir -p {sudoers_dir} && "
+            f"umask 077 && cat > {shlex.quote(str(path))} && "
+            f"chmod 0440 {shlex.quote(str(path))}"
+        )
+
         try:
-            subprocess.run(['sudo', '-v'], check=True)
+            proc = subprocess.run(
+                ["sudo", "-A", "sh", "-c", shell_cmd],
+                input=content,
+                text=True,
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                timeout=10,
+            )
+            if proc.returncode != 0:
+                return
+
+            check = subprocess.run(
+                ["sudo", "-A", "visudo", "-c", "-f", str(path)],
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+
+            if check.returncode == 0:
+                cls._sudoers_path = path
+            else:
+                with suppress(Exception):
+                    subprocess.run(
+                        ["sudo", "-A", "rm", "-f", str(path)],
+                        env=env,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=5,
+                    )
+        except Exception:
+            return
+
+    @classmethod
+    def set_password(cls, password: str) -> tuple[bool, str]:
+        cls.cleanup()
+        cls._remove_stale_askpass_files()
+
+        try:
+            askpass = cls._write_askpass(password)
+        except OSError as e:
+            return False, f"Failed to create askpass helper: {e}"
+
+        env = os.environ.copy()
+        env["SUDO_ASKPASS"] = str(askpass)
+
+        try:
+            proc = subprocess.run(
+                ["sudo", "-A", "-v"],
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            with suppress(OSError):
+                askpass.unlink(missing_ok=True)
+            return False, "sudo authentication timed out"
+        except OSError as e:
+            with suppress(OSError):
+                askpass.unlink(missing_ok=True)
+            return False, str(e)
+
+        if proc.returncode == 0:
+            cls._password = password
+            cls._askpass_path = askpass
+            cls._mode = "password"
+            os.environ["SUDO_ASKPASS"] = str(askpass)
+            if not cls._registered_atexit:
+                atexit.register(cls.cleanup)
+                cls._registered_atexit = True
+            cls._remove_stale_sudoers_files(env)
+            cls._write_sudoers_dropin(env)
+            return True, ""
+
+        err = (proc.stderr or "").strip()
+        with suppress(OSError):
+            askpass.unlink(missing_ok=True)
+        return False, err or "sudo authentication failed"
+
+    @classmethod
+    def detect_nopasswd(cls) -> bool:
+        if os.geteuid() == 0:
+            cls._mode = "root"
             return True
-        except subprocess.CalledProcessError:
+
+        if not shutil.which("sudo"):
+            return False
+
+        with suppress(Exception):
+            proc = subprocess.run(
+                ["sudo", "-n", "-v"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=15,
+            )
+            if proc.returncode == 0:
+                cls._password = None
+                cls._askpass_path = None
+                cls._sudoers_path = None
+                cls._mode = "nopasswd"
+                return True
+
+        return False
+
+    @classmethod
+    def refresh_sync(cls) -> bool:
+        if os.geteuid() == 0:
+            cls._mode = "root"
+            return True
+
+        if not shutil.which("sudo"):
+            return False
+
+        if cls._mode == "nopasswd":
+            cmd = ["sudo", "-n", "-v"]
+            env = os.environ.copy()
+        elif cls._mode == "password" and cls._askpass_path is not None:
+            cmd = ["sudo", "-A", "-v"]
+            env = os.environ.copy()
+            env["SUDO_ASKPASS"] = str(cls._askpass_path)
+        else:
+            return cls.detect_nopasswd()
+
+        try:
+            proc = subprocess.run(
+                cmd,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=20,
+            )
+            return proc.returncode == 0
+        except Exception:
+            return False
+
+    @classmethod
+    def sudo_prefix(cls) -> list[str]:
+        if cls._mode == "root":
+            return []
+        if cls._mode == "nopasswd":
+            return ["sudo", "-n", "--"]
+        if cls._mode == "password" and cls._askpass_path is not None:
+            return ["sudo", "-A", "--"]
+        return ["sudo", "--"]
+
+    @classmethod
+    def preflight(
+        cls,
+        cli_password: str | None = None,
+        password_file: Path | None = None,
+    ) -> bool:
+        if os.geteuid() == 0:
+            cls._mode = "root"
+            sys.stdout.write("\033[1;36m[DUSKY PRE-FLIGHT]\033[0m Running as root. No sudo escalation needed.\n")
+            return True
+
+        if not shutil.which("sudo"):
+            sys.stderr.write("\033[1;31m[FATAL]\033[0m sudo is required but not installed.\n")
+            return False
+
+        sys.stdout.write("\033[1;36m[DUSKY PRE-FLIGHT]\033[0m Securing administrative privileges...\n")
+
+        if cls.detect_nopasswd():
+            sys.stdout.write("\033[1;36m[DUSKY PRE-FLIGHT]\033[0m Passwordless sudo detected.\n")
+            return True
+
+        password: str | None = cli_password
+        if password is None and password_file is not None:
+            with suppress(OSError):
+                text = password_file.read_text(encoding="utf-8", errors="ignore")
+                if text:
+                    password = text.splitlines()[0].rstrip("\r\n")
+
+        if password is not None:
+            ok, err = cls.set_password(password)
+            if ok:
+                sys.stdout.write("\033[1;36m[DUSKY PRE-FLIGHT]\033[0m Sudo credentials cached for this session.\n")
+                return True
+            sys.stderr.write(f"\033[1;31m[ERROR]\033[0m Provided sudo password failed: {err}\n")
+
+        if sys.stdin.isatty():
+            import getpass
+
+            target_user = pwd.getpwuid(os.getuid()).pw_name
+            for attempt in range(1, 4):
+                try:
+                    password = getpass.getpass(f"[sudo] password for {target_user}: ")
+                except (EOFError, KeyboardInterrupt):
+                    sys.stderr.write("\n\033[1;31m[FATAL]\033[0m Sudo authentication cancelled.\n")
+                    return False
+
+                ok, err = cls.set_password(password)
+                if ok:
+                    sys.stdout.write("\033[1;36m[DUSKY PRE-FLIGHT]\033[0m Sudo credentials cached for this session.\n")
+                    return True
+                sys.stderr.write(f"\033[1;31m[ERROR]\033[0m Authentication failed ({attempt}/3): {err}\n")
+
+        sys.stderr.write("\033[1;31m[FATAL]\033[0m Sudo authentication failed. Aborting.\n")
+        return False
+
+    @staticmethod
+    async def maintain_heartbeat(error_callback=None) -> None:
+        fail_count = 0
+        interval = GLOBAL_CONFIG.get("sudo", {}).get("heartbeat_interval", 45)
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                ok = await asyncio.to_thread(SudoEngine.refresh_sync)
+                if ok:
+                    fail_count = 0
+                else:
+                    fail_count += 1
+                    if error_callback is not None and fail_count == 1:
+                        error_callback("Sudo heartbeat failed. Admin credentials may need renewal.")
+        except asyncio.CancelledError:
             pass
 
-    sys.stdout.write("\033[1;31m[FATAL]\033[0m Sudo authentication failed. Aborting.\n")
-    return False
+
+# ==============================================================================
+#  PERSISTENT STATE & IDEMPOTENCY STORAGE
+# ==============================================================================
+def safe_filename(name: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]", "_", str(name)).strip("._")
+    return cleaned or "unnamed"
 
 
+class StateStore:
+    DONE = {
+        "completed",
+        "skipped",
+        "ignored",
+        "manual",
+        "completed_once",
+    }
+
+    def __init__(self, profile: 'ProfileConfig'):
+        self.path = state_dir() / f"{safe_filename(profile.name)}.db"
+        self.conn = sqlite3.connect(self.path)
+        busy_timeout = GLOBAL_CONFIG.get("execution", {}).get("db_busy_timeout", 5000)
+        self.conn.execute("PRAGMA journal_mode=WAL;")
+        self.conn.execute("PRAGMA synchronous=NORMAL;")
+        self.conn.execute(f"PRAGMA busy_timeout={busy_timeout};")
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS state (
+                state_key TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                script TEXT,
+                checksum TEXT,
+                exit_code INTEGER,
+                note TEXT,
+                updated TEXT,
+                duration REAL DEFAULT 0.0
+            )
+            """
+        )
+        cur = self.conn.execute("PRAGMA table_info(state);")
+        columns = [row[1] for row in cur.fetchall()]
+        if "duration" not in columns:
+            self.conn.execute("ALTER TABLE state ADD COLUMN duration REAL DEFAULT 0.0;")
+        self.conn.commit()
+
+    def statuses(self) -> dict[str, str]:
+        cur = self.conn.execute("SELECT state_key, status FROM state")
+        return {str(k): str(v) for k, v in cur.fetchall()}
+
+    def durations(self) -> dict[str, float]:
+        cur = self.conn.execute("PRAGMA table_info(state);")
+        if "duration" not in [row[1] for row in cur.fetchall()]:
+            return {}
+        cur = self.conn.execute("SELECT state_key, duration FROM state")
+        return {str(k): float(v or 0.0) for k, v in cur.fetchall()}
+
+    @classmethod
+    def is_done(cls, status: str | None) -> bool:
+        return bool(status) and status in cls.DONE
+
+    def mark(
+        self,
+        task: 'DuskyTask',
+        status: str,
+        exit_code: int | None = None,
+        note: str = "",
+        duration: float = 0.0,
+    ) -> None:
+        self.conn.execute(
+            """
+            INSERT OR REPLACE INTO state
+                (state_key, status, script, checksum, exit_code, note, updated, duration)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                task.name,
+                status,
+                task.name,
+                "",
+                exit_code,
+                note,
+                datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                duration,
+            ),
+        )
+        self.conn.commit()
+
+    def reset(self) -> None:
+        with suppress(Exception):
+            self.conn.close()
+        for suffix in ("", "-wal", "-shm"):
+            Path(f"{self.path}{suffix}").unlink(missing_ok=True)
+
+    def close(self) -> None:
+        with suppress(Exception):
+            self.conn.close()
+
+
+class OnceStore:
+    def __init__(self) -> None:
+        self.path = state_dir() / "once.db"
+        self.conn = sqlite3.connect(self.path)
+        busy_timeout = GLOBAL_CONFIG.get("execution", {}).get("db_busy_timeout", 5000)
+        self.conn.execute("PRAGMA journal_mode=WAL;")
+        self.conn.execute("PRAGMA synchronous=NORMAL;")
+        self.conn.execute(f"PRAGMA busy_timeout={busy_timeout};")
+        self.conn.execute(
+            """
+CREATE TABLE IF NOT EXISTS once_markers (
+    marker_key TEXT PRIMARY KEY,
+    profile TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    script_name TEXT NOT NULL,
+    args_key TEXT NOT NULL,
+    resolved_path TEXT,
+    checksum TEXT,
+    once_mode TEXT NOT NULL,
+    exit_code INTEGER,
+    run_id TEXT,
+    version TEXT,
+    created TEXT,
+    updated TEXT
+)
+"""
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_once_script ON once_markers(script_name);"
+        )
+        self.conn.commit()
+
+    def forget(self, script: str) -> int:
+        script = script.strip()
+        if not script:
+            return 0
+
+        cur = self.conn.execute(
+            """
+DELETE FROM once_markers
+WHERE script_name = ?
+   OR resolved_path = ?
+   OR script_name LIKE ?
+""",
+            (script, script, f"%/{script}"),
+        )
+        self.conn.commit()
+        return cur.rowcount
+
+    @staticmethod
+    def make_key(task: 'DuskyTask', profile_name: str) -> str:
+        scope = task.once_scope if task.once_scope in ("profile", "global") else "profile"
+        profile_part = "__global__" if scope == "global" else profile_name
+        material = "|".join(
+            [
+                "once",
+                scope,
+                profile_part,
+                task.mode,
+                task.name,
+                shlex.join(task.args),
+            ]
+        ).encode("utf-8")
+        return hashlib.blake2b(material, digest_size=16).hexdigest()
+
+    def marker_valid(self, task: 'DuskyTask', profile_name: str) -> bool:
+        if not task.once:
+            return False
+
+        key = self.make_key(task, profile_name)
+        cur = self.conn.execute(
+            "SELECT checksum, once_mode FROM once_markers WHERE marker_key = ?",
+            (key,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return False
+
+        stored_checksum, stored_mode = row
+        if task.once_mode == "forever" or stored_mode == "forever":
+            return True
+
+        return bool(task.checksum) and stored_checksum == task.checksum
+
+    def mark_success(
+        self,
+        task: 'DuskyTask',
+        profile_name: str,
+        exit_code: int | None = None,
+        run_id: str = "",
+    ) -> None:
+        if not task.once:
+            return
+
+        key = self.make_key(task, profile_name)
+        args_key = shlex.join(task.args)
+
+        self.conn.execute(
+            """
+INSERT INTO once_markers (
+    marker_key, profile, scope, mode, script_name, args_key,
+    resolved_path, checksum, once_mode, exit_code, run_id,
+    version, created, updated
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(marker_key) DO UPDATE SET
+    profile=excluded.profile, scope=excluded.scope, mode=excluded.mode,
+    script_name=excluded.script_name, args_key=excluded.args_key,
+    resolved_path=excluded.resolved_path, checksum=excluded.checksum,
+    once_mode=excluded.once_mode, exit_code=excluded.exit_code,
+    run_id=excluded.run_id, version=excluded.version, updated=excluded.updated
+""",
+            (
+                key, profile_name, task.once_scope, task.mode, task.name,
+                args_key, str(task.resolved_path), task.checksum,
+                task.once_mode, exit_code, run_id, VERSION, now_iso(), now_iso(),
+            ),
+        )
+        self.conn.commit()
+
+    def list_markers(self) -> list[dict[str, object]]:
+        cur = self.conn.execute(
+            "SELECT profile, scope, mode, script_name, args_key, resolved_path, checksum, once_mode, exit_code, run_id, updated FROM once_markers ORDER BY profile, script_name, args_key"
+        )
+        rows: list[dict[str, object]] = []
+        for row in cur.fetchall():
+            rows.append(
+                {"profile": row[0], "scope": row[1], "mode": row[2], "script_name": row[3], "args_key": row[4], "resolved_path": row[5], "checksum": row[6], "once_mode": row[7], "exit_code": row[8], "run_id": row[9], "updated": row[10]}
+            )
+        return rows
+
+    def print_list(self) -> None:
+        rows = self.list_markers()
+        if not rows:
+            print("No persistent once markers found.")
+            return
+        print(f"Persistent once markers ({len(rows)}):")
+        for i, row in enumerate(rows, start=1):
+            print(f"{i:3d}. [{row['mode']}] {row['script_name']}\n     profile:   {row['profile']}\n     scope:     {row['scope']}\n     args:      {row['args_key']}\n     path:      {row['resolved_path']}\n     mode:      {row['once_mode']}\n     checksum:  {row['checksum']}\n     exit_code: {row['exit_code']}\n     run_id:    {row['run_id']}\n     updated:   {row['updated']}\n")
+
+    def close(self) -> None:
+        with suppress(Exception):
+            self.conn.close()
+
+
+# ==============================================================================
+#  CONDITION EVALUATOR & TASK RUN LOGGER
+# ==============================================================================
+class ConditionEvaluator:
+    IMMUTABLE = {
+        "wayland",
+        "x11",
+        "graphical",
+        "ssh",
+        "desktop",
+        "battery",
+        "btrfs",
+        "vm",
+        "baremetal",
+        "gpu",
+        "group",
+        "env",
+    }
+
+    def __init__(self):
+        self.cache: dict[str, bool] = {}
+
+    def _volatile(self, condition: str | None) -> bool:
+        if not condition:
+            return False
+        cond = condition.strip()
+        if cond.lower() in ("always", "true", "yes", "never", "false", "no"):
+            return False
+
+        kind, _, value = cond.partition(":")
+        kind = kind.strip().lower()
+        value = value.strip()
+
+        if kind == "not":
+            return self._volatile(value)
+        return kind not in self.IMMUTABLE
+
+    def check(self, condition: str | None) -> bool:
+        if not condition:
+            return True
+
+        cond = condition.strip()
+        if cond.lower() in ("always", "true", "yes"):
+            return True
+        if cond.lower() in ("never", "false", "no"):
+            return False
+
+        if self._volatile(cond):
+            return self._eval(cond)
+
+        if cond in self.cache:
+            return self.cache[cond]
+
+        result = self._eval(cond)
+        self.cache[cond] = result
+        return result
+
+    def _eval(self, cond: str) -> bool:
+        if "," in cond:
+            parts: list[str] = []
+            for token in cond.split(","):
+                if parts and ":" not in token:
+                    parts[-1] += "," + token
+                else:
+                    parts.append(token)
+
+            if len(parts) > 1:
+                return all(self.check(part) for part in parts)
+
+        kind, _, value = cond.partition(":")
+        kind = kind.strip().lower()
+        value = value.strip()
+
+        if kind == "not":
+            return not self.check(value)
+
+        if kind == "wayland":
+            return bool(os.environ.get("WAYLAND_DISPLAY"))
+        if kind == "x11":
+            return bool(os.environ.get("DISPLAY"))
+        if kind == "graphical":
+            return bool(os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY"))
+        if kind == "ssh":
+            return bool(os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"))
+        if kind == "desktop":
+            session = os.environ.get("XDG_SESSION_TYPE", "").lower()
+            if session in ("wayland", "x11", "mir"):
+                return True
+            return self.check("graphical") and not self.check("ssh")
+
+        if kind == "battery":
+            return self._has_battery()
+        if kind == "btrfs":
+            return self._root_is_btrfs()
+        if kind == "vm":
+            return self._is_vm()
+        if kind == "baremetal":
+            return not self._is_vm()
+
+        if kind == "command":
+            return bool(shutil.which(value))
+        if kind == "path":
+            return Path(value).expanduser().exists()
+        if kind == "missing":
+            return not Path(value).expanduser().exists()
+        if kind == "file":
+            return Path(value).expanduser().is_file()
+        if kind == "dir":
+            return Path(value).expanduser().is_dir()
+
+        if kind == "package":
+            return self._package_installed(value)
+        if kind == "group":
+            return self._user_in_group(value)
+        if kind == "gpu":
+            return self._gpu(value.lower())
+
+        if kind == "service_active":
+            cmd = GLOBAL_CONFIG.get("conditions", {}).get(
+                "service_active_cmd",
+                ["systemctl", "is-active", "--quiet"],
+            )
+            return self._run(cmd + [value])
+        if kind == "user_service_active":
+            cmd = GLOBAL_CONFIG.get("conditions", {}).get(
+                "user_service_active_cmd",
+                ["systemctl", "--user", "is-active", "--quiet"],
+            )
+            return self._run(cmd + [value])
+
+        if kind == "env":
+            return bool(os.environ.get(value))
+
+        return False
+
+    def _run(self, cmd: list[str]) -> bool:
+        with suppress(Exception):
+            return subprocess.run(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+            ).returncode == 0
+        return False
+
+    def _output(self, cmd: list[str]) -> str:
+        with suppress(Exception):
+            proc = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=5,
+            )
+            if proc.returncode == 0:
+                return proc.stdout.strip()
+        return ""
+
+    def _has_battery(self) -> bool:
+        base = Path("/sys/class/power_supply")
+        if not base.exists():
+            return False
+        with suppress(OSError):
+            for entry in base.iterdir():
+                type_file = entry / "type"
+                if type_file.exists():
+                    if type_file.read_text(errors="ignore").strip() == "Battery":
+                        return True
+        return False
+
+    def _root_is_btrfs(self) -> bool:
+        with suppress(OSError):
+            for line in Path("/proc/mounts").read_text(errors="ignore").splitlines():
+                parts = line.split()
+                if len(parts) >= 3 and parts[1] == "/" and parts[2] == "btrfs":
+                    return True
+        return False
+
+    def _is_vm(self) -> bool:
+        if shutil.which("systemd-detect-virt"):
+            with suppress(Exception):
+                proc = subprocess.run(
+                    ["systemd-detect-virt", "--vm", "--quiet"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=5,
+                )
+                return proc.returncode == 0
+
+        dmi = Path("/sys/class/dmi/id/sys_vendor")
+        if dmi.exists():
+            with suppress(OSError):
+                vendor = dmi.read_text(errors="ignore").lower()
+                return any(x in vendor for x in ("qemu", "kvm", "vmware", "virtualbox", "bochs"))
+
+        return False
+
+    def _package_installed(self, name: str) -> bool:
+        pkg_cmd = GLOBAL_CONFIG.get("conditions", {}).get(
+            "package_check_cmd",
+            ["pacman", "-Qq"],
+        )
+        if not pkg_cmd or not shutil.which(pkg_cmd[0]):
+            return False
+        return self._run(pkg_cmd + [name])
+
+    def _user_in_group(self, group: str) -> bool:
+        user = target_user_pw().pw_name
+        groups = self._output(["id", "-nG", user])
+        return group in groups.split()
+
+    def _gpu(self, kind: str) -> bool:
+        if kind == "nvidia" and Path("/sys/module/nvidia").exists():
+            return True
+        if kind == "intel" and (Path("/sys/module/i915").exists() or Path("/sys/module/xe").exists()):
+            return True
+        if kind == "amd" and (Path("/sys/module/amdgpu").exists() or Path("/sys/module/radeon").exists()):
+            return True
+
+        drm_path = Path("/sys/class/drm")
+        if drm_path.exists():
+            vendor_map = GLOBAL_CONFIG.get(
+                "conditions",
+                {},
+            ).get(
+                "gpu_vendor_map",
+                {
+                    "nvidia": "0x10de",
+                    "intel": "0x8086",
+                    "amd": "0x1002",
+                    "vmware": "0x15ad",
+                    "virtio": "0x1af4",
+                },
+            )
+            target_vendor = vendor_map.get(kind)
+            if target_vendor:
+                with suppress(OSError):
+                    for card in drm_path.glob("card[0-9]*"):
+                        device_dir = card / "device"
+                        if not device_dir.exists():
+                            continue
+                        driver_link = device_dir / "driver"
+                        if driver_link.exists():
+                            with suppress(OSError):
+                                if driver_link.resolve().name == "simpledrm":
+                                    continue
+                        vendor_file = device_dir / "vendor"
+                        if vendor_file.exists():
+                            if vendor_file.read_text(encoding="utf-8").strip().lower() == target_vendor:
+                                return True
+
+        if kind == "nvidia":
+            return self._lspci_vga("nvidia")
+        if kind == "intel":
+            return self._lspci_vga("intel")
+        if kind == "amd":
+            return (
+                self._lspci_vga("amd")
+                or self._lspci_vga("ati")
+                or self._lspci_vga("radeon")
+                or self._lspci_vga("advanced micro devices")
+            )
+        return False
+
+    def _lspci_vga(self, needle: str) -> bool:
+        if not shutil.which("lspci"):
+            return False
+        out = self._output(["lspci"])
+        needle_lower = needle.lower()
+        pattern = re.compile(rf"\b{re.escape(needle_lower)}\b", re.IGNORECASE)
+        for line in out.splitlines():
+            line_lower = line.lower()
+            if any(ctrl in line_lower for ctrl in ("vga", "3d", "display")):
+                if pattern.search(line_lower):
+                    return True
+        return False
+
+
+class RunLogger:
+    def __init__(self, profile: 'ProfileConfig', run_id: str):
+        log_config = GLOBAL_CONFIG.get("logging", {})
+        self.enabled = log_config.get("enabled", True)
+        self.write_task_logs = log_config.get("write_task_logs", True)
+        self.write_reports = log_config.get("write_reports", True)
+
+        self.root: Path | None = None
+        self.main_path: Path | None = None
+        self._main = None
+        self._task_files: dict[str, object] = {}
+        self.run_id = run_id
+
+        if not self.enabled:
+            return
+
+        try:
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            self.root = logs_dir() / f"{stamp}_{safe_filename(profile.name)}_{run_id}"
+            ensure_secure_dir(self.root)
+            self.main_path = self.root / "dusky_update.log"
+            self._main = open(self.main_path, "a", encoding="utf-8", errors="replace")
+            self.system(f"Logging started for profile: {profile.name}")
+            self.system(f"Run ID: {run_id}")
+        except OSError as e:
+            sys.stderr.write(f"[WARN] Cannot create task log directory under {logs_dir()}: {e}\n")
+
+    def system(self, msg: str) -> None:
+        if not self.enabled or self._main is None:
+            return
+        with suppress(OSError):
+            self._main.write(f"[{now_ts()}] {msg}\n")
+            self._main.flush()
+
+    def task_log_path(self, task: 'DuskyTask', index: int) -> Path:
+        if self.root is None:
+            return Path("/dev/null")
+        return self.root / f"{index:03d}_{safe_filename(task.name)}.log"
+
+    def write_task(self, task: 'DuskyTask', index: int, text: str) -> None:
+        if not self.enabled or not self.write_task_logs or self.root is None:
+            return
+        log_path = self.task_log_path(task, index)
+        with suppress(OSError):
+            with open(log_path, "a", encoding="utf-8", errors="replace") as f:
+                f.write(text + "\n")
+
+    def close_task(
+        self,
+        task: 'DuskyTask',
+        index: int,
+        status: str = "",
+        exit_code: int | None = None,
+        duration: float = 0.0,
+    ) -> None:
+        if not self.enabled or not self.write_task_logs or self.root is None:
+            return
+        log_path = self.task_log_path(task, index)
+        with suppress(OSError):
+            with open(log_path, "a", encoding="utf-8", errors="replace") as f:
+                f.write(f"\n[{now_ts()}] TASK END: {task.name}\n")
+                f.write(f"[{now_ts()}] STATUS: {status}\n")
+                f.write(f"[{now_ts()}] EXIT CODE: {exit_code}\n")
+                f.write(f"[{now_ts()}] DURATION: {duration:.2f}s\n")
+
+    def write_report(
+        self,
+        profile: 'ProfileConfig',
+        tasks: list,
+        statuses: dict[str, str],
+        counters: dict[str, int],
+    ) -> None:
+        if not self.enabled or not self.write_reports or self.root is None:
+            return
+
+        report = {
+            "run_id": self.run_id,
+            "generated": now_iso(),
+            "profile": profile.name,
+            "profile_file": str(profile.filepath),
+            "version": VERSION,
+            "python": sys.version,
+            "user": target_user_pw().pw_name,
+            "uid": target_user_pw().pw_uid,
+            "home": str(user_home()),
+            "counters": counters,
+            "tasks": [],
+        }
+
+        lines = [
+            "# Dusky Update Report",
+            "",
+            f"- Run ID: `{self.run_id}`",
+            f"- Generated: `{now_iso()}`",
+            f"- Profile: `{profile.name}`",
+            f"- Version: `{VERSION}`",
+            "",
+            "## Counters",
+            "",
+        ]
+
+        for k, v in sorted(counters.items()):
+            lines.append(f"- {k}: {v}")
+
+        lines.extend(["", "## Tasks", ""])
+
+        for task in tasks:
+            status = statuses.get(task.state_key, "pending")
+            item = {
+                "script": task.name,
+                "mode": task.mode,
+                "status": status,
+                "path": str(task.resolved_path),
+                "args": task.args,
+            }
+            report["tasks"].append(item)
+            lines.append(f"- [{task.mode}] {task.name} -> {status}")
+
+        with suppress(OSError):
+            (self.root / "report.json").write_text(
+                json.dumps(report, indent=2, default=str),
+                encoding="utf-8",
+            )
+            (self.root / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def close(self) -> None:
+        self.close_all()
+
+    def close_all(self) -> None:
+        if not self.enabled:
+            return
+
+        for f in list(self._task_files.values()):
+            with suppress(OSError):
+                if hasattr(f, "flush"):
+                    f.flush()
+                if hasattr(f, "close"):
+                    f.close()
+        self._task_files.clear()
+
+        if self._main is not None:
+            with suppress(OSError):
+                self.system("Logging stopped.")
+                self._main.flush()
+                self._main.close()
+            self._main = None
+
+
+# ==============================================================================
+#  NOTIFICATIONS & POWER MANAGEMENT INHIBITOR
+# ==============================================================================
+class AudioNotifier:
+    enabled = True
+
+    @classmethod
+    @functools.cache
+    def _get_player(cls) -> str | None:
+        players = GLOBAL_CONFIG.get("notifications", {}).get("audio_players", ["pw-play", "paplay"])
+        for bin_name in players:
+            if p := shutil.which(bin_name):
+                return p
+        return None
+
+    @classmethod
+    def play(cls, sound_type: str = "alert") -> None:
+        if not cls.enabled or not GLOBAL_CONFIG.get("notifications", {}).get("audio_enabled", True):
+            return
+
+        player = cls._get_player()
+        if not player:
+            return
+
+        sound_map = GLOBAL_CONFIG.get(
+            "notifications",
+            {},
+        ).get(
+            "sound_map",
+            {
+                "alert": "/usr/share/sounds/freedesktop/stereo/dialog-warning.oga",
+                "info": "/usr/share/sounds/freedesktop/stereo/dialog-information.oga",
+                "complete": "/usr/share/sounds/freedesktop/stereo/complete.oga",
+            },
+        )
+        target = Path(sound_map.get(sound_type, sound_map.get("alert", "")))
+        if not target.exists():
+            fallback_sound = GLOBAL_CONFIG.get(
+                "notifications",
+                {},
+            ).get("fallback_sound", "/usr/share/sounds/freedesktop/stereo/bell.oga")
+            fallback = Path(fallback_sound)
+            if fallback.exists():
+                target = fallback
+            else:
+                return
+
+        cmd = (
+            [player, "--media-role=event", str(target)]
+            if player.endswith("pw-play")
+            else [player, str(target)]
+        )
+
+        with suppress(OSError):
+            subprocess.Popen(
+                cmd,
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+            )
+
+
+class DesktopNotifier:
+    enabled = True
+
+    @classmethod
+    def notify(cls, title: str, body: str, urgency: str = "normal") -> None:
+        if not cls.enabled or not GLOBAL_CONFIG.get("notifications", {}).get("desktop_enabled", True):
+            return
+        if not shutil.which("notify-send"):
+            return
+        app_name = GLOBAL_CONFIG.get("notifications", {}).get("app_name", "Dusky Updater")
+        with suppress(OSError):
+            subprocess.Popen(
+                [
+                    "notify-send",
+                    f"--app-name={app_name}",
+                    f"--urgency={urgency}",
+                    title,
+                    body,
+                ],
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+            )
+
+
+class SleepInhibitor:
+    def __init__(self, enabled: bool = True):
+        self.proc = None
+        if not enabled:
+            return
+        if not shutil.which("systemd-inhibit") or not shutil.which("sleep"):
+            return
+
+        with suppress(OSError):
+            self.proc = subprocess.Popen(
+                [
+                    "systemd-inhibit",
+                    "--what=idle:sleep",
+                    "--who=Dusky Updater",
+                    "--why=System update running",
+                    "--mode=block",
+                    "sleep",
+                    "infinity",
+                ],
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+            )
+
+    def close(self) -> None:
+        if self.proc is None:
+            return
+        with suppress(Exception):
+            self.proc.terminate()
+            self.proc.wait(timeout=3)
+        with suppress(Exception):
+            self.proc.kill()
+        self.proc = None
+
+
+# ==============================================================================
+#  PRE-FLIGHT BOOTSTRAP & DEPENDENCY RESOLUTION
+# ==============================================================================
 def bootstrap_dependencies() -> bool:
     missing = [
         pkg for mod, pkg in [("textual", "python-textual"), ("rich", "python-rich")]
@@ -157,10 +1485,11 @@ def bootstrap_dependencies() -> bool:
     ]
     if missing:
         sys.stdout.write(f"\033[1;33m[DUSKY BOOTSTRAP]\033[0m Resolving dependencies: {', '.join(missing)}\n")
-        if not verify_sudo():
+        if not SudoEngine.preflight():
             sys.exit(1)
         try:
-            subprocess.run(['sudo', 'pacman', '-S', '--noconfirm'] + missing, check=True)
+            cmd = SudoEngine.sudo_prefix() + ['pacman', '-S', '--noconfirm'] + missing
+            subprocess.run(cmd, check=True)
             importlib.invalidate_caches()
             importlib.reload(site)
         except subprocess.CalledProcessError:
@@ -176,6 +1505,7 @@ try:
     from rich.markup import escape
     from rich.syntax import Syntax
     from rich.text import Text
+    from textual import events
     from textual.app import App, ComposeResult
     from textual.containers import Horizontal, Vertical
     from textual.reactive import reactive
@@ -407,8 +1737,7 @@ CLR_RST = "\033[0m"
 
 
 def strip_ansi(text: str) -> str:
-    ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-    return ansi_escape.sub('', text)
+    return ANSI_STRIP_REGEX.sub('', text)
 
 
 def log(level: str, msg: str):
@@ -446,17 +1775,9 @@ def log(level: str, msg: str):
 
 
 def desktop_notify(summary: str, body: str, urgency: str = "normal") -> None:
-    if OPT_DRY_RUN or not GLOBAL_CONFIG.get("notifications", {}).get("desktop_enabled", True):
+    if OPT_DRY_RUN:
         return
-    if shutil.which("notify-send"):
-        app_name = GLOBAL_CONFIG.get("notifications", {}).get("app_name", "Dusky Updater")
-        with suppress(Exception):
-            subprocess.run(
-                ["notify-send", "--urgency", urgency, "--app-name", app_name, summary, body],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=3,
-            )
+    DesktopNotifier.notify(summary, body, urgency)
 
 
 def auto_prune() -> None:
@@ -559,28 +1880,108 @@ def setup_runtime_dir():
     LOCK_FILE = lock_path()
 
 
-def acquire_lock():
-    global LOCK_FD
-    try:
-        LOCK_FD = open(LOCK_FILE, "a")
-    except OSError as e:
-        sys.stderr.write(f"Error: Cannot open lock file: {LOCK_FILE} ({e})\n")
-        return False
+_LOCK_FD: int | None = None
+
+
+def get_lock_holders() -> str:
+    lp = lock_path()
+    if not lp.exists():
+        return ""
 
     try:
-        fcntl.flock(LOCK_FD, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        return True
+        real_lock = lp.resolve()
+    except Exception:
+        return ""
+
+    holders: list[str] = []
+    proc_dir = Path("/proc")
+    if not proc_dir.exists():
+        return ""
+
+    try:
+        pids = [d for d in proc_dir.iterdir() if d.name.isdigit()]
+    except PermissionError:
+        return ""
+
+    my_pid = str(os.getpid())
+
+    for pid_dir in pids:
+        if pid_dir.name == my_pid:
+            continue
+
+        fd_dir = pid_dir / "fd"
+        try:
+            if not fd_dir.exists():
+                continue
+            for fd_link in fd_dir.iterdir():
+                try:
+                    if fd_link.resolve() == real_lock:
+                        cmdline_path = pid_dir / "cmdline"
+                        cmd = ""
+                        with suppress(PermissionError, OSError):
+                            if cmdline_path.exists():
+                                cmd = cmdline_path.read_text(errors="replace").replace("\x00", " ").strip()
+                        if not cmd:
+                            cmd = f"[pid {pid_dir.name}]"
+                        holders.append(f"  - PID {pid_dir.name}: {cmd}")
+                        break
+                except (PermissionError, FileNotFoundError, OSError):
+                    continue
+        except (PermissionError, OSError):
+            continue
+
+    return "\n".join(holders)
+
+
+def _cleanup_lock() -> None:
+    global _LOCK_FD
+    try:
+        if _LOCK_FD is not None:
+            with suppress(OSError):
+                fcntl.flock(_LOCK_FD, fcntl.LOCK_UN)
+            with suppress(OSError):
+                os.close(_LOCK_FD)
+            _LOCK_FD = None
+        lock_path().unlink(missing_ok=True)
     except OSError:
-        sys.stderr.write("Error: Another instance is already running.\n")
+        pass
+
+
+def acquire_lock() -> bool:
+    global _LOCK_FD
+    lp = lock_path()
+
+    with suppress(OSError):
+        ensure_secure_dir(lp.parent)
+
+    try:
+        fd = os.open(str(lp), os.O_CREAT | os.O_RDWR | os.O_CLOEXEC, 0o600)
+    except Exception as e:
+        sys.stderr.write(f"[ERROR] Could not open lock file {lp}: {e}\n")
+        return False
+
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _LOCK_FD = fd
+        atexit.register(_cleanup_lock)
+        return True
+    except BlockingIOError:
+        sys.stderr.write("[ERROR] Another instance is already running.\n")
+        holders = get_lock_holders()
+        if holders:
+            sys.stderr.write(holders + "\n")
+        with suppress(OSError):
+            os.close(fd)
+        return False
+    except OSError as e:
+        sys.stderr.write(f"[ERROR] Failed to acquire lock: {e}\n")
+        with suppress(OSError):
+            os.close(fd)
         return False
 
 
-def release_lock():
-    global LOCK_FD
-    if LOCK_FD is not None:
-        with suppress(OSError):
-            LOCK_FD.close()
-        LOCK_FD = None
+def release_lock() -> None:
+    _cleanup_lock()
 
 
 def check_disk_space(path: Path) -> bool:
@@ -785,6 +2186,22 @@ class DuskyTask:
     interpreter: Optional[list[str]] = None
     path_state: str = "ok"  # "ok", "missing", "conflict"
 
+    # Extended Orchestrator Subsystem Fields
+    interactive_override: bool | None = None
+    force_flag: bool = False
+    condition: str | None = None
+    timeout: float | None = None
+    always: bool = False
+    retry: int = 0
+    retry_delay: float = 1.0
+    on_failure: str = "ask"
+    once: bool = False
+    once_mode: str = "content"
+    once_scope: str = "profile"
+    checksum: str = ""
+    state_key: str = ""
+    duration: float = 0.0
+
 
 def parse_manifest(profile: ProfileConfig) -> list[DuskyTask]:
     tasks = [
@@ -814,7 +2231,6 @@ def parse_manifest(profile: ProfileConfig) -> list[DuskyTask]:
         else:
             continue
 
-        flags = {f.lower() for f in flags_raw.split()}
         with suppress(Exception):
             cmd_tokens = shlex.split(cmd_part)
         if 'cmd_tokens' not in locals() or not cmd_tokens:
@@ -824,8 +2240,61 @@ def parse_manifest(profile: ProfileConfig) -> list[DuskyTask]:
             continue
 
         script_name, *args = cmd_tokens
-        ignore_fail = bool(flags.intersection({"ignore", "ignore-fail", "true"}))
-        interactive = bool(flags.intersection({"interactive", "tui", "prompt"}))
+
+        ignore_fail = False
+        interactive = False
+        interactive_override = None
+        force_flag = False
+        always = False
+        condition = None
+        timeout = None
+        retry = 0
+        retry_delay = 1.0
+        on_failure = "ask"
+        once = False
+        once_mode = "content"
+        once_scope = "profile"
+
+        raw_flags = [tok.strip().lower() for part in flags_raw.split(",") for tok in part.split() if tok.strip()]
+        for f in raw_flags:
+            if f in ("true", "ignore", "ignore-fail"):
+                ignore_fail = True
+            elif f in ("interactive", "tui", "prompt", "fullscreen", "tty", "suspend"):
+                interactive = True
+                interactive_override = True
+            elif f in ("no-interactive", "noninteractive", "inline", "embedded"):
+                interactive = False
+                interactive_override = False
+            elif f in ("force", "--force"):
+                force_flag = True
+            elif f in ("always", "always_run"):
+                always = True
+            elif f in ("once", "run_once", "sticky"):
+                once = True
+            elif f in ("once:content", "once:hash"):
+                once, once_mode = True, "content"
+            elif f in ("once:forever", "once:exact", "once:permanent"):
+                once, once_mode = True, "forever"
+            elif f in ("once:profile", "once:local"):
+                once, once_scope = True, "profile"
+            elif f in ("once:global", "once:machine"):
+                once, once_scope = True, "global"
+            elif f.startswith("if:"):
+                cond_val = f[3:]
+                condition = cond_val if condition is None else f"{condition},{cond_val}"
+            elif f.startswith("timeout:"):
+                with suppress(ValueError):
+                    timeout = float(f[8:])
+            elif f.startswith("retry:"):
+                with suppress(ValueError):
+                    retry = max(0, int(f[6:]))
+            elif f.startswith("retry_delay:"):
+                with suppress(ValueError):
+                    retry_delay = max(0.0, float(f[12:]))
+            elif f.startswith("on_failure:"):
+                val = f[11:].lower()
+                if val in ("ask", "abort", "continue", "skip", "manual"):
+                    on_failure = val
 
         if not interactive and any(script_name.startswith(s) for s in interactive_heuristics):
             interactive = True
@@ -833,7 +2302,10 @@ def parse_manifest(profile: ProfileConfig) -> list[DuskyTask]:
         tasks.append(DuskyTask(
             name=script_name, mode=mode,  # type: ignore
             ignore_fail=ignore_fail, interactive=interactive,
-            args=args
+            interactive_override=interactive_override, force_flag=force_flag,
+            condition=condition, timeout=timeout, always=always, retry=retry,
+            retry_delay=retry_delay, on_failure=on_failure, once=once,
+            once_mode=once_mode, once_scope=once_scope, args=args
         ))
     return tasks
 
@@ -934,6 +2406,8 @@ def resolve_and_validate_manifest(profile: ProfileConfig, tasks: list[DuskyTask]
 
         task.resolved_path = script_path
         task.path_state = "ok"
+        task.checksum = file_checksum(script_path)
+        task.state_key = hashlib.blake2b((task.mode + task.name + shlex.join(task.args)).encode("utf-8")).hexdigest()
 
         if is_script_interactive(script_path):
             task.interactive = True
@@ -989,13 +2463,26 @@ def resolve_and_validate_manifest(profile: ProfileConfig, tasks: list[DuskyTask]
                 else:
                     print("Invalid choice.")
         else:
-            if has_py_ext or has_py_shebang:
-                needs_python = True
-                resolved_interpreter = extracted_interpreter or ["python3"]
+            suffix = script_path.suffix.lower()
+            ext_map = GLOBAL_CONFIG.get("execution", {}).get(
+                "extension_interpreters",
+                {
+                    ".py": sys.executable,
+                    ".sh": shutil.which("bash") or "bash",
+                    ".fish": shutil.which("fish") or "fish",
+                },
+            )
+            default_interp = GLOBAL_CONFIG.get("execution", {}).get("default_interpreter", "bash")
+
+            if suffix in ext_map:
+                resolved_interpreter = [ext_map[suffix]]
             elif extracted_interpreter:
                 resolved_interpreter = extracted_interpreter
+            elif has_py_ext or has_py_shebang:
+                needs_python = True
+                resolved_interpreter = extracted_interpreter or [sys.executable]
             else:
-                resolved_interpreter = ["bash"]
+                resolved_interpreter = [shutil.which(default_interp) or default_interp]
 
         task.interpreter = resolved_interpreter
 
@@ -1023,6 +2510,29 @@ def resolve_and_validate_manifest(profile: ProfileConfig, tasks: list[DuskyTask]
 # ==============================================================================
 #  GIT ASYNCHRONOUS ENGINE
 # ==============================================================================
+def _git_env() -> dict[str, str]:
+    env = os.environ.copy()
+    strip_keys = GLOBAL_CONFIG.get("git", {}).get(
+        "env_strip",
+        ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_LITERAL_PATHSPECS", "GIT_ASKPASS", "SSH_ASKPASS"],
+    )
+    for k in strip_keys:
+        env.pop(k, None)
+
+    inject = GLOBAL_CONFIG.get("git", {}).get(
+        "env_inject",
+        {
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_SSH_COMMAND": "ssh -o BatchMode=yes",
+            "GIT_PAGER": "cat",
+            "PAGER": "cat",
+            "GIT_OPTIONAL_LOCKS": "0",
+        },
+    )
+    env.update(inject)
+    return env
+
+
 class GitEngine:
     def __init__(self, app: App, profile: ProfileConfig):
         self.app = app
@@ -1034,7 +2544,7 @@ class GitEngine:
     async def _run(self, *args: str, check: bool = True, task_idx: int = -1) -> tuple[int, str, str]:
         cmd = self.git_cmd_base + list(args)
         proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=_git_env()
         )
         stdout, stderr = await proc.communicate()
         out, err = stdout.decode('utf-8', errors='replace').strip(), stderr.decode('utf-8', errors='replace').strip()
@@ -1054,7 +2564,7 @@ class GitEngine:
         cmd = self.git_cmd_base + list(args)
         try:
             coro = asyncio.create_subprocess_exec(
-                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=_git_env()
             )
             if timeout_sec > 0:
                 proc = await asyncio.wait_for(coro, timeout=timeout_sec)
@@ -1204,7 +2714,7 @@ class GitEngine:
                    'fetch', '--no-write-fetch-head', source, f'+refs/heads/{self.profile.branch}:{tracking_ref}']
             try:
                 proc = await asyncio.wait_for(
-                    asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT),
+                    asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=_git_env()),
                     timeout=FETCH_TIMEOUT
                 )
                 stdout, _ = await proc.communicate()
@@ -1232,7 +2742,7 @@ class GitEngine:
             cmd = ['git', 'clone', '--bare', '--branch', self.profile.branch, self.profile.repo_url, str(GIT_DIR)]
             try:
                 proc = await asyncio.wait_for(
-                    asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT),
+                    asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=_git_env()),
                     timeout=CLONE_TIMEOUT
                 )
                 stdout, _ = await proc.communicate()
@@ -1968,6 +3478,9 @@ class TaskItem(ListItem):
 # ==============================================================================
 #  MAIN APPLICATION ENGINE
 # ==============================================================================
+# ==============================================================================
+#  MAIN APPLICATION ENGINE
+# ==============================================================================
 class DuskyApp(App):
     CSS = DUSKY_CSS
 
@@ -1978,6 +3491,15 @@ class DuskyApp(App):
         self.has_sudo = has_sudo
         self.abort_flag = False
         self.git_diff_text = ""
+        self.current_pty_master: int | None = None
+        self.active_child_pid: int | None = None
+        self.active_child_group: bool = False
+        self._prompt_buffer: str = ""
+        self._prompt_counts: dict[str, int] = {}
+        self._prompt_last: dict[str, float] = {}
+        self.state_store: StateStore | None = None
+        self.sleep_inhibitor: SleepInhibitor | None = None
+        self.heartbeat_task: asyncio.Task | None = None
 
     def compose(self) -> ComposeResult:
         yield Static(f" 🦅 DUSKY PIPELINE ENGINE (v{VERSION} — {self.profile.name})", classes="header-panel")
@@ -1987,10 +3509,11 @@ class DuskyApp(App):
                 yield ListView(id="task_list")
 
             with Vertical(id="log_container"):
+                max_lines = GLOBAL_CONFIG.get("ui", {}).get("max_log_lines", 6000)
                 with ContentSwitcher(initial="log-main", id="log_switcher"):
-                    yield RichLog(id="log-main", markup=True, wrap=True, auto_scroll=True)
+                    yield RichLog(id="log-main", markup=True, wrap=True, auto_scroll=True, max_lines=max_lines)
                     for i in range(len(self.tasks)):
-                        yield RichLog(id=f"log-task-{i}", markup=True, wrap=True, auto_scroll=True)
+                        yield RichLog(id=f"log-task-{i}", markup=True, wrap=True, auto_scroll=True, max_lines=max_lines)
 
         yield ProgressBar(total=len(self.tasks), id="main_progress", show_eta=False)
 
@@ -2007,11 +3530,25 @@ class DuskyApp(App):
         self.log_main(f"[bold {THEME['accent']}] Profile: {self.profile.name}[/]")
         self.log_main(f"[bold {THEME['accent']}]======================================================[/]")
 
+        self.sleep_inhibitor = SleepInhibitor(enabled=True)
+        self.state_store = StateStore(self.profile)
+
         if self.has_sudo:
-            interval = GLOBAL_CONFIG.get("sudo", {}).get("heartbeat_interval", 60.0)
-            self.set_interval(float(interval), self.ping_sudo)
+            self.heartbeat_task = asyncio.create_task(
+                SudoEngine.maintain_heartbeat(
+                    error_callback=lambda msg: self.log_main(f"[bold {THEME['warning']}][WARN] {msg}[/]")
+                )
+            )
 
         self.run_worker(self.execute_pipeline(), exclusive=True, thread=False)
+
+    def on_unmount(self) -> None:
+        if self.heartbeat_task and not self.heartbeat_task.done():
+            self.heartbeat_task.cancel()
+        if self.sleep_inhibitor:
+            self.sleep_inhibitor.close()
+        if self.state_store:
+            self.state_store.close()
 
     def log_main(self, message: str) -> None:
         self.query_one("#log-main", RichLog).write(message)
@@ -2045,12 +3582,203 @@ class DuskyApp(App):
         elif isinstance(item, TaskItem):
             switcher.current = f"log-task-{item.task_index}"
 
-    async def ping_sudo(self) -> None:
-        with suppress(Exception):
+    def _maybe_respond_prompt(self, text: str) -> None:
+        if not hasattr(self, 'current_pty_master') or self.current_pty_master is None:
+            return
+
+        self._prompt_buffer = (getattr(self, "_prompt_buffer", "") + text)[-4096:]
+        tail = self._prompt_buffer
+
+        for name, pattern, kind in PROMPT_RULES:
+            if not pattern.search(tail):
+                continue
+
+            if not hasattr(self, '_prompt_counts'):
+                self._prompt_counts = {}
+                self._prompt_last = {}
+
+            count = self._prompt_counts.get(name, 0)
+            max_count = 5 if name == "sudo_password" else 500
+            if count >= max_count:
+                continue
+
+            now = time.monotonic()
+            last = self._prompt_last.get(name, 0.0)
+            cooldown = GLOBAL_CONFIG.get("prompts", {}).get("cooldown", 0.35)
+            if now - last < cooldown:
+                continue
+
+            response: bytes | None = None
+
+            if kind == "password":
+                if SudoEngine._password:
+                    response = SudoEngine._password.encode("utf-8") + b"\r"
+                else:
+                    self.log_main("[FATAL] Sudo password prompt detected, but no cached password is available.")
+                    continue
+            elif kind == "yes":
+                response = b"y\r"
+            else:
+                response = b"\r"
+
+            with suppress(OSError):
+                os.write(self.current_pty_master, response)
+
+            self._prompt_counts[name] = count + 1
+            self._prompt_last[name] = now
+            self._prompt_buffer = ""
+            break
+
+    @staticmethod
+    def _set_pty_size(fd: int) -> None:
+        try:
+            size = os.get_terminal_size()
+            winsize = struct.pack("HHHH", size.lines, size.columns, 0, 0)
+            fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
+        except (OSError, ValueError):
+            fallback_cols = GLOBAL_CONFIG.get("ui", {}).get("fallback_pty_columns", 120)
+            fallback_lines = GLOBAL_CONFIG.get("ui", {}).get("fallback_pty_lines", 40)
+            with suppress(OSError):
+                winsize = struct.pack("HHHH", fallback_lines, fallback_cols, 0, 0)
+                fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
+
+    async def execute_pty_command(self, cmd: list[str], timeout: float = 0.0, task_index: int = 0) -> tuple[bool, int | None]:
+        try:
+            master_fd, slave_fd = pty.openpty()
+        except OSError as e:
+            self.log_main(f"[FATAL] PTY allocation failed: {e}")
+            return False, None
+
+        self.current_pty_master = master_fd
+        self._set_pty_size(slave_fd)
+
+        transport: asyncio.Transport | None = None
+        proc: asyncio.subprocess.Process | None = None
+        file_obj = None
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        line_buffer = ""
+
+        try:
             proc = await asyncio.create_subprocess_exec(
-                'sudo', '-n', '-v', stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+                *cmd,
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                close_fds=True,
+                start_new_session=True,
+                cwd=str(WORK_TREE)
             )
-            await proc.wait()
+
+            with suppress(OSError):
+                os.close(slave_fd)
+            slave_fd = -1
+
+            self.active_child_pid = proc.pid
+            self.active_child_group = True
+
+            loop = asyncio.get_running_loop()
+            reader = asyncio.StreamReader(limit=1024 * 1024)
+            protocol = asyncio.StreamReaderProtocol(reader)
+
+            file_obj = os.fdopen(master_fd, "rb", buffering=0)
+            master_fd = -1
+
+            transport, _ = await loop.connect_read_pipe(lambda: protocol, file_obj)
+
+            async def read_loop() -> None:
+                nonlocal line_buffer
+
+                while True:
+                    try:
+                        chunk = await reader.read(4096)
+                    except Exception:
+                        chunk = b""
+
+                    if not chunk:
+                        if line_buffer:
+                            for line in BRACKET_NEWLINE_RE.split(line_buffer):
+                                if line:
+                                    self.log_task(Text.from_ansi(line), task_index)
+                            line_buffer = ""
+                        break
+
+                    try:
+                        text = decoder.decode(chunk)
+                    except Exception:
+                        text = chunk.decode("utf-8", errors="replace")
+
+                    if text:
+                        self._maybe_respond_prompt(text)
+
+                    line_buffer += text
+
+                    if len(line_buffer) > 32768:
+                        self.log_task(Text.from_ansi(line_buffer[:32768]), task_index)
+                        line_buffer = line_buffer[-4096:]
+
+                    while True:
+                        m = SINGLE_NEWLINE_RE.search(line_buffer)
+                        if not m:
+                            break
+                        idx = m.start()
+                        line = line_buffer[:idx]
+                        line_buffer = line_buffer[idx + 1:]
+                        if line:
+                            clean = line.strip("\r\n")
+                            stripped = ANSI_STRIP_REGEX.sub("", clean) if "\x1b" in clean else clean
+
+                            pct = speed = eta = None
+                            if "%" in stripped:
+                                if match := PCT_REGEX.search(stripped):
+                                    pct = match.group(0)
+                            if "b/s" in stripped.lower():
+                                if match := SPEED_ETA_REGEX.search(stripped):
+                                    speed, eta = match.group(1), match.group(2)
+                                elif match := ALT_SPEED_ETA_REGEX.search(stripped):
+                                    speed, eta = match.group(1), match.group(2)
+
+                            if pct or speed:
+                                telemetry_str = f" [dim {THEME['accent']}]({pct or ''} {speed or ''})[/]"
+                                with suppress(Exception):
+                                    lbl = self.query_one(f"#lbl-{task_index}", Label)
+                                    lbl.update(f"{task_index+1}. {self.tasks[task_index].name}{telemetry_str}")
+
+                            self.log_task(Text.from_ansi(line), task_index)
+
+            read_task = asyncio.create_task(read_loop())
+
+            try:
+                async with asyncio.timeout(timeout if timeout > 0 else None):
+                    code = await proc.wait()
+                    try:
+                        await asyncio.wait_for(asyncio.shield(read_task), timeout=2.0)
+                    except (TimeoutError, asyncio.TimeoutError):
+                        read_task.cancel()
+                    return code == 0, code
+
+            except (TimeoutError, asyncio.TimeoutError):
+                with suppress(ProcessLookupError, PermissionError, OSError):
+                    os.killpg(proc.pid, signal.SIGKILL)
+                read_task.cancel()
+                return False, None
+
+        finally:
+            self.current_pty_master = None
+            self.active_child_pid = None
+            self.active_child_group = False
+
+            if transport is not None:
+                with suppress(Exception):
+                    transport.close()
+            elif file_obj is not None:
+                with suppress(Exception):
+                    file_obj.close()
+            elif master_fd != -1:
+                with suppress(OSError):
+                    os.close(master_fd)
+            if slave_fd != -1:
+                with suppress(OSError):
+                    os.close(slave_fd)
 
     @contextmanager
     def _suspend_ui(self):
@@ -2102,6 +3830,21 @@ class DuskyApp(App):
                 continue
 
             task = self.tasks[index]
+
+            if task.condition and not self.condition_evaluator.check(task.condition):
+                self.log_main(f"[dim]Condition '{task.condition}' false. Skipping: {escape(task.name)}[/dim]")
+                self.update_task_state(index, "skipped")
+                if self.state_store:
+                    self.state_store.mark(task, "skipped", note=f"Condition false: {task.condition}")
+                continue
+
+            if task.once and self.once_store and self.once_store.marker_valid(task, self.profile.name):
+                self.log_main(f"[dim]Run-once marker valid. Skipping: {escape(task.name)}[/dim]")
+                self.update_task_state(index, "skipped")
+                if self.state_store:
+                    self.state_store.mark(task, "skipped", note="Run-once marker valid")
+                continue
+
             self.update_task_state(index, "running")
 
             cmd_str = f"{task.name} {' '.join(task.args)}".strip()
@@ -2123,6 +3866,8 @@ class DuskyApp(App):
                 self.log_main(err)
                 self.log_task(err, index)
                 self.update_task_state(index, "failed")
+                if self.state_store:
+                    self.state_store.mark(task, "failed", exit_code=1, note="Architecture File Missing")
                 fail_count += 1
                 if not task.ignore_fail or OPT_STOP_ON_FAIL:
                     self.abort_flag = True
@@ -2133,8 +3878,9 @@ class DuskyApp(App):
             if not interpreter:
                 exec_cmd = [str(resolved_path)] + task.args
             if task.mode == 'S':
-                exec_cmd = ['sudo', '-n'] + exec_cmd
+                exec_cmd = SudoEngine.sudo_prefix() + exec_cmd
 
+            start_t = time.monotonic()
             try:
                 if task.interactive:
                     self.log_main(f"[dim]Suspending UI abstraction... Passing raw PTY control...[/]")
@@ -2159,54 +3905,65 @@ class DuskyApp(App):
                     self.log_task(f"\n[bold {THEME['success']}]PTY control returned. Exit Code: {rc}[/]", index)
 
                 else:
-                    proc = await asyncio.create_subprocess_exec(
-                        *exec_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, cwd=str(WORK_TREE)
-                    )
-                    if proc.stdout:
-                        buffer = ""
-                        while True:
-                            chunk = await proc.stdout.read(4096)
-                            if not chunk:
-                                break
-                            buffer += chunk.decode('utf-8', errors='replace')
-                            normalized = buffer.replace("\r\n", "\n").replace("\r", "\n")
-                            if "\n" in normalized:
-                                lines = normalized.split("\n")
-                                for line in lines[:-1]:
-                                    self.log_task(Text.from_ansi(line.rstrip()), index)
-                                buffer = lines[-1]
-                        if buffer:
-                            self.log_task(Text.from_ansi(buffer.rstrip()), index)
+                    success, rc = await self.execute_pty_command(exec_cmd, timeout=0.0, task_index=index)
+                    if rc is None:
+                        rc = 1
 
-                    await proc.wait()
-                    rc = proc.returncode
+                duration = time.monotonic() - start_t
 
                 if rc == 0:
                     self.update_task_state(index, "success")
+                    if self.state_store:
+                        self.state_store.mark(task, "completed", exit_code=0, duration=duration)
+                    if task.once and self.once_store:
+                        self.once_store.mark_success(task, self.profile.name, exit_code=0, run_id=getattr(self, "run_id", ""))
+                    if self.run_logger:
+                        self.run_logger.close_task(task, index, "completed", 0, duration)
                     success_count += 1
-                    self.log_main(f"[bold {THEME['success']}][OK][/] Process Complete.")
-                    self.log_task(f"\n[bold {THEME['success']}]>>> EXECUTION SUCCESSFUL[/]", index)
+                    self.log_main(f"[bold {THEME['success']}][OK][/] Process Complete ({duration:.2f}s).")
+                    self.log_task(f"\n[bold {THEME['success']}]>>> EXECUTION SUCCESSFUL ({duration:.2f}s)[/]", index)
                 else:
                     if task.ignore_fail and not OPT_STOP_ON_FAIL:
                         self.update_task_state(index, "skipped")
+                        if self.state_store:
+                            self.state_store.mark(task, "skipped", exit_code=rc, duration=duration)
+                        if self.run_logger:
+                            self.run_logger.close_task(task, index, "skipped", rc, duration)
                         self.log_main(f"[bold {THEME['warning']}][WARN][/] Process failure (Code {rc}) suppressed by manifest.")
                         self.log_task(f"\n[bold {THEME['warning']}]>>> EXECUTION FAILED / SUPPRESSED (Code {rc})[/]", index)
                     else:
                         self.update_task_state(index, "failed")
+                        if self.state_store:
+                            self.state_store.mark(task, "failed", exit_code=rc, duration=duration)
+                        if self.run_logger:
+                            self.run_logger.close_task(task, index, "failed", rc, duration)
                         fail_count += 1
                         self.log_main(f"[bold {THEME['error']}][FATAL][/] Process aborted execution sequence (Code {rc}).")
                         self.log_task(f"\n[bold {THEME['error']}]>>> FATAL EXECUTION FAILURE (Code {rc})[/]", index)
                         self.abort_flag = True
 
             except Exception as e:
+                duration = time.monotonic() - start_t
                 err_msg = f"[bold {THEME['error']}][ERROR][/] Internal Exception: {escape(str(e))}"
                 self.log_main(err_msg)
                 self.log_task(err_msg, index)
                 self.update_task_state(index, "failed")
+                if self.state_store:
+                    self.state_store.mark(task, "failed", exit_code=1, note=str(e), duration=duration)
+                if self.run_logger:
+                    self.run_logger.close_task(task, index, "failed", 1, duration)
                 if not task.ignore_fail or OPT_STOP_ON_FAIL:
                     self.abort_flag = True
 
             await asyncio.sleep(0.01)
+
+        if self.run_logger:
+            self.run_logger.write_report(
+                self.profile,
+                self.tasks,
+                {t.state_key: t.status for t in self.tasks},
+                {"success": success_count, "failed": fail_count},
+            )
 
         self.log_main(f"\n[bold {THEME['accent']}]═══════ Pipeline Summary ═══════[/]")
         self.log_main(f"  Successful Deployments : [bold {THEME['success']}]{success_count}[/]")
@@ -2215,11 +3972,58 @@ class DuskyApp(App):
         if self.abort_flag:
             self.log_main(f"\n[bold {THEME['error']} blink]SYSTEM PIPELINE ABORTED.[/]")
             desktop_notify("Dusky Update", f"{fail_count} required script(s) failed", urgency="critical")
+            AudioNotifier.play("alert")
         else:
             self.log_main(f"\n[bold {THEME['success']}]ARCHITECTURE DEPLOYMENT COMPLETED.[/]")
             desktop_notify("Dusky Update", "Update completed successfully", urgency="normal")
+            AudioNotifier.play("complete")
 
         self.log_main("\n[dim]Press 'Ctrl+C' or 'Q' to terminate abstraction shell.[/dim]")
+
+    def on_key(self, event: events.Key) -> None:
+        if getattr(self, "current_pty_master", None) is not None:
+            if event.key == "ctrl+q":
+                self.log_main("[FATAL] Emergency abort requested from PTY session.")
+                self.action_quit()
+                event.stop()
+                return
+
+            data = self._pty_key_bytes(event)
+            if data:
+                with suppress(OSError):
+                    os.write(self.current_pty_master, data)
+                event.stop()
+
+    def _pty_key_bytes(self, event: events.Key) -> bytes:
+        key = event.key
+        if event.is_printable and event.character:
+            return event.character.encode("utf-8")
+
+        simple = {
+            "enter": b"\r", "escape": b"\x1b", "tab": b"\t", "shift+tab": b"\x1b[Z",
+            "backspace": b"\x7f", "delete": b"\x1b[3~", "home": b"\x1b[H", "end": b"\x1b[F",
+            "pageup": b"\x1b[5~", "pagedown": b"\x1b[6~", "up": b"\x1b[A", "down": b"\x1b[B",
+            "right": b"\x1b[C", "left": b"\x1b[D", "insert": b"\x1b[2~",
+            "f1": b"\x1bOP", "f2": b"\x1bOQ", "f3": b"\x1bOR", "f4": b"\x1bOS",
+            "f5": b"\x1b[15~", "f6": b"\x1b[17~", "f7": b"\x1b[18~", "f8": b"\x1b[19~",
+            "f9": b"\x1b[20~", "f10": b"\x1b[21~", "f11": b"\x1b[23~", "f12": b"\x1b[24~",
+        }
+
+        if key in simple:
+            return simple[key]
+
+        if key.startswith("ctrl+"):
+            rest = key[5:]
+            if rest in ("space", "@"): return b"\x00"
+            if rest == "[": return b"\x1b"
+            if rest == "\\": return b"\x1c"
+            if rest == "]": return b"\x1d"
+            if rest == "^": return b"\x1e"
+            if rest == "_": return b"\x1f"
+            if len(rest) == 1 and rest.isalpha():
+                return bytes([ord(rest.lower()) - 96])
+
+        return b""
 
     def action_quit(self) -> None:
         self.abort_flag = True
@@ -2239,7 +4043,7 @@ if __name__ == "__main__":
 
         if not OPT_SYNC_ONLY and not OPT_DRY_RUN:
             if not has_sudo and any(t.mode == 'S' for t in tasks):
-                if not verify_sudo():
+                if not SudoEngine.preflight():
                     sys.exit(1)
                 has_sudo = True
 

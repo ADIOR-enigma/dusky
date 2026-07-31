@@ -36,6 +36,23 @@ search_dirs = [
 [conflict_resolutions]
 # "update_checker.sh" = "user_scripts/update_dusky/update_checker.sh"
 
+# ==============================================================================
+# Update sequence tasks format:
+#   Mode | Flags | Script Name & Arguments
+#
+# Field 1 (Mode):
+#   U = Run as user
+#   S = Run with elevated sudo privileges
+#
+# Field 2 (Optional Flags):
+#   ignore-fail         Suppress script failure exit codes
+#   interactive         Pass raw terminal TTY control for interactive scripts
+#   once, once:forever  Run-once idempotency (skips script if completed in past run)
+#   if:<condition>      Conditional execution (e.g., if:wayland, if:gpu:nvidia, if:pkg:hyprland)
+#   timeout:<seconds>   Per-task execution timeout in seconds
+#   retry:<count>       Retry attempts on task failure
+#   on_failure:<action> Action on failure: ask, abort, continue, skip
+# ==============================================================================
 [sequence]
 tasks = [
     # ================= CUSTOM =====================
