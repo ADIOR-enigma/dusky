@@ -464,7 +464,6 @@ int main(int argc, char **argv) {
         except Exception:
             pass
 
-    # Compute actual serial DRAM throughput: 8 bytes / access
     bytes_per_sec = (1e9 / lat_ns) * 8.0 if lat_ns > 0 else 0.0
     gb_s = bytes_per_sec / 1e9
     mib_s = bytes_per_sec / (1024.0 * 1024.0)
@@ -483,7 +482,7 @@ int main(int argc, char **argv) {
         write_gb_s=0.0,
         efficiency_pct=eff_pct,
         latency_ns=lat_ns,
-        details=f"Pointer chasing ({array_size_mb}M buffer > L3 cache on Core {target_core})",
+        details=f"128M pointer chasing (> L3 cache on Core {target_core})",
     )
 
 
@@ -666,14 +665,14 @@ def run_copy_stream_test(
     lat_ns = (64.0 / (total_gb_s * 1e9)) * 1e9 if total_gb_s > 0 else None
 
     return TestResult(
-        name="Copy & Stream (Multi-Thread)",
+        name="Stream Copy (Multi-Thread)",
         throughput_gb_s=total_gb_s,
         throughput_mib_s=total_mib_s,
         read_gb_s=read_gb_s,
         write_gb_s=write_gb_s,
         efficiency_pct=eff_pct,
         latency_ns=lat_ns,
-        details=f"stress-ng --stream, {workers} workers (Read: {read_gb_s:.2f} GB/s, Write: {write_gb_s:.2f} GB/s)",
+        details=f"stress-ng --stream, {workers} workers (Read: {read_gb_s:.1f} GB/s, Write: {write_gb_s:.1f} GB/s)",
     )
 
 
@@ -712,11 +711,11 @@ def run_single_core_test(
         write_gb_s=gb_s / 2.0,
         efficiency_pct=eff_pct,
         latency_ns=lat_ns,
-        details=f"mbw memcpy on single core (Core {target_core}) - Single-core Line Fill Buffer limit",
+        details=f"mbw memcpy on Core {target_core} (Line Fill Buffer limit)",
     )
 
 
-def build_gauge(pct: float | None, width: int = 14) -> str:
+def build_gauge(pct: float | None, width: int = 8) -> str:
     """Render a seamless solid-block progress meter with 100% matched height and width."""
     if pct is None:
         return "[dim]N/A[/dim]"
@@ -725,7 +724,7 @@ def build_gauge(pct: float | None, width: int = 14) -> str:
     empty = width - filled
 
     fill_color = "bright_green" if clamped >= 75.0 else ("bright_yellow" if clamped >= 45.0 else "bright_cyan")
-    bar = f"[{fill_color}]" + "█" * filled + f"[/{fill_color}][bright_black]" + "█" * empty + f"[/bright_black] [bold white]{clamped:5.1f}%[/bold white]"
+    bar = f"[{fill_color}]" + "█" * filled + f"[/{fill_color}][bright_black]" + "█" * empty + f"[/bright_black] [bold white]{clamped:4.1f}%[/bold white]"
     return bar
 
 
@@ -803,11 +802,10 @@ def render_results_table(results: list[TestResult], specs: HardwareSpecs):
         header_style="bold cyan",
         expand=True,
     )
-    table.add_column("Benchmark Test Mode", style="bold white", width=26)
-    table.add_column("Throughput (GB/s)", justify="right", style="bold green", width=18)
-    table.add_column("Throughput (MiB/s)", justify="right", style="bold yellow", width=18)
-    table.add_column("Efficiency Meter (% of Max)", justify="center", width=25)
-    table.add_column("Access Latency", justify="right", style="bold cyan", width=16)
+    table.add_column("Benchmark Test Mode", style="bold white", width=29)
+    table.add_column("Throughput", justify="right", style="bold green", width=13)
+    table.add_column("Bus Efficiency", justify="center", width=16)
+    table.add_column("Access Latency", justify="right", style="bold cyan", width=14)
     table.add_column("Test Configuration & Details", style="dim white")
 
     for r in results:
@@ -815,10 +813,11 @@ def render_results_table(results: list[TestResult], specs: HardwareSpecs):
         if r.name == "Random Memory Latency":
             lat_str = f"[bold bright_cyan]󰔛 {r.latency_ns:.2f} ns[/bold bright_cyan]"
 
+        tp_str = f"[bold bright_green]{r.throughput_gb_s:.2f} GB/s[/bold bright_green]"
+
         table.add_row(
             r.name,
-            f"[bold bright_green]{r.throughput_gb_s:.2f} GB/s[/bold bright_green]",
-            f"{r.throughput_mib_s:,.1f} MiB/s",
+            tp_str,
             build_gauge(r.efficiency_pct),
             lat_str,
             r.details,
