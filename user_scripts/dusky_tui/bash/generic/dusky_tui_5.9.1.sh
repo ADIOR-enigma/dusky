@@ -173,8 +173,6 @@ declare -a PICKER_HINTS=()
 declare PICKER_CALLBACK=""
 declare -i PICKER_SELECTED=0 PICKER_SCROLL=0
 
-declare -i SUDO_AUTHENTICATED=0
-
 declare _TMPFILE=""
 declare _TMPMODE=""
 declare -a _TEMP_PATHS=()
@@ -248,11 +246,6 @@ cleanup() {
     for path in "${_TEMP_PATHS[@]:-}"; do
         [[ -n $path && -e $path ]] && rm -f -- "$path" 2>/dev/null || :
     done
-    
-    # Safely clear out the lockfile from /tmp to prevent pollution
-    if [[ -n ${LOCK_TARGET:-} && -f $LOCK_TARGET ]]; then
-        rm -f -- "$LOCK_TARGET" 2>/dev/null || :
-    fi
     
     _TEMP_PATHS=()
     _TMPFILE=""
@@ -633,7 +626,7 @@ populate_config_cache() {
 write_value_to_file() {
     local requested_key=$1 new_val=$2 requested_scope=${3:-}
     local target_key target_scope cache_key current_val
-    local lock_fd="" scratch="" src="" current_sig="" scratch_size=""
+    local lock_fd="" scratch="" src=""
 
     LAST_WRITE_CHANGED=0
 
@@ -695,28 +688,46 @@ write_value_to_file() {
         BEGIN {
             in_scope = (scope == "" ? 1 : 0)
             found = 0
+            k_len = length(key)
         }
-        /^\[.*\]$/ {
+        {
+            line_trim = $0
+            sub(/^[[:space:]]+/, "", line_trim)
+            sub(/[[:space:]]+$/, "", line_trim)
+        }
+        line_trim ~ /^\[.*\]$/ {
             if (in_scope && !found && val != "__DELETE__") {
                 print key "=" val
                 found = 1
             }
-            sec = $0
+            sec = line_trim
             sub(/^\[/, "", sec)
             sub(/\]$/, "", sec)
+            sub(/^[[:space:]]+/, "", sec)
+            sub(/[[:space:]]+$/, "", sec)
             in_scope = (sec == scope)
             print $0
             next
         }
         {
-            if (in_scope && match($0, "^[[:space:]]*" key "([[:space:]]*=[[:space:]]*|[[:space:]]+)")) {
-                if (!found && val != "__DELETE__") {
-                    sep = "="
-                    if (match($0, "^[[:space:]]*" key "[[:space:]]+[^=]")) sep = " "
-                    print key sep val
-                    found = 1
+            if (in_scope) {
+                indent = ""
+                if (match($0, /^[[:space:]]+/)) {
+                    indent = substr($0, RSTART, RLENGTH)
                 }
-                next
+                rest = substr($0, length(indent) + 1)
+                if (substr(rest, 1, k_len) == key) {
+                    rem = substr(rest, k_len + 1)
+                    if (rem ~ /^[[:space:]]*=/ || rem ~ /^[[:space:]]+/) {
+                        if (!found && val != "__DELETE__") {
+                            sep = "="
+                            if (rem ~ /^[[:space:]]+[^=]/) sep = " "
+                            print indent key sep val
+                            found = 1
+                        }
+                        next
+                    }
+                }
             }
             print $0
         }
@@ -733,7 +744,7 @@ write_value_to_file() {
         return 1
     fi
 
-    if ! scratch_size=$(stat -c '%s' -- "$scratch" 2>/dev/null); then
+    if ! stat -c '%s' -- "$scratch" >/dev/null 2>&1; then
         remove_temp "$scratch"
         release_lock_fd "$lock_fd"
         set_status "Failed to stat staged write."
@@ -773,7 +784,7 @@ write_value_to_file() {
     release_lock_fd "$lock_fd"
 
     if [[ "$new_val" == "__DELETE__" ]]; then
-        unset CONFIG_CACHE["$cache_key"]
+        unset "CONFIG_CACHE[$cache_key]"
     else
         CONFIG_CACHE["$cache_key"]=$new_val
     fi
@@ -787,9 +798,13 @@ write_value_to_file() {
 
 cycle_display_value() {
     local value=$1 options=$2 opt opt_dec
-    local -a opts=()
+    local -a raw_opts=() opts=()
     REPLY=$value
-    IFS=',' read -r -a opts <<< "$options"
+    IFS=',' read -r -a raw_opts <<< "$options"
+    for opt in "${raw_opts[@]:-}"; do
+        trim_spaces "$opt"
+        opts+=("$REPLY")
+    done
     for opt in "${opts[@]:-}"; do
         if [[ $opt == "$value" ]]; then
             REPLY=$opt
@@ -897,9 +912,14 @@ modify_value() {
             [[ $current == true ]] && new_val=false || new_val=true
             ;;
         cycle)
-            local -a opts=()
+            local -a raw_opts=() opts=()
             local -i count idx=0 i
-            IFS=',' read -r -a opts <<< "$min"
+            local opt
+            IFS=',' read -r -a raw_opts <<< "$min"
+            for opt in "${raw_opts[@]:-}"; do
+                trim_spaces "$opt"
+                opts+=("$REPLY")
+            done
             count=${#opts[@]}
             if (( count == 0 )); then return 0; fi
             for (( i = 0; i < count; i++ )); do
@@ -995,7 +1015,6 @@ reset_defaults() {
 
 acquire_sudo() {
     if sudo -n true 2>/dev/null; then
-        SUDO_AUTHENTICATED=1
         return 0
     fi
 
@@ -1014,7 +1033,6 @@ acquire_sudo() {
     printf '%s%s%s%s' "$MOUSE_ON" "$CURSOR_HIDE" "$CLR_SCREEN" "$CURSOR_HOME"
 
     if (( result == 0 )); then
-        SUDO_AUTHENTICATED=1
         set_status "Authentication successful."
         return 0
     fi
@@ -1123,7 +1141,15 @@ render_item_list() {
                     true|yes|1) display="${C_GREEN}ON${C_RESET}" ;;
                     false|no|0) display="${C_RED}OFF${C_RESET}" ;;
                     "$UNSET_MARKER") display="${C_YELLOW}⚠ UNSET${C_RESET}" ;;
-                    *) display="${C_WHITE}${val}${C_RESET}" ;;
+                    *)
+                        local -i max_v=$(( BOX_INNER_WIDTH - ITEM_PADDING - 8 ))
+                        if (( max_v < 1 )); then max_v=1; fi
+                        if (( ${#val} > max_v )); then
+                            display="${C_WHITE}${val:0:max_v}…${C_RESET}"
+                        else
+                            display="${C_WHITE}${val}${C_RESET}"
+                        fi
+                        ;;
                 esac
                 ;;
         esac
