@@ -14,15 +14,17 @@ Replaces and consolidates:
 
 Features & Architecture:
   - Declarative ServiceConfig data structures with default enable/disable toggles
-  - Headless-safe UserContext resolution (no os.getlogin crashes)
+  - PAM/logind-aware UserContext resolution (/proc/self/loginuid & SUDO_UID)
   - Sudo environment tunneling via /usr/bin/env preserving XDG_RUNTIME_DIR/DBus
+  - Reconstructed child args preventing double-execution of user targets in child
   - True O(1) bulk systemctl dictionary parser with Id & Names alias resolution
-  - Python 3.14+ Asyncio TaskGroup concurrent execution engine
+  - Python 3.14+ Asyncio TaskGroup concurrent execution engine with proc.kill() cleanup
+  - Robust UTF-8/binary decode fallback (errors='replace') for malformed unit logs
   - Extended systemd start timeout handling (95s limit matching systemd defaults)
-  - Complete status states: MASKED, STATIC, FAILED, ACTIVATING, BAD, MISSING
+  - Precedence status tracking: BAD, MASKED, FAILED, STATIC, ACTIVATING, MISSING
   - Interactive prompting (-i/--interactive) & non-interactive modes (-y/--default)
   - Dual-scope DBus activation reloading via busctl (User & System)
-  - Pure uncorrupted JSON status output (--json)
+  - Pure, uncorrupted, merged JSON status and execution output (--json)
 ==============================================================================
 """
 
@@ -176,10 +178,10 @@ class UnitState:
             return UnitStatus.MISSING
         if self.unit_file_state in ("bad", "error"):
             return UnitStatus.BAD
-        if self.active_state == "failed":
-            return UnitStatus.FAILED
         if self.unit_file_state == "masked":
             return UnitStatus.MASKED
+        if self.active_state == "failed":
+            return UnitStatus.FAILED
         if self.unit_file_state in ("static", "indirect", "generated", "transient"):
             return UnitStatus.STATIC
         if self.active_state in ("activating", "deactivating"):
@@ -219,19 +221,27 @@ class UserContext:
 # ==============================================================================
 
 def resolve_user_context() -> UserContext:
-    """Resolves real non-root user details safely across sudo/doas/pkexec contexts (headless safe)."""
+    """Resolves real non-root user details safely across sudo/doas/pkexec/su contexts."""
     is_root = os.geteuid() == 0
     real_uid = os.getuid()
 
     if is_root:
-        escalation_uid = os.environ.get("SUDO_UID") or os.environ.get("PKEXEC_UID")
-        if escalation_uid and escalation_uid.isdigit():
-            real_uid = int(escalation_uid)
-        elif "DOAS_USER" in os.environ:
-            try:
-                real_uid = pwd.getpwnam(os.environ["DOAS_USER"]).pw_uid
-            except KeyError:
-                pass
+        # 1. Absolute Truth via PAM / logind
+        try:
+            loginuid_raw = Path("/proc/self/loginuid").read_text(encoding="utf-8").strip()
+            loginuid = int(loginuid_raw)
+            if loginuid != 4294967295:  # (unsigned -1) means unset
+                real_uid = loginuid
+        except (FileNotFoundError, ValueError, OSError):
+            # 2. Fallback to privilege escalation environment variables
+            escalation_uid = os.environ.get("SUDO_UID") or os.environ.get("PKEXEC_UID")
+            if escalation_uid and escalation_uid.isdigit():
+                real_uid = int(escalation_uid)
+            elif "DOAS_USER" in os.environ:
+                try:
+                    real_uid = pwd.getpwnam(os.environ["DOAS_USER"]).pw_uid
+                except KeyError:
+                    pass
 
     try:
         pw = pwd.getpwuid(real_uid)
@@ -419,7 +429,7 @@ async def process_unit_action_async(
     dry_run: bool,
     ctx: UserContext,
 ) -> ProcessingResult:
-    """Asynchronously enables or disables a pre-queried unit."""
+    """Asynchronously enables or disables a pre-queried unit with proc.kill() cleanup."""
     norm_name = normalize_unit_name(target.config.name)
     category = target.category
 
@@ -476,11 +486,21 @@ async def process_unit_action_async(
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env
         )
-        stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=95)
-        output_text = (stderr_bytes.decode().strip() + "\n" + stdout_bytes.decode().strip()).strip()
+        try:
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=95)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return ProcessingResult(unit_name=norm_name, category=category, status=UnitStatus.ERROR, message="Execution timed out (95s limit reached), process killed.")
+
+        output_text = (stderr_bytes.decode(errors="replace").strip() + "\n" + stdout_bytes.decode(errors="replace").strip()).strip()
 
         if proc.returncode == 0:
-            msg = f"Successfully {action}d" + (" & started" if now and action == "enable" else (" & stopped" if now else ""))
+            if st.status_enum == UnitStatus.STATIC:
+                msg = f"Successfully {'started' if now and action == 'enable' else 'stopped'} (Static Unit)"
+            else:
+                msg = f"Successfully {action}d" + (" & started" if now and action == "enable" else (" & stopped" if now else ""))
+
             return ProcessingResult(
                 unit_name=norm_name,
                 category=category,
@@ -496,8 +516,6 @@ async def process_unit_action_async(
                 message=f"Failed to {action}",
                 output=output_text,
             )
-    except asyncio.TimeoutError:
-        return ProcessingResult(unit_name=norm_name, category=category, status=UnitStatus.ERROR, message="Execution timed out (95s limit reached)")
     except Exception as e:
         return ProcessingResult(unit_name=norm_name, category=category, status=UnitStatus.ERROR, message=f"Execution error: {e}")
 
@@ -755,8 +773,10 @@ def main() -> None:
             Category.USER_AUR,
         }
 
-    # Subprocess Escalation Fork for System Services
+    # Subprocess Escalation Fork for System Services (Reconstructed args prevent double-execution)
     requires_system_scope = any(cat in (Category.SYSTEM_CORE, Category.SYSTEM_AUR) for cat in targeted_categories)
+    child_json_data: list[dict] = []
+
     if requires_system_scope and not ctx.is_root and not args.status and not args.dry_run:
         escalator = get_escalator()
         if escalator:
@@ -764,15 +784,50 @@ def main() -> None:
                 console.print(f"[bold blue][INFO][/bold blue] System services require root privileges. Forking via {escalator}...")
 
             script_path = Path(__file__).resolve().as_posix()
-            child_args = [sys.executable, script_path] + sys.argv[1:]
+            child_args = [sys.executable, script_path]
+
+            if Category.SYSTEM_CORE in targeted_categories:
+                child_args.append("--system")
+            if Category.SYSTEM_AUR in targeted_categories:
+                child_args.append("--aur-system")
+            if args.disable:
+                child_args.append("--disable")
+            if args.no_now:
+                child_args.append("--no-now")
+            if args.interactive:
+                child_args.append("--interactive")
+            if args.default:
+                child_args.append("--default")
+            if args.daemon_reload:
+                child_args.append("--daemon-reload")
+            if args.dbus_reload:
+                child_args.append("--dbus-reload")
+            if args.json:
+                child_args.append("--json")
 
             sudo_cmd = [escalator] + child_args
-            subprocess.run(sudo_cmd, check=False)
 
+            if args.json:
+                res = subprocess.run(sudo_cmd, capture_output=True, text=True)
+                if res.returncode != 0:
+                    sys.exit(res.returncode)
+                try:
+                    child_json_data = json.loads(res.stdout.strip())
+                except json.JSONDecodeError:
+                    pass
+            else:
+                res = subprocess.run(sudo_cmd, check=False)
+                if res.returncode != 0:
+                    error_console.print("[bold red][ERROR][/bold red] Privilege escalation failed or aborted.")
+                    sys.exit(res.returncode)
+
+            # Strip system categories from the parent process so they aren't executed twice
             targeted_categories.discard(Category.SYSTEM_CORE)
             targeted_categories.discard(Category.SYSTEM_AUR)
             if not targeted_categories:
-                if args.dbus_reload:
+                if args.json and child_json_data:
+                    print(json.dumps(child_json_data, indent=2))
+                elif args.dbus_reload:
                     reload_dbus(Scope.USER, dry_run=args.dry_run, ctx=ctx)
                 return
         elif not args.json:
@@ -829,7 +884,8 @@ def main() -> None:
     results = asyncio.run(execute_operations(approved_targets, approved_states, action_type, not args.no_now, args.dry_run, ctx))
 
     if args.json:
-        print(json.dumps([{"unit": r.unit_name, "status": r.status.value, "message": r.message} for r in results], indent=2))
+        parent_results = [{"unit": r.unit_name, "status": r.status.value, "message": r.message} for r in results]
+        print(json.dumps(child_json_data + parent_results, indent=2))
     else:
         render_results(results)
 
