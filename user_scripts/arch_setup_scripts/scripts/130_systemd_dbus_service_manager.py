@@ -279,6 +279,35 @@ def suggest_missing(source_path: Path) -> None:
             console.print("  (No .service or .timer files found)")
 
 
+def get_caller_cgroup_units() -> set[str]:
+    """Finds systemd service/scope/timer units containing the current process or parent processes."""
+    caller_units = set()
+    try:
+        pid = os.getpid()
+        while pid > 1:
+            try:
+                cgroup_path = Path(f"/proc/{pid}/cgroup")
+                if cgroup_path.exists():
+                    cgroup_text = cgroup_path.read_text(encoding="utf-8")
+                    for line in cgroup_text.splitlines():
+                        matches = re.findall(r"/([^/\s]+\.(?:service|scope|timer))", line)
+                        caller_units.update(matches)
+                stat_path = Path(f"/proc/{pid}/stat")
+                if stat_path.exists():
+                    stat_text = stat_path.read_text(encoding="utf-8")
+                    ppid = int(stat_text.split()[3])
+                    if ppid == pid:
+                        break
+                    pid = ppid
+                else:
+                    break
+            except (OSError, ValueError, IndexError):
+                break
+    except Exception:
+        pass
+    return caller_units
+
+
 def run_systemctl(args: list[str], is_user: bool, dry_run: bool, ctx: UserContext) -> bool:
     """Executes systemctl with mandatory timeout parameters."""
     base = ["systemctl", "--user"] if is_user else ["systemctl"]
@@ -328,7 +357,7 @@ def reload_dbus(dry_run: bool, ctx: UserContext) -> bool:
         log_success("DBus reloaded successfully.")
         return True
     except Exception as e:
-        log_error(f"Failed to reload DBus: {e}")
+        log_warn(f"DBus reload error: {e}")
         return False
 
 
@@ -426,6 +455,9 @@ def process_service_batch(
         else:
             disable_units.append(service_name)
 
+    # Detect caller units to prevent stopping/restarting host service
+    caller_units = get_caller_cgroup_units() if is_user else set()
+
     # Phase 4: Bulk Systemd Execution
     if enable_units:
         log_info(f"Enabling & Starting ({len(enable_units)} units)...")
@@ -433,9 +465,17 @@ def process_service_batch(
             log_success(f"Successfully activated: {', '.join(enable_units)}")
 
     if disable_units:
-        log_info(f"Disabling & Stopping ({len(disable_units)} units)...")
-        if run_systemctl(["disable", "--now"] + disable_units, is_user=is_user, dry_run=dry_run, ctx=ctx):
-            log_success(f"Successfully deactivated: {', '.join(disable_units)}")
+        # Filter out caller's hosting service if present to avoid process suicide
+        safe_disable_units = [u for u in disable_units if u not in caller_units]
+        skipped_caller_units = [u for u in disable_units if u in caller_units]
+
+        if skipped_caller_units:
+            log_warn(f"Skipping immediate stop of active hosting service ({', '.join(skipped_caller_units)}) to prevent process suicide.")
+
+        if safe_disable_units:
+            log_info(f"Disabling ({len(safe_disable_units)} units)...")
+            if run_systemctl(["disable"] + safe_disable_units, is_user=is_user, dry_run=dry_run, ctx=ctx):
+                log_success(f"Successfully disabled: {', '.join(safe_disable_units)}")
 
 
 def process_symlinks(
