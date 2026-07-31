@@ -85,9 +85,7 @@ INSTALL_SEQUENCE=(
     "U | 115_aur_packages_user_services.sh"
     "S | 120_create_mount_directories.sh"
     "S | 127_pam_keyring_greetd.py --mode auto"
-    "U | 130_copy_service_files.sh"
-    "U | 131_dbus_copy_service_files.sh"
-    "U | 132_copy_system_services.sh"
+    "U | 130_systemd_dbus_service_manager.py"
     "U | 135_battery_notify_service.sh"
     "U | 137_snapper_isolation_subvolume.sh --auto"
 
