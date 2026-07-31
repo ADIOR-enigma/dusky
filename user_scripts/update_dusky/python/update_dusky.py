@@ -703,7 +703,7 @@ class StateStore:
 
     def __init__(self, profile: 'ProfileConfig'):
         self.path = state_dir() / f"{safe_filename(profile.name)}.db"
-        self.conn = sqlite3.connect(self.path)
+        self.conn = sqlite3.connect(self.path, check_same_thread=False)
         busy_timeout = GLOBAL_CONFIG.get("execution", {}).get("db_busy_timeout", 5000)
         self.conn.execute("PRAGMA journal_mode=WAL;")
         self.conn.execute("PRAGMA synchronous=NORMAL;")
@@ -784,7 +784,7 @@ class StateStore:
 class OnceStore:
     def __init__(self) -> None:
         self.path = state_dir() / "once.db"
-        self.conn = sqlite3.connect(self.path)
+        self.conn = sqlite3.connect(self.path, check_same_thread=False)
         busy_timeout = GLOBAL_CONFIG.get("execution", {}).get("db_busy_timeout", 5000)
         self.conn.execute("PRAGMA journal_mode=WAL;")
         self.conn.execute("PRAGMA synchronous=NORMAL;")
@@ -1481,6 +1481,9 @@ class SleepInhibitor:
 #  PRE-FLIGHT BOOTSTRAP & DEPENDENCY RESOLUTION
 # ==============================================================================
 def bootstrap_dependencies() -> bool:
+    if any(flag in sys.argv for flag in {"-h", "--help", "--version", "--doctor", "--list"}):
+        return False
+
     missing = [
         pkg for mod, pkg in [("textual", "python-textual"), ("rich", "python-rich")]
         if importlib.util.find_spec(mod) is None
@@ -2233,9 +2236,10 @@ def parse_manifest(profile: ProfileConfig) -> list[DuskyTask]:
         else:
             continue
 
+        cmd_tokens: list[str] | None = None
         with suppress(Exception):
             cmd_tokens = shlex.split(cmd_part)
-        if 'cmd_tokens' not in locals() or not cmd_tokens:
+        if not cmd_tokens:
             cmd_tokens = cmd_part.split()
 
         if not cmd_tokens:
@@ -2531,7 +2535,7 @@ def _git_env() -> dict[str, str]:
         "env_inject",
         {
             "GIT_TERMINAL_PROMPT": "0",
-            "GIT_SSH_COMMAND": "ssh -o BatchMode=yes",
+            "GIT_SSH_COMMAND": "ssh" if "SSH_AUTH_SOCK" in os.environ else "ssh -o BatchMode=yes",
             "GIT_PAGER": "cat",
             "PAGER": "cat",
             "GIT_OPTIONAL_LOCKS": "0",
@@ -2572,15 +2576,15 @@ class GitEngine:
         cmd = self.git_cmd_base + list(args)
         try:
             proc = await asyncio.create_subprocess_exec(
-                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=_git_env()
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=_git_env(), start_new_session=True
             )
             if timeout_sec > 0:
                 try:
                     async with asyncio.timeout(timeout_sec):
                         stdout, stderr = await proc.communicate()
                 except TimeoutError:
-                    with suppress(ProcessLookupError, OSError):
-                        proc.kill()
+                    with suppress(ProcessLookupError, PermissionError, OSError):
+                        os.killpg(proc.pid, signal.SIGKILL)
                         await proc.wait()
                     return 124, "", "timeout"
             else:
@@ -2638,6 +2642,7 @@ class GitEngine:
 
             lock_open = False
             with suppress(OSError):
+                lock_real = str(lock_path)
                 lock_real = str(lock_path.resolve())
                 for pid_dir in os.listdir("/proc"):
                     if not pid_dir.isdigit():
@@ -2726,7 +2731,7 @@ class GitEngine:
             cmd = ['git', f'--git-dir={GIT_DIR}', f'--work-tree={WORK_TREE}',
                    'fetch', '--no-write-fetch-head', source, f'+refs/heads/{self.profile.branch}:{tracking_ref}']
             try:
-                proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=_git_env())
+                proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=_git_env(), start_new_session=True)
                 async with asyncio.timeout(FETCH_TIMEOUT):
                     stdout, _ = await proc.communicate()
                 output = stdout.decode('utf-8', errors='replace').strip()
@@ -2734,8 +2739,8 @@ class GitEngine:
                     self._tlog(f"[dim]{escape(output)}[/dim]", task_idx)
                 rc = proc.returncode
             except TimeoutError:
-                with suppress(ProcessLookupError, OSError):
-                    proc.kill()
+                with suppress(ProcessLookupError, PermissionError, OSError):
+                    os.killpg(proc.pid, signal.SIGKILL)
                     await proc.wait()
                 rc = 124
             if rc == 0:
@@ -2755,7 +2760,7 @@ class GitEngine:
             self._tlog(f"[dim]Clone attempt {attempt}/{MAX_ATTEMPTS}...[/dim]", task_idx)
             cmd = ['git', 'clone', '--bare', '--branch', self.profile.branch, self.profile.repo_url, str(GIT_DIR)]
             try:
-                proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=_git_env())
+                proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=_git_env(), start_new_session=True)
                 async with asyncio.timeout(CLONE_TIMEOUT):
                     stdout, _ = await proc.communicate()
                 output = stdout.decode('utf-8', errors='replace').strip()
@@ -2763,8 +2768,8 @@ class GitEngine:
                     self._tlog(f"[dim]{escape(output)}[/dim]", task_idx)
                 rc = proc.returncode
             except TimeoutError:
-                with suppress(ProcessLookupError, OSError):
-                    proc.kill()
+                with suppress(ProcessLookupError, PermissionError, OSError):
+                    os.killpg(proc.pid, signal.SIGKILL)
                     await proc.wait()
                 rc = 124
             if rc == 0:
@@ -3174,9 +3179,8 @@ class GitEngine:
                     mdest = merge_dir / path
                     mdest.parent.mkdir(parents=True, exist_ok=True)
                     try:
-                        proc = await asyncio.create_subprocess_exec('cp', '-a', '--reflink=auto', str(backup_src), str(mdest))
-                        await proc.wait()
-                        if proc.returncode == 0:
+                        ok = await asyncio.to_thread(_sync_copy_file, backup_src, mdest)
+                        if ok:
                             merge_count += 1
                             self._tlog(f"[dim]  → Upstream changed: {escape(path)} (your version saved for merge)[/dim]", task_idx)
                         else:
@@ -3191,9 +3195,8 @@ class GitEngine:
                 try:
                     with tempfile.TemporaryDirectory(prefix=f".{target.name}.dtmp.", dir=target.parent) as tmpdir:
                         tmp_file = Path(tmpdir) / target.name
-                        proc = await asyncio.create_subprocess_exec('cp', '-a', '--reflink=auto', str(backup_src), str(tmp_file))
-                        await proc.wait()
-                        if proc.returncode == 0:
+                        ok = await asyncio.to_thread(_sync_copy_file, backup_src, tmp_file)
+                        if ok:
                             if target.exists() or target.is_symlink():
                                 displaced = Path(tmpdir) / (".old_" + target.name)
                                 shutil.move(str(target), str(displaced))
@@ -3885,14 +3888,14 @@ class DuskyApp(App):
                     self.log_main(f"[dim]Condition '{task.condition}' false. Skipping: {escape(task.name)}[/dim]")
                     self.update_task_state(index, "skipped")
                     if self.state_store:
-                        self.state_store.mark(task, "skipped", note=f"Condition false: {task.condition}")
+                        await asyncio.to_thread(self.state_store.mark, task, "skipped", note=f"Condition false: {task.condition}")
                     continue
 
             if task.once and self.once_store and self.once_store.marker_valid(task, self.profile.name):
                 self.log_main(f"[dim]Run-once marker valid. Skipping: {escape(task.name)}[/dim]")
                 self.update_task_state(index, "skipped")
                 if self.state_store:
-                    self.state_store.mark(task, "skipped", note="Run-once marker valid")
+                    await asyncio.to_thread(self.state_store.mark, task, "skipped", note="Run-once marker valid")
                 continue
 
             self.update_task_state(index, "running")
@@ -3917,7 +3920,7 @@ class DuskyApp(App):
                 self.log_task(err, index)
                 self.update_task_state(index, "failed")
                 if self.state_store:
-                    self.state_store.mark(task, "failed", exit_code=1, note="Architecture File Missing")
+                    await asyncio.to_thread(self.state_store.mark, task, "failed", exit_code=1, note="Architecture File Missing")
                 fail_count += 1
                 if not task.ignore_fail or OPT_STOP_ON_FAIL:
                     self.abort_flag = True
@@ -3964,9 +3967,9 @@ class DuskyApp(App):
                 if rc == 0:
                     self.update_task_state(index, "success")
                     if self.state_store:
-                        self.state_store.mark(task, "completed", exit_code=0, duration=duration)
+                        await asyncio.to_thread(self.state_store.mark, task, "completed", exit_code=0, duration=duration)
                     if task.once and self.once_store:
-                        self.once_store.mark_success(task, self.profile.name, exit_code=0, run_id=getattr(self, "run_id", ""))
+                        await asyncio.to_thread(self.once_store.mark_success, task, self.profile.name, exit_code=0, run_id=getattr(self, "run_id", ""))
                     if self.run_logger:
                         self.run_logger.close_task(task, index, "completed", 0, duration)
                     success_count += 1
@@ -3976,7 +3979,7 @@ class DuskyApp(App):
                     if task.ignore_fail and not OPT_STOP_ON_FAIL:
                         self.update_task_state(index, "skipped")
                         if self.state_store:
-                            self.state_store.mark(task, "skipped", exit_code=rc, duration=duration)
+                            await asyncio.to_thread(self.state_store.mark, task, "skipped", exit_code=rc, duration=duration)
                         if self.run_logger:
                             self.run_logger.close_task(task, index, "skipped", rc, duration)
                         self.log_main(f"[bold {THEME['warning']}][WARN][/] Process failure (Code {rc}) suppressed by manifest.")
@@ -3984,7 +3987,7 @@ class DuskyApp(App):
                     else:
                         self.update_task_state(index, "failed")
                         if self.state_store:
-                            self.state_store.mark(task, "failed", exit_code=rc, duration=duration)
+                            await asyncio.to_thread(self.state_store.mark, task, "failed", exit_code=rc, duration=duration)
                         if self.run_logger:
                             self.run_logger.close_task(task, index, "failed", rc, duration)
                         fail_count += 1
@@ -3999,7 +4002,7 @@ class DuskyApp(App):
                 self.log_task(err_msg, index)
                 self.update_task_state(index, "failed")
                 if self.state_store:
-                    self.state_store.mark(task, "failed", exit_code=1, note=str(e), duration=duration)
+                    await asyncio.to_thread(self.state_store.mark, task, "failed", exit_code=1, note=str(e), duration=duration)
                 if self.run_logger:
                     self.run_logger.close_task(task, index, "failed", 1, duration)
                 if not task.ignore_fail or OPT_STOP_ON_FAIL:
