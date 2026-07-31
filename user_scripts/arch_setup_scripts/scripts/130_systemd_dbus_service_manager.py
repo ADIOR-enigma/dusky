@@ -10,7 +10,7 @@ Description: Atomically installs, symlinks, and manages user and system-level
 
 Features:
   - Declarative configuration blocks at top of script.
-  - Native Python 3.14+ (pathlib, dataclasses, typing).
+  - Native Python 3.14+ (pathlib, dataclasses, regex, typing).
   - Rich terminal presentation (styled logs, panels, progress tables).
   - Multi-mode support: --all, --user, --dbus, --system.
   - Non-interactive mode (--default / -y).
@@ -18,18 +18,19 @@ Features:
   - Live unit inspection (--status / -st).
   - Complete uninstall/reversion mode (--uninstall).
   - Split Execution Architecture (unprivileged user execution + isolated sudo sub-process).
-  - CWE-377 mitigated secure atomic file creation (tempfile.mkstemp + os.replace).
+  - XDG_DATA_HOME and XDG_CONFIG_HOME specification compliance.
+  - CWE-377 mitigated secure atomic file creation (tempfile.mkstemp + os.close + os.replace).
   - Cryptographically random symlink substitution (secrets.token_hex).
-  - Systemd 261 JSON payload state parsing (--output=json).
+  - Absolute script path resolution for secure sudo subprocess forking.
 ===============================================================================
 """
 
 import argparse
-import contextlib
 import datetime
 import json
 import os
 import pwd
+import re
 import secrets
 import shutil
 import subprocess
@@ -99,12 +100,12 @@ DBUS_SYMLINKS: list[SymlinkConfig] = [
     # Dusky Control Center DBus Activation
     SymlinkConfig(
         "$HOME/user_scripts/dusky_system/control_center/service/com.github.dusky.controlcenter.service",
-        "$HOME/.local/share/dbus-1/services/com.github.dusky.controlcenter.service",
+        "$XDG_DATA_HOME/dbus-1/services/com.github.dusky.controlcenter.service",
     ),
     # Dusky Quickpanel DBus Activation
     SymlinkConfig(
         "$HOME/user_scripts/dusky_system/quickpanal/service/org.dusky.quickpanal.service",
-        "$HOME/.local/share/dbus-1/services/org.dusky.quickpanal.service",
+        "$XDG_DATA_HOME/dbus-1/services/org.dusky.quickpanal.service",
     ),
 ]
 
@@ -174,43 +175,62 @@ def get_user_config_dir(ctx: UserContext) -> Path:
     """Strictly enforces standard XDG config home."""
     if not ctx.is_root:
         xdg_config = os.environ.get("XDG_CONFIG_HOME")
-        if xdg_config:
-            return Path(os.path.expandvars(xdg_config)).expanduser().resolve()
+        if xdg_config and Path(xdg_config).is_absolute():
+            return Path(xdg_config)
     return ctx.home / ".config"
+
+
+def get_user_data_dir(ctx: UserContext) -> Path:
+    """Strictly enforces standard XDG data home for DBus configurations."""
+    if not ctx.is_root:
+        xdg_data = os.environ.get("XDG_DATA_HOME")
+        if xdg_data and Path(xdg_data).is_absolute():
+            return Path(xdg_data)
+    return ctx.home / ".local" / "share"
 
 
 def expand_path(raw_path: str, ctx: UserContext) -> Path:
     """Deterministically expands paths without executing arbitrary env injections."""
-    path_str = raw_path.replace("${HOME}", str(ctx.home)).replace("$HOME", str(ctx.home))
+    path_str = raw_path.replace("$XDG_DATA_HOME", str(get_user_data_dir(ctx)))
+    path_str = path_str.replace("$XDG_CONFIG_HOME", str(get_user_config_dir(ctx)))
+
+    path_str = re.sub(r'\$(HOME\b|{HOME})', str(ctx.home), path_str)
     if path_str.startswith("~/"):
         path_str = path_str.replace("~", str(ctx.home), 1)
     elif path_str.startswith("/root/") and ctx.username != "root":
         path_str = os.path.join(str(ctx.home), path_str[6:])
 
-    final_path = Path(path_str).expanduser()
-    if not ctx.is_root and final_path.is_absolute() and not str(final_path).startswith(str(ctx.home)):
-        log_warn(f"Warning: Path {final_path} resolves outside designated user boundaries.")
+    final_path = Path(os.path.normpath(os.path.expanduser(path_str)))
+    if not ctx.is_root and not final_path.is_relative_to(ctx.home):
+        log_warn(f"Warning: Path {final_path} resolves outside designated user boundaries ({ctx.home}).")
 
     return final_path
 
 
-def safe_mkdir(target_dir: Path) -> None:
-    """Standard directory creation. Split execution model ensures correct ownership."""
+def safe_mkdir(target_dir: Path) -> bool:
+    """Standard directory creation enforcing exact 0755 permissions. Returns success state."""
     try:
-        target_dir.mkdir(parents=True, exist_ok=True)
+        target_dir.mkdir(parents=True, exist_ok=True, mode=0o755)
+        return True
     except Exception as e:
         log_error(f"Failed to create directory {target_dir}: {e}")
+        return False
 
 
 def get_user_ipc_env(ctx: UserContext) -> dict[str, str]:
-    """Generates strict environment mapping and checks socket existence."""
-    env = os.environ.copy()
+    """Constructs a sterile whitelist environment mapping to prevent root environment leakage."""
     runtime_dir = Path(f"/run/user/{ctx.uid}")
     if not runtime_dir.exists():
         log_warn(f"Runtime dir {runtime_dir} missing! Is user logged in or linger enabled?")
-    env["XDG_RUNTIME_DIR"] = str(runtime_dir)
-    env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={runtime_dir}/bus"
-    return env
+
+    return {
+        "PATH": os.environ.get("PATH", "/usr/local/sbin:/usr/local/bin:/usr/bin"),
+        "USER": ctx.username,
+        "HOME": str(ctx.home),
+        "LANG": os.environ.get("LANG", "en_US.UTF-8"),
+        "XDG_RUNTIME_DIR": str(runtime_dir),
+        "DBUS_SESSION_BUS_ADDRESS": f"unix:path={runtime_dir}/bus",
+    }
 
 
 def log_info(msg: str) -> None:
@@ -254,7 +274,7 @@ def run_systemctl(args: list[str], is_user: bool, dry_run: bool, ctx: UserContex
 
     env = get_user_ipc_env(ctx) if is_user else None
     try:
-        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, text=True, timeout=20)
+        res = subprocess.run(cmd, capture_output=True, env=env, text=True, timeout=20)
         if res.returncode != 0:
             err_msg = res.stderr.strip()
             log_error(f"Systemctl failed ({cmd_str}):\n{err_msg}" if err_msg else f"Systemctl returned non-zero ({cmd_str})")
@@ -284,7 +304,7 @@ def reload_dbus(dry_run: bool, ctx: UserContext) -> bool:
 
     env = get_user_ipc_env(ctx)
     try:
-        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, text=True, timeout=10)
+        res = subprocess.run(cmd, capture_output=True, env=env, text=True, timeout=10)
         if res.returncode != 0:
             log_warn(f"DBus reload failed (is DBus running?): {res.stderr.strip()}")
             return False
@@ -312,11 +332,14 @@ def process_service_batch(
     console.print(f"\n[bold magenta]--- Processing {scope} Services ---[/bold magenta]")
 
     if not dry_run:
-        safe_mkdir(target_dir)
+        if not safe_mkdir(target_dir):
+            log_error(f"Aborting batch due to directory creation failure: {target_dir}")
+            return
 
     installed_units: list[ServiceConfig] = []
+    valid_extensions = {".service", ".timer", ".socket", ".target"}
 
-    # Phase 1: Installation (Secure Atomic Replacement)
+    # Phase 1: Installation (Secure Atomic Replacement - CWE-377 Mitigated)
     for cfg in configs:
         src_path = expand_path(cfg.source_path, ctx)
         service_name = src_path.name
@@ -325,6 +348,10 @@ def process_service_batch(
         console.print("-" * 50)
         log_info(f"Processing: [bold cyan]{service_name}[/bold cyan]")
 
+        if src_path.suffix not in valid_extensions:
+            log_error(f"Invalid unit extension '{src_path.suffix}'. Must be a valid Systemd type. Skipping.")
+            continue
+
         if not src_path.exists():
             log_error(f"Source file not found: {src_path}")
             suggest_missing(src_path)
@@ -332,15 +359,16 @@ def process_service_batch(
 
         log_info(f"Installing to {target_file}...")
         if dry_run:
-            log_info(f"[Dry-Run] Secure atomic copy {src_path} -> {target_file} (mode=0644)")
+            log_info(f"[Dry-Run] Atomic secure copy {src_path} -> {target_file} (mode=0644)")
         else:
             try:
                 fd, temp_path_str = tempfile.mkstemp(dir=target_dir, prefix=f".{service_name}.", suffix=".tmp")
+                os.close(fd)
                 temp_file = Path(temp_path_str)
+
                 shutil.copy2(src_path, temp_file)
                 os.chmod(temp_file, 0o644)
                 os.replace(temp_file, target_file)
-                os.close(fd)
                 log_success(f"Installed {service_name}")
             except Exception as e:
                 log_error(f"Failed to atomically install {service_name}: {e}")
@@ -358,7 +386,7 @@ def process_service_batch(
     log_info(f"Reloading {scope.lower()} systemd daemon...")
     run_systemctl(["daemon-reload"], is_user=is_user, dry_run=dry_run, ctx=ctx)
 
-    # Phase 3: Action Assessment
+    # Phase 3: Bulk Action Assessment
     enable_units: list[str] = []
     disable_units: list[str] = []
 
@@ -389,7 +417,7 @@ def process_service_batch(
         else:
             disable_units.append(service_name)
 
-    # Phase 4: Resilient Systemd Execution
+    # Phase 4: Individual Systemd Execution (Resilient to partial failures)
     if enable_units:
         log_info(f"Enabling & Starting ({len(enable_units)} units)...")
         for unit in enable_units:
@@ -431,7 +459,8 @@ def process_symlinks(
             continue
 
         if not dry_run:
-            safe_mkdir(target_dir)
+            if not safe_mkdir(target_dir):
+                continue
 
         if target_path.exists() and target_path.is_dir() and not target_path.is_symlink():
             log_error(f"Target path {target_path} is a directory! Cannot replace.")
@@ -505,7 +534,7 @@ def display_status(ctx: UserContext) -> None:
 
         env = get_user_ipc_env(ctx) if is_user else None
         try:
-            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env, text=True, timeout=15)
+            res = subprocess.run(cmd, capture_output=True, env=env, text=True, timeout=15)
         except subprocess.TimeoutExpired:
             return {}
 
@@ -519,9 +548,12 @@ def display_status(ctx: UserContext) -> None:
                 data = [data]
 
             for item in data:
-                unit_id = item.get("Id", "unknown")
+                unit_id = item.get("Id") or "unknown"
                 if unit_id != "unknown":
-                    states[unit_id] = (item.get("ActiveState", "unknown"), item.get("UnitFileState", "unknown"))
+                    states[unit_id] = (
+                        item.get("ActiveState") or "unknown",
+                        item.get("UnitFileState") or "unknown"
+                    )
         except json.JSONDecodeError:
             log_error("Failed to parse systemctl JSON output.")
 
@@ -570,12 +602,13 @@ def uninstall_all(ctx: UserContext, dry_run: bool, scope: Literal["user", "syste
 
             if target.is_symlink() or target.exists():
                 log_info(f"Stopping & disabling: {src_name}")
-                if run_systemctl(["disable", "--now", src_name], is_user=True, dry_run=dry_run, ctx=ctx) or dry_run:
-                    log_info(f"Removing {target}")
-                    if not dry_run:
+                run_systemctl(["disable", "--now", src_name], is_user=True, dry_run=dry_run, ctx=ctx)
+                log_info(f"Removing {target}")
+                if not dry_run:
+                    try:
                         target.unlink(missing_ok=True)
-                else:
-                    log_error(f"Failed to stop {src_name}. Refusing to orphan process by unlinking unit.")
+                    except Exception as e:
+                        log_error(f"Failed to remove {target}: {e}")
 
         run_systemctl(["daemon-reload"], is_user=True, dry_run=dry_run, ctx=ctx)
 
@@ -584,7 +617,10 @@ def uninstall_all(ctx: UserContext, dry_run: bool, scope: Literal["user", "syste
             if target.is_symlink() or target.exists():
                 log_info(f"Removing symlink {target}")
                 if not dry_run:
-                    target.unlink(missing_ok=True)
+                    try:
+                        target.unlink(missing_ok=True)
+                    except Exception as e:
+                        log_error(f"Failed to remove symlink {target}: {e}")
 
     if scope in ("system", "all"):
         if not ctx.is_root:
@@ -596,12 +632,13 @@ def uninstall_all(ctx: UserContext, dry_run: bool, scope: Literal["user", "syste
 
                 if target.is_symlink() or target.exists():
                     log_info(f"Stopping & disabling: {src_name}")
-                    if run_systemctl(["disable", "--now", src_name], is_user=False, dry_run=dry_run, ctx=ctx) or dry_run:
-                        log_info(f"Removing {target}")
-                        if not dry_run:
+                    run_systemctl(["disable", "--now", src_name], is_user=False, dry_run=dry_run, ctx=ctx)
+                    log_info(f"Removing {target}")
+                    if not dry_run:
+                        try:
                             target.unlink(missing_ok=True)
-                    else:
-                        log_error(f"Failed to stop {src_name}. Refusing to orphan process.")
+                        except Exception as e:
+                            log_error(f"Failed to remove {target}: {e}")
 
             run_systemctl(["daemon-reload"], is_user=False, dry_run=dry_run, ctx=ctx)
 
@@ -650,6 +687,8 @@ def main() -> None:
         display_status(ctx)
         return
 
+    script_path = Path(sys.argv[0]).resolve().as_posix()
+
     # Determine execution scope
     run_user = args.user or args.all
     run_dbus = args.dbus or args.all
@@ -671,7 +710,7 @@ def main() -> None:
         if scope in ("all", "user") and args.all and not ctx.is_root and not args.dry_run:
             if shutil.which("sudo"):
                 log_info("Forking system uninstallation via sudo...")
-                subprocess.run(["sudo", sys.executable, sys.argv[0], "--uninstall", "--system"], check=False)
+                subprocess.run(["sudo", sys.executable, script_path, "--uninstall", "--system"], check=False)
         return
 
     # Subprocess Split Execution for System Scope
@@ -679,7 +718,7 @@ def main() -> None:
         log_info("System services require root privileges.")
         if sys.stdin.isatty() and shutil.which("sudo"):
             log_info("Forking system service installation securely via sudo...")
-            sudo_cmd = ["sudo", sys.executable, sys.argv[0], "--system"]
+            sudo_cmd = ["sudo", sys.executable, script_path, "--system"]
             if args.default:
                 sudo_cmd.append("-y")
             try:
