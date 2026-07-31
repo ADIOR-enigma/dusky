@@ -4,9 +4,9 @@
 Unified Systemd & DBus Service Manager
 ===============================================================================
 Context: Arch Linux (Bleeding-Edge) / Python 3.14+
-Description: Atomically installs, symlinks, and manages user and system-level
-             Systemd services and DBus activation files. Replaces legacy bash
-             scripts 130, 131, and 132 with a single, highly configurable tool.
+Description: Installs, symlinks, and manages user and system-level Systemd
+             services and DBus activation files. Replaces legacy bash scripts
+             130, 131, and 132 with a single, highly configurable tool.
 
 Features:
   - Declarative configuration blocks at top of script.
@@ -18,9 +18,8 @@ Features:
   - Live unit inspection (--status / -st).
   - Complete uninstall/reversion mode (--uninstall) with O(1) batching.
   - Split Execution Architecture (unprivileged user execution + isolated sudo sub-process).
-  - PYTHONPATH environment preservation for sudo sub-process module import resolution.
-  - CWE-377 mitigated atomic file creation (tempfile.mkstemp + os.fdopen + os.replace).
-  - Cryptographically random symlink substitution (secrets.token_hex).
+  - Fast, clean direct file copying (shutil.copy2) without backup clutter or temp files.
+  - Direct symlink creation and updates.
   - Robust JSON / JSONL state parsing with LoadState tracking.
 ===============================================================================
 """
@@ -30,11 +29,10 @@ import datetime
 import json
 import os
 import pwd
-import secrets
+import re
 import shutil
 import subprocess
 import sys
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -341,7 +339,7 @@ def process_service_batch(
     dry_run: bool,
     ctx: UserContext,
 ) -> None:
-    """Installs and manages systemd service units (Strict Atomic Replacement - CWE-377 mitigated)."""
+    """Installs and manages systemd service units cleanly using fast direct file copy (shutil.copy2)."""
     scope = "User" if is_user else "System"
     console.print(f"\n[bold magenta]--- Processing {scope} Services ---[/bold magenta]")
 
@@ -353,7 +351,7 @@ def process_service_batch(
     installed_units: list[ServiceConfig] = []
     valid_extensions = {".service", ".timer", ".socket", ".target"}
 
-    # Phase 1: Installation (Strict Atomic Replacement)
+    # Phase 1: Installation (Fast Direct Copy)
     for cfg in configs:
         src_path = expand_path(cfg.source_path, ctx)
         service_name = src_path.name
@@ -373,24 +371,14 @@ def process_service_batch(
 
         log_info(f"Installing to {target_file}...")
         if dry_run:
-            log_info(f"[Dry-Run] Atomic secure copy {src_path} -> {target_file} (mode=0644)")
+            log_info(f"[Dry-Run] Copy {src_path} -> {target_file} (mode=0644)")
         else:
-            temp_file = None
             try:
-                # CWE-377 Fix: Write raw bytes directly to open descriptor to prevent TOCTOU and metadata leaks
-                fd, temp_path_str = tempfile.mkstemp(dir=target_dir, prefix=f".{service_name}.", suffix=".tmp")
-                temp_file = Path(temp_path_str)
-
-                with os.fdopen(fd, "wb") as f:
-                    f.write(src_path.read_bytes())
-
-                os.chmod(temp_file, 0o644)
-                os.replace(temp_file, target_file)
+                shutil.copy2(src_path, target_file)
+                target_file.chmod(0o644)
                 log_success(f"Installed {service_name}")
             except Exception as e:
-                log_error(f"Failed to atomically install {service_name}: {e}")
-                if not dry_run and temp_file and temp_file.exists():
-                    temp_file.unlink(missing_ok=True)
+                log_error(f"Failed to install {service_name}: {e}")
                 continue
 
         installed_units.append(cfg)
@@ -433,7 +421,7 @@ def process_service_batch(
         else:
             disable_units.append(service_name)
 
-    # Phase 4: Bulk Systemd Execution (O(1) highly optimized batch calls)
+    # Phase 4: Bulk Systemd Execution
     if enable_units:
         log_info(f"Enabling & Starting ({len(enable_units)} units)...")
         if run_systemctl(["enable", "--now"] + enable_units, is_user=is_user, dry_run=dry_run, ctx=ctx):
@@ -450,7 +438,7 @@ def process_symlinks(
     dry_run: bool,
     ctx: UserContext,
 ) -> None:
-    """Manages DBus and User service symlinks cleanly with cryptographically secure atomic substitution."""
+    """Manages DBus and User service symlinks cleanly via direct symlink creation without backup files."""
     console.print("\n[bold magenta]--- Processing DBus & Service Symlinks ---[/bold magenta]")
 
     need_user_daemon_reload = False
@@ -460,9 +448,6 @@ def process_symlinks(
         src_path = expand_path(cfg.source_path, ctx)
         target_path = expand_path(cfg.target_path, ctx)
         target_dir = target_path.parent
-
-        # Secure temporary symlink generation
-        temp_link = target_path.with_name(f".{target_path.name}.{secrets.token_hex(4)}.tmp")
 
         console.print("-" * 50)
         log_info(f"Target: [cyan]{target_path.name}[/cyan]")
@@ -488,29 +473,17 @@ def process_symlinks(
                 log_warn(f"Updating existing link (was pointing to {target_path.resolve()})")
             except Exception:
                 log_warn("Updating broken or invalid existing symlink.")
-        elif target_path.exists():
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            backup_path = target_path.with_suffix(f"{target_path.suffix}.bak_{timestamp}")
-            log_warn(f"File exists at target. Backing up to {backup_path.name}...")
-            if not dry_run:
-                try:
-                    target_path.rename(backup_path)
-                except Exception as e:
-                    log_error(f"Failed to back up {target_path}: {e}")
-                    continue
 
         log_info(f"Linking {src_path} -> {target_path}")
         if dry_run:
-            log_info(f"[Dry-Run] Would atomically symlink {src_path} -> {target_path}")
+            log_info(f"[Dry-Run] Would symlink {src_path} -> {target_path}")
         else:
             try:
-                temp_link.symlink_to(src_path)
-                os.replace(temp_link, target_path)
+                target_path.unlink(missing_ok=True)
+                target_path.symlink_to(src_path)
                 log_success("Link mapped successfully.")
             except Exception as e:
                 log_error(f"Failed to create symlink {target_path}: {e}")
-                if temp_link.exists():
-                    temp_link.unlink(missing_ok=True)
                 continue
 
         # Robust Trigger Detection
