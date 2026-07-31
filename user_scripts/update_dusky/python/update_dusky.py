@@ -124,7 +124,9 @@ def runtime_dir() -> Path:
         if ensure_secure_dir(candidate):
             return candidate
     candidate = Path(f"/tmp/{NAMESPACE}-{os.getuid()}")
-    ensure_secure_dir(candidate)
+    if not ensure_secure_dir(candidate):
+        sys.stderr.write(f"\033[1;31m[FATAL]\033[0m Cannot secure runtime directory: {candidate}\n")
+        sys.exit(1)
     return candidate
 
 
@@ -404,7 +406,7 @@ for f in {sudoers_dir}/{prefix}*; do
         if ! kill -0 "$pid" 2>/dev/null; then
             rm -f "$f"
         elif [ -n "$expected_st" ] && [ -f "/proc/$pid/stat" ]; then
-            real_st=$(awk '{{print $22}}' "/proc/$pid/stat" 2>/dev/null)
+            real_st=$(cat "/proc/$pid/stat" 2>/dev/null | sed -E 's/^.*\\) //' | awk '{{print $20}}')
             if [ "$real_st" != "$expected_st" ]; then
                 rm -f "$f"
             fi
@@ -2496,8 +2498,14 @@ def resolve_and_validate_manifest(profile: ProfileConfig, tasks: list[DuskyTask]
         else:
             log("WARN", "Python dependency detected, but 'python' binary is not installed.")
             log("INFO", "Installing Python via pacman...")
+
+            if not SudoEngine.refresh_sync():
+                if not SudoEngine.preflight():
+                    log("ERROR", "Sudo authentication required to install Python dependency.")
+                    return False
+
             try:
-                subprocess.run(["sudo", "pacman", "-S", "python", "--noconfirm", "--needed"], check=True)
+                subprocess.run(SudoEngine.sudo_prefix() + ["pacman", "-S", "python", "--noconfirm", "--needed"], check=True)
                 log("OK", "Python installed successfully.")
             except subprocess.CalledProcessError:
                 log("ERROR", "Failed to install Python. Aborting update sequence.")
@@ -2713,16 +2721,17 @@ class GitEngine:
             cmd = ['git', f'--git-dir={GIT_DIR}', f'--work-tree={WORK_TREE}',
                    'fetch', '--no-write-fetch-head', source, f'+refs/heads/{self.profile.branch}:{tracking_ref}']
             try:
-                proc = await asyncio.wait_for(
-                    asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=_git_env()),
-                    timeout=FETCH_TIMEOUT
-                )
-                stdout, _ = await proc.communicate()
+                proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=_git_env())
+                async with asyncio.timeout(FETCH_TIMEOUT):
+                    stdout, _ = await proc.communicate()
                 output = stdout.decode('utf-8', errors='replace').strip()
                 if output:
                     self._tlog(f"[dim]{escape(output)}[/dim]", task_idx)
                 rc = proc.returncode
-            except asyncio.TimeoutError:
+            except TimeoutError:
+                with suppress(ProcessLookupError, OSError):
+                    proc.kill()
+                    await proc.wait()
                 rc = 124
             if rc == 0:
                 return True
@@ -2741,16 +2750,17 @@ class GitEngine:
             self._tlog(f"[dim]Clone attempt {attempt}/{MAX_ATTEMPTS}...[/dim]", task_idx)
             cmd = ['git', 'clone', '--bare', '--branch', self.profile.branch, self.profile.repo_url, str(GIT_DIR)]
             try:
-                proc = await asyncio.wait_for(
-                    asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=_git_env()),
-                    timeout=CLONE_TIMEOUT
-                )
-                stdout, _ = await proc.communicate()
+                proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=_git_env())
+                async with asyncio.timeout(CLONE_TIMEOUT):
+                    stdout, _ = await proc.communicate()
                 output = stdout.decode('utf-8', errors='replace').strip()
                 if output:
                     self._tlog(f"[dim]{escape(output)}[/dim]", task_idx)
                 rc = proc.returncode
-            except asyncio.TimeoutError:
+            except TimeoutError:
+                with suppress(ProcessLookupError, OSError):
+                    proc.kill()
+                    await proc.wait()
                 rc = 124
             if rc == 0:
                 await self._run_raw('config', 'remote.origin.fetch', '+refs/heads/*:refs/remotes/origin/*')
@@ -3483,6 +3493,7 @@ class TaskItem(ListItem):
 # ==============================================================================
 class DuskyApp(App):
     CSS = DUSKY_CSS
+    BINDINGS = [("q", "quit", "Quit")]
 
     def __init__(self, profile: ProfileConfig, tasks: list[DuskyTask], has_sudo: bool):
         super().__init__()
@@ -3500,6 +3511,7 @@ class DuskyApp(App):
         self.state_store: StateStore | None = None
         self.sleep_inhibitor: SleepInhibitor | None = None
         self.heartbeat_task: asyncio.Task | None = None
+        self.condition_evaluator = ConditionEvaluator()
 
     def compose(self) -> ComposeResult:
         yield Static(f" 🦅 DUSKY PIPELINE ENGINE (v{VERSION} — {self.profile.name})", classes="header-panel")
@@ -3633,7 +3645,9 @@ class DuskyApp(App):
     def _set_pty_size(fd: int) -> None:
         try:
             size = os.get_terminal_size()
-            winsize = struct.pack("HHHH", size.lines, size.columns, 0, 0)
+            sidebar_percent = GLOBAL_CONFIG.get("ui", {}).get("sidebar_width", 35)
+            actual_cols = max(10, int(size.columns * (1 - (sidebar_percent / 100))) - 2)
+            winsize = struct.pack("HHHH", size.lines, actual_cols, 0, 0)
             fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
         except (OSError, ValueError):
             fallback_cols = GLOBAL_CONFIG.get("ui", {}).get("fallback_pty_columns", 120)
@@ -3831,12 +3845,14 @@ class DuskyApp(App):
 
             task = self.tasks[index]
 
-            if task.condition and not self.condition_evaluator.check(task.condition):
-                self.log_main(f"[dim]Condition '{task.condition}' false. Skipping: {escape(task.name)}[/dim]")
-                self.update_task_state(index, "skipped")
-                if self.state_store:
-                    self.state_store.mark(task, "skipped", note=f"Condition false: {task.condition}")
-                continue
+            if task.condition:
+                condition_met = await asyncio.to_thread(self.condition_evaluator.check, task.condition)
+                if not condition_met:
+                    self.log_main(f"[dim]Condition '{task.condition}' false. Skipping: {escape(task.name)}[/dim]")
+                    self.update_task_state(index, "skipped")
+                    if self.state_store:
+                        self.state_store.mark(task, "skipped", note=f"Condition false: {task.condition}")
+                    continue
 
             if task.once and self.once_store and self.once_store.marker_valid(task, self.profile.name):
                 self.log_main(f"[dim]Run-once marker valid. Skipping: {escape(task.name)}[/dim]")
