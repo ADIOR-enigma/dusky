@@ -274,6 +274,7 @@ path_dirname() {
 path_basename() {
     local path=$1
     REPLY=${path##*/}
+    [[ -n $REPLY ]] || REPLY="file"
 }
 
 read_error_excerpt() {
@@ -603,6 +604,7 @@ populate_config_cache() {
 
         if [[ $line =~ ^\[(.*)\]$ ]]; then
             current_scope="${BASH_REMATCH[1]}"
+            trim_spaces "$current_scope"; current_scope=$REPLY
         elif [[ $line =~ ^([^=[:space:]]+)[=[:space:]]+(.*)$ ]]; then
             k="${BASH_REMATCH[1]}"
             v="${BASH_REMATCH[2]}"
