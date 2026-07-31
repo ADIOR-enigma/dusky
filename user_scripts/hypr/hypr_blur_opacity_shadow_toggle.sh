@@ -80,9 +80,15 @@ die() {
 }
 
 notify() {
+    local title="${1:-Visual Performance}"
+    local message="${2:-}"
+    local icon="${3:-preferences-desktop-display}"
+
     command -v notify-send &>/dev/null && notify-send \
+        --app-name=hypr-visuals \
+        --icon="$icon" \
         -h string:x-canonical-private-synchronous:hypr-visuals \
-        -t 1500 "Hyprland" "$1" 2>/dev/null || true
+        -t 1500 "$title" "$message" 2>/dev/null || true
 }
 
 # --- The Architecture: Stream-Optimized Atomic I/O ---
@@ -210,7 +216,8 @@ if [[ "$TARGET_STATE" == "on" ]]; then
     NEW_MAKO_PROGRESS_ALPHA="$MAKO_PROGRESS_ALPHA_ON"
     NEW_MAKO_OSD_BG_ALPHA="$MAKO_OSD_BG_ALPHA_ON"
     
-    NOTIFY_MSG="Visuals: Max (Blur/Shadow ON)"
+    NOTIFY_TITLE="Blur & Effects"
+    NOTIFY_MSG="ON"
     STATE_STRING="True"
 else
     NEW_ENABLED="false"
@@ -225,7 +232,8 @@ else
     NEW_MAKO_PROGRESS_ALPHA="$MAKO_PROGRESS_ALPHA_OFF"
     NEW_MAKO_OSD_BG_ALPHA="$MAKO_OSD_BG_ALPHA_OFF"
     
-    NOTIFY_MSG="Visuals: Performance (Blur/Shadow OFF)"
+    NOTIFY_TITLE="Blur & Effects"
+    NOTIFY_MSG="OFF"
     STATE_STRING="False"
 fi
 
@@ -309,6 +317,6 @@ command -v makoctl &>/dev/null && { makoctl reload &>/dev/null || true; }
 command -v pkill &>/dev/null && { pkill -SIGUSR2 waybar || true; }
 
 # --- User Feedback ---
-notify "$NOTIFY_MSG"
+notify "$NOTIFY_TITLE" "$NOTIFY_MSG" "preferences-desktop-display"
 
 exit 0

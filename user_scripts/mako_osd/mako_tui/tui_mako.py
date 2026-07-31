@@ -678,6 +678,45 @@ SCHEMA = {
         ConfigItem(label="Icons", key="icons", scope='app-name="Battery Monitor"', type_="bool", default=True, parent_ref="menu_battery", extended_help="**Battery Icons Toggle**\n\nEnables rendering of beautiful battery state icons inside the popup."),
         ConfigItem(label="MaxSize", key="max-icon-size", scope='app-name="Battery Monitor"', type_="int", default=36, min_val=16, max_val=128, step=2, parent_ref="menu_battery", extended_help="**Battery Icon Max Size**\n\nMaximum dimensions for the battery status icon."),
         ConfigItem(label="Timeout", key="default-timeout", scope='app-name="Battery Monitor"', type_="int", default=4000, min_val=0, max_val=10000, step=500, parent_ref="menu_battery", extended_help="**Battery OSD Lifespan**\n\nHow rapidly the battery popup closes automatically (in milliseconds)."),
+
+        # =====================================================================
+        # GROUP: Visuals & Rotation (Hyprland Visuals & Screen Rotate Overlays)
+        # =====================================================================
+        ConfigItem(
+            label="Hypr Visuals", key="menu_hypr_visuals", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Visuals & Rotation",
+            extended_help="**Hyprland Visual Effects Overlay**\n\nControls the popup aesthetic for the Blur & Effects toggle notification. Targets notifications pushed with `app-name=hypr-visuals`."
+        ),
+        ConfigItem(label="Anchor", key="anchor", scope="app-name=hypr-visuals", type_="cycle", default="bottom-center", options=["top-right", "top-center", "top-left", "bottom-right", "bottom-center", "bottom-left", "center-right", "center-left", "center"], parent_ref="menu_hypr_visuals", extended_help="**Visuals Anchor**\n\nWhere the Blur/Effects notification anchors on screen."),
+        ConfigItem(label="Layer", key="layer", scope="app-name=hypr-visuals", type_="cycle", default="overlay", options=["background", "bottom", "top", "overlay"], parent_ref="menu_hypr_visuals", extended_help="**Visuals Layer**\n\nArranges the notification at a specific Wayland surface layer."),
+        ConfigItem(label="Width", key="width", scope="app-name=hypr-visuals", type_="int", default=170, min_val=50, max_val=800, step=5, parent_ref="menu_hypr_visuals", extended_help="**Visuals Box Width**\n\nTotal width allocated for the notification pill."),
+        ConfigItem(label="Height", key="height", scope="app-name=hypr-visuals", type_="int", default=40, min_val=10, max_val=200, step=2, parent_ref="menu_hypr_visuals", extended_help="**Visuals Box Height**\n\nTotal height allocated for the notification pill."),
+        ConfigItem(label="Margin", key="margin", scope="app-name=hypr-visuals", type_="string", default="0,0,30,0", parent_ref="menu_hypr_visuals", extended_help="**Visuals Margin**\n\nSpacing pushing the notification away from screen boundaries."),
+        ConfigItem(label="Padding", key="padding", scope="app-name=hypr-visuals", type_="string", default="6,12", parent_ref="menu_hypr_visuals", extended_help="**Visuals Internal Padding**\n\nInternal spacing separating text/icons from borders."),
+        ConfigItem(label="Radius", key="border-radius", scope="app-name=hypr-visuals", type_="int", default=20, min_val=0, max_val=50, step=1, parent_ref="menu_hypr_visuals", extended_help="**Visuals Corner Smoothing**\n\nApplies rounded arcs to the notification pill."),
+        ConfigItem(label="Size", key="border-size", scope="app-name=hypr-visuals", type_="int", default=1, min_val=0, max_val=10, step=1, parent_ref="menu_hypr_visuals", extended_help="**Visuals Border Stroke**\n\nThickness of the outer border ring."),
+        ConfigItem(label="Icons", key="icons", scope="app-name=hypr-visuals", type_="bool", default=True, parent_ref="menu_hypr_visuals", extended_help="**Visuals Icon Toggle**\n\nEnables display of the system display icon."),
+        ConfigItem(label="Timeout", key="default-timeout", scope="app-name=hypr-visuals", type_="int", default=1500, min_val=0, max_val=10000, step=100, parent_ref="menu_hypr_visuals", extended_help="**Visuals Lifespan**\n\nMilliseconds the notification stays visible."),
+        ConfigItem(label="Background", key="background-color", scope="app-name=hypr-visuals", type_="color", default="{{colors.surface.default.hex}}1a", options=COLOR_OPTIONS, hints=COLOR_HINTS, parent_ref="menu_hypr_visuals", extended_help="**Visuals Fill Color**" + ALPHA_HELP),
+        ConfigItem(label="Text", key="text-color", scope="app-name=hypr-visuals", type_="color", default="{{colors.on_surface.default.hex}}", options=COLOR_OPTIONS, hints=COLOR_HINTS, parent_ref="menu_hypr_visuals", extended_help="**Visuals Text Color**" + ALPHA_HELP),
+        ConfigItem(label="Border", key="border-color", scope="app-name=hypr-visuals", type_="color", default="{{colors.outline.default.hex}}33", options=COLOR_OPTIONS, hints=COLOR_HINTS, parent_ref="menu_hypr_visuals", extended_help="**Visuals Border Color**" + ALPHA_HELP),
+
+        ConfigItem(
+            label="Hypr Rotate", key="menu_hypr_rotate", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Visuals & Rotation",
+            extended_help="**Screen Rotation Overlay**\n\nControls the popup aesthetic for screen rotation notifications. Targets notifications pushed with `app-name=hypr-rotate`."
+        ),
+        ConfigItem(label="Anchor", key="anchor", scope="app-name=hypr-rotate", type_="cycle", default="bottom-center", options=["top-right", "top-center", "top-left", "bottom-right", "bottom-center", "bottom-left", "center-right", "center-left", "center"], parent_ref="menu_hypr_rotate", extended_help="**Rotate Anchor**\n\nWhere the screen rotation notification anchors on screen."),
+        ConfigItem(label="Layer", key="layer", scope="app-name=hypr-rotate", type_="cycle", default="overlay", options=["background", "bottom", "top", "overlay"], parent_ref="menu_hypr_rotate", extended_help="**Rotate Layer**\n\nArranges the notification at a specific Wayland surface layer."),
+        ConfigItem(label="Width", key="width", scope="app-name=hypr-rotate", type_="int", default=240, min_val=50, max_val=800, step=5, parent_ref="menu_hypr_rotate", extended_help="**Rotate Box Width**\n\nTotal width allocated for the rotation notification pill."),
+        ConfigItem(label="Height", key="height", scope="app-name=hypr-rotate", type_="int", default=42, min_val=10, max_val=200, step=2, parent_ref="menu_hypr_rotate", extended_help="**Rotate Box Height**\n\nTotal height allocated for the rotation notification pill."),
+        ConfigItem(label="Margin", key="margin", scope="app-name=hypr-rotate", type_="string", default="0,0,30,0", parent_ref="menu_hypr_rotate", extended_help="**Rotate Margin**\n\nSpacing pushing the notification away from screen boundaries."),
+        ConfigItem(label="Padding", key="padding", scope="app-name=hypr-rotate", type_="string", default="6,14", parent_ref="menu_hypr_rotate", extended_help="**Rotate Internal Padding**\n\nInternal spacing separating text/icons from borders."),
+        ConfigItem(label="Radius", key="border-radius", scope="app-name=hypr-rotate", type_="int", default=20, min_val=0, max_val=50, step=1, parent_ref="menu_hypr_rotate", extended_help="**Rotate Corner Smoothing**\n\nApplies rounded arcs to the notification pill."),
+        ConfigItem(label="Size", key="border-size", scope="app-name=hypr-rotate", type_="int", default=1, min_val=0, max_val=10, step=1, parent_ref="menu_hypr_rotate", extended_help="**Rotate Border Stroke**\n\nThickness of the outer border ring."),
+        ConfigItem(label="Icons", key="icons", scope="app-name=hypr-rotate", type_="bool", default=True, parent_ref="menu_hypr_rotate", extended_help="**Rotate Icon Toggle**\n\nEnables display of the system rotation icon."),
+        ConfigItem(label="Timeout", key="default-timeout", scope="app-name=hypr-rotate", type_="int", default=1500, min_val=0, max_val=10000, step=100, parent_ref="menu_hypr_rotate", extended_help="**Rotate Lifespan**\n\nMilliseconds the notification stays visible."),
+        ConfigItem(label="Background", key="background-color", scope="app-name=hypr-rotate", type_="color", default="{{colors.surface.default.hex}}1a", options=COLOR_OPTIONS, hints=COLOR_HINTS, parent_ref="menu_hypr_rotate", extended_help="**Rotate Fill Color**" + ALPHA_HELP),
+        ConfigItem(label="Text", key="text-color", scope="app-name=hypr-rotate", type_="color", default="{{colors.on_surface.default.hex}}", options=COLOR_OPTIONS, hints=COLOR_HINTS, parent_ref="menu_hypr_rotate", extended_help="**Rotate Text Color**" + ALPHA_HELP),
+        ConfigItem(label="Border", key="border-color", scope="app-name=hypr-rotate", type_="color", default="{{colors.outline.default.hex}}33", options=COLOR_OPTIONS, hints=COLOR_HINTS, parent_ref="menu_hypr_rotate", extended_help="**Rotate Border Color**" + ALPHA_HELP),
     ],
 
 
@@ -1109,6 +1148,24 @@ SCHEMA = {
             default="notify-send -a 'Battery Monitor' -i 'battery-good-charging' 'Power Connected' '80% — charging'",
             group="Execution",
             extended_help="**Battery OSD Test**\n\nFires a mock battery charging notification to preview your Battery OSD styling in the center of the screen."
+        ),
+        ConfigItem(
+            label="TestVisuals",
+            key="action_test_visuals",
+            scope="DEFAULT",
+            type_="action",
+            default="notify-send -a hypr-visuals -i preferences-desktop-display -h string:x-canonical-private-synchronous:hypr-visuals 'Blur & Effects' 'ON'",
+            group="Execution",
+            extended_help="**Hypr Visuals Test**\n\nFires a mock Blur & Effects notification to preview your Hypr Visuals pill styling."
+        ),
+        ConfigItem(
+            label="TestRotate",
+            key="action_test_rotate",
+            scope="DEFAULT",
+            type_="action",
+            default="notify-send -a hypr-rotate -i object-rotate-right -h string:x-canonical-private-synchronous:display-rotate 'Display Rotated' 'eDP-1 • 0° (normal)'",
+            group="Execution",
+            extended_help="**Hypr Rotate Test**\n\nFires a mock Display Rotated notification to preview your Hypr Rotate pill styling."
         ),
         ConfigItem(
             label="Reset",
