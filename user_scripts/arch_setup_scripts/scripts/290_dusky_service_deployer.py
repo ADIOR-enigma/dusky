@@ -15,13 +15,14 @@ Replaces and consolidates:
 Features & Architecture:
   - Declarative ServiceConfig data structures with default enable/disable toggles
   - Unprivileged user execution with sterile IPC environment (XDG_RUNTIME_DIR/DBus)
-  - Isolated subprocess sudo forking for system service operations
-  - High-speed bulk systemctl status querying via property parsing
+  - Safe subprocess privilege escalation (sudo/doas/pkexec) without PYTHONPATH injection
+  - True O(1) bulk systemctl positional block property parser (SYSTEMD_COLORS=0)
+  - Native systemd unit alias & not-found resolution
   - Interactive prompting (-i/--interactive) & non-interactive modes (-y/--default)
   - Fuzzy unit suggestion engine for missing services using difflib
-  - DBus activation reloading via busctl
-  - Reversion/disable mode (--disable)
-  - Structured JSON status output (--json)
+  - Dual-scope DBus activation reloading via busctl (User & System)
+  - Extended systemd start timeout handling (95s limit matching systemd defaults)
+  - Complete STDERR symlink output capture and structured JSON status export (--json)
 ==============================================================================
 """
 
@@ -38,12 +39,17 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import Final, Literal, NamedTuple
 
-# Rich Presentation Imports
-from rich.console import Console
-from rich.panel import Panel
-from rich.prompt import Confirm
-from rich.table import Table
-from rich.text import Text
+# Rich Presentation Imports Guard
+try:
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.prompt import Confirm
+    from rich.table import Table
+    from rich.text import Text
+except ImportError:
+    print("ERROR: The 'rich' python library is required.", file=sys.stderr)
+    print("Install it via: sudo pacman -S python-rich", file=sys.stderr)
+    sys.exit(1)
 
 # Initialize Rich Consoles
 console = Console()
@@ -229,6 +235,11 @@ def resolve_user_context() -> UserContext:
     )
 
 
+def get_escalator() -> str | None:
+    """Resolves available privilege escalation tool (sudo, doas, or pkexec)."""
+    return shutil.which("sudo") or shutil.which("doas") or shutil.which("pkexec")
+
+
 def get_user_ipc_env(ctx: UserContext) -> dict[str, str]:
     """
     Constructs a sterile IPC environment to prevent DBus/systemctl --user failure
@@ -251,18 +262,22 @@ def get_user_ipc_env(ctx: UserContext) -> dict[str, str]:
 
 
 def build_systemctl_cmd(scope: Scope, args: list[str], ctx: UserContext, read_only: bool = False) -> tuple[list[str], dict[str, str] | None]:
-    """Constructs systemctl command vectors and sterile execution environments."""
+    """Constructs systemctl command vectors and sterile execution environments with fallback escalation."""
     if scope == Scope.SYSTEM:
         if read_only or ctx.is_root:
             return ["systemctl"] + args, None
         else:
-            return ["sudo", "systemctl"] + args, None
+            escalator = get_escalator()
+            if not escalator:
+                raise RuntimeError("Privilege escalation tool (sudo/doas/pkexec) not found. Cannot modify system services.")
+            return [escalator, "systemctl"] + args, None
     else:  # Scope.USER
         env = get_user_ipc_env(ctx)
         if ctx.is_root:
             if ctx.username == "root":
                 return ["systemctl", "--user"] + args, env
-            return ["sudo", "-u", ctx.username, "systemctl", "--user"] + args, env
+            escalator = get_escalator() or "sudo"
+            return [escalator, "-u", ctx.username, "systemctl", "--user"] + args, env
         else:
             return ["systemctl", "--user"] + args, env
 
@@ -302,19 +317,19 @@ def suggest_missing_unit(unit_name: str, scope: Scope, ctx: UserContext) -> list
 
 
 # ==============================================================================
-# 6. SYSTEMD ENGINE & QUERY PIPELINE
+# 6. TRUE O(1) BULK POSITIONAL SYSTEMD PARSER
 # ==============================================================================
 
 def query_bulk_unit_states(units: list[tuple[ServiceConfig, Scope, Category]], ctx: UserContext) -> list[UnitState]:
-    """Queries unit metadata in bulk via high-speed systemctl show property parsing."""
+    """Queries unit metadata in bulk via positional systemctl show block parsing (SYSTEMD_COLORS=0)."""
     states: list[UnitState] = []
 
     sys_targets = [t for t in units if t[1] == Scope.SYSTEM]
     usr_targets = [t for t in units if t[1] == Scope.USER]
 
-    def fetch_scope_states(target_group: list[tuple[ServiceConfig, Scope, Category]], scope: Scope) -> dict[str, dict[str, str]]:
+    def fetch_scope_states(target_group: list[tuple[ServiceConfig, Scope, Category]], scope: Scope) -> list[dict[str, str]]:
         if not target_group:
-            return {}
+            return []
         unit_names = [normalize_unit_name(t[0].name) for t in target_group]
         cmd, env = build_systemctl_cmd(
             scope,
@@ -322,36 +337,48 @@ def query_bulk_unit_states(units: list[tuple[ServiceConfig, Scope, Category]], c
             ctx=ctx,
             read_only=True,
         )
+        if env is None:
+            env = os.environ.copy()
+        else:
+            env = env.copy()
+        env["SYSTEMD_COLORS"] = "0"
+
         try:
             res = subprocess.run(cmd, capture_output=True, env=env, text=True, timeout=15)
             out = res.stdout.strip()
             if not out:
-                return {}
+                return [{}] * len(target_group)
 
-            results: dict[str, dict[str, str]] = {}
-            current: dict[str, str] = {}
-            for line in out.splitlines():
-                line_str = line.strip()
-                if not line_str:
-                    if "Id" in current:
-                        results[current["Id"]] = current
-                    current = {}
-                    continue
-                if "=" in line_str:
-                    k, v = line_str.split("=", 1)
-                    current[k] = v
-            if "Id" in current:
-                results[current["Id"]] = current
+            blocks = out.split("\n\n")
+            results: list[dict[str, str]] = []
+            for block in blocks:
+                current: dict[str, str] = {}
+                for line in block.splitlines():
+                    if "=" in line:
+                        k, v = line.split("=", 1)
+                        current[k.strip()] = v.strip()
+                results.append(current)
+
+            while len(results) < len(target_group):
+                results.append({})
             return results
         except (subprocess.TimeoutExpired, Exception):
-            return {}
+            return [{}] * len(target_group)
 
     sys_res = fetch_scope_states(sys_targets, Scope.SYSTEM)
     usr_res = fetch_scope_states(usr_targets, Scope.USER)
 
+    sys_idx, usr_idx = 0, 0
+
     for cfg, scope, cat in units:
         norm_name = normalize_unit_name(cfg.name)
-        data = sys_res.get(norm_name) if scope == Scope.SYSTEM else usr_res.get(norm_name)
+        if scope == Scope.SYSTEM:
+            data = sys_res[sys_idx] if sys_idx < len(sys_res) else {}
+            sys_idx += 1
+        else:
+            data = usr_res[usr_idx] if usr_idx < len(usr_res) else {}
+            usr_idx += 1
+
         if data and data.get("LoadState") != "not-found":
             st = UnitState(
                 unit_name=norm_name,
@@ -374,16 +401,15 @@ def process_unit_action(
     cfg: ServiceConfig,
     scope: Scope,
     category: Category,
+    st: UnitState,
     action: Literal["enable", "disable"],
     now: bool,
     interactive: bool,
     dry_run: bool,
     ctx: UserContext,
 ) -> ProcessingResult:
-    """Enables or disables a single unit cleanly with interactive prompt support."""
+    """Enables or disables a pre-queried unit cleanly with interactive prompt and 95s timeout support."""
     norm_name = normalize_unit_name(cfg.name)
-    states = query_bulk_unit_states([(cfg, scope, category)], ctx)
-    st = states[0]
 
     if not st.exists:
         suggestions = suggest_missing_unit(norm_name, scope, ctx)
@@ -419,9 +445,7 @@ def process_unit_action(
                 return ProcessingResult(unit_name=norm_name, category=category, status=UnitStatus.STATIC, message="Static unit (Cannot enable without --now start)")
             cmd_flags = ["start"]
         else:
-            cmd_flags = ["enable"]
-            if now:
-                cmd_flags.append("--now")
+            cmd_flags = ["enable", "--now"] if now else ["enable"]
     else:  # disable
         if st.status_enum == UnitStatus.DISABLED and st.active_state == "inactive":
             return ProcessingResult(unit_name=norm_name, category=category, status=UnitStatus.DISABLED, message="Already disabled & inactive")
@@ -430,12 +454,14 @@ def process_unit_action(
                 return ProcessingResult(unit_name=norm_name, category=category, status=UnitStatus.STATIC, message="Static unit (Already inactive)")
             cmd_flags = ["stop"]
         else:
-            cmd_flags = ["disable"]
-            if now:
-                cmd_flags.append("--now")
+            cmd_flags = ["disable", "--now"] if now else ["disable"]
 
     cmd_flags.append(norm_name)
-    cmd, env = build_systemctl_cmd(scope, cmd_flags, ctx=ctx, read_only=False)
+
+    try:
+        cmd, env = build_systemctl_cmd(scope, cmd_flags, ctx=ctx, read_only=False)
+    except RuntimeError as e:
+        return ProcessingResult(unit_name=norm_name, category=category, status=UnitStatus.ERROR, message=str(e))
 
     if dry_run:
         return ProcessingResult(
@@ -446,7 +472,9 @@ def process_unit_action(
         )
 
     try:
-        proc = subprocess.run(cmd, capture_output=True, env=env, text=True, timeout=20)
+        proc = subprocess.run(cmd, capture_output=True, env=env, text=True, timeout=95)
+        output_text = (proc.stderr.strip() + "\n" + proc.stdout.strip()).strip()
+
         if proc.returncode == 0:
             msg = f"Successfully {action}d" + (" & started" if now and action == "enable" else (" & stopped" if now else ""))
             return ProcessingResult(
@@ -454,7 +482,7 @@ def process_unit_action(
                 category=category,
                 status=UnitStatus.ENABLED_ACTIVE if action == "enable" and now else UnitStatus.DISABLED,
                 message=msg,
-                output=proc.stdout.strip(),
+                output=output_text,
             )
         else:
             return ProcessingResult(
@@ -462,14 +490,14 @@ def process_unit_action(
                 category=category,
                 status=UnitStatus.ERROR,
                 message=f"Failed to {action}",
-                output=proc.stderr.strip() or proc.stdout.strip(),
+                output=output_text,
             )
     except subprocess.TimeoutExpired:
         return ProcessingResult(
             unit_name=norm_name,
             category=category,
             status=UnitStatus.ERROR,
-            message="Execution timed out (20s limit reached)",
+            message="Execution timed out (95s limit reached)",
         )
     except Exception as e:
         return ProcessingResult(
@@ -480,35 +508,54 @@ def process_unit_action(
         )
 
 
-def reload_dbus(dry_run: bool, ctx: UserContext) -> None:
-    """Reloads DBus configuration via busctl for dbus-broker compatibility."""
-    cmd = ["busctl", "--user", "call", "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "ReloadConfig"]
+def reload_dbus(scope: Scope, dry_run: bool, ctx: UserContext) -> None:
+    """Reloads DBus configuration via busctl for both user and system contexts."""
+    if scope == Scope.USER:
+        cmd = ["busctl", "--user", "call", "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "ReloadConfig"]
+        env = get_user_ipc_env(ctx)
+    else:
+        escalator = get_escalator() or "sudo"
+        cmd = [escalator, "busctl", "call", "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "ReloadConfig"]
+        if ctx.is_root:
+            cmd = ["busctl", "call", "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "ReloadConfig"]
+        env = None
+
+    scope_str = "System" if scope == Scope.SYSTEM else "User"
     if dry_run:
-        console.print(f"[bold yellow][DRY-RUN][/bold yellow] Would execute DBus reload: {' '.join(cmd)}")
+        console.print(f"[bold yellow][DRY-RUN][/bold yellow] Would execute {scope_str} DBus reload: {' '.join(cmd)}")
         return
-    env = get_user_ipc_env(ctx)
+
     try:
         res = subprocess.run(cmd, capture_output=True, env=env, text=True, timeout=10)
         if res.returncode == 0:
-            console.print("[bold green][OK][/bold green] DBus configuration reloaded via busctl.")
+            console.print(f"[bold green][OK][/bold green] {scope_str} DBus configuration reloaded via busctl.")
         else:
-            console.print(f"[bold yellow][WARN][/bold yellow] DBus reload skipped or failed: {res.stderr.strip()}")
+            console.print(f"[bold yellow][WARN][/bold yellow] {scope_str} DBus reload skipped or failed: {res.stderr.strip()}")
     except Exception as e:
-        console.print(f"[bold red][ERR][/bold red] DBus reload failed: {e}")
+        console.print(f"[bold red][ERR][/bold red] {scope_str} DBus reload failed: {e}")
 
 
 def daemon_reload(scope: Scope, dry_run: bool, ctx: UserContext) -> None:
     """Executes daemon-reload for system or user scope."""
-    cmd, env = build_systemctl_cmd(scope, ["daemon-reload"], ctx=ctx, read_only=False)
+    try:
+        cmd, env = build_systemctl_cmd(scope, ["daemon-reload"], ctx=ctx, read_only=False)
+    except RuntimeError as e:
+        console.print(f"[bold red][ERR][/bold red] Cannot reload daemon: {e}")
+        return
+
     scope_str = "System" if scope == Scope.SYSTEM else "User"
     if dry_run:
         console.print(f"[bold yellow][DRY-RUN][/bold yellow] Would run {scope_str} daemon-reload: {' '.join(cmd)}")
         return
-    res = subprocess.run(cmd, capture_output=True, env=env, text=True, timeout=20)
-    if res.returncode == 0:
-        console.print(f"[bold green][OK][/bold green] Executed {scope_str} daemon-reload.")
-    else:
-        console.print(f"[bold red][ERR][/bold red] Failed {scope_str} daemon-reload: {res.stdout.strip()}")
+
+    try:
+        res = subprocess.run(cmd, capture_output=True, env=env, text=True, timeout=20)
+        if res.returncode == 0:
+            console.print(f"[bold green][OK][/bold green] Executed {scope_str} daemon-reload.")
+        else:
+            console.print(f"[bold red][ERR][/bold red] Failed {scope_str} daemon-reload: {res.stdout.strip()}")
+    except Exception as e:
+        console.print(f"[bold red][ERR][/bold red] Failed {scope_str} daemon-reload: {e}")
 
 
 # ==============================================================================
@@ -690,33 +737,45 @@ def main() -> None:
             Category.USER_AUR,
         }
 
-    # Subprocess Sudo Escalation Fork for System Services
+    # Subprocess Escalation Fork for System Services
     requires_system_scope = any(cat in (Category.SYSTEM_CORE, Category.SYSTEM_AUR) for cat in targeted_categories)
     if requires_system_scope and not ctx.is_root and not args.status and not args.dry_run:
-        if shutil.which("sudo"):
+        escalator = get_escalator()
+        if escalator:
             if not args.json:
-                console.print("[bold blue][INFO][/bold blue] System services require root privileges. Forking via sudo...")
-            script_path = Path(sys.argv[0]).resolve().as_posix()
-            python_path = os.pathsep.join(sys.path)
-            sudo_cmd = ["sudo", "env", f"PYTHONPATH={python_path}", sys.executable, script_path, "--system", "--aur-system"]
-            if args.disable:
-                sudo_cmd.append("--disable")
-            if args.no_now:
-                sudo_cmd.append("--no-now")
-            if args.interactive:
-                sudo_cmd.append("--interactive")
-            if args.default:
-                sudo_cmd.append("--default")
-            if args.daemon_reload:
-                sudo_cmd.append("--daemon-reload")
+                console.print(f"[bold blue][INFO][/bold blue] System services require root privileges. Forking via {escalator}...")
 
+            script_path = Path(__file__).resolve().as_posix()
+            child_args = [sys.executable, script_path]
+
+            if Category.SYSTEM_CORE in targeted_categories:
+                child_args.append("--system")
+            if Category.SYSTEM_AUR in targeted_categories:
+                child_args.append("--aur-system")
+            if args.disable:
+                child_args.append("--disable")
+            if args.no_now:
+                child_args.append("--no-now")
+            if args.interactive:
+                child_args.append("--interactive")
+            if args.default:
+                child_args.append("--default")
+            if args.daemon_reload:
+                child_args.append("--daemon-reload")
+            if args.json:
+                child_args.append("--json")
+
+            sudo_cmd = [escalator] + child_args
             subprocess.run(sudo_cmd, check=False)
+
             targeted_categories.discard(Category.SYSTEM_CORE)
             targeted_categories.discard(Category.SYSTEM_AUR)
             if not targeted_categories:
                 if args.dbus_reload:
-                    reload_dbus(dry_run=args.dry_run, ctx=ctx)
+                    reload_dbus(Scope.USER, dry_run=args.dry_run, ctx=ctx)
                 return
+        else:
+            error_console.print("[bold red][ERROR][/bold red] Privilege escalation tool (sudo/doas/pkexec) missing. System services skipped.")
 
     # Build target service tuples: (ServiceConfig, scope, category)
     unit_targets: list[tuple[ServiceConfig, Scope, Category]] = []
@@ -730,17 +789,19 @@ def main() -> None:
     if Category.USER_AUR in targeted_categories:
         unit_targets.extend([(cfg, Scope.USER, Category.USER_AUR) for cfg in AUR_USER_SERVICES if args.status or args.all or cfg.enabled_by_default or args.interactive])
 
+    # Pre-fetch unit states in bulk ONCE (True O(1) bulk query architecture)
+    if not args.json and not args.status:
+        console.print("\n[bold cyan]Querying systemd unit states in bulk...[/bold cyan]")
+
+    states_list = query_bulk_unit_states(unit_targets, ctx=ctx)
+
     # Status Inspection Mode
     if args.status:
-        if not args.json:
-            console.print("\n[bold cyan]Querying systemd unit states in bulk via property engine...[/bold cyan]")
-        states = query_bulk_unit_states(unit_targets, ctx=ctx)
-        states.sort(key=lambda s: (s.category.value, s.unit_name))
-
+        states_list.sort(key=lambda s: (s.category.value, s.unit_name))
         if args.json:
-            export_json_status(states)
+            export_json_status(states_list)
         else:
-            render_status_table(states)
+            render_status_table(states_list)
         return
 
     # Execution Mode (Enable or Disable)
@@ -752,14 +813,15 @@ def main() -> None:
     if args.dry_run:
         console.print("[bold yellow]*** DRY-RUN MODE ACTIVE - No changes will be made ***[/bold yellow]\n")
 
-    for cfg, scope, cat in unit_targets:
+    for (cfg, scope, cat), st in zip(unit_targets, states_list):
         res = process_unit_action(
             cfg=cfg,
             scope=scope,
             category=cat,
+            st=st,
             action=action_type,
             now=now_flag,
-            interactive=args.interactive and not args.default,
+            interactive=args.interactive and not args.default and not args.json,
             dry_run=args.dry_run,
             ctx=ctx,
         )
@@ -776,7 +838,11 @@ def main() -> None:
             daemon_reload(Scope.USER, dry_run=args.dry_run, ctx=ctx)
 
     if args.dbus_reload:
-        reload_dbus(dry_run=args.dry_run, ctx=ctx)
+        console.print("\n[bold cyan]Triggering dbus-reload...[/bold cyan]")
+        if any(scope == Scope.SYSTEM for _, scope, _ in unit_targets):
+            reload_dbus(Scope.SYSTEM, dry_run=args.dry_run, ctx=ctx)
+        if any(scope == Scope.USER for _, scope, _ in unit_targets):
+            reload_dbus(Scope.USER, dry_run=args.dry_run, ctx=ctx)
 
 
 if __name__ == "__main__":
