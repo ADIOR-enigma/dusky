@@ -167,7 +167,7 @@ INSTALL_SEQUENCE=(
 #    "U | 470_vesktop_matugen.sh --auto"
     "S | 473_add_user_to_group.sh --auto"
     "U | 475_reverting_sleep_timeout.sh"
-    "U | 480_dusky_commands.sh"
+    "U | 480_dusky_commands.py -s"
     "S | 485_sudoers_nopassword.sh"
 
 # ------ CUSTOM PATH SCRIPTS -------

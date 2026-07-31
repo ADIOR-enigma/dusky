@@ -57,7 +57,7 @@ search_dirs = [
 tasks = [
     # ================= CUSTOM =====================
     "U | backup_hyprlang_files.sh",
-    "U | dusky_commands_before.sh",
+    "U | 480_dusky_commands.py -b",
     # ================= Scripts =====================
     "U | 005_hypr_custom_config_setup.py",
     "U | 006_animation_default.sh",
@@ -96,7 +96,7 @@ tasks = [
     "U | ignore-fail | hypr_anim.sh --current",
     "U | ignore-fail | theme_ctl.sh refresh",
     "U | ignore-fail | update_counter.sh",
-    "U | dusky_commands_after.sh",
+    "U | 480_dusky_commands.py -a",
     "S | fix_wayland_session.py",
     "U | reboot_post_lua_update.sh"
 ]

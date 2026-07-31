@@ -110,7 +110,7 @@ scripts = [
     "U | if:wayland | 455_hyprctl_reload.sh",
     "S | 473_add_user_to_group.sh --auto",
     "U | 475_reverting_sleep_timeout.sh",
-    "U | 480_dusky_commands.sh",
+    "U | 480_dusky_commands.py -s",
     "S | 485_sudoers_nopassword.sh",
     "U | if:dir:~/user_scripts/images | wallpaper_selector.py --build-cache",
     "U | dusky_neovim_manager.sh -a -t dusky",

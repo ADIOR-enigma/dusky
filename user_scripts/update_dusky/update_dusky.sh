@@ -190,7 +190,7 @@ declare -ra UPDATE_SEQUENCE=(
 
 #================= CUSTOM=====================
     "U | backup_hyprlang_files.sh"
-    "U | dusky_commands_before.sh"
+    "U | 480_dusky_commands.py -b"
 #================= Scripts =====================
 
 #    "U | 002_pre_generated_colors.sh"
@@ -301,7 +301,7 @@ declare -ra UPDATE_SEQUENCE=(
 #    "U | 470_vesktop_matugen.sh"
     "S | 473_add_user_to_group.sh --auto"
 #    "U | 475_reverting_sleep_timeout.sh"
-#    "U | 480_dusky_commands.sh"
+#    "U | 480_dusky_commands.py"
     "S | 485_sudoers_nopassword.sh"
 
 #================= CUSTOM=====================
@@ -316,7 +316,7 @@ declare -ra UPDATE_SEQUENCE=(
     "U | ignore-fail | hypr_anim.sh --current"
     "U | ignore-fail | theme_ctl.sh refresh"
     "U | ignore-fail | update_counter.sh"
-    "U | dusky_commands_after.sh"
+    "U | 480_dusky_commands.py -a"
 #    "U | system_update.sh --pacman"
 #
 #
