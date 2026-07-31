@@ -720,7 +720,7 @@ def main() -> None:
     # Subprocess Split Execution for System Scope
     if run_system and not ctx.is_root and not args.dry_run:
         log_info("System services require root privileges.")
-        if sys.stdin.isatty() and shutil.which("sudo"):
+        if shutil.which("sudo"):
             log_info("Forking system service installation securely via sudo...")
             python_path = os.pathsep.join(sys.path)
             sudo_cmd = ["sudo", "env", f"PYTHONPATH={python_path}", sys.executable, script_path, "--system"]
