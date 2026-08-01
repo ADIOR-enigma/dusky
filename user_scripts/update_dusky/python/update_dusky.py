@@ -708,42 +708,52 @@ class StateStore:
         if OPT_DRY_RUN:
             if not self.path.exists():
                 self.conn = sqlite3.connect(":memory:", check_same_thread=False)
+                self._ensure_schema()
             else:
                 self.conn = sqlite3.connect(f"{self.path.as_uri()}?mode=ro", uri=True, check_same_thread=False)
         else:
             self.conn = sqlite3.connect(self.path, check_same_thread=False, timeout=busy_timeout / 1000.0)
             self.conn.execute("PRAGMA journal_mode=WAL;")
             self.conn.execute("PRAGMA synchronous=NORMAL;")
-            self.conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS state (
-                    state_key TEXT PRIMARY KEY,
-                    status TEXT NOT NULL,
-                    script TEXT,
-                    checksum TEXT,
-                    exit_code INTEGER,
-                    note TEXT,
-                    updated TEXT,
-                    duration REAL DEFAULT 0.0
-                )
-                """
+            self._ensure_schema()
+
+    def _ensure_schema(self) -> None:
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS state (
+                state_key TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                script TEXT,
+                checksum TEXT,
+                exit_code INTEGER,
+                note TEXT,
+                updated TEXT,
+                duration REAL DEFAULT 0.0
             )
-            cur = self.conn.execute("PRAGMA table_info(state);")
-            columns = [row[1] for row in cur.fetchall()]
-            if "duration" not in columns:
-                self.conn.execute("ALTER TABLE state ADD COLUMN duration REAL DEFAULT 0.0;")
-            self.conn.commit()
+            """
+        )
+        cur = self.conn.execute("PRAGMA table_info(state);")
+        columns = [row[1] for row in cur.fetchall()]
+        if "duration" not in columns:
+            self.conn.execute("ALTER TABLE state ADD COLUMN duration REAL DEFAULT 0.0;")
+        self.conn.commit()
 
     def statuses(self) -> dict[str, str]:
-        cur = self.conn.execute("SELECT state_key, status FROM state")
-        return {str(k): str(v) for k, v in cur.fetchall()}
+        try:
+            cur = self.conn.execute("SELECT state_key, status FROM state")
+            return {str(k): str(v) for k, v in cur.fetchall()}
+        except sqlite3.OperationalError:
+            return {}
 
     def durations(self) -> dict[str, float]:
-        cur = self.conn.execute("PRAGMA table_info(state);")
-        if "duration" not in [row[1] for row in cur.fetchall()]:
+        try:
+            cur = self.conn.execute("PRAGMA table_info(state);")
+            if "duration" not in [row[1] for row in cur.fetchall()]:
+                return {}
+            cur = self.conn.execute("SELECT state_key, duration FROM state")
+            return {str(k): float(v or 0.0) for k, v in cur.fetchall()}
+        except sqlite3.OperationalError:
             return {}
-        cur = self.conn.execute("SELECT state_key, duration FROM state")
-        return {str(k): float(v or 0.0) for k, v in cur.fetchall()}
 
     def mark(
         self,
@@ -791,14 +801,18 @@ class OnceStore:
         if OPT_DRY_RUN:
             if not self.path.exists():
                 self.conn = sqlite3.connect(":memory:", check_same_thread=False)
+                self._ensure_schema()
             else:
                 self.conn = sqlite3.connect(f"{self.path.as_uri()}?mode=ro", uri=True, check_same_thread=False)
         else:
             self.conn = sqlite3.connect(self.path, check_same_thread=False, timeout=busy_timeout / 1000.0)
             self.conn.execute("PRAGMA journal_mode=WAL;")
             self.conn.execute("PRAGMA synchronous=NORMAL;")
-            self.conn.execute(
-                """
+            self._ensure_schema()
+
+    def _ensure_schema(self) -> None:
+        self.conn.execute(
+            """
 CREATE TABLE IF NOT EXISTS once_markers (
     marker_key TEXT PRIMARY KEY,
     profile TEXT NOT NULL,
@@ -816,20 +830,25 @@ CREATE TABLE IF NOT EXISTS once_markers (
     updated TEXT
 )
 """
-            )
-            with suppress(sqlite3.OperationalError):
-                self.conn.execute("ALTER TABLE once_markers ADD COLUMN notified_checksum TEXT DEFAULT '';")
+        )
+        with suppress(sqlite3.OperationalError):
+            self.conn.execute("ALTER TABLE once_markers ADD COLUMN notified_checksum TEXT DEFAULT '';")
 
-            self.conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_once_script ON once_markers(script_name);"
-            )
-            self.conn.commit()
-            self._migrate_keys()
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_once_script ON once_markers(script_name);"
+        )
+        self.conn.commit()
+        self._migrate_keys()
 
     def _migrate_keys(self) -> None:
-        cur = self.conn.execute("SELECT marker_key, profile, scope, mode, script_name, args_key, resolved_path FROM once_markers")
+        try:
+            cur = self.conn.execute("SELECT marker_key, profile, scope, mode, script_name, args_key, resolved_path FROM once_markers")
+            rows = cur.fetchall()
+        except sqlite3.OperationalError:
+            return
+
         updates = []
-        for row in cur.fetchall():
+        for row in rows:
             old_key, profile, scope, mode, script_name, args_key, resolved_path = row
             rel_path = ""
             if resolved_path:
@@ -857,17 +876,20 @@ CREATE TABLE IF NOT EXISTS once_markers (
         if not script:
             return 0
 
-        cur = self.conn.execute(
-            """
+        try:
+            cur = self.conn.execute(
+                """
 DELETE FROM once_markers
 WHERE script_name = ?
    OR resolved_path = ?
    OR script_name LIKE ?
 """,
-            (script, script, f"%/{script}"),
-        )
-        self.conn.commit()
-        return cur.rowcount
+                (script, script, f"%/{script}"),
+            )
+            self.conn.commit()
+            return cur.rowcount
+        except sqlite3.OperationalError:
+            return 0
 
     @staticmethod
     def make_key(task: 'DuskyTask', profile_name: str) -> str:
@@ -897,11 +919,14 @@ WHERE script_name = ?
             return "run"
 
         key = self.make_key(task, profile_name)
-        cur = self.conn.execute(
-            "SELECT checksum, once_mode, notified_checksum FROM once_markers WHERE marker_key = ?",
-            (key,),
-        )
-        row = cur.fetchone()
+        try:
+            cur = self.conn.execute(
+                "SELECT checksum, once_mode, notified_checksum FROM once_markers WHERE marker_key = ?",
+                (key,),
+            )
+            row = cur.fetchone()
+        except sqlite3.OperationalError:
+            return "run"
         if row is None:
             return "run"
 

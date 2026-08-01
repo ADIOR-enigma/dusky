@@ -499,11 +499,10 @@ class StateStore:
 
     def __init__(self, profile: ProfileConfig):
         self.path = state_dir() / f"{safe_filename(profile.name)}.db"
-        self.conn = sqlite3.connect(self.path, check_same_thread=False)
         busy_timeout = GLOBAL_CONFIG.get("execution", {}).get("db_busy_timeout", 5000)
+        self.conn = sqlite3.connect(self.path, check_same_thread=False, timeout=busy_timeout / 1000.0)
         self.conn.execute("PRAGMA journal_mode=WAL;")
         self.conn.execute("PRAGMA synchronous=NORMAL;")
-        self.conn.execute(f"PRAGMA busy_timeout={busy_timeout};")
         self.conn.execute(
             """
             CREATE TABLE IF NOT EXISTS state (
@@ -525,15 +524,21 @@ class StateStore:
         self.conn.commit()
 
     def statuses(self) -> dict[str, str]:
-        cur = self.conn.execute("SELECT state_key, status FROM state")
-        return {str(k): str(v) for k, v in cur.fetchall()}
+        try:
+            cur = self.conn.execute("SELECT state_key, status FROM state")
+            return {str(k): str(v) for k, v in cur.fetchall()}
+        except sqlite3.OperationalError:
+            return {}
 
     def durations(self) -> dict[str, float]:
-        cur = self.conn.execute("PRAGMA table_info(state);")
-        if "duration" not in [row[1] for row in cur.fetchall()]:
+        try:
+            cur = self.conn.execute("PRAGMA table_info(state);")
+            if "duration" not in [row[1] for row in cur.fetchall()]:
+                return {}
+            cur = self.conn.execute("SELECT state_key, duration FROM state")
+            return {str(k): float(v or 0.0) for k, v in cur.fetchall()}
+        except sqlite3.OperationalError:
             return {}
-        cur = self.conn.execute("SELECT state_key, duration FROM state")
-        return {str(k): float(v or 0.0) for k, v in cur.fetchall()}
 
     @classmethod
     def is_done(cls, status: str | None) -> bool:
@@ -586,11 +591,10 @@ def reset_state_for_profile(profile: ProfileConfig) -> None:
 class OnceStore:
     def __init__(self) -> None:
         self.path = state_dir() / "once.db"
-        self.conn = sqlite3.connect(self.path, check_same_thread=False)
         busy_timeout = GLOBAL_CONFIG.get("execution", {}).get("db_busy_timeout", 5000)
+        self.conn = sqlite3.connect(self.path, check_same_thread=False, timeout=busy_timeout / 1000.0)
         self.conn.execute("PRAGMA journal_mode=WAL;")
         self.conn.execute("PRAGMA synchronous=NORMAL;")
-        self.conn.execute(f"PRAGMA busy_timeout={busy_timeout};")
         self.conn.execute(
             """
 CREATE TABLE IF NOT EXISTS once_markers (
@@ -1155,7 +1159,7 @@ def get_lock_holders() -> str:
                 continue
             for fd_link in fd_dir.iterdir():
                 try:
-                    if fd_link.resolve() == real_lock:
+                    if os.readlink(fd_link) == str(real_lock):
                         cmdline_path = pid_dir / "cmdline"
                         cmd = ""
                         with suppress(PermissionError, OSError):
@@ -1182,7 +1186,6 @@ def _cleanup_lock() -> None:
             with suppress(OSError):
                 os.close(_LOCK_FD)
             _LOCK_FD = None
-        lock_path().unlink(missing_ok=True)
     except OSError:
         pass
 
@@ -5782,15 +5785,14 @@ class DuskyOrchestratorApp(App):
                 print(f"Executing: {clean_cmd}\n")
                 sys.stdout.flush()
 
-                old_int = signal.signal(signal.SIGINT, signal.SIG_IGN)
                 try:
                     res = await asyncio.to_thread(subprocess.run, cmd, env=env)
                     code = res.returncode
                     if code == -signal.SIGINT or code == 130:
                         return False, 130, "interactive session interrupted by user"
                     return code == 0, code, "interactive session"
-                finally:
-                    signal.signal(signal.SIGINT, old_int)
+                except KeyboardInterrupt:
+                    return False, 130, "interactive session interrupted by user"
 
             except Exception as e:
                 return False, None, str(e)
