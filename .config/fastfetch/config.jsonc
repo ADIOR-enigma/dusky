@@ -97,7 +97,6 @@
             "type": "gpu",
             "key": "{#36}├─ {#32}󰢮 gpu     ",
             "keyWidth": 14,
-            "hideType": "integrated",
             "format": "{2}"
         },
         {
