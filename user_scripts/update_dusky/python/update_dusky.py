@@ -809,6 +809,9 @@ CREATE TABLE IF NOT EXISTS once_markers (
 )
 """
         )
+        with suppress(sqlite3.OperationalError):
+            self.conn.execute("ALTER TABLE once_markers ADD COLUMN notified_checksum TEXT DEFAULT '';")
+
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_once_script ON once_markers(script_name);"
         )
@@ -835,6 +838,12 @@ WHERE script_name = ?
     def make_key(task: 'DuskyTask', profile_name: str) -> str:
         scope = task.once_scope if task.once_scope in ("profile", "global") else "profile"
         profile_part = "__global__" if scope == "global" else profile_name
+
+        try:
+            rel_path = str(task.resolved_path.relative_to(WORK_TREE)) if task.resolved_path else ""
+        except ValueError:
+            rel_path = str(task.resolved_path)
+
         material = "|".join(
             [
                 "once",
@@ -842,29 +851,48 @@ WHERE script_name = ?
                 profile_part,
                 task.mode,
                 task.name,
+                rel_path,
                 shlex.join(task.args),
             ]
         ).encode("utf-8")
         return hashlib.blake2b(material, digest_size=16).hexdigest()
 
-    def marker_valid(self, task: 'DuskyTask', profile_name: str) -> bool:
+    def check_marker_status(self, task: 'DuskyTask', profile_name: str) -> Literal["run", "skip", "notify_sealed"]:
         if not task.once:
-            return False
+            return "run"
 
         key = self.make_key(task, profile_name)
         cur = self.conn.execute(
-            "SELECT checksum, once_mode FROM once_markers WHERE marker_key = ?",
+            "SELECT checksum, once_mode, notified_checksum FROM once_markers WHERE marker_key = ?",
             (key,),
         )
         row = cur.fetchone()
         if row is None:
-            return False
+            return "run"
 
-        stored_checksum, stored_mode = row
+        stored_checksum, stored_mode, notified_checksum = row
+
         if task.once_mode == "forever" or stored_mode == "forever":
-            return True
+            return "skip"
 
-        return bool(task.checksum) and stored_checksum == task.checksum
+        if task.once_mode == "sealed" or stored_mode == "sealed":
+            if bool(task.checksum) and stored_checksum != task.checksum:
+                if notified_checksum != task.checksum:
+                    return "notify_sealed"
+            return "skip"
+
+        if bool(task.checksum) and stored_checksum == task.checksum:
+            return "skip"
+
+        return "run"
+
+    def mark_sealed_notified(self, task: 'DuskyTask', profile_name: str) -> None:
+        key = self.make_key(task, profile_name)
+        self.conn.execute(
+            "UPDATE once_markers SET notified_checksum = ?, updated = ? WHERE marker_key = ?",
+            (task.checksum, now_iso(), key)
+        )
+        self.conn.commit()
 
     def mark_success(
         self,
@@ -2192,20 +2220,17 @@ class DuskyTask:
     path_state: str = "ok"  # "ok", "missing", "conflict"
 
     # Extended Orchestrator Subsystem Fields
-    interactive_override: bool | None = None
-    force_flag: bool = False
     condition: str | None = None
     timeout: float | None = None
-    always: bool = False
     retry: int = 0
     retry_delay: float = 1.0
-    on_failure: str = "ask"
     once: bool = False
     once_mode: str = "content"
     once_scope: str = "profile"
     checksum: str = ""
     state_key: str = ""
     duration: float = 0.0
+    conflict_note: str = ""
 
 
 def parse_manifest(profile: ProfileConfig) -> list[DuskyTask]:
@@ -2249,58 +2274,46 @@ def parse_manifest(profile: ProfileConfig) -> list[DuskyTask]:
 
         ignore_fail = False
         interactive = False
-        interactive_override = None
-        force_flag = False
-        always = False
         condition = None
         timeout = None
         retry = 0
         retry_delay = 1.0
-        on_failure = "ask"
         once = False
         once_mode = "content"
         once_scope = "profile"
 
         raw_flags = [tok.strip().lower() for part in flags_raw.split(",") for tok in part.split() if tok.strip()]
         for f in raw_flags:
-            if f in ("true", "ignore", "ignore-fail"):
-                ignore_fail = True
-            elif f in ("interactive", "tui", "prompt", "fullscreen", "tty", "suspend"):
-                interactive = True
-                interactive_override = True
-            elif f in ("no-interactive", "noninteractive", "inline", "embedded"):
-                interactive = False
-                interactive_override = False
-            elif f in ("force", "--force"):
-                force_flag = True
-            elif f in ("always", "always_run"):
-                always = True
-            elif f in ("once", "run_once", "sticky"):
-                once = True
-            elif f in ("once:content", "once:hash"):
-                once, once_mode = True, "content"
-            elif f in ("once:forever", "once:exact", "once:permanent"):
-                once, once_mode = True, "forever"
-            elif f in ("once:profile", "once:local"):
-                once, once_scope = True, "profile"
-            elif f in ("once:global", "once:machine"):
-                once, once_scope = True, "global"
-            elif f.startswith("if:"):
-                cond_val = f[3:]
-                condition = cond_val if condition is None else f"{condition},{cond_val}"
-            elif f.startswith("timeout:"):
-                with suppress(ValueError):
-                    timeout = float(f[8:])
-            elif f.startswith("retry:"):
-                with suppress(ValueError):
-                    retry = max(0, int(f[6:]))
-            elif f.startswith("retry_delay:"):
-                with suppress(ValueError):
-                    retry_delay = max(0.0, float(f[12:]))
-            elif f.startswith("on_failure:"):
-                val = f[11:].lower()
-                if val in ("ask", "abort", "continue", "skip", "manual"):
-                    on_failure = val
+            match f.split(":", 1):
+                case ["true" | "ignore" | "ignore-fail"]:
+                    ignore_fail = True
+                case ["interactive" | "tui" | "prompt" | "fullscreen" | "tty" | "suspend"]:
+                    interactive = True
+                case ["once" | "run_once" | "sticky"]:
+                    once = True
+                case ["once", "content" | "hash"]:
+                    once, once_mode = True, "content"
+                case ["once", "forever" | "exact" | "permanent"]:
+                    once, once_mode = True, "forever"
+                case ["once", "sealed" | "locked"]:
+                    once, once_mode = True, "sealed"
+                case ["once", "profile" | "local"]:
+                    once, once_scope = True, "profile"
+                case ["once", "global" | "machine"]:
+                    once, once_scope = True, "global"
+                case ["if", cond_val]:
+                    condition = cond_val if condition is None else f"{condition},{cond_val}"
+                case ["timeout", val]:
+                    with suppress(ValueError):
+                        timeout = float(val)
+                case ["retry", val]:
+                    with suppress(ValueError):
+                        retry = max(0, int(val))
+                case ["retry_delay", val]:
+                    with suppress(ValueError):
+                        retry_delay = max(0.0, float(val))
+                case _:
+                    pass
 
         if not interactive and any(script_name.startswith(s) for s in interactive_heuristics):
             interactive = True
@@ -2308,9 +2321,8 @@ def parse_manifest(profile: ProfileConfig) -> list[DuskyTask]:
         tasks.append(DuskyTask(
             name=script_name, mode=mode,  # type: ignore
             ignore_fail=ignore_fail, interactive=interactive,
-            interactive_override=interactive_override, force_flag=force_flag,
-            condition=condition, timeout=timeout, always=always, retry=retry,
-            retry_delay=retry_delay, on_failure=on_failure, once=once,
+            condition=condition, timeout=timeout, retry=retry,
+            retry_delay=retry_delay, once=once,
             once_mode=once_mode, once_scope=once_scope, args=args
         ))
     return tasks
@@ -2339,7 +2351,7 @@ def resolve_and_validate_manifest(profile: ProfileConfig, tasks: list[DuskyTask]
     preflight_failures = 0
     needs_python = False
 
-    for task in tasks:
+    for index, task in enumerate(tasks):
         if task.mode == 'GIT':
             continue
 
@@ -2363,7 +2375,7 @@ def resolve_and_validate_manifest(profile: ProfileConfig, tasks: list[DuskyTask]
             task.resolved_path = Path(script)
             task.path_state = "missing"
             task.checksum = ""
-            task.state_key = hashlib.blake2b((task.mode + task.name + shlex.join(task.args)).encode("utf-8")).hexdigest()
+            task.state_key = hashlib.blake2b(f"{index}|{task.mode}|{task.name}|{shlex.join(task.args)}".encode("utf-8")).hexdigest()
             log("WARN", f"Required script not found or unreadable: {script}")
             continue
         elif len(matches) == 1:
@@ -2384,37 +2396,39 @@ def resolve_and_validate_manifest(profile: ProfileConfig, tasks: list[DuskyTask]
                     preflight_failures += 1
                     continue
             else:
-                if OPT_DRY_RUN or OPT_FORCE or not sys.stdin.isatty():
-                    log("ERROR", f"Conflict: Multiple versions of '{script}' found.")
-                    for m in matches:
-                        log("ERROR", f"  Found at: {m}")
-                    log("ERROR", "Cannot prompt in non-interactive/dry-run mode.")
-                    task.resolved_path = Path(script)
-                    task.path_state = "conflict"
-                    preflight_failures += 1
-                    continue
+                hashes = {m: file_checksum(m) for m in matches}
+                unique_hashes = set(hashes.values())
+                if len(unique_hashes) == 1:
+                    script_path = matches[0]
+                    task.conflict_note = f"Identical duplicates found for {script} (locations: {', '.join(str(m) for m in matches)})"
+                    log("INFO", f"Resolved {script} silently (all duplicates identical byte-for-byte).")
+                else:
+                    script_path = matches[0]
+                    log("WARN", f"Content conflict for {script}. Found differing versions:")
+                    for j, m in enumerate(matches):
+                        log("WARN", f"  {j+1}) {m} (Checksum: {hashes[m]})")
 
-                sys.stdout.write(f"\n{CLR_YLW}[CONFLICT DETECTED]{CLR_RST} Multiple versions of {script} found:\n")
-                for j, m in enumerate(matches):
-                    sys.stdout.write(f"  {j+1}) {m}\n")
-
-                choice = ""
-                while True:
-                    try:
-                        choice = input(f"Which one should be executed? (1-{len(matches)}): ").strip()
-                    except (KeyboardInterrupt, EOFError):
-                        log("ERROR", "Input interrupted. Aborting.")
-                        sys.exit(1)
-                    if choice.isdigit() and 1 <= int(choice) <= len(matches):
-                        script_path = matches[int(choice) - 1]
-                        log("OK", f"Selected: {script_path}")
-                        break
-                    print(f"Invalid choice. Please enter a number between 1 and {len(matches)}.")
+                    if OPT_DRY_RUN or OPT_FORCE or not sys.stdin.isatty():
+                        log("WARN", "Non-interactive/force mode: automatically picking the first match.")
+                    else:
+                        sys.stdout.write(f"\n{CLR_YLW}[CONFLICT DETECTED]{CLR_RST} Which version of {script} should be executed?\n")
+                        choice = ""
+                        while True:
+                            try:
+                                choice = input(f"Enter 1-{len(matches)}: ").strip()
+                            except (KeyboardInterrupt, EOFError):
+                                log("ERROR", "Input interrupted. Aborting.")
+                                sys.exit(1)
+                            if choice.isdigit() and 1 <= int(choice) <= len(matches):
+                                script_path = matches[int(choice) - 1]
+                                log("OK", f"Selected: {script_path}")
+                                break
+                            print(f"Invalid choice. Please enter a number between 1 and {len(matches)}.")
 
         task.resolved_path = script_path
         task.path_state = "ok"
         task.checksum = file_checksum(script_path)
-        task.state_key = hashlib.blake2b((task.mode + task.name + shlex.join(task.args)).encode("utf-8")).hexdigest()
+        task.state_key = hashlib.blake2b(f"{index}|{task.mode}|{task.name}|{shlex.join(task.args)}".encode("utf-8")).hexdigest()
 
         if is_script_interactive(script_path):
             task.interactive = True
@@ -3813,7 +3827,7 @@ class DuskyApp(App):
                 with suppress(ProcessLookupError, PermissionError, OSError):
                     os.killpg(proc.pid, signal.SIGKILL)
                 read_task.cancel()
-                return False, None
+                return False, 124
 
         finally:
             self.current_pty_master = None
@@ -3893,12 +3907,24 @@ class DuskyApp(App):
                         await asyncio.to_thread(self.state_store.mark, task, "skipped", note=f"Condition false: {task.condition}")
                     continue
 
-            if task.once and self.once_store and self.once_store.marker_valid(task, self.profile.name):
-                self.log_main(f"[dim]Run-once marker valid. Skipping: {escape(task.name)}[/dim]")
-                self.update_task_state(index, "skipped")
-                if self.state_store:
-                    await asyncio.to_thread(self.state_store.mark, task, "skipped", note="Run-once marker valid")
-                continue
+            if task.once and self.once_store:
+                once_status = await asyncio.to_thread(self.once_store.check_marker_status, task, self.profile.name)
+                if once_status == "notify_sealed":
+                    msg = f"[bold {THEME['warning']}][WARN][/] Run-once:sealed script modified since last run; not re-run: {escape(task.name)}"
+                    self.log_main(msg)
+                    self.log_task(msg, index)
+                    desktop_notify("Dusky Update", f"Sealed script modified: {task.name}", urgency="normal")
+                    await asyncio.to_thread(self.once_store.mark_sealed_notified, task, self.profile.name)
+                    self.update_task_state(index, "skipped")
+                    if self.state_store:
+                        await asyncio.to_thread(self.state_store.mark, task, "skipped", note="Run-once:sealed modified")
+                    continue
+                elif once_status == "skip":
+                    self.log_main(f"[dim]Run-once marker valid. Skipping: {escape(task.name)}[/dim]")
+                    self.update_task_state(index, "skipped")
+                    if self.state_store:
+                        await asyncio.to_thread(self.state_store.mark, task, "skipped", note="Run-once marker valid")
+                    continue
 
             self.update_task_state(index, "running")
 
@@ -3906,27 +3932,19 @@ class DuskyApp(App):
             self.log_main(f"\n[bold {THEME['warning']}]>[/] Executing Process: [bold {THEME['fg']}]{escape(cmd_str)}[/]")
             self.log_task(f"[bold {THEME['accent']}]>>> PROCESS INITIATED:[/] {escape(cmd_str)}\n", index)
 
-            if task.resolved_path and task.path_state == "ok" and task.resolved_path.is_file():
-                resolved_path: Optional[Path] = task.resolved_path
-            else:
-                resolved_path = None
-                for d in self.profile.search_dirs:
-                    candidate = WORK_TREE / d / task.name
-                    if candidate.is_file():
-                        resolved_path = candidate
-                        break
-
-            if not resolved_path:
+            if not (task.resolved_path and task.path_state == "ok" and task.resolved_path.is_file()):
                 self.missing_scripts.append(task.name)
-                err = f"[bold {THEME['warning']}][WARN][/] Script missing (not found in search dirs): {escape(task.name)}"
+                err = f"[bold {THEME['warning']}][WARN][/] Script missing or conflicting in preflight: {escape(task.name)}"
                 self.log_main(err)
                 self.log_task(err, index)
                 self.update_task_state(index, "skipped")
                 if self.state_store:
-                    await asyncio.to_thread(self.state_store.mark, task, "skipped", note="Script not found in search dirs")
+                    await asyncio.to_thread(self.state_store.mark, task, "skipped", note="Script missing or unresolvable")
                 if self.run_logger:
                     self.run_logger.close_task(task, index, "skipped", 1, 0.0)
                 continue
+
+            resolved_path = task.resolved_path
 
             interpreter = task.interpreter or []
             exec_cmd = interpreter + [str(resolved_path)] + task.args
@@ -3960,9 +3978,24 @@ class DuskyApp(App):
                     self.log_task(f"\n[bold {THEME['success']}]PTY control returned. Exit Code: {rc}[/]", index)
 
                 else:
-                    success, rc = await self.execute_pty_command(exec_cmd, timeout=0.0, task_index=index)
-                    if rc is None:
-                        rc = 1
+                    max_attempts = (task.retry + 1) if task.retry > 0 else 1
+                    for attempt in range(1, max_attempts + 1):
+                        success, rc = await self.execute_pty_command(
+                            exec_cmd,
+                            timeout=task.timeout if task.timeout else 0.0,
+                            task_index=index
+                        )
+                        if rc is None:
+                            rc = 1
+                            break
+
+                        if rc == 0 or self.abort_flag:
+                            break
+
+                        if attempt < max_attempts:
+                            reason = "Timeout (124)" if rc == 124 else f"Code {rc}"
+                            self.log_task(f"[bold {THEME['warning']}]Attempt {attempt} failed ({reason}). Retrying in {task.retry_delay}s...[/]", index)
+                            await asyncio.sleep(task.retry_delay)
 
                 duration = time.monotonic() - start_t
 
@@ -4025,6 +4058,12 @@ class DuskyApp(App):
         self.log_main(f"  Failed Operations      : [bold {THEME['error']}]{fail_count}[/]")
         if self.missing_scripts:
             self.log_main(f"  Missing Scripts       : [bold {THEME['warning']}]{len(self.missing_scripts)}[/] [dim]({escape(', '.join(self.missing_scripts))})[/]")
+
+        duplicate_notes = [t.conflict_note for t in self.tasks if t.conflict_note]
+        if duplicate_notes:
+            self.log_main(f"\n  [bold {THEME['fg']}]Preflight Optimizations:[/bold]")
+            for note in duplicate_notes:
+                self.log_main(f"  [dim]- {escape(note)}[/dim]")
 
         if self.abort_flag:
             self.log_main(f"\n[bold {THEME['error']} blink]SYSTEM PIPELINE ABORTED.[/]")
