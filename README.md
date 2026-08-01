@@ -1,10 +1,14 @@
-## If you need help with installation, troubleshooting or just want to hangout, join the Discord server.
+## If you need help with installation, troubleshooting or just want to hangout, participate on the Discussion tab.
+
+[Join Discussions][discussion]
+
+[discussion]: https://github.com/dusklinux/dusky/discussions
 
 
 ~~[Join Discord Server][discord]~~
 
-[discord]: ----------------------
-The Discord server has been deleted
+[discord]: https://github.com/dusklinux/dusky/discussions
+The Server has been deleted. Please Refer to [This Issue](https://github.com/dusklinux/dusky/issues/271#issuecomment-5150215079)
 
 ## Updated demo video now out on YouTube with all major features covered! 
 (since the release of this video around 5 major features have been added, scroll down to the `overview` section for details)
