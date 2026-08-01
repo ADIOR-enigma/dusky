@@ -8,7 +8,7 @@
 ~~[Join Discord Server][discord]~~
 
 [discord]: https://github.com/dusklinux/dusky/discussions
-The Server has been deleted. Please Refer to [This Issue](https://github.com/dusklinux/dusky/issues/271#issuecomment-5150215079)
+The Discord Server has been deleted. Please Refer to [This Issue](https://github.com/dusklinux/dusky/issues/271#issuecomment-5150215079)
 
 ## Updated demo video now out on YouTube with all major features covered! 
 (since the release of this video around 5 major features have been added, scroll down to the `overview` section for details)
