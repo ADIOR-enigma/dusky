@@ -647,10 +647,6 @@ def _cleanup_lock(lock_file: Path):
         except OSError:
             pass
         _LOCK_FD = None
-    try:
-        lock_file.unlink(missing_ok=True)
-    except OSError:
-        pass
 
 
 def acquire_lock(lock_file: Path) -> bool:
@@ -1134,12 +1130,11 @@ class DuskyOrchestratorApp(App):
             self.log_system(f"Delegating terminal to interactive process: {task.script_name}")
             await asyncio.sleep(0.3)
 
-            old_int = signal.signal(signal.SIGINT, signal.SIG_IGN)
             try:
                 with self._suspend_ui():
                     rc = (await asyncio.to_thread(subprocess.run, cmd)).returncode
-            finally:
-                signal.signal(signal.SIGINT, old_int)
+            except KeyboardInterrupt:
+                rc = 130
 
             dur = time.time() - start_t
             self.log_system(f"TUI Resumed. Script exited with code: {rc}")
