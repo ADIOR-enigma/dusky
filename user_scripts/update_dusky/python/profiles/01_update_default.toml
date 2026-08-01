@@ -47,11 +47,13 @@ search_dirs = [
 # Field 2 (Optional Flags):
 #   ignore-fail         Suppress script failure exit codes
 #   interactive         Pass raw terminal TTY control for interactive scripts
-#   once, once:forever  Run-once idempotency (skips script if completed in past run)
+#   once, once:content  Re-run when the script content changes
+#   once:forever        Never re-run once completed
+#   once:sealed         Never re-run; notify once when the script content changes
 #   if:<condition>      Conditional execution (e.g., if:wayland, if:gpu:nvidia, if:pkg:hyprland)
 #   timeout:<seconds>   Per-task execution timeout in seconds
 #   retry:<count>       Retry attempts on task failure
-#   on_failure:<action> Action on failure: ask, abort, continue, skip
+#   retry_delay:<secs>  Seconds to wait between retry attempts
 # ==============================================================================
 [sequence]
 tasks = [
