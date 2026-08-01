@@ -2362,8 +2362,9 @@ def resolve_and_validate_manifest(profile: ProfileConfig, tasks: list[DuskyTask]
         if len(matches) == 0:
             task.resolved_path = Path(script)
             task.path_state = "missing"
-            log("ERROR", f"Required script not found or unreadable: {script}")
-            preflight_failures += 1
+            task.checksum = ""
+            task.state_key = hashlib.blake2b((task.mode + task.name + shlex.join(task.args)).encode("utf-8")).hexdigest()
+            log("WARN", f"Required script not found or unreadable: {script}")
             continue
         elif len(matches) == 1:
             script_path = matches[0]
@@ -3539,6 +3540,7 @@ class DuskyApp(App):
         self.run_id: str = RUN_TIMESTAMP
         self.run_logger: RunLogger | None = None
         self.once_store: OnceStore | None = None
+        self.missing_scripts: list[str] = []
 
     def compose(self) -> ComposeResult:
         yield Static(f" 🦅 DUSKY PIPELINE ENGINE (v{VERSION} — {self.profile.name})", classes="header-panel")
@@ -3915,15 +3917,15 @@ class DuskyApp(App):
                         break
 
             if not resolved_path:
-                err = f"[bold {THEME['error']}][ERROR][/] Architecture File Missing: {escape(task.name)}"
+                self.missing_scripts.append(task.name)
+                err = f"[bold {THEME['warning']}][WARN][/] Script missing (not found in search dirs): {escape(task.name)}"
                 self.log_main(err)
                 self.log_task(err, index)
-                self.update_task_state(index, "failed")
+                self.update_task_state(index, "skipped")
                 if self.state_store:
-                    await asyncio.to_thread(self.state_store.mark, task, "failed", exit_code=1, note="Architecture File Missing")
-                fail_count += 1
-                if not task.ignore_fail or OPT_STOP_ON_FAIL:
-                    self.abort_flag = True
+                    await asyncio.to_thread(self.state_store.mark, task, "skipped", note="Script not found in search dirs")
+                if self.run_logger:
+                    self.run_logger.close_task(task, index, "skipped", 1, 0.0)
                 continue
 
             interpreter = task.interpreter or []
@@ -4015,17 +4017,23 @@ class DuskyApp(App):
                 self.profile,
                 self.tasks,
                 {t.state_key: t.status for t in self.tasks},
-                {"success": success_count, "failed": fail_count},
+                {"success": success_count, "failed": fail_count, "missing": len(self.missing_scripts)},
             )
 
         self.log_main(f"\n[bold {THEME['accent']}]═══════ Pipeline Summary ═══════[/]")
         self.log_main(f"  Successful Deployments : [bold {THEME['success']}]{success_count}[/]")
         self.log_main(f"  Failed Operations      : [bold {THEME['error']}]{fail_count}[/]")
+        if self.missing_scripts:
+            self.log_main(f"  Missing Scripts       : [bold {THEME['warning']}]{len(self.missing_scripts)}[/] [dim]({escape(', '.join(self.missing_scripts))})[/]")
 
         if self.abort_flag:
             self.log_main(f"\n[bold {THEME['error']} blink]SYSTEM PIPELINE ABORTED.[/]")
             desktop_notify("Dusky Update", f"{fail_count} required script(s) failed", urgency="critical")
             AudioNotifier.play("alert")
+        elif self.missing_scripts:
+            self.log_main(f"\n[bold {THEME['warning']}]ARCHITECTURE DEPLOYMENT COMPLETED WITH {len(self.missing_scripts)} MISSING SCRIPT(S).[/]")
+            desktop_notify("Dusky Update", f"{len(self.missing_scripts)} script(s) missing and skipped", urgency="normal")
+            AudioNotifier.play("info")
         else:
             self.log_main(f"\n[bold {THEME['success']}]ARCHITECTURE DEPLOYMENT COMPLETED.[/]")
             desktop_notify("Dusky Update", "Update completed successfully", urgency="normal")
