@@ -1,9 +1,10 @@
 ## If you need help with installation, troubleshooting or just want to hangout, join the Discord server.
 
 
-[Join Discord Server][discord]
+~~[Join Discord Server][discord]~~
 
-[discord]: https://discord.gg/Nv2a7yTBQS
+[discord]: ----------------------
+The Discord server has been deleted
 
 ## Updated demo video now out on YouTube with all major features covered! 
 (since the release of this video around 5 major features have been added, scroll down to the `overview` section for details)
