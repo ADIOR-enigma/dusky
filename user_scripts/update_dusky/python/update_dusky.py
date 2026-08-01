@@ -709,7 +709,7 @@ class StateStore:
             if not self.path.exists():
                 self.conn = sqlite3.connect(":memory:", check_same_thread=False)
             else:
-                self.conn = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True, check_same_thread=False)
+                self.conn = sqlite3.connect(f"{self.path.as_uri()}?mode=ro", uri=True, check_same_thread=False)
         else:
             self.conn = sqlite3.connect(self.path, check_same_thread=False, timeout=busy_timeout / 1000.0)
             self.conn.execute("PRAGMA journal_mode=WAL;")
@@ -792,7 +792,7 @@ class OnceStore:
             if not self.path.exists():
                 self.conn = sqlite3.connect(":memory:", check_same_thread=False)
             else:
-                self.conn = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True, check_same_thread=False)
+                self.conn = sqlite3.connect(f"{self.path.as_uri()}?mode=ro", uri=True, check_same_thread=False)
         else:
             self.conn = sqlite3.connect(self.path, check_same_thread=False, timeout=busy_timeout / 1000.0)
             self.conn.execute("PRAGMA journal_mode=WAL;")
@@ -1974,7 +1974,7 @@ def get_lock_holders() -> str:
                 continue
             for fd_link in fd_dir.iterdir():
                 try:
-                    if fd_link.resolve() == real_lock:
+                    if os.readlink(fd_link) == str(real_lock):
                         cmdline_path = pid_dir / "cmdline"
                         cmd = ""
                         with suppress(PermissionError, OSError):
@@ -4001,13 +4001,12 @@ class DuskyApp(App):
                         sys.stdout.write(f"\n\033[1;38;2;{r};{g};{b}m=== DUSKY INTERACTIVE ABSTRACTION: {task.name} ===\033[0m\n\n")
                         sys.stdout.flush()
 
-                        old_int = signal.signal(signal.SIGINT, signal.SIG_IGN)
                         try:
                             proc = await asyncio.create_subprocess_exec(*exec_cmd, cwd=str(WORK_TREE))
                             await proc.wait()
                             rc = proc.returncode
-                        finally:
-                            signal.signal(signal.SIGINT, old_int)
+                        except KeyboardInterrupt:
+                            rc = 130
 
                         sys.stdout.write(f"\n\033[1;38;2;{r};{g};{b}m=== ABSTRACTION TERMINATED (Code: {rc}) ===\033[0m\n")
                         sys.stdout.flush()
@@ -4121,6 +4120,14 @@ class DuskyApp(App):
             AudioNotifier.play("complete")
 
         self.log_main("\n[dim]Press 'Ctrl+C' or 'Q' to terminate abstraction shell.[/dim]")
+
+    def on_resize(self, event: events.Resize) -> None:
+        if getattr(self, "current_pty_master", None) is not None:
+            with suppress(OSError, ValueError):
+                sidebar_percent = GLOBAL_CONFIG.get("ui", {}).get("sidebar_width", 35)
+                actual_cols = max(10, int(event.size.width * (1 - (sidebar_percent / 100))) - 2)
+                winsize = struct.pack("HHHH", event.size.height, actual_cols, 0, 0)
+                fcntl.ioctl(self.current_pty_master, termios.TIOCSWINSZ, winsize)
 
     def on_key(self, event: events.Key) -> None:
         if getattr(self, "current_pty_master", None) is not None:
