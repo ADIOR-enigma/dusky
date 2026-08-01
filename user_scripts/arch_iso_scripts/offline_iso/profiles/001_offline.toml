@@ -11,8 +11,10 @@ scripts = [
     "U | interactive | 030_partitioning.py --no-encrypt",
     "U | 040_disk_mount.py --auto",
     "U | 045_repo_bind_mount.sh",
+    # "U | 050_mirrorlist.sh",
     "U | 051_pacman_repo_switch.sh --offline",
     "U | 060_console_fix.sh",
+    # "U | 065_verify_repo.py",
     "U | 070_pacstrap_and_disable_mkinitcpio.py --auto",
     "U | 080_script_directories_population_in_chroot.sh",
     "U | 090_fstab.sh --auto"
