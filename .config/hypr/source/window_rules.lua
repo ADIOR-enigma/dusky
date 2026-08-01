@@ -922,7 +922,9 @@ hl.window_rule({
     name = "fastfetch",
     match = { class = "^(fastfetch)$" },
     float = true,
-    size = {943, 393},
+    dim_around = true,
+    border_size = 0,
+    size = {682, 450},
     center = true
 })
 
