@@ -816,6 +816,33 @@ CREATE TABLE IF NOT EXISTS once_markers (
             "CREATE INDEX IF NOT EXISTS idx_once_script ON once_markers(script_name);"
         )
         self.conn.commit()
+        self._migrate_keys()
+
+    def _migrate_keys(self) -> None:
+        cur = self.conn.execute("SELECT marker_key, profile, scope, mode, script_name, args_key, resolved_path FROM once_markers")
+        updates = []
+        for row in cur.fetchall():
+            old_key, profile, scope, mode, script_name, args_key, resolved_path = row
+            rel_path = ""
+            if resolved_path:
+                try:
+                    rel_path = str(Path(resolved_path).relative_to(WORK_TREE))
+                except ValueError:
+                    rel_path = str(resolved_path)
+
+            profile_part = "__global__" if scope == "global" else profile
+            material = "|".join([
+                "once", scope, profile_part, mode, script_name, rel_path, args_key
+            ]).encode("utf-8")
+            new_key = hashlib.blake2b(material, digest_size=16).hexdigest()
+
+            if new_key != old_key:
+                updates.append((new_key, old_key))
+
+        if updates:
+            for new_k, old_k in updates:
+                self.conn.execute("UPDATE once_markers SET marker_key = ? WHERE marker_key = ?", (new_k, old_k))
+            self.conn.commit()
 
     def forget(self, script: str) -> int:
         script = script.strip()
@@ -2315,7 +2342,7 @@ def parse_manifest(profile: ProfileConfig) -> list[DuskyTask]:
                 case _:
                     pass
 
-        if not interactive and any(script_name.startswith(s) for s in interactive_heuristics):
+        if not interactive and script_name in interactive_heuristics:
             interactive = True
 
         tasks.append(DuskyTask(
@@ -2348,7 +2375,6 @@ def is_script_interactive(script_path: Path) -> bool:
 def resolve_and_validate_manifest(profile: ProfileConfig, tasks: list[DuskyTask]) -> bool:
     log("INFO", "Performing pre-flight validation and conflict resolution...")
 
-    preflight_failures = 0
     needs_python = False
 
     for index, task in enumerate(tasks):
@@ -2390,10 +2416,11 @@ def resolve_and_validate_manifest(profile: ProfileConfig, tasks: list[DuskyTask]
                     script_path = explicit_pre
                     log("INFO", f"Resolved duplicate '{script}' using conflict resolution -> {script_path}")
                 else:
-                    log("ERROR", f"Predefined resolution for '{script}' is missing or unreadable: {explicit_pre}")
+                    log("WARN", f"Predefined resolution for '{script}' is missing or unreadable: {explicit_pre}")
                     task.resolved_path = Path(script)
                     task.path_state = "missing"
-                    preflight_failures += 1
+                    task.checksum = ""
+                    task.state_key = hashlib.blake2b(f"{index}|{task.mode}|{task.name}|{shlex.join(task.args)}".encode("utf-8")).hexdigest()
                     continue
             else:
                 hashes = {m: file_checksum(m) for m in matches}
@@ -2459,30 +2486,31 @@ def resolve_and_validate_manifest(profile: ProfileConfig, tasks: list[DuskyTask]
 
         if (has_py_ext and has_bash_shebang) or (has_sh_ext and has_py_shebang):
             if OPT_DRY_RUN or OPT_FORCE or not sys.stdin.isatty():
-                log("ERROR", f"Interpreter conflict for '{script}': File extension and Shebang disagree.")
-                preflight_failures += 1
-                continue
-
-            sys.stdout.write(f"\n{CLR_YLW}[INTERPRETER CONFLICT]{CLR_RST} Script {script} has conflicting indicators.\n")
-            sys.stdout.write("  1) Run with Bash\n")
-            sys.stdout.write("  2) Run with Python\n")
-
-            int_choice = ""
-            while True:
-                try:
-                    int_choice = input("Select interpreter (1-2): ").strip()
-                except (KeyboardInterrupt, EOFError):
-                    log("ERROR", "Input interrupted. Aborting.")
-                    sys.exit(1)
-                if int_choice == "1":
-                    resolved_interpreter = ["bash"]
-                    break
-                elif int_choice == "2":
-                    resolved_interpreter = ["python3"]
+                log("WARN", f"Interpreter conflict for '{script}': File extension and Shebang disagree. Auto-picking Shebang.")
+                resolved_interpreter = extracted_interpreter
+                if has_py_shebang:
                     needs_python = True
-                    break
-                else:
-                    print("Invalid choice.")
+            else:
+                sys.stdout.write(f"\n{CLR_YLW}[INTERPRETER CONFLICT]{CLR_RST} Script {script} has conflicting indicators.\n")
+                sys.stdout.write("  1) Run with Bash\n")
+                sys.stdout.write("  2) Run with Python\n")
+
+                int_choice = ""
+                while True:
+                    try:
+                        int_choice = input("Select interpreter (1-2): ").strip()
+                    except (KeyboardInterrupt, EOFError):
+                        log("ERROR", "Input interrupted. Aborting.")
+                        sys.exit(1)
+                    if int_choice == "1":
+                        resolved_interpreter = ["bash"]
+                        break
+                    elif int_choice == "2":
+                        resolved_interpreter = ["python3"]
+                        needs_python = True
+                        break
+                    else:
+                        print("Invalid choice.")
         else:
             suffix = script_path.suffix.lower()
             ext_map = GLOBAL_CONFIG.get("execution", {}).get(
@@ -2506,10 +2534,6 @@ def resolve_and_validate_manifest(profile: ProfileConfig, tasks: list[DuskyTask]
                 resolved_interpreter = [shutil.which(default_interp) or default_interp]
 
         task.interpreter = resolved_interpreter
-
-    if preflight_failures > 0:
-        log("ERROR", f"Aborting preflight due to {preflight_failures} resolution error(s)")
-        return False
 
     if needs_python and shutil.which("python3") is None and shutil.which("python") is None:
         if OPT_DRY_RUN:
@@ -3870,14 +3894,20 @@ class DuskyApp(App):
 
     async def execute_pipeline(self) -> None:
         if not OPT_SKIP_SYNC:
-            self.log_main(f"\n[bold {THEME['accent']}]═══ Phase 1: Git Architecture Reconciliation ═══[/]\n")
-            git_engine = GitEngine(self, self.profile)
-            if not await git_engine.execute_phase():
-                self.abort_flag = True
-                self.log_main(f"\n[bold {THEME['error']} blink]SYSTEM HALTED. GIT INTEGRITY VIOLATION.[/]")
-                for index in range(5, len(self.tasks)):
+            if OPT_DRY_RUN:
+                self.log_main(f"\n[bold {THEME['accent']}]═══ Phase 1: Git Architecture Reconciliation (DRY-RUN) ═══[/]\n")
+                self.log_main("[dim]Git synchronization bypassed during dry-run.[/dim]")
+                for index in range(5):
                     self.update_task_state(index, "skipped")
-                return
+            else:
+                self.log_main(f"\n[bold {THEME['accent']}]═══ Phase 1: Git Architecture Reconciliation ═══[/]\n")
+                git_engine = GitEngine(self, self.profile)
+                if not await git_engine.execute_phase():
+                    self.abort_flag = True
+                    self.log_main(f"\n[bold {THEME['error']} blink]SYSTEM HALTED. GIT INTEGRITY VIOLATION.[/]")
+                    for index in range(5, len(self.tasks)):
+                        self.update_task_state(index, "skipped")
+                    return
         else:
             self.log_main(f"\n[bold {THEME['accent']}]═══ Phase 1: Git Architecture Reconciliation (SKIPPED) ═══[/]\n")
             for index in range(5):
@@ -3955,7 +3985,12 @@ class DuskyApp(App):
 
             start_t = time.monotonic()
             try:
-                if task.interactive:
+                if OPT_DRY_RUN:
+                    self.log_main(f"[dim][DRY-RUN] Would execute: {escape(' '.join(exec_cmd))}[/dim]")
+                    self.log_task(f"[dim][DRY-RUN] Execution bypassed.[/dim]", index)
+                    rc = 0
+                    await asyncio.sleep(0.05)
+                elif task.interactive:
                     self.log_main(f"[dim]Suspending UI abstraction... Passing raw PTY control...[/]")
                     self.log_task(f"[dim]Interactive flag detected. Console control delegated to user.[/]", index)
 
@@ -4001,9 +4036,9 @@ class DuskyApp(App):
 
                 if rc == 0:
                     self.update_task_state(index, "success")
-                    if self.state_store:
+                    if self.state_store and not OPT_DRY_RUN:
                         await asyncio.to_thread(self.state_store.mark, task, "completed", exit_code=0, duration=duration)
-                    if task.once and self.once_store:
+                    if task.once and self.once_store and not OPT_DRY_RUN:
                         await asyncio.to_thread(self.once_store.mark_success, task, self.profile.name, exit_code=0, run_id=getattr(self, "run_id", ""))
                     if self.run_logger:
                         self.run_logger.close_task(task, index, "completed", 0, duration)
@@ -4013,7 +4048,7 @@ class DuskyApp(App):
                 else:
                     if task.ignore_fail and not OPT_STOP_ON_FAIL:
                         self.update_task_state(index, "skipped")
-                        if self.state_store:
+                        if self.state_store and not OPT_DRY_RUN:
                             await asyncio.to_thread(self.state_store.mark, task, "skipped", exit_code=rc, duration=duration)
                         if self.run_logger:
                             self.run_logger.close_task(task, index, "skipped", rc, duration)
@@ -4021,7 +4056,7 @@ class DuskyApp(App):
                         self.log_task(f"\n[bold {THEME['warning']}]>>> EXECUTION FAILED / SUPPRESSED (Code {rc})[/]", index)
                     else:
                         self.update_task_state(index, "failed")
-                        if self.state_store:
+                        if self.state_store and not OPT_DRY_RUN:
                             await asyncio.to_thread(self.state_store.mark, task, "failed", exit_code=rc, duration=duration)
                         if self.run_logger:
                             self.run_logger.close_task(task, index, "failed", rc, duration)
@@ -4069,6 +4104,10 @@ class DuskyApp(App):
             self.log_main(f"\n[bold {THEME['error']} blink]SYSTEM PIPELINE ABORTED.[/]")
             desktop_notify("Dusky Update", f"{fail_count} required script(s) failed", urgency="critical")
             AudioNotifier.play("alert")
+        elif OPT_DRY_RUN:
+            self.log_main(f"\n[bold {THEME['success']}]DRY-RUN COMPLETED. NO CHANGES WERE MADE.[/]")
+            desktop_notify("Dusky Update", "Dry-run completed successfully", urgency="normal")
+            AudioNotifier.play("info")
         elif self.missing_scripts:
             self.log_main(f"\n[bold {THEME['warning']}]ARCHITECTURE DEPLOYMENT COMPLETED WITH {len(self.missing_scripts)} MISSING SCRIPT(S).[/]")
             desktop_notify("Dusky Update", f"{len(self.missing_scripts)} script(s) missing and skipped", urgency="normal")
@@ -4152,7 +4191,8 @@ if __name__ == "__main__":
         if not acquire_lock():
             sys.exit(1)
 
-        auto_prune()
+        if not OPT_DRY_RUN:
+            auto_prune()
 
         if not OPT_SYNC_ONLY:
             if not resolve_and_validate_manifest(profile, tasks):
