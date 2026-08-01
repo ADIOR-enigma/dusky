@@ -1,45 +1,25 @@
 #!/usr/bin/env python3
 """
 ram_bandwidth.py - Ultimate DDR Memory Bandwidth & Latency Benchmark Suite
-
-Features:
-  - Hardware & SMBIOS Memory Probe with Direct Data Width Parsing (Configured Speed, Factory Rated Speed, Channels, Manufacturers, Form Factor, Capacities).
-  - SPD5118 DDR5 Memory Temperature Sensors & Thermal Monitoring.
-  - NUMA Node & Multi-Socket Topology Probe.
-  - Heterogeneous P-Core / E-Core Hardware Capacity Probing with Offline Core Filtering (`/sys/devices/system/cpu/cpu*/cpu_capacity`).
-  - SCHED_FIFO Real-Time Priority + Sattolo's Algorithm + Lemire's Zero-Bias Rejection Loop + Xoshiro256** PRNG Pointer-Chasing Latency Benchmark.
-  - `CLOCK_MONOTONIC_RAW` & GCC Assembly Optimization Barriers (`__asm__ volatile`).
-  - Executable Tmpdir Detection (`noexec` /tmp fallback to ~/.cache/ram_bandwidth_bench).
-  - L1 / L2 / L3 Cache & Main DRAM Latency Hierarchy Micro-Benchmark.
-  - Theoretical Peak Memory Bandwidth Calculator & Efficiency Gauge.
-  - Pure Multi-Core Read Benchmark (sysbench 64M blocks).
-  - Pure Multi-Core Write Benchmark (sysbench 64M blocks).
-  - Multi-Core STREAM / Copy Benchmark (stress-ng --stream).
-  - Single-Core Copy & Memory Benchmark (mbw memcpy on optimal P-Core).
-  - Script-Based CPU Scaling Governor & EPP Performance Tuner.
-  - Subprocess Execution Hardening with Strict 60s Deadlock Timeouts.
-  - Process Exit Cleanup Handler via `atexit`.
-  - Structured JSON & CSV Export Options with Metadata Header & Path Resolution (`expanduser().resolve()`).
-  - Native TTY Sudo Privilege Elevation & TemporaryDirectory automatic filesystem cleanup.
+Target: Arch Linux | Kernel 7.1.5+ | Python 3.14.6+
 """
 
 import argparse
 import atexit
 import contextlib
 import csv
-import getpass
 import glob
 import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Literal
 
 try:
     from rich import box
@@ -57,40 +37,38 @@ console = Console() if RICH_AVAILABLE else None
 
 
 def cleanup_orphaned_tmp():
+    """Robust cleanup using rmtree to bypass ENOTEMPTY os errors."""
     cache_dir = Path.home() / ".cache" / "ram_bandwidth_bench"
     if cache_dir.exists():
-        try:
-            cache_dir.rmdir()
-        except OSError:
-            pass
+        shutil.rmtree(cache_dir, ignore_errors=True)
 
 
 atexit.register(cleanup_orphaned_tmp)
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, kw_only=True)
 class HardwareSpecs:
     cpu_model: str
     online_cpus: int
     numa_nodes: int
     optimal_p_core: str
     mem_type: str
-    configured_speed_mts: int | None
-    factory_speed_mts: int | None
-    dimm_count: int | None
-    channels: int | None
-    bus_width_bits: int | None
-    theoretical_max_gb_s: float | None
-    total_ram_gb: float | None
-    avail_ram_gb: float | None
-    manufacturer: str | None
-    part_number: str | None
-    form_factor: str | None
+    configured_speed_mts: int | None = None
+    factory_speed_mts: int | None = None
+    dimm_count: int | None = None
+    channels: int | None = None
+    bus_width_bits: int | None = None
+    theoretical_max_gb_s: float | None = None
+    total_ram_gib: float | None = None
+    avail_ram_gib: float | None = None
+    manufacturer: str | None = None
+    part_number: str | None = None
+    form_factor: str | None = None
     initial_dram_temps: list[tuple[str, float]] | None = None
     final_dram_temps: list[tuple[str, float]] | None = None
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, kw_only=True)
 class TestResult:
     name: str
     throughput_gb_s: float
@@ -102,7 +80,7 @@ class TestResult:
     details: str = ""
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, kw_only=True)
 class CacheHierarchyResult:
     l1_kb: int
     l2_kb: int
@@ -122,42 +100,30 @@ def tool_exists(name: str) -> bool:
     return shutil.which(name) is not None
 
 
-def get_sudo_pass(cli_pass: str | None = None, allow_interactive_prompt: bool = True) -> str | None:
-    """Determine sudo password dynamically without leaking to CLI history."""
+def cache_sudo_privileges() -> bool:
+    """Securely cache sudo credentials via PAM without passing plain strings in memory."""
     if os.geteuid() == 0:
-        return None
-
-    if cli_pass is not None:
-        return cli_pass
-
-    if "SUDO_PASSWORD" in os.environ:
-        return os.environ["SUDO_PASSWORD"]
-
+        return True
     try:
+        sudo_pass = os.environ.get("SUDO_PASSWORD")
+        if sudo_pass:
+            subprocess.run(["sudo", "-S", "-v"], input=f"{sudo_pass}\n", text=True, check=True, capture_output=True)
+            return True
         proc = subprocess.run(["sudo", "-n", "true"], capture_output=True)
         if proc.returncode == 0:
-            return ""
-    except Exception:
-        pass
-
-    if allow_interactive_prompt and sys.stdin.isatty():
-        if RICH_AVAILABLE:
-            console.print("[bold yellow]󰌆 Sudo privileges required for hardware probing (dmidecode).[/bold yellow]")
-        else:
-            print("Sudo privileges required for hardware probing (dmidecode).")
-        try:
-            return getpass.getpass(prompt="[sudo] password: ")
-        except Exception:
-            pass
-
-    return None
+            return True
+        if RICH_AVAILABLE and sys.stdin.isatty():
+            console.print("[bold yellow]󰌆 Sudo privileges required for hardware thermal & SMBIOS probing.[/bold yellow]")
+        subprocess.run(["sudo", "-v"], check=True)
+        return True
+    except (subprocess.CalledProcessError, KeyboardInterrupt):
+        return False
 
 
-def run_cmd(cmd: list[str], input_text: str | None = None, timeout: int = 60) -> str:
-    """Execute a command with strict timeout to prevent kernel/hardware deadlocks."""
+def run_cmd(cmd: list[str], timeout: int = 60) -> str:
+    """Execute a command with dynamic timeouts to prevent kernel deadlocks."""
     proc = subprocess.run(
         cmd,
-        input=input_text,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -168,18 +134,14 @@ def run_cmd(cmd: list[str], input_text: str | None = None, timeout: int = 60) ->
     return proc.stdout or ""
 
 
-def run_sudo_cmd(cmd: list[str], sudo_pass: str | None = None, timeout: int = 60) -> str:
-    """Run a command securely via OS sudo with sanitized output handling and timeouts."""
+def run_sudo_cmd(cmd: list[str], timeout: int = 60) -> str:
+    """Run a privileged command relying on pre-cached sudo tokens."""
     if os.geteuid() == 0:
         return run_cmd(cmd, timeout=timeout)
 
-    full_cmd = ["sudo", "-S", *cmd] if sudo_pass and sudo_pass != "" else ["sudo", *cmd]
-    input_data = f"{sudo_pass}\n" if sudo_pass and sudo_pass != "" else None
-
     try:
         proc = subprocess.run(
-            full_cmd,
-            input=input_data,
+            ["sudo", *cmd],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -188,24 +150,26 @@ def run_sudo_cmd(cmd: list[str], sudo_pass: str | None = None, timeout: int = 60
         )
         return proc.stdout or ""
     except subprocess.CalledProcessError as e:
-        safe_output = e.output.replace(sudo_pass, "***") if sudo_pass else e.output
-        raise RuntimeError(f"Privileged execution failed for {' '.join(cmd)}\n{safe_output}") from e
+        raise RuntimeError(f"Privileged execution failed for {' '.join(cmd)}\n{e.output}") from e
     except subprocess.TimeoutExpired as e:
         raise RuntimeError(f"Command timed out after {timeout}s: {' '.join(cmd)}") from e
 
 
 def get_online_cpu_count() -> int:
-    """Native Python 3.13+ process CPU count respecting process affinity."""
     return os.process_cpu_count() or max(os.cpu_count() or 1, 1)
 
 
 def get_optimal_p_core() -> str:
-    """Probe hardware to identify the highest capacity P-Core, strictly avoiding offline cores."""
+    """Strict regex-based parsing to identify highest capacity P-Core."""
     max_cap = -1
     best_core = "0"
     for cap_file in Path("/sys/devices/system/cpu/").glob("cpu[0-9]*/cpu_capacity"):
         try:
-            core_id = cap_file.parent.name.replace("cpu", "")
+            match = re.search(r"cpu(\d+)", cap_file.parent.name)
+            if not match:
+                continue
+            core_id = match.group(1)
+
             online_path = cap_file.parent / "online"
             if online_path.exists() and online_path.read_text(encoding="utf-8").strip() == "0":
                 continue
@@ -220,7 +184,6 @@ def get_optimal_p_core() -> str:
 
 
 def get_executable_tmpdir() -> Path:
-    """Ensure an executable temporary directory, bypassing `noexec` /tmp mounts."""
     default_tmp = Path(tempfile.gettempdir())
     test_file = default_tmp / f".exec_test_{os.getpid()}.sh"
     try:
@@ -238,7 +201,6 @@ def get_executable_tmpdir() -> Path:
 
 
 def probe_dram_temperatures() -> list[tuple[str, float]]:
-    """Probe SPD5118 DDR5 module and system memory thermal sensors via hwmon."""
     temps: list[tuple[str, float]] = []
     for path in glob.glob("/sys/class/hwmon/hwmon*/temp*_input"):
         try:
@@ -252,12 +214,11 @@ def probe_dram_temperatures() -> list[tuple[str, float]]:
                 sensor_name = f"DRAM Module ({name})" if "spd5118" in name.lower() else f"{name} {label}"
                 temps.append((sensor_name, val_c))
         except Exception:
-            pass
+            continue
     return temps
 
 
 def get_numa_node_count() -> int:
-    """Probe system NUMA nodes topology."""
     numa_nodes = 1
     numa_path = "/sys/devices/system/node"
     if os.path.exists(numa_path):
@@ -268,7 +229,6 @@ def get_numa_node_count() -> int:
 
 
 def probe_cpu_cache_sizes(target_core: str = "0") -> tuple[int, int, int]:
-    """Probe L1D, L2, and L3 cache sizes dynamically for a specific microarchitectural core."""
     l1_kb, l2_kb, l3_kb = 32, 512, 16384
     core_id = re.split(r"[,\-]", target_core)[0].strip() if target_core else get_optimal_p_core()
 
@@ -298,15 +258,14 @@ def probe_cpu_cache_sizes(target_core: str = "0") -> tuple[int, int, int]:
     return l1_kb, l2_kb, l3_kb
 
 
-def check_and_install_deps(sudo_pass: str | None = None) -> None:
-    """Verify required benchmark dependencies cleanly."""
-    required_tools = ["sysbench", "stress-ng", "dmidecode", "taskset"]
+def check_and_install_deps() -> None:
+    required_tools = ["sysbench", "stress-ng", "dmidecode", "taskset", "mbw"]
     if not tool_exists("gcc") and not tool_exists("clang"):
         required_tools.append("gcc")
 
     missing = [t for t in required_tools if not tool_exists(t)]
     if missing:
-        pacman_map = {"taskset": "util-linux", "gcc": "gcc", "sysbench": "sysbench", "stress-ng": "stress-ng", "dmidecode": "dmidecode"}
+        pacman_map = {"taskset": "util-linux", "gcc": "gcc", "sysbench": "sysbench", "stress-ng": "stress-ng", "dmidecode": "dmidecode", "mbw": "mbw"}
         missing_pkgs = list(set([pacman_map.get(m, m) for m in missing]))
         msg = f"Error: Missing critical benchmark dependencies: {', '.join(missing)}\n"
         msg += f"Please install them using pacman: sudo pacman -S {' '.join(missing_pkgs)}"
@@ -314,8 +273,7 @@ def check_and_install_deps(sudo_pass: str | None = None) -> None:
         sys.exit(1)
 
 
-def detect_hardware_specs(sudo_pass: str | None = None) -> HardwareSpecs:
-    """Dynamically probe CPU, RAM capacity, and NUMA via SMBIOS regex and direct Data Width parsing."""
+def detect_hardware_specs() -> HardwareSpecs:
     cpu_model = "Unknown Processor"
     if tool_exists("lscpu"):
         try:
@@ -327,17 +285,13 @@ def detect_hardware_specs(sudo_pass: str | None = None) -> HardwareSpecs:
         except Exception:
             pass
 
-    online_cpus = get_online_cpu_count()
-    numa_nodes = get_numa_node_count()
-    optimal_p_core = get_optimal_p_core()
-
-    total_ram_gb, avail_ram_gb = None, None
+    total_ram_gib, avail_ram_gib = None, None
     try:
         meminfo = Path("/proc/meminfo").read_text(encoding="utf-8")
         if t_match := re.search(r"MemTotal:\s+(\d+)\s+kB", meminfo):
-            total_ram_gb = float(t_match.group(1)) / 1e6
+            total_ram_gib = float(t_match.group(1)) / (1024.0 * 1024.0)
         if a_match := re.search(r"MemAvailable:\s+(\d+)\s+kB", meminfo):
-            avail_ram_gb = float(a_match.group(1)) / 1e6
+            avail_ram_gib = float(a_match.group(1)) / (1024.0 * 1024.0)
     except Exception:
         pass
 
@@ -347,7 +301,7 @@ def detect_hardware_specs(sudo_pass: str | None = None) -> HardwareSpecs:
 
     if tool_exists("dmidecode"):
         try:
-            dmi_out = run_sudo_cmd(["dmidecode", "-t", "memory"], sudo_pass=sudo_pass)
+            dmi_out = run_sudo_cmd(["dmidecode", "-t", "memory"], timeout=10)
             types = re.findall(r"Type:\s+(DDR[3-9]|LPDDR[3-9]|HBM\d?|LPCAMM\d?|CAMM\d?|MRDIMM)", dmi_out)
             if types:
                 mem_type = types[0]
@@ -371,7 +325,6 @@ def detect_hardware_specs(sudo_pass: str | None = None) -> HardwareSpecs:
             part_number = extract_first(r"Part Number:\s+([^\n]+)")
             form_factor = extract_first(r"Form Factor:\s+([^\n]+)")
 
-            # Explicit SMBIOS Data Width Extraction
             widths = [int(w) for w in re.findall(r"Data Width:\s+(\d+)\s+bits", dmi_out) if int(w) > 0]
             if widths:
                 bus_width_bits = sum(widths)
@@ -388,9 +341,9 @@ def detect_hardware_specs(sudo_pass: str | None = None) -> HardwareSpecs:
 
     return HardwareSpecs(
         cpu_model=cpu_model,
-        online_cpus=online_cpus,
-        numa_nodes=numa_nodes,
-        optimal_p_core=optimal_p_core,
+        online_cpus=get_online_cpu_count(),
+        numa_nodes=get_numa_node_count(),
+        optimal_p_core=get_optimal_p_core(),
         mem_type=mem_type,
         configured_speed_mts=configured_speed_mts,
         factory_speed_mts=factory_speed_mts,
@@ -398,8 +351,8 @@ def detect_hardware_specs(sudo_pass: str | None = None) -> HardwareSpecs:
         channels=channels,
         bus_width_bits=bus_width_bits,
         theoretical_max_gb_s=max_gb_s,
-        total_ram_gb=total_ram_gb,
-        avail_ram_gb=avail_ram_gb,
+        total_ram_gib=total_ram_gib,
+        avail_ram_gib=avail_ram_gib,
         manufacturer=manufacturer,
         part_number=part_number,
         form_factor=form_factor,
@@ -408,8 +361,8 @@ def detect_hardware_specs(sudo_pass: str | None = None) -> HardwareSpecs:
 
 
 @contextlib.contextmanager
-def set_cpu_performance(sudo_pass: str | None = None):
-    """Securely set CPU scaling governor using a generated script to prevent ARG_MAX & shell injection limits."""
+def set_cpu_performance():
+    """Securely set CPU governor. Uses signal trapping to prevent max-voltage lockouts."""
     state_map: dict[str, str] = {}
     paths = [
         *Path("/sys/devices/system/cpu/").glob("cpu*/cpufreq/scaling_governor"),
@@ -422,7 +375,7 @@ def set_cpu_performance(sudo_pass: str | None = None):
         except Exception:
             pass
 
-    def write_val(val: str, file_paths: list[str]):
+    def execute_script(file_paths: list[str], val: str):
         if not file_paths:
             return
         script_content = "#!/bin/sh\n" + "\n".join([f"echo '{val}' > {p}" for p in file_paths]) + "\n"
@@ -433,7 +386,7 @@ def set_cpu_performance(sudo_pass: str | None = None):
                 tmp.write(script_content)
                 tmp_path = tmp.name
             os.chmod(tmp_path, 0o755)
-            run_sudo_cmd(["sh", tmp_path], sudo_pass=sudo_pass)
+            run_sudo_cmd(["sh", tmp_path], timeout=5)
         except Exception:
             pass
         finally:
@@ -441,15 +394,7 @@ def set_cpu_performance(sudo_pass: str | None = None):
                 with contextlib.suppress(FileNotFoundError):
                     os.remove(tmp_path)
 
-    gov_paths = [p for p in state_map if "scaling_governor" in p]
-    epp_paths = [p for p in state_map if "energy_performance" in p]
-
-    write_val("performance", gov_paths)
-    write_val("performance", epp_paths)
-
-    try:
-        yield
-    finally:
+    def restore_state(*_):
         restore_script = "#!/bin/sh\n" + "\n".join([f"echo '{orig_val}' > {p}" for p, orig_val in state_map.items()]) + "\n"
         tmp_path = None
         try:
@@ -458,7 +403,40 @@ def set_cpu_performance(sudo_pass: str | None = None):
                 tmp.write(restore_script)
                 tmp_path = tmp.name
             os.chmod(tmp_path, 0o755)
-            run_sudo_cmd(["sh", tmp_path], sudo_pass=sudo_pass)
+            run_sudo_cmd(["sh", tmp_path], timeout=5)
+        except Exception:
+            pass
+        finally:
+            if tmp_path:
+                with contextlib.suppress(FileNotFoundError):
+                    os.remove(tmp_path)
+            sys.exit(1)
+
+    # Trap critical signals to guarantee state restoration
+    signal.signal(signal.SIGINT, restore_state)
+    signal.signal(signal.SIGTERM, restore_state)
+
+    gov_paths = [p for p in state_map if "scaling_governor" in p]
+    epp_paths = [p for p in state_map if "energy_performance" in p]
+
+    execute_script(gov_paths, "performance")
+    execute_script(epp_paths, "performance")
+
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
+        restore_script = "#!/bin/sh\n" + "\n".join([f"echo '{orig_val}' > {p}" for p, orig_val in state_map.items()]) + "\n"
+        tmp_path = None
+        try:
+            tmp_dir = get_executable_tmpdir()
+            with tempfile.NamedTemporaryFile(dir=tmp_dir, mode="w", delete=False) as tmp:
+                tmp.write(restore_script)
+                tmp_path = tmp.name
+            os.chmod(tmp_path, 0o755)
+            run_sudo_cmd(["sh", tmp_path], timeout=5)
         except Exception:
             pass
         finally:
@@ -467,12 +445,10 @@ def set_cpu_performance(sudo_pass: str | None = None):
                     os.remove(tmp_path)
 
 
-def run_cache_hierarchy_latency_test(cores: str | None = None, sudo_pass: str | None = None) -> CacheHierarchyResult | None:
-    """Measure L1/L2/L3 Cache and DRAM access delays using SCHED_FIFO priority + Sattolo's algorithm + Lemire's Zero-Bias Rejection Loop."""
+def run_cache_hierarchy_latency_test(cores: str | None = None) -> CacheHierarchyResult | None:
     target_core = re.split(r"[,\-]", cores)[0].strip() if cores else get_optimal_p_core()
 
-    compiler = tool_exists("gcc") or tool_exists("clang")
-    if not compiler:
+    if not (tool_exists("gcc") or tool_exists("clang")):
         return None
 
     l1_kb, l2_kb, l3_kb = probe_cpu_cache_sizes(target_core)
@@ -525,7 +501,6 @@ double measure_lat_kb(size_t size_kb) {{
 
     for (size_t i = 0; i < count; i++) indices[i] = i;
 
-    // Sattolo's algorithm with Lemire's zero-bias rejection loop
     for (size_t i = count - 1; i > 0; i--) {{
         size_t j = random_bounded_zerobias(i);
         size_t tmp = indices[i];
@@ -548,7 +523,8 @@ double measure_lat_kb(size_t size_kb) {{
 
     __asm__ volatile("" : : "r"(curr) : "memory");
 
-    double nsec = (ts2.tv_sec - ts1.tv_sec) * 1e9 + (ts2.tv_nsec - ts1.tv_nsec);
+    uint64_t delta_ns = (ts2.tv_sec - ts1.tv_sec) * 1000000000ULL + (ts2.tv_nsec - ts1.tv_nsec);
+    double nsec = (double)delta_ns;
     free(arr);
     return nsec / (double)jumps;
 }}
@@ -574,9 +550,13 @@ int main() {{
             with open(c_path, "w", encoding="utf-8") as f:
                 f.write(c_code)
 
-            subprocess.run([cc, "-O3", c_path, "-o", bin_path], check=True, capture_output=True)
+            comp_proc = subprocess.run([cc, "-O3", c_path, "-o", bin_path], capture_output=True, text=True)
+            if comp_proc.returncode != 0:
+                eprint(f"[Warning] Micro-bench compilation failed: {comp_proc.stderr}")
+                return None
+
             cmd = ["taskset", "-c", target_core, bin_path]
-            out = run_sudo_cmd(cmd, sudo_pass=sudo_pass).strip().split()
+            out = run_sudo_cmd(cmd, timeout=30).strip().split()
 
             if len(out) == 4:
                 return CacheHierarchyResult(
@@ -589,15 +569,14 @@ int main() {{
                     l3_ns=float(out[2]),
                     dram_ns=float(out[3]),
                 )
-    except Exception:
-        pass
+    except Exception as e:
+        eprint(f"[Warning] Cache latency test exception: {e}")
     return None
 
 
 def run_latency_test(
-    array_size_mb: int = 128, specs: HardwareSpecs = None, cores: str | None = None, sudo_pass: str | None = None
+    array_size_mb: int, specs: HardwareSpecs, cores: str | None = None
 ) -> TestResult:
-    """High-precision random DRAM access latency benchmark via SCHED_FIFO + Sattolo's Algorithm + Lemire's Zero-Bias Rejection Loop."""
     target_core = re.split(r"[,\-]", cores)[0].strip() if cores else get_optimal_p_core()
     lat_ns: float = 0.0
     compiler = tool_exists("gcc") or tool_exists("clang")
@@ -650,7 +629,6 @@ int main(int argc, char **argv) {
 
     for (size_t i = 0; i < count; i++) indices[i] = i;
 
-    // Sattolo's algorithm with Lemire's zero-bias rejection loop
     for (size_t i = count - 1; i > 0; i--) {
         size_t j = random_bounded_zerobias(i);
         size_t tmp = indices[i];
@@ -673,7 +651,8 @@ int main(int argc, char **argv) {
 
     __asm__ volatile("" : : "r"(curr) : "memory");
 
-    double nsec = (ts2.tv_sec - ts1.tv_sec) * 1e9 + (ts2.tv_nsec - ts1.tv_nsec);
+    uint64_t delta_ns = (ts2.tv_sec - ts1.tv_sec) * 1000000000ULL + (ts2.tv_nsec - ts1.tv_nsec);
+    double nsec = (double)delta_ns;
     printf("%.2f\n", nsec / (double)jumps);
 
     free(arr);
@@ -689,12 +668,15 @@ int main(int argc, char **argv) {
                 with open(c_path, "w", encoding="utf-8") as f:
                     f.write(c_code)
 
-                subprocess.run([cc, "-O3", c_path, "-o", bin_path], check=True, capture_output=True)
-                cmd = ["taskset", "-c", target_core, bin_path, str(array_size_mb * 1024 * 1024)]
-                out = run_sudo_cmd(cmd, sudo_pass=sudo_pass).strip()
-                lat_ns = float(out)
-        except Exception:
-            pass
+                comp_proc = subprocess.run([cc, "-O3", c_path, "-o", bin_path], capture_output=True, text=True)
+                if comp_proc.returncode != 0:
+                    eprint(f"[Warning] Latency compilation failed: {comp_proc.stderr}")
+                else:
+                    cmd = ["taskset", "-c", target_core, bin_path, str(array_size_mb * 1024 * 1024)]
+                    out = run_sudo_cmd(cmd, timeout=60).strip()
+                    lat_ns = float(out)
+        except Exception as e:
+            eprint(f"[Warning] Error during random latency execution: {e}")
 
     bytes_per_sec = (1e9 / lat_ns) * 8.0 if lat_ns > 0 else 0.0
     gb_s = bytes_per_sec / 1e9
@@ -702,8 +684,8 @@ int main(int argc, char **argv) {
 
     eff_pct = (
         (gb_s / specs.theoretical_max_gb_s) * 100.0
-        if specs and specs.theoretical_max_gb_s and specs.theoretical_max_gb_s > 0
-        else 0.1
+        if specs.theoretical_max_gb_s and specs.theoretical_max_gb_s > 0
+        else None
     )
 
     return TestResult(
@@ -713,15 +695,14 @@ int main(int argc, char **argv) {
         read_gb_s=gb_s,
         write_gb_s=0.0,
         efficiency_pct=eff_pct,
-        latency_ns=lat_ns,
-        details=f"128M pointer chasing (SCHED_FIFO + Zero-Bias Lemire on Core {target_core})",
+        latency_ns=lat_ns if lat_ns > 0 else None,
+        details=f"{array_size_mb}M pointer chasing (SCHED_FIFO + Zero-Bias Lemire on Core {target_core})",
     )
 
 
 def run_pure_read_test(
     workers: int, run_time: int, specs: HardwareSpecs, cores: str | None = None
 ) -> TestResult:
-    """100% Pure Memory Read Benchmark using sysbench memory with 64M block size."""
     cmd = []
     if cores:
         cmd.extend(["taskset", "-c", cores])
@@ -741,7 +722,7 @@ def run_pure_read_test(
         ]
     )
 
-    stdout = run_cmd(cmd)
+    stdout = run_cmd(cmd, timeout=run_time + 15)
 
     mib_s = 0.0
     for line in stdout.splitlines():
@@ -782,7 +763,6 @@ def run_pure_read_test(
 def run_pure_write_test(
     workers: int, run_time: int, specs: HardwareSpecs, cores: str | None = None
 ) -> TestResult:
-    """100% Pure Memory Write Benchmark using sysbench memory with 64M block size."""
     cmd = []
     if cores:
         cmd.extend(["taskset", "-c", cores])
@@ -802,7 +782,7 @@ def run_pure_write_test(
         ]
     )
 
-    stdout = run_cmd(cmd)
+    stdout = run_cmd(cmd, timeout=run_time + 15)
 
     mib_s = 0.0
     for line in stdout.splitlines():
@@ -843,13 +823,11 @@ def run_pure_write_test(
 def run_copy_stream_test(
     workers: int, run_time: int, specs: HardwareSpecs, cores: str | None = None
 ) -> TestResult:
-    """Multi-Core Combined Memory Stream Copy Benchmark using stress-ng --stream."""
     cmd = []
     if cores:
         cmd.extend(["taskset", "-c", cores])
 
     actual_time = max(run_time, 5)
-
     cmd.extend(
         [
             "stress-ng",
@@ -862,7 +840,7 @@ def run_copy_stream_test(
         ]
     )
 
-    stdout = run_cmd(cmd)
+    stdout = run_cmd(cmd, timeout=actual_time + 15)
 
     rate_re = re.compile(
         r"memory rate:\s+([0-9]+(?:\.[0-9]+)?)\s+([KMGT]?B)\s+read/sec,\s+([0-9]+(?:\.[0-9]+)?)\s+([KMGT]?B)\s+write/sec",
@@ -909,15 +887,14 @@ def run_copy_stream_test(
 
 
 def run_single_core_test(
-    size_mib: int, runs: int, specs: HardwareSpecs, cores: str | None = None
+    size_mib: int, runs: int, run_time: int, specs: HardwareSpecs, cores: str | None = None
 ) -> TestResult:
-    """Single-Core Memory Copy Benchmark using mbw or stress-ng pinned to optimal P-Core."""
     target_core = re.split(r"[,\-]", cores)[0].strip() if cores else get_optimal_p_core()
 
     if tool_exists("mbw"):
         try:
             cmd = ["taskset", "-c", target_core, "mbw", "-n", str(runs), str(size_mib)]
-            stdout = run_cmd(cmd)
+            stdout = run_cmd(cmd, timeout=run_time + 60)
             avg_re = re.compile(r"^AVG\s+Method:\s+(\S+).+?Copy:\s+([0-9.]+)\s+MiB/s", re.MULTILINE)
             averages = avg_re.findall(stdout)
             memcpy_mib_s = next((float(rate) for method, rate in averages if method == "MEMCPY"), 0.0)
@@ -938,8 +915,8 @@ def run_single_core_test(
 
     if tool_exists("stress-ng"):
         try:
-            cmd = ["taskset", "-c", target_core, "stress-ng", "--memcpy", "1", "--memcpy-bytes", "2M", "--timeout", "4s", "--metrics-brief"]
-            stdout = run_cmd(cmd)
+            cmd = ["taskset", "-c", target_core, "stress-ng", "--memcpy", "1", "--memcpy-bytes", "2M", "--timeout", f"{run_time}s", "--metrics-brief"]
+            stdout = run_cmd(cmd, timeout=run_time + 15)
             m = re.search(r"memcpy\s+\d+\s+[\d\.]+\s+[\d\.]+\s+[\d\.]+\s+([\d\.]+)", stdout)
             if m:
                 bogo_ops_s = float(m.group(1))
@@ -958,11 +935,15 @@ def run_single_core_test(
         except Exception:
             pass
 
-    return TestResult(name="Single-Core Copy (1 P-Core)", throughput_gb_s=0.0, throughput_mib_s=0.0, details="Failed")
+    return TestResult(
+        name="Single-Core Copy (1 P-Core)",
+        throughput_gb_s=0.0,
+        throughput_mib_s=0.0,
+        details="Failed (Install mbw or stress-ng)"
+    )
 
 
 def build_gauge(pct: float | None, width: int = 8) -> str:
-    """Render a seamless solid-block progress meter with 100% matched height and width."""
     if pct is None:
         return "[dim]N/A[/dim]"
     clamped = max(0.0, min(100.0, pct))
@@ -993,8 +974,8 @@ def render_header(specs: HardwareSpecs, governor_active: bool = True):
         else "N/A"
     )
     ram_cap_str = (
-        f"{specs.total_ram_gb:.1f} GB Installed ({specs.avail_ram_gb:.1f} GB Available)"
-        if specs.total_ram_gb and specs.avail_ram_gb
+        f"{specs.total_ram_gib:.1f} GiB Installed ({specs.avail_ram_gib:.1f} GiB Available)"
+        if specs.total_ram_gib and specs.avail_ram_gib
         else "System RAM"
     )
     mfg_str = specs.manufacturer or "Generic DRAM"
@@ -1049,7 +1030,6 @@ def render_header(specs: HardwareSpecs, governor_active: bool = True):
 
 
 def render_cache_hierarchy_table(result: CacheHierarchyResult | None):
-    """Render CPU Cache & DRAM Latency Hierarchy table."""
     if not result:
         return
 
@@ -1116,10 +1096,10 @@ def render_results_table(results: list[TestResult], specs: HardwareSpecs):
 
     for r in results:
         lat_str = f"[bold bright_cyan]{r.latency_ns:.2f} ns[/bold bright_cyan]" if r.latency_ns is not None else "[dim]N/A[/dim]"
-        if r.name == "Random Memory Latency":
+        if r.name == "Random Memory Latency" and r.latency_ns:
             lat_str = f"[bold bright_cyan]󰔛 {r.latency_ns:.2f} ns[/bold bright_cyan]"
 
-        tp_str = f"[bold bright_green]{r.throughput_gb_s:.2f} GB/s[/bold bright_green]"
+        tp_str = f"[bold bright_green]{r.throughput_gb_s:.2f} GB/s[/bold bright_green]" if r.throughput_gb_s > 0 else "[dim]Failed[/dim]"
 
         table.add_row(
             r.name,
@@ -1184,7 +1164,6 @@ def export_report(
     cache_hierarchy: CacheHierarchyResult | None,
     results: list[TestResult],
 ) -> None:
-    """Export structured JSON or CSV benchmark report with path resolution and strict UTF-8 encoding."""
     specs.final_dram_temps = probe_dram_temperatures()
 
     export_path = Path(filename).expanduser().resolve()
@@ -1192,26 +1171,7 @@ def export_report(
 
     data = {
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "hardware_specs": {
-            "cpu_model": specs.cpu_model,
-            "online_cpus": specs.online_cpus,
-            "numa_nodes": specs.numa_nodes,
-            "optimal_p_core": specs.optimal_p_core,
-            "mem_type": specs.mem_type,
-            "configured_speed_mts": specs.configured_speed_mts,
-            "factory_speed_mts": specs.factory_speed_mts,
-            "dimm_count": specs.dimm_count,
-            "channels": specs.channels,
-            "bus_width_bits": specs.bus_width_bits,
-            "theoretical_max_gb_s": specs.theoretical_max_gb_s,
-            "total_ram_gb": specs.total_ram_gb,
-            "avail_ram_gb": specs.avail_ram_gb,
-            "manufacturer": specs.manufacturer,
-            "part_number": specs.part_number,
-            "form_factor": specs.form_factor,
-            "initial_dram_temps_c": specs.initial_dram_temps,
-            "final_dram_temps_c": specs.final_dram_temps,
-        },
+        "hardware_specs": asdict(specs),
         "cache_hierarchy_latency_ns": asdict(cache_hierarchy) if cache_hierarchy else None,
         "benchmark_results": [asdict(r) for r in results],
     }
@@ -1284,10 +1244,11 @@ def main() -> int:
         help="Skip optimizing CPU performance governor.",
     )
     args = parser.parse_args()
-    sudo_pass = get_sudo_pass(allow_interactive_prompt=True)
 
-    check_and_install_deps(sudo_pass)
-    specs = detect_hardware_specs(sudo_pass)
+    has_sudo = cache_sudo_privileges()
+
+    check_and_install_deps()
+    specs = detect_hardware_specs()
 
     render_header(specs, governor_active=not args.no_governor)
 
@@ -1296,7 +1257,7 @@ def main() -> int:
     cache_hierarchy: CacheHierarchyResult | None = None
 
     governor_ctx = (
-        contextlib.nullcontext() if args.no_governor else set_cpu_performance(sudo_pass)
+        contextlib.nullcontext() if args.no_governor else set_cpu_performance()
     )
 
     with governor_ctx:
@@ -1311,14 +1272,14 @@ def main() -> int:
                     tc = progress.add_task(
                         "Measuring L1/L2/L3 Cache & DRAM Latency Hierarchy...", total=None
                     )
-                    cache_hierarchy = run_cache_hierarchy_latency_test(args.cores, sudo_pass=sudo_pass)
+                    cache_hierarchy = run_cache_hierarchy_latency_test(args.cores)
                     progress.remove_task(tc)
 
                 if args.bench in ["latency", "all"]:
                     t0 = progress.add_task(
                         "Running Random DRAM Access Latency Benchmark (128M Pointer-Chasing)...", total=None
                     )
-                    res_lat = run_latency_test(128, specs, args.cores, sudo_pass=sudo_pass)
+                    res_lat = run_latency_test(128, specs, args.cores)
                     results.append(res_lat)
                     progress.remove_task(t0)
 
@@ -1326,7 +1287,7 @@ def main() -> int:
                     t1 = progress.add_task(
                         "Running Single-Core Memory Copy Benchmark...", total=None
                     )
-                    res_single = run_single_core_test(args.size, 10, specs, args.cores)
+                    res_single = run_single_core_test(args.size, 10, args.time, specs, args.cores)
                     results.append(res_single)
                     progress.remove_task(t1)
 
@@ -1356,13 +1317,13 @@ def main() -> int:
         else:
             if args.bench in ["cache", "all"]:
                 print("Measuring L1/L2/L3 Cache & DRAM Latency Hierarchy...")
-                cache_hierarchy = run_cache_hierarchy_latency_test(args.cores, sudo_pass=sudo_pass)
+                cache_hierarchy = run_cache_hierarchy_latency_test(args.cores)
             if args.bench in ["latency", "all"]:
                 print("Running Random DRAM Access Latency Benchmark...")
-                results.append(run_latency_test(128, specs, args.cores, sudo_pass=sudo_pass))
+                results.append(run_latency_test(128, specs, args.cores))
             if args.bench in ["single", "all"]:
                 print("Running Single-Core Memory Copy Benchmark...")
-                results.append(run_single_core_test(args.size, 10, specs, args.cores))
+                results.append(run_single_core_test(args.size, 10, args.time, specs, args.cores))
             if args.bench in ["read", "all"]:
                 print("Running Pure Multi-Core Read Benchmark...")
                 results.append(run_pure_read_test(workers, args.time, specs, args.cores))
