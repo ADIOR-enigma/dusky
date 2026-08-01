@@ -63,7 +63,6 @@ INSTALL_SEQUENCE=(
     "U | 010_package_removal.sh"
     "U | 013_matugen_state_file_placment.py"
     "U | 015_set_thunar_terminal.py -t foot"
-#    "U | 020_desktop_apps_username_setter.sh"
     "U | 020_desktop_entries.py"
     "U | 025_configure_keyboard.sh"
     "U | 040_long_sleep_timeout.sh"
