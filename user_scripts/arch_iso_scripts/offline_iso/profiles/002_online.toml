@@ -8,6 +8,11 @@ dirs = [
     "online",
 ]
 
+[policy]
+# audio = false
+# notify = false
+# task_timeout = 600
+
 [phase1]
 scripts = [
     "U | 001_uefi_check.sh",
