@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ==============================================================================
-#  DUSKY UPDATER (v9.5.0) — BLEEDING EDGE ARCH / PYTHON 3.14 TUI
+#  DUSKY UPDATER (v9.6.0) — BLEEDING EDGE ARCH / PYTHON 3.14 TUI
 # ==============================================================================
 import argparse
 import asyncio
@@ -46,7 +46,7 @@ if sys.version_info < (3, 14):
     sys.stdout.write("\033[1;31m[FATAL]\033[0m Dusky requires Python 3.14+ bleeding-edge architecture.\n")
     sys.exit(1)
 
-VERSION = "9.5.0"
+VERSION = "9.6.0"
 SCRIPT_DIR: Path = Path(__file__).resolve().parent
 PROFILES_DIR: Path = Path(
     os.environ.get("DUSKY_UPDATER_PROFILES_DIR", SCRIPT_DIR / "profiles")
