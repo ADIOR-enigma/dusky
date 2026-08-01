@@ -485,6 +485,7 @@ class ProfileConfig:
     description: str
     phase1_tasks: List[OrchestratorTask]
     phase2_tasks: List[OrchestratorTask]
+    search_dirs: List[Path] = field(default_factory=list)
 
 
 # ==============================================================================
@@ -578,6 +579,18 @@ def load_profile(filepath: Path) -> ProfileConfig:
     p_data = data.get("profile", {})
     ph1_data = data.get("phase1", {})
     ph2_data = data.get("phase2", {})
+    s_data = data.get("search_dirs", {})
+
+    search_dirs: List[Path] = []
+    for d in s_data.get("dirs", []):
+        p = Path(str(d)).expanduser()
+        if not p.is_absolute():
+            p = SCRIPT_DIR / p
+        p = p.resolve()
+        if not p.exists():
+            sys.stderr.write(f"[WARN] Search directory does not exist: {p}\n")
+        if p not in search_dirs:
+            search_dirs.append(p)
 
     p1_tasks = []
     for idx, line in enumerate(ph1_data.get("scripts", []), start=1):
@@ -601,6 +614,7 @@ def load_profile(filepath: Path) -> ProfileConfig:
         description=p_data.get("description", ""),
         phase1_tasks=p1_tasks,
         phase2_tasks=p2_tasks,
+        search_dirs=search_dirs,
     )
 
 
@@ -700,6 +714,29 @@ def resolve_interpreter(script_path: Path) -> Tuple[str, bool]:
         interp = GLOBAL_CONFIG.get("execution", {}).get("default_interpreter", "bash")
 
     return interp, is_interactive
+
+
+def resolve_script(script_name: str, search_dirs: List[Path]) -> Optional[Path]:
+    """Locate a script by name. Base is SCRIPT_DIR; then profile search_dirs
+    (resolved relative to SCRIPT_DIR or absolute); then each is searched
+    recursively into subdirectories."""
+    if "/" in script_name or "\\" in script_name:
+        p = SCRIPT_DIR / script_name
+        return p if p.is_file() else None
+
+    roots: List[Path] = [SCRIPT_DIR]
+    for d in search_dirs:
+        if d not in roots:
+            roots.append(d)
+
+    for root in roots:
+        direct = root / script_name
+        if direct.is_file():
+            return direct
+        for sub in root.rglob(script_name):
+            if sub.is_file():
+                return sub
+    return None
 
 
 # ==============================================================================
@@ -1368,9 +1405,7 @@ def main():
 
     tasks: List[OrchestratorTask] = []
     for i, t in enumerate(raw_sequence, start=1):
-        resolved_path = SCRIPT_DIR / t.script_name
-        if not resolved_path.exists():
-            resolved_path = None
+        resolved_path = resolve_script(t.script_name, selected_profile.search_dirs)
 
         interpreter = t.interpreter
         is_interactive = t.interactive
