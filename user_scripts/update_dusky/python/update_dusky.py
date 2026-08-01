@@ -703,30 +703,36 @@ class StateStore:
 
     def __init__(self, profile: 'ProfileConfig'):
         self.path = state_dir() / f"{safe_filename(profile.name)}.db"
-        self.conn = sqlite3.connect(self.path, check_same_thread=False)
         busy_timeout = GLOBAL_CONFIG.get("execution", {}).get("db_busy_timeout", 5000)
-        self.conn.execute("PRAGMA journal_mode=WAL;")
-        self.conn.execute("PRAGMA synchronous=NORMAL;")
-        self.conn.execute(f"PRAGMA busy_timeout={busy_timeout};")
-        self.conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS state (
-                state_key TEXT PRIMARY KEY,
-                status TEXT NOT NULL,
-                script TEXT,
-                checksum TEXT,
-                exit_code INTEGER,
-                note TEXT,
-                updated TEXT,
-                duration REAL DEFAULT 0.0
+
+        if OPT_DRY_RUN:
+            if not self.path.exists():
+                self.conn = sqlite3.connect(":memory:", check_same_thread=False)
+            else:
+                self.conn = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True, check_same_thread=False)
+        else:
+            self.conn = sqlite3.connect(self.path, check_same_thread=False, timeout=busy_timeout / 1000.0)
+            self.conn.execute("PRAGMA journal_mode=WAL;")
+            self.conn.execute("PRAGMA synchronous=NORMAL;")
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS state (
+                    state_key TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    script TEXT,
+                    checksum TEXT,
+                    exit_code INTEGER,
+                    note TEXT,
+                    updated TEXT,
+                    duration REAL DEFAULT 0.0
+                )
+                """
             )
-            """
-        )
-        cur = self.conn.execute("PRAGMA table_info(state);")
-        columns = [row[1] for row in cur.fetchall()]
-        if "duration" not in columns:
-            self.conn.execute("ALTER TABLE state ADD COLUMN duration REAL DEFAULT 0.0;")
-        self.conn.commit()
+            cur = self.conn.execute("PRAGMA table_info(state);")
+            columns = [row[1] for row in cur.fetchall()]
+            if "duration" not in columns:
+                self.conn.execute("ALTER TABLE state ADD COLUMN duration REAL DEFAULT 0.0;")
+            self.conn.commit()
 
     def statuses(self) -> dict[str, str]:
         cur = self.conn.execute("SELECT state_key, status FROM state")
@@ -738,10 +744,6 @@ class StateStore:
             return {}
         cur = self.conn.execute("SELECT state_key, duration FROM state")
         return {str(k): float(v or 0.0) for k, v in cur.fetchall()}
-
-    @classmethod
-    def is_done(cls, status: str | None) -> bool:
-        return bool(status) and status in cls.DONE
 
     def mark(
         self,
@@ -784,13 +786,19 @@ class StateStore:
 class OnceStore:
     def __init__(self) -> None:
         self.path = state_dir() / "once.db"
-        self.conn = sqlite3.connect(self.path, check_same_thread=False)
         busy_timeout = GLOBAL_CONFIG.get("execution", {}).get("db_busy_timeout", 5000)
-        self.conn.execute("PRAGMA journal_mode=WAL;")
-        self.conn.execute("PRAGMA synchronous=NORMAL;")
-        self.conn.execute(f"PRAGMA busy_timeout={busy_timeout};")
-        self.conn.execute(
-            """
+
+        if OPT_DRY_RUN:
+            if not self.path.exists():
+                self.conn = sqlite3.connect(":memory:", check_same_thread=False)
+            else:
+                self.conn = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True, check_same_thread=False)
+        else:
+            self.conn = sqlite3.connect(self.path, check_same_thread=False, timeout=busy_timeout / 1000.0)
+            self.conn.execute("PRAGMA journal_mode=WAL;")
+            self.conn.execute("PRAGMA synchronous=NORMAL;")
+            self.conn.execute(
+                """
 CREATE TABLE IF NOT EXISTS once_markers (
     marker_key TEXT PRIMARY KEY,
     profile TEXT NOT NULL,
@@ -808,15 +816,15 @@ CREATE TABLE IF NOT EXISTS once_markers (
     updated TEXT
 )
 """
-        )
-        with suppress(sqlite3.OperationalError):
-            self.conn.execute("ALTER TABLE once_markers ADD COLUMN notified_checksum TEXT DEFAULT '';")
+            )
+            with suppress(sqlite3.OperationalError):
+                self.conn.execute("ALTER TABLE once_markers ADD COLUMN notified_checksum TEXT DEFAULT '';")
 
-        self.conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_once_script ON once_markers(script_name);"
-        )
-        self.conn.commit()
-        self._migrate_keys()
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_once_script ON once_markers(script_name);"
+            )
+            self.conn.commit()
+            self._migrate_keys()
 
     def _migrate_keys(self) -> None:
         cur = self.conn.execute("SELECT marker_key, profile, scope, mode, script_name, args_key, resolved_path FROM once_markers")
@@ -916,8 +924,8 @@ WHERE script_name = ?
     def mark_sealed_notified(self, task: 'DuskyTask', profile_name: str) -> None:
         key = self.make_key(task, profile_name)
         self.conn.execute(
-            "UPDATE once_markers SET notified_checksum = ?, updated = ? WHERE marker_key = ?",
-            (task.checksum, now_iso(), key)
+            "UPDATE once_markers SET notified_checksum = ?, checksum = ?, updated = ? WHERE marker_key = ?",
+            (task.checksum, task.checksum, now_iso(), key)
         )
         self.conn.commit()
 
@@ -1266,10 +1274,12 @@ class RunLogger:
         self.write_task_logs = log_config.get("write_task_logs", True)
         self.write_reports = log_config.get("write_reports", True)
 
+        if OPT_DRY_RUN:
+            self.enabled = False
+
         self.root: Path | None = None
         self.main_path: Path | None = None
         self._main = None
-        self._task_files: dict[str, object] = {}
         self.run_id = run_id
 
         if not self.enabled:
@@ -1390,14 +1400,6 @@ class RunLogger:
     def close_all(self) -> None:
         if not self.enabled:
             return
-
-        for f in list(self._task_files.values()):
-            with suppress(OSError):
-                if hasattr(f, "flush"):
-                    f.flush()
-                if hasattr(f, "close"):
-                    f.close()
-        self._task_files.clear()
 
         if self._main is not None:
             with suppress(OSError):
@@ -1584,7 +1586,6 @@ OPT_SYNC_ONLY = False
 OPT_FORCE = False
 OPT_STOP_ON_FAIL = False
 OPT_ALLOW_DIVERGED_RESET = False
-OPT_POST_SELF_UPDATE = False
 OPT_PROFILE_NAME = "01_update_default"
 
 
@@ -1668,7 +1669,7 @@ def list_active_scripts(profile: 'ProfileConfig'):
 
 def parse_args():
     global OPT_DRY_RUN, OPT_SKIP_SYNC, OPT_SYNC_ONLY, OPT_FORCE
-    global OPT_STOP_ON_FAIL, OPT_ALLOW_DIVERGED_RESET, OPT_POST_SELF_UPDATE, OPT_PROFILE_NAME
+    global OPT_STOP_ON_FAIL, OPT_ALLOW_DIVERGED_RESET, OPT_PROFILE_NAME
 
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument('--help', '-h', action='store_true')
@@ -1682,7 +1683,6 @@ def parse_args():
     parser.add_argument('--stop-on-fail', action='store_true')
     parser.add_argument('--allow-diverged-reset', action='store_true')
     parser.add_argument('--list', action='store_true')
-    parser.add_argument('--post-self-update', action='store_true')
 
     args, unknown = parser.parse_known_args()
 
@@ -1704,7 +1704,6 @@ def parse_args():
     OPT_FORCE = args.force
     OPT_STOP_ON_FAIL = args.stop_on_fail
     OPT_ALLOW_DIVERGED_RESET = args.allow_diverged_reset
-    OPT_POST_SELF_UPDATE = args.post_self_update
 
     return args
 
@@ -2002,7 +2001,6 @@ def _cleanup_lock() -> None:
             with suppress(OSError):
                 os.close(_LOCK_FD)
             _LOCK_FD = None
-        lock_path().unlink(missing_ok=True)
     except OSError:
         pass
 
@@ -2401,7 +2399,7 @@ def resolve_and_validate_manifest(profile: ProfileConfig, tasks: list[DuskyTask]
             task.resolved_path = Path(script)
             task.path_state = "missing"
             task.checksum = ""
-            task.state_key = hashlib.blake2b(f"{index}|{task.mode}|{task.name}|{shlex.join(task.args)}".encode("utf-8")).hexdigest()
+            task.state_key = hashlib.blake2b(f"{task.mode}|{task.name}|{shlex.join(task.args)}".encode("utf-8")).hexdigest()
             log("WARN", f"Required script not found or unreadable: {script}")
             continue
         elif len(matches) == 1:
@@ -2420,7 +2418,7 @@ def resolve_and_validate_manifest(profile: ProfileConfig, tasks: list[DuskyTask]
                     task.resolved_path = Path(script)
                     task.path_state = "missing"
                     task.checksum = ""
-                    task.state_key = hashlib.blake2b(f"{index}|{task.mode}|{task.name}|{shlex.join(task.args)}".encode("utf-8")).hexdigest()
+                    task.state_key = hashlib.blake2b(f"{task.mode}|{task.name}|{shlex.join(task.args)}".encode("utf-8")).hexdigest()
                     continue
             else:
                 hashes = {m: file_checksum(m) for m in matches}
@@ -2455,7 +2453,7 @@ def resolve_and_validate_manifest(profile: ProfileConfig, tasks: list[DuskyTask]
         task.resolved_path = script_path
         task.path_state = "ok"
         task.checksum = file_checksum(script_path)
-        task.state_key = hashlib.blake2b(f"{index}|{task.mode}|{task.name}|{shlex.join(task.args)}".encode("utf-8")).hexdigest()
+        task.state_key = hashlib.blake2b(f"{task.mode}|{task.name}|{shlex.join(task.args)}".encode("utf-8")).hexdigest()
 
         if is_script_interactive(script_path):
             task.interactive = True
@@ -3851,6 +3849,8 @@ class DuskyApp(App):
                 with suppress(ProcessLookupError, PermissionError, OSError):
                     os.killpg(proc.pid, signal.SIGKILL)
                 read_task.cancel()
+                with suppress(Exception):
+                    await proc.wait()
                 return False, 124
 
         finally:
@@ -3914,7 +3914,8 @@ class DuskyApp(App):
                 self.update_task_state(index, "skipped")
 
         if OPT_SYNC_ONLY:
-            self.log_main(f"\n[bold {THEME['success']}]SYNC COMPLETE. (--sync-only specified)[/]")
+            msg = "SYNC SIMULATED." if OPT_DRY_RUN else "SYNC COMPLETE."
+            self.log_main(f"\n[bold {THEME['success']}]{msg} (--sync-only specified)[/]")
             return
 
         self.log_main(f"\n[bold {THEME['accent']}]═══ Phase 2: Configuration Pipeline Execution ═══[/]\n")
@@ -3933,7 +3934,7 @@ class DuskyApp(App):
                 if not condition_met:
                     self.log_main(f"[dim]Condition '{task.condition}' false. Skipping: {escape(task.name)}[/dim]")
                     self.update_task_state(index, "skipped")
-                    if self.state_store:
+                    if self.state_store and not OPT_DRY_RUN:
                         await asyncio.to_thread(self.state_store.mark, task, "skipped", note=f"Condition false: {task.condition}")
                     continue
 
@@ -3944,15 +3945,16 @@ class DuskyApp(App):
                     self.log_main(msg)
                     self.log_task(msg, index)
                     desktop_notify("Dusky Update", f"Sealed script modified: {task.name}", urgency="normal")
-                    await asyncio.to_thread(self.once_store.mark_sealed_notified, task, self.profile.name)
+                    if not OPT_DRY_RUN:
+                        await asyncio.to_thread(self.once_store.mark_sealed_notified, task, self.profile.name)
                     self.update_task_state(index, "skipped")
-                    if self.state_store:
+                    if self.state_store and not OPT_DRY_RUN:
                         await asyncio.to_thread(self.state_store.mark, task, "skipped", note="Run-once:sealed modified")
                     continue
                 elif once_status == "skip":
                     self.log_main(f"[dim]Run-once marker valid. Skipping: {escape(task.name)}[/dim]")
                     self.update_task_state(index, "skipped")
-                    if self.state_store:
+                    if self.state_store and not OPT_DRY_RUN:
                         await asyncio.to_thread(self.state_store.mark, task, "skipped", note="Run-once marker valid")
                     continue
 
@@ -3968,7 +3970,7 @@ class DuskyApp(App):
                 self.log_main(err)
                 self.log_task(err, index)
                 self.update_task_state(index, "skipped")
-                if self.state_store:
+                if self.state_store and not OPT_DRY_RUN:
                     await asyncio.to_thread(self.state_store.mark, task, "skipped", note="Script missing or unresolvable")
                 if self.run_logger:
                     self.run_logger.close_task(task, index, "skipped", 1, 0.0)
@@ -4071,7 +4073,7 @@ class DuskyApp(App):
                 self.log_main(err_msg)
                 self.log_task(err_msg, index)
                 self.update_task_state(index, "failed")
-                if self.state_store:
+                if self.state_store and not OPT_DRY_RUN:
                     await asyncio.to_thread(self.state_store.mark, task, "failed", exit_code=1, note=str(e), duration=duration)
                 if self.run_logger:
                     self.run_logger.close_task(task, index, "failed", 1, duration)
@@ -4089,7 +4091,8 @@ class DuskyApp(App):
             )
 
         self.log_main(f"\n[bold {THEME['accent']}]═══════ Pipeline Summary ═══════[/]")
-        self.log_main(f"  Successful Deployments : [bold {THEME['success']}]{success_count}[/]")
+        deploy_label = "Simulated Deployments" if OPT_DRY_RUN else "Successful Deployments"
+        self.log_main(f"  {deploy_label:<23}: [bold {THEME['success']}]{success_count}[/]")
         self.log_main(f"  Failed Operations      : [bold {THEME['error']}]{fail_count}[/]")
         if self.missing_scripts:
             self.log_main(f"  Missing Scripts       : [bold {THEME['warning']}]{len(self.missing_scripts)}[/] [dim]({escape(', '.join(self.missing_scripts))})[/]")
