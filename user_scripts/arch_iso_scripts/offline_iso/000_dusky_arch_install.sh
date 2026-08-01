@@ -219,7 +219,7 @@ export PYTHONUTF8=1
 export PYTHONDONTWRITEBYTECODE=1
 
 log "INFO" "Handing execution control over to Python Textual UI..."
-python3 "$ORCHESTRATOR_PY" "$PHASE_FLAG" "$@"
+python3 "$ORCHESTRATOR_PY" "$PHASE_FLAG" --profile 001_offline.toml "$@"
 orchestrator_exit=$?
 
 if (( orchestrator_exit != 0 )); then
