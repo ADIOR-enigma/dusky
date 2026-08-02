@@ -1,5 +1,5 @@
 #!/usr/bin/env -S python3 -I
-"""SSHFS remote manager for Arch Linux with multi-mount support, Python Rich UI, and robust error recovery."""
+"""Dusky SSH File System Mounter for Arch Linux with multi-mount support, Python Rich UI, and robust error recovery."""
 
 import os
 import sys
@@ -128,22 +128,23 @@ class ActiveMount(NamedTuple):
 
 
 def render_banner() -> None:
-    """Render main application header."""
-    grid = Table.grid(expand=True)
+    """Render main application header fitted strictly to content width."""
+    grid = Table.grid(expand=False)
     grid.add_column(justify="center")
-    grid.add_row(Text("⚡ SSHFS REMOTE MOUNT MANAGER ⚡", style="bold cyan"))
+    grid.add_row(Text("󰒍 Dusky SSH File System Mounter", style="bold cyan"))
     grid.add_row(Text("Arch Linux Multi-Mount Utility", style="dim white"))
-    console.print(Panel(grid, border_style="cyan", padding=(0, 2)))
+    console.print(Panel.fit(grid, border_style="cyan", padding=(0, 3)))
 
 
 def render_active_mounts(mounts: list[ActiveMount]) -> None:
-    """Render active mounts table."""
+    """Render active mounts table formatted to content width."""
     if not mounts:
         console.print(
-            Panel(
+            Panel.fit(
                 f"[dim italic]No active SSHFS mounts in {BASE_MOUNT_DIR}[/dim italic]",
                 title="[bold yellow]Active Mounts[/bold yellow]",
                 border_style="dim",
+                padding=(0, 2),
             )
         )
         return
@@ -151,7 +152,7 @@ def render_active_mounts(mounts: list[ActiveMount]) -> None:
     table = Table(
         title=f"[bold green]Active SSHFS Mounts ({len(mounts)})[/bold green]",
         border_style="green",
-        expand=True,
+        expand=False,
     )
     table.add_column("#", style="bold cyan", width=4, justify="center")
     table.add_column("Remote Target", style="bold white")
@@ -164,18 +165,22 @@ def render_active_mounts(mounts: list[ActiveMount]) -> None:
         with contextlib.suppress(OSError):
             is_healthy = m.mount_point.is_dir() and os.access(m.mount_point, os.R_OK)
 
-        status_badge = "[bold green]● Active[/bold green]" if is_healthy else "[bold red]✖ Broken[/bold red]"
+        status_badge = "[bold green]󰄬 Active[/bold green]" if is_healthy else "[bold red]󰅙 Broken[/bold red]"
         table.add_row(str(idx), m.source, str(m.mount_point), m.fstype, status_badge)
 
     console.print(table)
 
 
 def render_history(history: list[str]) -> None:
-    """Render recent target connections."""
+    """Render recent target connections fitted to content width."""
     if not history:
         return
 
-    table = Table(title="[bold blue]Recent Connections[/bold blue]", border_style="blue", expand=True)
+    table = Table(
+        title="[bold blue]Recent Connections[/bold blue]",
+        border_style="blue",
+        expand=False,
+    )
     table.add_column("#", style="bold cyan", width=4, justify="center")
     table.add_column("Target Spec", style="bold white")
 
@@ -750,7 +755,11 @@ def unmount(
         if len(mounts) == 1:
             target_path = mounts[0].mount_point
         elif interactive:
-            table = Table(title="[bold yellow]Select Connection to Unmount[/bold yellow]", border_style="yellow")
+            table = Table(
+                title="[bold yellow]Select Connection to Unmount[/bold yellow]",
+                border_style="yellow",
+                expand=False,
+            )
             table.add_column("#", style="bold cyan", width=4, justify="center")
             table.add_column("Source Target", style="bold white")
             table.add_column("Mount Point", style="bold yellow")
@@ -856,7 +865,7 @@ def display_mount_failure(
     stderr: str,
     probe_msg: str | None = None,
 ) -> None:
-    """Render a detailed Rich diagnosis panel when SSHFS fails."""
+    """Render a detailed Rich diagnosis panel fitted tightly to content width."""
     canonical = target.canonical_string
     lines: list[str] = [
         f"[bold white]Target Spec:[/bold white] [cyan]{canonical}[/cyan]",
@@ -890,7 +899,7 @@ def display_mount_failure(
     else:
         tips.append("• Verify target IP/hostname, remote path, SSH credentials, and firewall rules.")
 
-    grid = Table.grid(expand=True)
+    grid = Table.grid(expand=False)
     grid.add_column()
     grid.add_row(Text.from_markup("\n".join(lines)))
     grid.add_row(Text(""))
@@ -901,9 +910,9 @@ def display_mount_failure(
     grid.add_row(Text.from_markup("\n".join(tips)))
 
     console.print(
-        Panel(
+        Panel.fit(
             grid,
-            title="[bold red]✖ SSHFS Mount Operation Failed[/bold red]",
+            title="[bold red]󰅙 SSHFS Mount Operation Failed[/bold red]",
             border_style="red",
             padding=(1, 2),
         )
@@ -1016,38 +1025,36 @@ def mount(raw_target: str, custom_mount_path: str | None = None) -> bool:
 
     cmd.extend((target_spec, str(mount_point)))
 
-    # Pre-flight TCP probe
+    # 1. Pre-flight TCP probe BEFORE showing status spinner
     probe_ok, probe_msg = probe_tcp_connection(parsed.host, parsed.port, timeout=2.5)
 
-    with console.status(
-        f"[bold green]Mounting {canonical} at {mount_point}...[/bold green]", spinner="dots"
-    ):
-        if not probe_ok:
-            display_mount_failure(parsed, mount_point, returncode=1, stderr="", probe_msg=probe_msg)
-            return False
+    if not probe_ok:
+        display_mount_failure(parsed, mount_point, returncode=1, stderr="", probe_msg=probe_msg)
+        return False
 
-        try:
-            proc = subprocess.run(
-                cmd,
-                check=False,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
-            if proc.returncode != 0:
-                err = (proc.stderr or proc.stdout or "").strip()
-                display_mount_failure(parsed, mount_point, proc.returncode, err)
-                return False
-        except OSError as exc:
-            error_console.print(f"[bold red][-] Failed to launch sshfs: {exc}[/bold red]")
-            return False
+    # 2. Print clean progress without an interactive TTY-clashing spinner thread
+    console.print(f"[bold cyan][*] Connecting to {canonical}...[/bold cyan]")
 
-        mounted = wait_until_mounted(mount_point)
+    try:
+        # Run sshfs allowing TTY passthrough if password authentication is requested by OpenSSH
+        proc = subprocess.run(
+            cmd,
+            check=False,
+            text=True,
+        )
+        if proc.returncode != 0:
+            display_mount_failure(parsed, mount_point, proc.returncode, "sshfs exited with non-zero status.")
+            return False
+    except OSError as exc:
+        error_console.print(f"[bold red][-] Failed to launch sshfs: {exc}[/bold red]")
+        return False
+
+    mounted = wait_until_mounted(mount_point)
 
     if mounted:
         console.print(
-            Panel(
-                f"[bold green]✓ Filesystem successfully mounted![/bold green]\n"
+            Panel.fit(
+                f"[bold green]󰄬 Filesystem successfully mounted![/bold green]\n"
                 f"[white]Remote:[/white] [cyan]{canonical}[/cyan]\n"
                 f"[white]Local Path:[/white] [bold yellow]{mount_point}[/bold yellow]",
                 border_style="green",
@@ -1062,6 +1069,55 @@ def mount(raw_target: str, custom_mount_path: str | None = None) -> bool:
         stderr="sshfs command exited cleanly but mount point did not register in /proc/mounts.",
     )
     return False
+
+
+def handle_mount_flow(
+    parsed_target: ParsedTarget, initial_custom_path: str | None, history: list[str]
+) -> list[str]:
+    """Handle mounting, interactive retries on failure, and state updates."""
+    current_target = parsed_target
+    custom_path = initial_custom_path
+
+    while True:
+        target_str = current_target.canonical_string
+        success = mount(target_str, custom_path)
+        if success:
+            history = update_history(history, target_str)
+            Prompt.ask("Press Enter to return to main menu...")
+            return history
+
+        # Mount failed -> offer retry options instead of forcing restart from scratch!
+        console.print()
+        table = Table(show_header=False, box=None, padding=(0, 1), expand=False)
+        table.add_column("Key", style="bold cyan", justify="right")
+        table.add_column("Action", style="bold white")
+        table.add_row("1", "Retry connection [dim](re-try target after enabling remote SSH/sshd)[/dim]")
+        table.add_row("2", "Change SSH target / username")
+        table.add_row("0", "Return to Main Menu")
+
+        console.print(Panel.fit(table, title="[bold yellow]Connection Failure Options[/bold yellow]", border_style="yellow"))
+
+        try:
+            choice = Prompt.ask("Select option", default="1").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            return history
+
+        if choice == "1":
+            console.print(f"[bold cyan][*] Retrying connection to {target_str}...[/bold cyan]")
+            continue
+        elif choice == "2":
+            new_target = Prompt.ask("Enter new SSH target", default=target_str).strip()
+            parsed_new = parse_target(new_target)
+            if parsed_new:
+                parsed_user = select_remote_user(parsed_new)
+                if parsed_user:
+                    current_target = parsed_user
+                    default_dir = derive_mount_point(current_target)
+                    folder_input = Prompt.ask("Enter local mount path", default=str(default_dir)).strip()
+                    custom_path = folder_input if folder_input and folder_input != str(default_dir) else None
+            continue
+        else:
+            return history
 
 
 def select_remote_user(parsed: ParsedTarget) -> ParsedTarget | None:
@@ -1150,7 +1206,7 @@ def main() -> int:
             render_history(history)
             console.print()
 
-        menu_table = Table(show_header=False, box=None, padding=(0, 2))
+        menu_table = Table(show_header=False, box=None, padding=(0, 1), expand=False)
         menu_table.add_column("Key", style="bold cyan", justify="right")
         menu_table.add_column("Action", style="bold white")
 
@@ -1161,7 +1217,7 @@ def main() -> int:
         menu_table.add_row("4", "Refresh mount status")
         menu_table.add_row("0", "Exit")
 
-        console.print(Panel(menu_table, title="[bold yellow]Menu Options[/bold yellow]", border_style="yellow"))
+        console.print(Panel.fit(menu_table, title="[bold yellow]Menu Options[/bold yellow]", border_style="yellow"))
 
         try:
             choice = Prompt.ask("Select an option", default="1").strip().lower()
@@ -1211,10 +1267,7 @@ def main() -> int:
 
                 custom_path = folder_input if folder_input and folder_input != str(default_dir) else None
 
-                if mount(parsed_with_user.canonical_string, custom_path):
-                    history = update_history(history, parsed_with_user.canonical_string)
-
-                Prompt.ask("Press Enter to continue...")
+                history = handle_mount_flow(parsed_with_user, custom_path, history)
 
             case "2" if history:
                 raw_idx = Prompt.ask(f"Select connection (1-{len(history)})", default="1").strip()
@@ -1248,10 +1301,7 @@ def main() -> int:
 
                 custom_path = folder_input if folder_input and folder_input != str(default_dir) else None
 
-                if mount(parsed_with_user.canonical_string, custom_path):
-                    history = update_history(history, parsed_with_user.canonical_string)
-
-                Prompt.ask("Press Enter to continue...")
+                history = handle_mount_flow(parsed_with_user, custom_path, history)
 
             case "3":
                 unmount(interactive=True)
