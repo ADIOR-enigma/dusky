@@ -356,9 +356,15 @@ def derive_mount_point(target: ParsedTarget, custom_path: str | None = None) -> 
     if custom_path and custom_path.strip():
         c = custom_path.strip()
         p = Path(c).expanduser()
-        if not p.is_absolute():
-            return BASE_MOUNT_DIR / c
-        return p
+        if p.is_absolute():
+            return p.resolve()
+
+        # Explicit relative path starting with . or .. or containing path separators
+        if c.startswith("./") or c.startswith("../") or "/" in c or c in (".", ".."):
+            return (Path.cwd() / p).resolve()
+
+        # Simple folder name -> resolve inside BASE_MOUNT_DIR
+        return (BASE_MOUNT_DIR / c).resolve()
 
     host_clean = re.sub(r"[^\w.-]", "_", target.host)
     user_prefix = f"{target.user}_" if target.user and target.user != os.environ.get("USER") else ""
@@ -919,7 +925,7 @@ def display_mount_failure(
     )
 
 
-def mount(raw_target: str, custom_mount_path: str | None = None) -> bool:
+def mount(raw_target: str, custom_mount_path: str | None = None, open_gui_prompt: bool = False) -> bool:
     parsed = parse_target(raw_target)
     if parsed is None:
         error_console.print(
@@ -1060,6 +1066,10 @@ def mount(raw_target: str, custom_mount_path: str | None = None) -> bool:
                 border_style="green",
             )
         )
+        xdg_open = find_executable("xdg-open")
+        if open_gui_prompt and xdg_open and sys.stdin.isatty() and Confirm.ask("Open mounted folder in GUI file manager?", default=False):
+            with contextlib.suppress(OSError):
+                subprocess.Popen([xdg_open, str(mount_point)])
         return True
 
     display_mount_failure(
@@ -1154,7 +1164,7 @@ def print_usage() -> None:
     console.print("  [cyan]dusky_ssh_filesystem.py -h | --help[/cyan]           Show this help message")
     console.print("\n[bold white]Examples:[/bold white]")
     console.print("  [dim]dusky_ssh_filesystem.py user@192.168.1.50[/dim]")
-    console.print("  [dim]dusky_ssh_filesystem.py root@host /home/dusk/Documents/sshfs/server1[/dim]")
+    console.print("  [dim]dusky_ssh_filesystem.py root@host ~/Documents/sshfs/server1[/dim]")
     console.print("  [dim]dusky_ssh_filesystem.py -u all[/dim]")
 
 
@@ -1215,6 +1225,8 @@ def main() -> int:
             menu_table.add_row("2", "Quick connect to recent server")
         menu_table.add_row("3", "Unmount connection(s)")
         menu_table.add_row("4", "Refresh mount status")
+        if active and find_executable("xdg-open"):
+            menu_table.add_row("o", "Open mounted folder in GUI file manager")
         menu_table.add_row("0", "Exit")
 
         console.print(Panel.fit(menu_table, title="[bold yellow]Menu Options[/bold yellow]", border_style="yellow"))
@@ -1225,12 +1237,12 @@ def main() -> int:
             console.print("\n[bold yellow][*] Exiting...[/bold yellow]")
             break
 
-        if choice in ("0", "q", "quit", "exit"):
+        if choice in ("0", "x", "q", "quit", "exit"):
             console.print("[bold yellow][*] Goodbye![/bold yellow]")
             break
 
         match choice:
-            case "1":
+            case "1" | "c" | "connect":
                 prompt_default = history[0] if history else ""
                 target_raw = Prompt.ask(
                     "Enter SSH target (e.g. user@host, host:/path, or ssh user@host)",
@@ -1269,7 +1281,7 @@ def main() -> int:
 
                 history = handle_mount_flow(parsed_with_user, custom_path, history)
 
-            case "2" if history:
+            case "2" | "quick" if history:
                 raw_idx = Prompt.ask(f"Select connection (1-{len(history)})", default="1").strip()
                 try:
                     idx = int(raw_idx)
@@ -1303,15 +1315,25 @@ def main() -> int:
 
                 history = handle_mount_flow(parsed_with_user, custom_path, history)
 
-            case "3":
+            case "3" | "u" | "unmount":
                 unmount(interactive=True)
                 Prompt.ask("Press Enter to continue...")
 
-            case "4":
+            case "4" | "r" | "refresh":
+                continue
+
+            case "o" | "open" if active:
+                xdg_open = find_executable("xdg-open")
+                if xdg_open:
+                    for m in active:
+                        with contextlib.suppress(OSError):
+                            subprocess.Popen([xdg_open, str(m.mount_point)])
+                    console.print("[bold green][+] Opened mount folder(s) in file manager.[/bold green]")
+                    time.sleep(1)
                 continue
 
             case _:
-                error_console.print("[bold red][-] Invalid option. Enter a valid menu number.[/bold red]")
+                error_console.print("[bold red][-] Invalid option. Enter a valid menu choice.[/bold red]")
                 Prompt.ask("Press Enter to continue...")
 
     return 0
