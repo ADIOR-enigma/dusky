@@ -2671,13 +2671,12 @@ def last_git_diff_path() -> Path:
     return runtime_dir() / "last_git_diff.json"
 
 
-def persist_last_git_diff(commits: str, files_changed: int, diff_text: str) -> None:
+def persist_last_git_diff(payload: dict) -> None:
     try:
-        payload = json.dumps(
-            {"commits": commits, "files_changed": files_changed, "diff": diff_text},
-            ensure_ascii=False,
+        last_git_diff_path().write_text(
+            json.dumps(payload, ensure_ascii=False),
+            encoding="utf-8",
         )
-        last_git_diff_path().write_text(payload, encoding="utf-8")
     except Exception:
         pass
 
@@ -2695,6 +2694,8 @@ class GitEngine:
         self.profile = profile
         self.log = app.log_main  # type: ignore
         self.git_cmd_base = ['git', f'--git-dir={GIT_DIR}', f'--work-tree={WORK_TREE}']
+        self._last_collision_count = 0
+        self._last_collision_dir = ""
         backups_dir().mkdir(parents=True, exist_ok=True)
 
     async def _run(self, *args: str, check: bool = True, task_idx: int = -1) -> tuple[int, str, str]:
@@ -3005,6 +3006,8 @@ class GitEngine:
                 collision_roots[coll] = 1
 
         if not collision_roots:
+            self._last_collision_count = 0
+            self._last_collision_dir = ""
             self._tlog(f"[bold {THEME['success']}]No structural filesystem conflicts detected.[/]", task_idx)
             return True
 
@@ -3023,6 +3026,9 @@ class GitEngine:
         if not backup_dir:
             self._tlog(f"[bold {THEME['error']}]Failed to create collision backup directory[/]", task_idx, True)
             return False
+
+        self._last_collision_count = len(collision_roots)
+        self._last_collision_dir = str(backup_dir)
 
         with suppress(Exception):
             (backup_dir / "INFO.txt").write_text(
@@ -3366,6 +3372,21 @@ class GitEngine:
         change_status: dict = {}
         change_old_mode: dict = {}
         change_old_oid: dict = {}
+        meta: dict = {
+            "branch": self.profile.branch,
+            "commits": "",
+            "files_changed": 0,
+            "diff": "",
+            "before_head": "",
+            "after_head": "",
+            "unrelated_histories": False,
+            "collisions": None,
+            "collision_backup": "",
+            "local_mods": None,
+            "local_mods_backup": "",
+            "local_mods_restored": None,
+        }
+        restore_ok: bool | None = None
 
         try:
             # Task 0: Bare Repo Validation
@@ -3475,7 +3496,13 @@ class GitEngine:
                 self._tlog(f"\n[bold {THEME['warning']}]Differential Divergence Detected:[/]\n", idx)
                 self.app.log_task(Syntax(diff_out, "diff", theme="monokai", background_color="default", word_wrap=True), idx)  # type: ignore
                 self.app.git_diff_text = diff_out  # type: ignore
-                persist_last_git_diff(commit_count, len(changed_files), diff_out)
+                meta.update(
+                    commits=commit_count,
+                    files_changed=len(changed_files),
+                    diff=diff_out,
+                    before_head=local_head,
+                    after_head=remote_head,
+                )
 
             mb_rc, base_commit, _ = await self._run_raw('merge-base', local_head, remote_head)
             base_commit = base_commit.strip()
@@ -3496,6 +3523,14 @@ class GitEngine:
                     raise RuntimeError(f"Reset failed (unrelated histories): {err_r}")
                 await self._ensure_repo_defaults()
                 self._tlog(f"[bold {THEME['success']}]Reset complete. Previous state fully preserved in backup.[/]", idx, True)
+                meta.update(
+                    unrelated_histories=True,
+                    after_head=remote_head,
+                    collisions=self._last_collision_count,
+                    collision_backup=self._last_collision_dir,
+                )
+                if meta.get("diff"):
+                    persist_last_git_diff(meta)
                 self.app.update_task_state(idx, "success")  # type: ignore
                 for i in range(2, 5):
                     self.app.update_task_state(i, "skipped")  # type: ignore
@@ -3523,6 +3558,10 @@ class GitEngine:
 
             if not await self._backup_worktree_collisions(UPSTREAM_TRACKING_REF, honor_tracked=True, task_idx=idx):
                 raise RuntimeError("Collision backup failed.")
+            meta.update(
+                collisions=self._last_collision_count,
+                collision_backup=self._last_collision_dir,
+            )
             self.app.update_task_state(idx, "success")  # type: ignore
 
             # Task 3: Atomic Snapshot (CoW)
@@ -3537,6 +3576,10 @@ class GitEngine:
                     raise RuntimeError("User modifications backup failed.")
             else:
                 self._tlog(f"[bold {THEME['success']}]No local tracked modifications found. Snapshot skipped.[/]", idx)
+            meta.update(
+                local_mods=len(change_paths),
+                local_mods_backup=str(your_changes_backup) if your_changes_backup else "",
+            )
 
             self.app.update_task_state(idx, "success")  # type: ignore
 
@@ -3554,13 +3597,19 @@ class GitEngine:
 
             if your_changes_backup and change_paths:
                 self._tlog(f"[bold {THEME['accent']}]Restoring your tracked modifications...[/]", idx)
-                ok = await self._restore_user_modifications(
+                restore_ok = await self._restore_user_modifications(
                     your_changes_backup, change_paths, change_status, change_old_mode, change_old_oid, idx
                 )
-                if not ok:
+                if not restore_ok:
                     self._tlog(f"[bold {THEME['warning']}]Some files could not be restored. Backup preserved at: {your_changes_backup}[/]", idx, True)
 
             await self._ensure_repo_defaults()
+            meta.update(
+                after_head=remote_head,
+                local_mods_restored=restore_ok,
+            )
+            if meta.get("diff"):
+                persist_last_git_diff(meta)
             self.app.update_task_state(idx, "success")  # type: ignore
             return True
 
@@ -3795,22 +3844,74 @@ class DuskyApp(App):
         if not isinstance(payload, dict):
             return
         diff = payload.get("diff") or ""
-        if not diff.strip():
-            return
         commits = payload.get("commits", "?")
         files_changed = payload.get("files_changed", "?")
-        self.log_task(f"\n[bold {THEME['accent']}]Upstream changes applied by this update:[/]", 1)
-        self.log_task(f"[dim]Commits behind: {commits}  |  Files changed: {files_changed}[/dim]", 1)
-        self.log_task(f"[dim]{'-' * 46}[/dim]", 1)
-        self.log_task(Syntax(diff, "diff", theme="monokai", background_color="default", word_wrap=True), 1)
-        for index, hint in (
-            (0, "Validated before the update. See 'Fetch Upstream & Diff' for the applied changes."),
-            (2, "Skipped during the post-update restart. See 'Fetch Upstream & Diff' for the applied changes."),
-            (3, "Skipped during the post-update restart. See 'Fetch Upstream & Diff' for the applied changes."),
-            (4, "Skipped during the post-update restart. See 'Fetch Upstream & Diff' for the applied changes."),
-        ):
-            self.log_task(f"\n[dim]{hint}[/dim]", index)
-        self.log_main(f"\n[bold {THEME['accent']}]Git diff from the applied update is shown on the 'Fetch Upstream & Diff' task.[/]")
+        branch = payload.get("branch") or self.profile.branch
+        before = payload.get("before_head") or ""
+        after = payload.get("after_head") or ""
+        unrelated = bool(payload.get("unrelated_histories"))
+
+        def short(sha: str) -> str:
+            return sha[:10] if sha else "?"
+
+        self.log_task(f"\n[bold {THEME['accent']}]Git Bare Repo Validation[/]", 0)
+        self.log_task(f"[dim]Branch: {branch}[/dim]", 0)
+        if before:
+            self.log_task(f"[dim]HEAD before update: {short(before)}[/dim]", 0)
+        if unrelated:
+            self.log_task("[dim]Local history did not share ancestry with upstream — full recovery performed.[/dim]", 0)
+
+        self.log_task(f"\n[bold {THEME['accent']}]Fetch Upstream & Diff[/]", 1)
+        if diff.strip():
+            self.log_task(f"[dim]Commits behind: {commits}  |  Files changed: {files_changed}[/dim]", 1)
+            self.log_task(f"[dim]{'-' * 46}[/dim]", 1)
+            self.log_task(Syntax(diff, "diff", theme="monokai", background_color="default", word_wrap=True), 1)
+        else:
+            self.log_task("[dim]No textual diff captured.[/dim]", 1)
+
+        self.log_task(f"\n[bold {THEME['accent']}]Forensic Collision Backup[/]", 2)
+        if unrelated:
+            note = f"Collision backup performed during diverged-history recovery ({payload.get('collisions', 0)} collision(s))."
+        elif payload.get("collisions") is None:
+            note = "No collision-backup details recorded."
+        elif payload.get("collisions") == 0:
+            note = "No work-tree collisions detected."
+        else:
+            note = f"{payload.get('collisions')} work-tree collision(s) backed up."
+            if payload.get("collision_backup"):
+                note += f" Backup: {payload['collision_backup']}"
+        self.log_task(f"[dim]{note}[/dim]", 2)
+
+        self.log_task(f"\n[bold {THEME['accent']}]Atomic Snapshot (CoW)[/]", 3)
+        if unrelated:
+            note = "Full tracked-tree backup performed during diverged-history recovery."
+        elif payload.get("local_mods") is None:
+            note = "No snapshot details recorded."
+        elif payload.get("local_mods") == 0:
+            note = "No local tracked modifications found. Snapshot skipped."
+        else:
+            note = f"{payload.get('local_mods')} local tracked modification(s) backed up."
+            if payload.get("local_mods_backup"):
+                note += f" Backup: {payload['local_mods_backup']}"
+        self.log_task(f"[dim]{note}[/dim]", 3)
+
+        self.log_task(f"\n[bold {THEME['accent']}]Apply Bare Updates (Reset)[/]", 4)
+        if unrelated:
+            note = "Reset applied during diverged-history recovery."
+        elif before or after:
+            note = f"Reset applied: {short(before)} -> {short(after)}."
+        else:
+            note = "Reset applied and synchronized."
+        if not unrelated:
+            if payload.get("local_mods_restored") is True:
+                note += " Local modifications restored."
+            elif payload.get("local_mods_restored") is False:
+                note += " Some local modifications could not be restored (backup preserved)."
+            elif payload.get("local_mods") == 0:
+                note += " No local modifications to restore."
+        self.log_task(f"[dim]{note}[/dim]", 4)
+
+        self.log_main(f"\n[bold {THEME['accent']}]Update applied. Select a GIT task on the left to review what changed.[/]")
 
     def update_task_state(self, index: int, new_status: str) -> None:
         self.tasks[index].status = new_status  # type: ignore
