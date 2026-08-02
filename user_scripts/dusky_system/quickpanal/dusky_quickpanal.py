@@ -107,7 +107,7 @@ icon = "folder-download-symbolic"
 label = "Updates"
 tooltip = "Updates\\nLMB: System Update | RMB: Dusky Update"
 on_left = "dusky-run kitty --class system_update.sh --hold sh -c '~/user_scripts/update_dusky/system_update.sh --all'"
-on_right = "dusky-run kitty --class update_dusky.sh --hold sh -c '~/user_scripts/update_dusky/update_dusky.sh'"
+on_right = "dusky-run kitty --class update_dusky.py --hold sh -c '~/user_scripts/update_dusky/python/update_dusky.py'"
 
 [[toggles]]
 id = "dnd"

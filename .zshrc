@@ -155,7 +155,7 @@ alias dusky_replace='python3 ~/user_scripts/tools/sed/dusky_replace.py'
 # System & Development Scripts
 alias tui='python ~/user_scripts/dusky_tui/python/main/main.py'
 alias sendlogs="$HOME/user_scripts/arch_setup_scripts/send_logs.sh --auto"
-alias update_dusky="$HOME/user_scripts/update_dusky/update_dusky.sh"
+alias update_dusky="$HOME/user_scripts/update_dusky/python/update_dusky.py"
 alias dusky_force_sync_github="$HOME/user_scripts/update_dusky/dusky_force_sync_github.sh"
 alias darkmode="$HOME/user_scripts/theme_matugen/theme_ctl.sh set --mode dark"
 alias lightmode="$HOME/user_scripts/theme_matugen/theme_ctl.sh set --mode light"

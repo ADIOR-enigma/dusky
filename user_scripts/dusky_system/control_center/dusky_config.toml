@@ -77,7 +77,7 @@ button_text_map = { "0" = "Updated", "default" = "Available" }
 style_map = { "0" = "default", "default" = "suggested" }
 [pages.layout.items.on_press]
 type = "exec"
-command = "dusky-run kitty --class update_dusky.sh --title \"System Updater\" --hold sh -c \"$HOME/user_scripts/update_dusky/update_dusky.sh\""
+command = "dusky-run kitty --class update_dusky.py --title \"System Updater\" --hold sh -c \"$HOME/user_scripts/update_dusky/python/update_dusky.py\""
 terminal = false
 
 [[pages.layout.items]]
@@ -303,7 +303,7 @@ button_text_map = { "0" = "Updated", "default" = "Available" }
 style_map = { "0" = "normal", "default" = "suggested" }
 [pages.layout.items.layout.items.on_press]
 type = "exec"
-command = "dusky-run kitty --class update_dusky.sh --title \"System Updater\" --hold sh -c \"$HOME/user_scripts/update_dusky/update_dusky.sh\""
+command = "dusky-run kitty --class update_dusky.py --title \"System Updater\" --hold sh -c \"$HOME/user_scripts/update_dusky/python/update_dusky.py\""
 terminal = false
 
 [[pages.layout.items.layout.items]]

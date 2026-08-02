@@ -1333,13 +1333,13 @@ hl.window_rule({
     center = true
 })
 
---- update_dusky.sh script ---
+--- update_dusky.py updater ---
 hl.window_rule({
-    name = "update_dusky.sh",
-    match = { class = "^(update_dusky.sh)$" },
+    name = "update_dusky.py",
+    match = { class = "^(update_dusky.py)$" },
     float = true,
-    size = {1192, 710},
-    center = true
+    size = {"(monitor_w*0.9)", "(monitor_h*0.9)"},
+    move = {"(monitor_w*0.05)", "(monitor_h*0.05)"}
 })
 
 --- system_update.sh script ---
