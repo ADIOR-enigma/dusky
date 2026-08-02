@@ -61,7 +61,6 @@ SSHFS_OPTIONS: Final[tuple[str, ...]] = (
     "ServerAliveCountMax=3",
     "ConnectTimeout=10",
     "StrictHostKeyChecking=accept-new",
-    "idmap=user",
 )
 
 
@@ -443,17 +442,28 @@ def get_mount_info_for(mount_point: Path) -> tuple[str, str] | None:
 
 
 def cleanup_stale_mount(mount_point: Path) -> bool:
-    """Attempt a lazy unmount to clean up stale/broken FUSE mounts."""
+    """Attempt a lazy unmount to clean up stale/broken FUSE mounts (d?????????)."""
+    target_str = str(mount_point)
     fusermount = find_executable("fusermount3")
-    if not fusermount:
-        return False
-    with contextlib.suppress(OSError):
-        subprocess.run(
-            [fusermount, "-u", "-z", str(mount_point)],
-            check=False,
-            text=True,
-            capture_output=True,
-        )
+    if fusermount:
+        with contextlib.suppress(OSError):
+            subprocess.run(
+                [fusermount, "-u", "-z", target_str],
+                check=False,
+                text=True,
+                capture_output=True,
+            )
+
+    umount_bin = find_executable("umount")
+    if umount_bin:
+        with contextlib.suppress(OSError):
+            subprocess.run(
+                [umount_bin, "-l", target_str],
+                check=False,
+                text=True,
+                capture_output=True,
+            )
+
     return wait_until_unmounted(mount_point, timeout=2.0)
 
 
@@ -1016,6 +1026,9 @@ def mount(raw_target: str, custom_mount_path: str | None = None, open_gui_prompt
         cleanup_stale_mount(mount_point)
 
     options = list(SSHFS_OPTIONS)
+    with contextlib.suppress(AttributeError, OSError):
+        options.append(f"uid={os.getuid()}")
+        options.append(f"gid={os.getgid()}")
 
     if "SSHPASS" in os.environ and find_executable("sshpass"):
         options.append("ssh_command=sshpass -e ssh")
