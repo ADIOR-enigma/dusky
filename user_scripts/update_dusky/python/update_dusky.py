@@ -3625,7 +3625,7 @@ class CompletionDialog(ModalScreen[bool]):
         Binding("q", "dismiss_quit", "Quit"),
     ]
 
-    def __init__(self, title: str = "UPDATE COMPLETE", message: str = "", level: str = "success") -> None:
+    def __init__(self, title: str = "dusky updated", message: str = "", level: str = "success") -> None:
         super().__init__()
         self.title_text = title
         self.message = message
@@ -4261,9 +4261,9 @@ class DuskyApp(App):
         elif OPT_DRY_RUN:
             dialog_title, dialog_level = "DRY-RUN COMPLETE", "success"
         elif self.missing_scripts:
-            dialog_title, dialog_level = "UPDATE COMPLETE", "warning"
+            dialog_title, dialog_level = "dusky updated", "warning"
         else:
-            dialog_title, dialog_level = "UPDATE COMPLETE", "success"
+            dialog_title, dialog_level = "dusky updated", "success"
 
         self._show_completion_dialog(
             dialog_title,
