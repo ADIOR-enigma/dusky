@@ -306,7 +306,6 @@ declare -ra UPDATE_SEQUENCE=(
 #
 #
     "S | fix_wayland_session.py"
-    "U | reboot_post_lua_update.sh"
 )
 
 # ==============================================================================
