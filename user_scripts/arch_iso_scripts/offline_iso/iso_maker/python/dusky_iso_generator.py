@@ -178,7 +178,7 @@ ALL_GROUPS: Dict[str, List[str]] = {
         "ttf-atkinson-hyperlegible", "otf-atkinson-hyperlegible",
         "noto-fonts-emoji", "sassc", "python-packaging", "python", "python-gobject",
         "python-cairo", "python-opengl", "gtk-layer-shell", "python-evdev", "python-pyudev",
-        "fontconfig", "python-pyquery", "python-textual", "python-rich",
+        "fontconfig", "python-pyquery", "python-textual", "python-rich", "papirus-icon-theme",
     ],
     "desktop": [
         "waybar", "awww", "hyprlock", "hypridle", "hyprsunset", "hyprpicker", "rofi",
@@ -244,7 +244,6 @@ AUR_SEED: Tuple[str, ...] = (
     "xdg-terminal-exec",
     "paru",
     "hyprshutdown",
-    "papirus-icon-theme-git",
 )
 
 # ==============================================================================
