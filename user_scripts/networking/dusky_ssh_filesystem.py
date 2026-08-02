@@ -61,6 +61,7 @@ SSHFS_OPTIONS: Final[tuple[str, ...]] = (
     "ServerAliveCountMax=3",
     "ConnectTimeout=10",
     "StrictHostKeyChecking=accept-new",
+    "idmap=user",
 )
 
 
