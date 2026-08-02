@@ -3762,8 +3762,10 @@ class DuskyApp(App):
             if index < len(task_nodes):
                 task_nodes[index].status = new_status
 
-        if new_status == "running" and list_view.index in [None, 0, index]:
-            list_view.index = index + 1
+        if new_status == "running":
+            target_pos = index + 1
+            if list_view.index is None or list_view.index <= target_pos:
+                list_view.index = target_pos
 
         if new_status in ("success", "failed", "skipped"):
             self.progress.advance(1)
