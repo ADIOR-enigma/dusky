@@ -1,5 +1,5 @@
 #!/usr/bin/env -S python3 -I
-"""SSHFS remote manager for Arch Linux with multi-mount support and robust error recovery."""
+"""SSHFS remote manager for Arch Linux with multi-mount support, Python Rich UI, and robust error recovery."""
 
 import os
 import sys
@@ -23,6 +23,7 @@ import json
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import tempfile
 import time
@@ -30,10 +31,21 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Final, NamedTuple, NoReturn
 
+from rich.console import Console
+from rich.panel import Panel
+from rich.prompt import Confirm, Prompt
+from rich.rule import Rule
+from rich.syntax import Syntax
+from rich.table import Table
+from rich.text import Text
+
+console = Console()
+error_console = Console(stderr=True)
+
 try:
     HOME: Final[Path] = Path.home()
 except (RuntimeError, KeyError) as exc:
-    print(f"[-] Cannot determine home directory: {exc}", file=sys.stderr)
+    error_console.print(f"[bold red][-] Cannot determine home directory: {exc}[/bold red]")
     sys.exit(1)
 
 # --- Fixed paths ---
@@ -53,7 +65,7 @@ SSHFS_OPTIONS: Final[tuple[str, ...]] = (
 
 
 def fail(message: str, code: int = 1) -> NoReturn:
-    print(f"[-] {message}", file=sys.stderr)
+    error_console.print(f"[bold red][-] {message}[/bold red]")
     sys.exit(code)
 
 
@@ -81,22 +93,6 @@ def find_executable(name: str) -> str | None:
         except OSError:
             continue
     return None
-
-
-def read_input(prompt: str) -> str | None:
-    try:
-        return input(prompt).strip()
-    except EOFError:
-        return None
-
-
-def confirm(prompt: str, default: bool = False) -> bool:
-    answer = read_input(prompt)
-    if answer is None:
-        return default
-    if not answer:
-        return default
-    return answer.lower() in {"y", "yes"}
 
 
 class ParsedTarget(NamedTuple):
@@ -131,23 +127,115 @@ class ActiveMount(NamedTuple):
     fstype: str
 
 
+def render_banner() -> None:
+    """Render main application header."""
+    grid = Table.grid(expand=True)
+    grid.add_column(justify="center")
+    grid.add_row(Text("⚡ SSHFS REMOTE MOUNT MANAGER ⚡", style="bold cyan"))
+    grid.add_row(Text("Arch Linux Multi-Mount Utility", style="dim white"))
+    console.print(Panel(grid, border_style="cyan", padding=(0, 2)))
+
+
+def render_active_mounts(mounts: list[ActiveMount]) -> None:
+    """Render active mounts table."""
+    if not mounts:
+        console.print(
+            Panel(
+                f"[dim italic]No active SSHFS mounts in {BASE_MOUNT_DIR}[/dim italic]",
+                title="[bold yellow]Active Mounts[/bold yellow]",
+                border_style="dim",
+            )
+        )
+        return
+
+    table = Table(
+        title=f"[bold green]Active SSHFS Mounts ({len(mounts)})[/bold green]",
+        border_style="green",
+        expand=True,
+    )
+    table.add_column("#", style="bold cyan", width=4, justify="center")
+    table.add_column("Remote Target", style="bold white")
+    table.add_column("Local Mount Point", style="bold yellow")
+    table.add_column("Filesystem", style="dim cyan")
+    table.add_column("Status", justify="center")
+
+    for idx, m in enumerate(mounts, 1):
+        is_healthy = False
+        with contextlib.suppress(OSError):
+            is_healthy = m.mount_point.is_dir() and os.access(m.mount_point, os.R_OK)
+
+        status_badge = "[bold green]● Active[/bold green]" if is_healthy else "[bold red]✖ Broken[/bold red]"
+        table.add_row(str(idx), m.source, str(m.mount_point), m.fstype, status_badge)
+
+    console.print(table)
+
+
+def render_history(history: list[str]) -> None:
+    """Render recent target connections."""
+    if not history:
+        return
+
+    table = Table(title="[bold blue]Recent Connections[/bold blue]", border_style="blue", expand=True)
+    table.add_column("#", style="bold cyan", width=4, justify="center")
+    table.add_column("Target Spec", style="bold white")
+
+    for idx, entry in enumerate(history, 1):
+        default_tag = " [dim cyan](latest)[/dim cyan]" if idx == 1 else ""
+        table.add_row(str(idx), f"{entry}{default_tag}")
+
+    console.print(table)
+
+
 def parse_target(raw: str) -> ParsedTarget | None:
     """
     Validate and parse an SSH target string into a structured ParsedTarget.
 
-    Accepted forms:
-      - user@host (defaults to port 22, remote root directory /)
-      - host (defaults to port 22, remote root directory /)
-      - user@host: (remote root directory /)
-      - user@host:/path (remote path)
-      - user@host:2222 (port 2222, remote root directory /)
-      - user@host:2222/path or user@host:2222:/path (port 2222, remote path)
-      - ssh://[user@]host[:port][/path] (URI format)
+    Robustly handles:
+      - Stripping leading `ssh ` command (e.g., `ssh user@host`)
+      - Parsing `-p <port>` or `-p<port>` SSH flags
+      - Standard `user@host` / `user@host:/path` / `user@host:port`
+      - `ssh://[user@]host[:port][/path]` URI format
     """
     target = raw.strip()
-    if not target or target.startswith("-") or not target.isprintable():
+    if not target or not target.isprintable():
         return None
     if any(ch in target for ch in "\r\n\t\v\f"):
+        return None
+
+    # Automatically clean up leading 'ssh' command token if entered
+    if target == "ssh":
+        return None
+    if target.startswith("ssh ") or target.startswith("ssh\t"):
+        target = target[3:].strip()
+
+    if not target:
+        return None
+
+    extracted_port: int | None = None
+
+    # Handle leading flags like -p 2222 or -p2222
+    while target.startswith("-"):
+        tokens = target.split(maxsplit=2)
+        if not tokens:
+            return None
+        flag = tokens[0]
+        if flag in ("-p", "-P") and len(tokens) >= 2:
+            try:
+                extracted_port = int(tokens[1])
+                target = tokens[2] if len(tokens) > 2 else ""
+            except ValueError:
+                return None
+        elif (flag.startswith("-p") or flag.startswith("-P")) and flag[2:].isdigit():
+            extracted_port = int(flag[2:])
+            target = tokens[1] if len(tokens) > 1 else ""
+        else:
+            # Skip unrecognized options/flags if user passed e.g. -i keyfile target
+            if len(tokens) >= 2 and not tokens[1].startswith("-") and "@" not in tokens[0] and "." not in tokens[0]:
+                target = tokens[2] if len(tokens) > 2 else ""
+            else:
+                target = tokens[1] if len(tokens) > 1 else ""
+
+    if not target:
         return None
 
     # Handle ssh:// style target
@@ -184,7 +272,7 @@ def parse_target(raw: str) -> ParsedTarget | None:
             return None
 
         try:
-            port = int(port_str or 22)
+            port = extracted_port or int(port_str or 22)
             if not (1 <= port <= 65535):
                 return None
         except ValueError:
@@ -195,7 +283,7 @@ def parse_target(raw: str) -> ParsedTarget | None:
             host=host,
             port=port,
             remote_path=remote_path,
-            raw_input=target,
+            raw_input=raw,
         )
 
     # Standard / scp / user-friendly syntax
@@ -225,10 +313,10 @@ def parse_target(raw: str) -> ParsedTarget | None:
         return None
 
     if not after_host:
-        port = 22
+        port = extracted_port or 22
         remote_path = "/"
     elif after_host.isdigit():
-        port = int(after_host)
+        port = extracted_port or int(after_host)
         if not (1 <= port <= 65535):
             return None
         remote_path = "/"
@@ -236,17 +324,17 @@ def parse_target(raw: str) -> ParsedTarget | None:
         parts = after_host.split(":", 1)
         if not parts[0].isdigit():
             return None
-        port = int(parts[0])
+        port = extracted_port or int(parts[0])
         if not (1 <= port <= 65535):
             return None
         remote_path = parts[1] or "/"
     else:
         m = re.match(r"^(\d+)/(.*)$", after_host)
         if m and (1 <= int(m.group(1)) <= 65535):
-            port = int(m.group(1))
+            port = extracted_port or int(m.group(1))
             remote_path = "/" + m.group(2)
         else:
-            port = 22
+            port = extracted_port or 22
             remote_path = after_host or "/"
 
     return ParsedTarget(
@@ -254,7 +342,7 @@ def parse_target(raw: str) -> ParsedTarget | None:
         host=host,
         port=port,
         remote_path=remote_path,
-        raw_input=target,
+        raw_input=raw,
     )
 
 
@@ -405,13 +493,13 @@ def load_state() -> list[str]:
     except FileNotFoundError:
         return []
     except (OSError, UnicodeDecodeError) as exc:
-        print(f"[!] Cannot read state file: {exc}", file=sys.stderr)
+        error_console.print(f"[bold yellow][!] Cannot read state file: {exc}[/bold yellow]")
         return []
 
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
-        print(f"[!] State file is corrupt; starting with empty history ({exc}).", file=sys.stderr)
+        error_console.print(f"[bold yellow][!] State file corrupt; starting clean ({exc})[/bold yellow]")
         return []
 
     if isinstance(data, dict):
@@ -458,10 +546,10 @@ def update_history(history: list[str], target: str) -> list[str]:
     try:
         return save_state(history, target)
     except OSError as exc:
-        print(f"[!] Could not save state: {exc}", file=sys.stderr)
+        error_console.print(f"[bold yellow][!] Could not save history: {exc}[/bold yellow]")
         hint = root_hint(state_destination()) or root_hint(state_destination().parent)
         if hint:
-            print(hint, file=sys.stderr)
+            error_console.print(f"[dim]{hint}[/dim]")
         return history
 
 
@@ -505,7 +593,7 @@ def ensure_directories() -> None:
 def install_package(package: str) -> bool:
     pacman = find_executable("pacman")
     if not pacman:
-        print("[-] pacman not found.", file=sys.stderr)
+        error_console.print("[bold red][-] pacman package manager not found.[/bold red]")
         return False
 
     base: list[str] | None = None
@@ -520,25 +608,24 @@ def install_package(package: str) -> bool:
                 break
 
     if base is None:
-        print(
-            f"[-] No privilege command found (sudo/doas/run0). Install '{package}' manually.",
-            file=sys.stderr,
+        error_console.print(
+            f"[bold red][-] No privilege escalator (sudo/doas/run0) found. Install '{package}' manually.[/bold red]"
         )
         return False
 
     cmd = base + [pacman, "-S", "--noconfirm", "--noprogressbar", package]
 
-    print(f"[*] Installing '{package}' via pacman...")
+    console.print(f"[bold cyan][*] Installing '{package}' via pacman...[/bold cyan]")
     try:
         subprocess.run(cmd, check=True)
         return True
     except subprocess.CalledProcessError as exc:
-        print(f"[-] pacman failed with exit code {exc.returncode}.", file=sys.stderr)
+        error_console.print(f"[bold red][-] pacman failed with exit code {exc.returncode}.[/bold red]")
         if Path("/var/lib/pacman/db.lck").exists():
-            print("    Hint: Pacman appears to be locked by another process.", file=sys.stderr)
+            error_console.print("    [dim]Hint: Pacman is locked by another process.[/dim]")
         return False
     except OSError as exc:
-        print(f"[-] Failed to run pacman: {exc}", file=sys.stderr)
+        error_console.print(f"[bold red][-] Failed to run pacman: {exc}[/bold red]")
         return False
 
 
@@ -546,7 +633,7 @@ def ensure_unmount_dependencies() -> bool:
     if find_executable("fusermount3"):
         return True
 
-    print("[-] fusermount3 not found. Installing 'fuse3'...")
+    console.print("[bold yellow][!] fusermount3 missing. Installing 'fuse3'...[/bold yellow]")
     if not install_package("fuse3"):
         return False
 
@@ -564,12 +651,14 @@ def ensure_mount_dependencies() -> bool:
         if find_executable(binary):
             continue
 
-        print(f"[-] '{binary}' not found. Installing '{package}'...")
+        console.print(f"[bold yellow][!] '{binary}' missing. Installing package '{package}'...[/bold yellow]")
         if not install_package(package):
             return False
 
         if not find_executable(binary):
-            print(f"[-] '{binary}' is still missing after installing '{package}'.", file=sys.stderr)
+            error_console.print(
+                f"[bold red][-] '{binary}' is still missing after installing '{package}'.[/bold red]"
+            )
             return False
 
     return True
@@ -579,17 +668,29 @@ def check_fuse_device() -> bool:
     fuse = Path("/dev/fuse")
 
     if not fuse.exists():
-        print(
-            "[-] /dev/fuse is missing. Install fuse3 and ensure the fuse kernel module is loaded.",
-            file=sys.stderr,
+        error_console.print(
+            "[bold red][-] /dev/fuse is missing. Ensure fuse3 is installed and fuse kernel module is loaded.[/bold red]"
         )
         return False
 
     if os.geteuid() != 0 and not os.access(fuse, os.R_OK | os.W_OK):
-        print("[-] /dev/fuse is not accessible by your user.", file=sys.stderr)
+        error_console.print("[bold red][-] /dev/fuse is not accessible by your user account.[/bold red]")
         return False
 
     return True
+
+
+def probe_tcp_connection(host: str, port: int, timeout: float = 3.0) -> tuple[bool, str]:
+    """Pre-flight check to verify if remote SSH port is open and reachable."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True, "Reachable"
+    except socket.timeout:
+        return False, f"Connection timed out (port {port} unreachable)"
+    except ConnectionRefusedError:
+        return False, f"Connection refused on port {port} (sshd service may be down)"
+    except OSError as exc:
+        return False, f"Network error: {exc.strerror or exc}"
 
 
 def wait_until_unmounted(mount_point: Path, timeout: float = 2.0) -> bool:
@@ -631,11 +732,11 @@ def unmount(
     if all_mounts:
         mounts = get_active_mounts()
         if not mounts:
-            print("[*] No active SSHFS connections to unmount.")
+            console.print("[bold yellow][*] No active SSHFS connections to unmount.[/bold yellow]")
             return True
         success = True
         for m in mounts:
-            print(f"[*] Unmounting {m.mount_point} ({m.source})...")
+            console.print(f"[bold cyan][*] Unmounting {m.mount_point} ({m.source})...[/bold cyan]")
             if not unmount(m.mount_point, lazy=lazy, interactive=False):
                 success = False
         return success
@@ -643,23 +744,29 @@ def unmount(
     if target_path is None:
         mounts = get_active_mounts()
         if not mounts:
-            print("[*] Directory is not currently mounted.")
+            console.print("[bold yellow][*] No directory is currently mounted.[/bold yellow]")
             return True
 
         if len(mounts) == 1:
             target_path = mounts[0].mount_point
         elif interactive:
-            print("\nActive SSHFS Mounts:")
-            for i, m in enumerate(mounts, 1):
-                print(f"  {i}. {m.source} -> {m.mount_point}")
-            print(f"  {len(mounts) + 1}. Unmount ALL connections")
+            table = Table(title="[bold yellow]Select Connection to Unmount[/bold yellow]", border_style="yellow")
+            table.add_column("#", style="bold cyan", width=4, justify="center")
+            table.add_column("Source Target", style="bold white")
+            table.add_column("Mount Point", style="bold yellow")
 
-            raw = read_input(f"Select connection to unmount (1-{len(mounts) + 1}) [1]: ")
-            if raw is None:
-                return False
-            if raw == "" or raw == "1":
-                target_path = mounts[0].mount_point
-            elif raw == str(len(mounts) + 1) or raw.lower() in ("all", "a"):
+            for i, m in enumerate(mounts, 1):
+                table.add_row(str(i), m.source, str(m.mount_point))
+            table.add_row(str(len(mounts) + 1), "[bold red]ALL CONNECTIONS[/bold red]", "Unmount everything")
+
+            console.print(table)
+
+            raw = Prompt.ask(
+                f"Select connection to unmount (1-{len(mounts) + 1})",
+                default="1",
+            ).strip()
+
+            if raw == str(len(mounts) + 1) or raw.lower() in ("all", "a"):
                 return unmount(all_mounts=True, lazy=lazy, interactive=False)
             else:
                 try:
@@ -667,10 +774,10 @@ def unmount(
                     if 1 <= idx <= len(mounts):
                         target_path = mounts[idx - 1].mount_point
                     else:
-                        print("[-] Invalid selection.")
+                        error_console.print("[bold red][-] Invalid selection.[/bold red]")
                         return False
                 except ValueError:
-                    print("[-] Invalid selection.")
+                    error_console.print("[bold red][-] Invalid selection.[/bold red]")
                     return False
         else:
             target_path = mounts[0].mount_point
@@ -689,17 +796,16 @@ def unmount(
                     capture_output=True,
                 )
             if wait_until_unmounted(target_p):
-                print("[+] Unmounted successfully.")
+                console.print(f"[bold green][+] Successfully unmounted {target_p}.[/bold green]")
                 return True
-        print(f"[*] {target_p} is not currently mounted.")
+        console.print(f"[bold yellow][*] {target_p} is not currently mounted.[/bold yellow]")
         return True
 
     source, fstype = info
 
     if not (fstype == "fuse" or fstype.startswith("fuse.")):
-        print(
-            f"[-] {target_p} is mounted as '{fstype}', not FUSE. Refusing to unmount.",
-            file=sys.stderr,
+        error_console.print(
+            f"[bold red][-] {target_p} is mounted as '{fstype}', not FUSE. Refusing to unmount.[/bold red]"
         )
         return False
 
@@ -717,19 +823,21 @@ def unmount(
     cmd.append(str(target_p))
 
     action = "Lazily unmounting" if lazy else "Unmounting"
-    print(f"[*] {action} {target_p} ({source})...")
+    console.print(f"[bold cyan][*] {action} {target_p} ({source})...[/bold cyan]")
 
     try:
         proc = subprocess.run(cmd, check=False, text=True, capture_output=True)
     except OSError as exc:
-        print(f"[-] Failed to run fusermount3: {exc}", file=sys.stderr)
+        error_console.print(f"[bold red][-] Failed to execute fusermount3: {exc}[/bold red]")
         return False
 
     if proc.returncode == 0:
         if wait_until_unmounted(target_p):
-            print("[+] Unmounted successfully.")
+            console.print(f"[bold green][+] Successfully unmounted {target_p}.[/bold green]")
             return True
-        print("[-] Unmount command succeeded but the mount is still present.", file=sys.stderr)
+        error_console.print(
+            "[bold red][-] Unmount command returned success but mount point is still present.[/bold red]"
+        )
         return False
 
     if not lazy:
@@ -737,16 +845,76 @@ def unmount(
 
     output = (proc.stderr or proc.stdout or "").strip()
     if output:
-        print(output, file=sys.stderr)
+        error_console.print(f"[bold red]{output}[/bold red]")
     return False
+
+
+def display_mount_failure(
+    target: ParsedTarget,
+    mount_point: Path,
+    returncode: int,
+    stderr: str,
+    probe_msg: str | None = None,
+) -> None:
+    """Render a detailed Rich diagnosis panel when SSHFS fails."""
+    canonical = target.canonical_string
+    lines: list[str] = [
+        f"[bold white]Target Spec:[/bold white] [cyan]{canonical}[/cyan]",
+        f"[bold white]Mount Point:[/bold white] [yellow]{mount_point}[/yellow]",
+        f"[bold white]Exit Code:[/bold white] [bold red]{returncode}[/bold red]",
+    ]
+
+    if probe_msg:
+        lines.append(f"[bold white]Network Probe:[/bold white] [bold red]{probe_msg}[/bold red]")
+
+    err_text = stderr.strip() if stderr else "No output returned by sshfs."
+
+    # Diagnostics logic
+    tips: list[str] = []
+    if "Connection refused" in err_text or (probe_msg and "refused" in probe_msg):
+        tips.append(f"• The remote SSH daemon (sshd) is not running on port {target.port}")
+        tips.append("• Check if target IP is correct and SSH service is started on remote server.")
+    elif "Permission denied" in err_text:
+        user_str = target.user or "default"
+        tips.append(f"• SSH key or password authentication failed for user '{user_str}'")
+        target_prefix = f"{target.user}@" if target.user else ""
+        tips.append(f"• Test manually with: [cyan]ssh {target_prefix}{target.host}[/cyan]")
+    elif "subsystem request failed" in err_text or "sftp" in err_text.lower():
+        tips.append("• The remote SSH server refused SFTP access.")
+        tips.append("• Ensure Subsystem sftp /usr/lib/ssh/sftp-server is enabled in remote /etc/ssh/sshd_config")
+    elif "Host key verification failed" in err_text:
+        tips.append("• Remote SSH host key changed or is not trusted.")
+        tips.append(f"• Run [cyan]ssh {target.host}[/cyan] once to accept the key.")
+    elif "not empty" in err_text:
+        tips.append("• Mount point directory is not empty.")
+    else:
+        tips.append("• Verify target IP/hostname, remote path, SSH credentials, and firewall rules.")
+
+    grid = Table.grid(expand=True)
+    grid.add_column()
+    grid.add_row(Text.from_markup("\n".join(lines)))
+    grid.add_row(Text(""))
+    grid.add_row(Text.from_markup("[bold white]Error Output:[/bold white]"))
+    grid.add_row(Syntax(err_text, "text", theme="ansi_dark", word_wrap=True))
+    grid.add_row(Text(""))
+    grid.add_row(Text.from_markup("[bold yellow]Troubleshooting Tips:[/bold yellow]"))
+    grid.add_row(Text.from_markup("\n".join(tips)))
+
+    console.print(
+        Panel(
+            grid,
+            title="[bold red]✖ SSHFS Mount Operation Failed[/bold red]",
+            border_style="red",
+            padding=(1, 2),
+        )
+    )
 
 
 def mount(raw_target: str, custom_mount_path: str | None = None) -> bool:
     parsed = parse_target(raw_target)
     if parsed is None:
-        print(
-            "[-] Invalid target. Accepted forms: user@host, host, user@host:/path, user@host:port, or ssh://user@host[:port]/path.",
-            file=sys.stderr,
+        error_console.print(
+            "[bold red][-] Invalid target. Accepted formats: user@host, host, user@host:/path, user@host:port, or ssh://user@host[:port]/path[/bold red]"
         )
         return False
 
@@ -761,15 +929,21 @@ def mount(raw_target: str, custom_mount_path: str | None = None) -> bool:
             is_healthy = mount_point.is_dir() and os.access(mount_point, os.R_OK)
 
         if not is_healthy:
-            print(f"[!] Existing mount at {mount_point} ({info[0]}) is unresponsive or broken. Cleaning up...")
+            console.print(
+                f"[bold yellow][!] Unresponsive mount detected at {mount_point}. Cleaning up...[/bold yellow]"
+            )
             cleanup_stale_mount(mount_point)
         elif info[0] == target_spec or info[0] == canonical:
-            print(f"[*] {mount_point} is already mounted to {canonical}.")
+            console.print(f"[bold green][+] {mount_point} is already mounted to {canonical}.[/bold green]")
             return True
         else:
-            print(f"[*] {mount_point} is currently mounted to {info[0]}. Unmounting to switch target...")
+            console.print(
+                f"[bold yellow][*] {mount_point} currently points to {info[0]}. Unmounting to switch target...[/bold yellow]"
+            )
             if not unmount(mount_point, interactive=False):
-                print("[-] Cannot mount while the existing mount is active.", file=sys.stderr)
+                error_console.print(
+                    "[bold red][-] Cannot mount while existing mount point is active.[/bold red]"
+                )
                 return False
 
     extra_options: list[str] = []
@@ -781,34 +955,34 @@ def mount(raw_target: str, custom_mount_path: str | None = None) -> bool:
             mount_point.mkdir(parents=True, exist_ok=True, mode=0o700)
 
             if not mount_point.is_dir():
-                print(f"[-] {mount_point} exists and is not a directory.", file=sys.stderr)
+                error_console.print(f"[bold red][-] {mount_point} exists and is not a directory.[/bold red]")
                 return False
 
             try:
                 if any(mount_point.iterdir()):
-                    if not confirm(
-                        f"[!] {mount_point} is not empty. Mounting will hide existing files. Continue? [y/N]: ",
+                    if not Confirm.ask(
+                        f"[yellow][!] {mount_point} is not empty. Mounting will obscure existing files. Continue?[/yellow]",
                         default=False,
                     ):
-                        print("[*] Mount cancelled.")
+                        console.print("[bold yellow][*] Mount cancelled by user.[/bold yellow]")
                         return False
 
                     extra_options.extend(("-o", "nonempty"))
             except OSError as exc:
                 if exc.errno in (errno.ENOTCONN, errno.EBUSY):
-                    print("[!] Stale mount detected. Attempting unmount...")
+                    console.print("[bold yellow][!] Stale mount detected. Cleaning up...[/bold yellow]")
                     if not cleanup_stale_mount(mount_point):
-                        print(f"[-] Stale mount cleanup failed: {exc}", file=sys.stderr)
+                        error_console.print(f"[bold red][-] Stale mount cleanup failed: {exc}[/bold red]")
                         return False
                 else:
-                    print(f"[-] Cannot inspect mountpoint: {exc}", file=sys.stderr)
+                    error_console.print(f"[bold red][-] Cannot inspect mount point: {exc}[/bold red]")
                     return False
     except OSError as exc:
         if exc.errno in (errno.ENOTCONN, errno.EBUSY):
-            print("[!] Stale mount detected on directory creation. Attempting cleanup...")
+            console.print("[bold yellow][!] Stale mount detected on directory creation. Cleaning up...[/bold yellow]")
             cleanup_stale_mount(mount_point)
         else:
-            print(f"[-] Cannot inspect mountpoint: {exc}", file=sys.stderr)
+            error_console.print(f"[bold red][-] Cannot prepare mount directory: {exc}[/bold red]")
             return False
 
     if not ensure_mount_dependencies():
@@ -819,7 +993,7 @@ def mount(raw_target: str, custom_mount_path: str | None = None) -> bool:
 
     sshfs = find_executable("sshfs")
     if not sshfs:
-        print("[-] sshfs is missing.", file=sys.stderr)
+        error_console.print("[bold red][-] sshfs executable missing.[/bold red]")
         return False
 
     if mount_point.is_symlink():
@@ -842,58 +1016,72 @@ def mount(raw_target: str, custom_mount_path: str | None = None) -> bool:
 
     cmd.extend((target_spec, str(mount_point)))
 
-    print(f"[*] Mounting {canonical} at {mount_point}...")
+    # Pre-flight TCP probe
+    probe_ok, probe_msg = probe_tcp_connection(parsed.host, parsed.port, timeout=2.5)
 
-    try:
-        proc = subprocess.run(
-            cmd,
-            check=False,
-            text=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-        )
-        if proc.returncode != 0:
-            err = (proc.stderr or "").strip()
-            print(
-                f"[-] Mounting failed (exit code {proc.returncode}). "
-                "Verify target, remote path, SSH credentials, and server SFTP access.",
-                file=sys.stderr,
-            )
-            if err:
-                print(f"    {err}", file=sys.stderr)
+    with console.status(
+        f"[bold green]Mounting {canonical} at {mount_point}...[/bold green]", spinner="dots"
+    ):
+        if not probe_ok:
+            display_mount_failure(parsed, mount_point, returncode=1, stderr="", probe_msg=probe_msg)
             return False
-    except OSError as exc:
-        print(f"[-] Failed to run sshfs: {exc}", file=sys.stderr)
-        return False
 
-    if wait_until_mounted(mount_point):
-        print(f"[+] Successfully mounted. Access files at {mount_point}")
+        try:
+            proc = subprocess.run(
+                cmd,
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            if proc.returncode != 0:
+                err = (proc.stderr or proc.stdout or "").strip()
+                display_mount_failure(parsed, mount_point, proc.returncode, err)
+                return False
+        except OSError as exc:
+            error_console.print(f"[bold red][-] Failed to launch sshfs: {exc}[/bold red]")
+            return False
+
+        mounted = wait_until_mounted(mount_point)
+
+    if mounted:
+        console.print(
+            Panel(
+                f"[bold green]✓ Filesystem successfully mounted![/bold green]\n"
+                f"[white]Remote:[/white] [cyan]{canonical}[/cyan]\n"
+                f"[white]Local Path:[/white] [bold yellow]{mount_point}[/bold yellow]",
+                border_style="green",
+            )
+        )
         return True
 
-    print("[-] sshfs exited successfully but the mount did not appear.", file=sys.stderr)
+    display_mount_failure(
+        parsed,
+        mount_point,
+        returncode=1,
+        stderr="sshfs command exited cleanly but mount point did not register in /proc/mounts.",
+    )
     return False
 
 
 def select_remote_user(parsed: ParsedTarget) -> ParsedTarget | None:
-    default_user = parsed.user or os.environ.get("USER", "user")
-    print("\nSelect remote account:")
-    print(f"1. Normal user ({default_user}) [default]")
-    print("2. Root (root)")
+    """Ensure a remote username is set without unneeded prompts if already provided."""
+    if parsed.user:
+        return parsed
 
-    choice = read_input(f"Select account (1/2) [{default_user}]: ")
-    if choice is None:
-        return None
+    default_user = os.environ.get("USER", "root")
+    console.print(f"[dim]No SSH user specified for target host '{parsed.host}'.[/dim]")
 
-    choice_str = choice.strip().lower()
-    if choice_str in ("2", "root", "r"):
-        selected_user = "root"
-    elif choice_str in ("1", ""):
-        selected_user = default_user
-    else:
-        selected_user = choice.strip()
+    user_input = Prompt.ask(
+        "Enter remote SSH username",
+        default=default_user,
+    ).strip()
+
+    if not user_input:
+        user_input = default_user
 
     return ParsedTarget(
-        user=selected_user,
+        user=user_input,
         host=parsed.host,
         port=parsed.port,
         remote_path=parsed.remote_path,
@@ -902,16 +1090,16 @@ def select_remote_user(parsed: ParsedTarget) -> ParsedTarget | None:
 
 
 def print_usage() -> None:
-    print("=== SSHFS Remote Manager ===")
-    print("\nUsage:")
-    print("  dusky_ssh_filesystem.py [TARGET] [MOUNT_PATH]  Mount target directly")
-    print("  dusky_ssh_filesystem.py -u | --unmount [PATH|all] Unmount connection(s)")
-    print("  dusky_ssh_filesystem.py -s | --status         Show all active mounts")
-    print("  dusky_ssh_filesystem.py -h | --help           Show this help message")
-    print("\nExamples:")
-    print("  dusky_ssh_filesystem.py user@host")
-    print("  dusky_ssh_filesystem.py root@host /home/dusk/Documents/sshfs/server1")
-    print("  dusky_ssh_filesystem.py -u all")
+    render_banner()
+    console.print("\n[bold white]Usage:[/bold white]")
+    console.print("  [cyan]dusky_ssh_filesystem.py [TARGET] [MOUNT_PATH][/cyan]  Mount target directly")
+    console.print("  [cyan]dusky_ssh_filesystem.py -u | --unmount [PATH|all][/cyan] Unmount connection(s)")
+    console.print("  [cyan]dusky_ssh_filesystem.py -s | --status[/cyan]         Show all active mounts")
+    console.print("  [cyan]dusky_ssh_filesystem.py -h | --help[/cyan]           Show this help message")
+    console.print("\n[bold white]Examples:[/bold white]")
+    console.print("  [dim]dusky_ssh_filesystem.py user@192.168.1.50[/dim]")
+    console.print("  [dim]dusky_ssh_filesystem.py root@host /home/dusk/Documents/sshfs/server1[/dim]")
+    console.print("  [dim]dusky_ssh_filesystem.py -u all[/dim]")
 
 
 def main() -> int:
@@ -934,18 +1122,14 @@ def main() -> int:
             else:
                 return 0 if unmount(interactive=False) else 1
         elif arg in ("-s", "--status"):
+            render_banner()
             active = get_active_mounts()
-            if active:
-                print(f"Active SSHFS Mounts ({len(active)} active):")
-                for m in active:
-                    print(f"  - {m.source} -> {m.mount_point} ({m.fstype})")
-            else:
-                print(f"No active mounts under {BASE_MOUNT_DIR}")
+            render_active_mounts(active)
             return 0
         else:
             parsed = parse_target(arg)
             if not parsed:
-                print(f"[-] Invalid target argument: '{arg}'", file=sys.stderr)
+                error_console.print(f"[bold red][-] Invalid target argument: '{arg}'[/bold red]")
                 return 1
             custom_path = sys.argv[2].strip() if len(sys.argv) > 2 else None
             if mount(parsed.canonical_string, custom_path):
@@ -953,134 +1137,132 @@ def main() -> int:
                 return 0
             return 1
 
-    print("=== SSHFS Remote Manager ===")
-
     while True:
+        console.clear()
+        render_banner()
+        console.print()
+
         active = get_active_mounts()
-        if active:
-            print(f"\nActive SSHFS Mounts ({len(active)} active):")
-            for i, m in enumerate(active, 1):
-                print(f"  {i}. {m.source} -> {m.mount_point}")
-        else:
-            print(f"\nNo active mounts in {BASE_MOUNT_DIR}")
+        render_active_mounts(active)
+        console.print()
 
-        menu: list[tuple[str, str]] = [
-            ("1", "Connect to a new server (mount alongside existing connections)")
-        ]
         if history:
-            menu.append(("2", "Connect to a recently used server"))
-        if active:
-            menu.append(("3", "Unmount a connection"))
-        else:
-            menu.append(("3", "Unmount connection"))
-        menu.append(("4", "Exit"))
+            render_history(history)
+            console.print()
 
-        print("\nOptions:")
-        for key, label in menu:
-            default_str = " [default]" if key == "1" else ""
-            print(f"{key}. {label}{default_str}")
+        menu_table = Table(show_header=False, box=None, padding=(0, 2))
+        menu_table.add_column("Key", style="bold cyan", justify="right")
+        menu_table.add_column("Action", style="bold white")
 
-        choice = read_input(f"\nSelect an option ({'/'.join(key for key, _ in menu)}) [1]: ")
-        if choice is None:
-            print("\n[*] Exiting...")
+        menu_table.add_row("1", "Connect to a new server [dim](mount alongside existing)[/dim]")
+        if history:
+            menu_table.add_row("2", "Quick connect to recent server")
+        menu_table.add_row("3", "Unmount connection(s)")
+        menu_table.add_row("4", "Refresh mount status")
+        menu_table.add_row("0", "Exit")
+
+        console.print(Panel(menu_table, title="[bold yellow]Menu Options[/bold yellow]", border_style="yellow"))
+
+        try:
+            choice = Prompt.ask("Select an option", default="1").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            console.print("\n[bold yellow][*] Exiting...[/bold yellow]")
             break
 
-        if choice == "":
-            choice = "1"
-        else:
-            choice = choice.lower()
-            if choice.isdecimal():
-                choice = str(int(choice))
+        if choice in ("0", "q", "quit", "exit"):
+            console.print("[bold yellow][*] Goodbye![/bold yellow]")
+            break
 
         match choice:
             case "1":
-                prompt_default = f" [{history[0]}]" if history else ""
-                target_raw = read_input(
-                    f"Enter SSH target (e.g., user@host, host:/path, or user@host:port){prompt_default}: "
+                prompt_default = history[0] if history else ""
+                target_raw = Prompt.ask(
+                    "Enter SSH target (e.g. user@host, host:/path, or ssh user@host)",
+                    default=prompt_default if prompt_default else None,
                 )
-                if target_raw is None:
-                    print("\n[*] Exiting...")
-                    break
-
                 if not target_raw:
-                    if history:
-                        target_raw = history[0]
-                        print(f"[*] Defaulting to most recent: {target_raw}")
-                    else:
-                        print("[*] No target entered. Returning to menu.")
-                        continue
+                    continue
 
                 parsed = parse_target(target_raw)
                 if parsed is None:
-                    print(
-                        "[-] Invalid target. Examples: user@host, host, user@host:/path, user@host:port, or ssh://user@host[:port]/path.",
-                        file=sys.stderr,
+                    error_console.print(
+                        "[bold red][-] Invalid SSH target format. Examples: user@host, host, user@host:port[/bold red]"
                     )
+                    Prompt.ask("Press Enter to continue...")
                     continue
 
                 parsed_with_user = select_remote_user(parsed)
                 if parsed_with_user is None:
-                    print("\n[*] Exiting...")
-                    break
+                    continue
 
                 default_dir = derive_mount_point(parsed_with_user)
-                folder_input = read_input(f"Enter local mount path [{default_dir}]: ")
-                custom_path = folder_input.strip() if folder_input and folder_input.strip() else None
+                folder_input = Prompt.ask(
+                    "Enter local mount path",
+                    default=str(default_dir),
+                ).strip()
+
+                # Guard against user entering single-digit menu choice by mistake
+                if folder_input in ("1", "2", "3", "4") and folder_input != str(default_dir):
+                    if not Confirm.ask(
+                        f"[bold yellow]You entered '{folder_input}'. Did you mean folder path '{BASE_MOUNT_DIR / folder_input}'?[/bold yellow]",
+                        default=False,
+                    ):
+                        folder_input = str(default_dir)
+
+                custom_path = folder_input if folder_input and folder_input != str(default_dir) else None
 
                 if mount(parsed_with_user.canonical_string, custom_path):
                     history = update_history(history, parsed_with_user.canonical_string)
+
+                Prompt.ask("Press Enter to continue...")
 
             case "2" if history:
-                print("\nRecent connections:")
-                for i, entry in enumerate(history, 1):
-                    default_str = " [default]" if i == 1 else ""
-                    print(f"  {i}. {entry}{default_str}")
-
-                raw = read_input(f"Select connection (1-{len(history)}) [1]: ")
-                if raw is None:
-                    print("\n[*] Exiting...")
-                    break
-
-                if raw == "":
-                    index = 1
-                else:
-                    try:
-                        index = int(raw)
-                    except ValueError:
-                        print("[-] Invalid selection.")
+                raw_idx = Prompt.ask(f"Select connection (1-{len(history)})", default="1").strip()
+                try:
+                    idx = int(raw_idx)
+                    if not 1 <= idx <= len(history):
+                        error_console.print("[bold red][-] Invalid selection.[/bold red]")
+                        Prompt.ask("Press Enter to continue...")
                         continue
-
-                if not 1 <= index <= len(history):
-                    print("[-] Invalid selection.")
+                except ValueError:
+                    error_console.print("[bold red][-] Invalid selection.[/bold red]")
+                    Prompt.ask("Press Enter to continue...")
                     continue
 
-                target = history[index - 1]
+                target = history[idx - 1]
                 parsed = parse_target(target)
                 if parsed is None:
-                    print("[-] Invalid entry in history.")
+                    error_console.print("[bold red][-] Invalid entry in history.[/bold red]")
+                    Prompt.ask("Press Enter to continue...")
                     continue
 
                 parsed_with_user = select_remote_user(parsed)
                 if parsed_with_user is None:
-                    print("\n[*] Exiting...")
-                    break
+                    continue
 
                 default_dir = derive_mount_point(parsed_with_user)
-                folder_input = read_input(f"Enter local mount path [{default_dir}]: ")
-                custom_path = folder_input.strip() if folder_input and folder_input.strip() else None
+                folder_input = Prompt.ask(
+                    "Enter local mount path",
+                    default=str(default_dir),
+                ).strip()
+
+                custom_path = folder_input if folder_input and folder_input != str(default_dir) else None
 
                 if mount(parsed_with_user.canonical_string, custom_path):
                     history = update_history(history, parsed_with_user.canonical_string)
+
+                Prompt.ask("Press Enter to continue...")
 
             case "3":
                 unmount(interactive=True)
+                Prompt.ask("Press Enter to continue...")
 
-            case "4" | "q" | "quit" | "exit":
-                print("[*] Exiting...")
-                break
+            case "4":
+                continue
 
             case _:
-                print("[-] Invalid option. Please enter a valid number.")
+                error_console.print("[bold red][-] Invalid option. Enter a valid menu number.[/bold red]")
+                Prompt.ask("Press Enter to continue...")
 
     return 0
 
@@ -1089,7 +1271,7 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except KeyboardInterrupt:
-        print("\n[*] Exiting...")
+        console.print("\n[bold yellow][*] Exiting...[/bold yellow]")
         sys.exit(0)
     except BrokenPipeError:
         with contextlib.suppress(OSError):
