@@ -2688,6 +2688,21 @@ def remove_last_git_diff() -> None:
         pass
 
 
+def _sync_copy_file(src_p: Path, dest_p: Path) -> bool:
+    try:
+        dest_p.parent.mkdir(parents=True, exist_ok=True)
+        if src_p.is_symlink():
+            target = os.readlink(src_p)
+            if dest_p.is_symlink() or dest_p.exists():
+                dest_p.unlink(missing_ok=True)
+            os.symlink(target, dest_p)
+        else:
+            shutil.copy2(src_p, dest_p, follow_symlinks=False)
+        return True
+    except OSError:
+        return False
+
+
 class GitEngine:
     def __init__(self, app: App, profile: ProfileConfig):
         self.app = app
@@ -3120,20 +3135,6 @@ class GitEngine:
         except Exception:
             return None
 
-        def _sync_copy_file(src_p: Path, dest_p: Path) -> bool:
-            try:
-                dest_p.parent.mkdir(parents=True, exist_ok=True)
-                if src_p.is_symlink():
-                    target = os.readlink(src_p)
-                    if dest_p.is_symlink() or dest_p.exists():
-                        dest_p.unlink(missing_ok=True)
-                    os.symlink(target, dest_p)
-                else:
-                    shutil.copy2(src_p, dest_p, follow_symlinks=False)
-                return True
-            except OSError:
-                return False
-
         for path in change_paths:
             st = change_status.get(path, "?")
             src = WORK_TREE / path
@@ -3514,26 +3515,73 @@ class GitEngine:
                     raise RuntimeError("Unrelated upstream history. Aborting.")
                 if not await self._backup_git_history(idx):
                     raise RuntimeError("Git history backup failed.")
+
+                self.app.update_task_state(idx, "success")  # type: ignore
+
+                # Task 2: Forensic Collision Backup
+                idx = 2
+                self.app.update_task_state(idx, "running")  # type: ignore
+                self._tlog(f"[bold {THEME['accent']}]>>> PROCESS INITIATED:[/] Forensic Collision Backup\n", idx)
+
                 if not await self._backup_worktree_collisions(UPSTREAM_TRACKING_REF, honor_tracked=True, task_idx=idx):
                     raise RuntimeError("Collision backup failed.")
+                meta.update(
+                    collisions=self._last_collision_count,
+                    collision_backup=self._last_collision_dir,
+                )
+                self.app.update_task_state(idx, "success")  # type: ignore
+
+                # Task 3: Atomic Snapshot (CoW)
+                idx = 3
+                self.app.update_task_state(idx, "running")  # type: ignore
+                self._tlog(f"[bold {THEME['accent']}]>>> PROCESS INITIATED:[/] Atomic Snapshot (CoW)\n", idx)
+
                 if not await self._backup_full_tracked_tree(idx):
                     raise RuntimeError("Full tracked-tree backup failed.")
-                rc_r, _, err_r = await self._run_raw('reset', '--hard', UPSTREAM_TRACKING_REF)
-                if rc_r != 0:
-                    raise RuntimeError(f"Reset failed (unrelated histories): {err_r}")
+
+                change_paths, change_status, change_old_mode, change_old_oid = await self._capture_tracked_changes()
+                if change_paths:
+                    your_changes_backup = await self._backup_user_modifications(change_paths, change_status, idx)
+                    if your_changes_backup is None:
+                        raise RuntimeError("User modifications backup failed.")
+                else:
+                    self._tlog(f"[bold {THEME['success']}]No local tracked modifications found. Snapshot skipped.[/]", idx)
+                meta.update(
+                    local_mods=len(change_paths),
+                    local_mods_backup=str(your_changes_backup) if your_changes_backup else "",
+                )
+
+                self.app.update_task_state(idx, "success")  # type: ignore
+
+                # Task 4: Apply Bare Updates (Reset)
+                idx = 4
+                self.app.update_task_state(idx, "running")  # type: ignore
+                self._tlog(f"[bold {THEME['accent']}]>>> PROCESS INITIATED:[/] Apply Bare Updates (Reset)\n", idx)
+
+                rc_reset, _, err_reset = await self._run_raw('reset', '--hard', UPSTREAM_TRACKING_REF)
+                if rc_reset != 0:
+                    self._tlog(f"[bold {THEME['error']}]Reset failed: {escape(err_reset)}[/]", idx, True)
+                    raise RuntimeError(f"Reset failed (rc={rc_reset}).")
+
+                self._tlog(f"[bold {THEME['success']}]Bare Repository reset applied and synchronized.[/]", idx, True)
+
+                if your_changes_backup and change_paths:
+                    self._tlog(f"[bold {THEME['accent']}]Restoring your tracked modifications...[/]", idx)
+                    restore_ok = await self._restore_user_modifications(
+                        your_changes_backup, change_paths, change_status, change_old_mode, change_old_oid, idx
+                    )
+                    if not restore_ok:
+                        self._tlog(f"[bold {THEME['warning']}]Some files could not be restored. Backup preserved at: {your_changes_backup}[/]", idx, True)
+
                 await self._ensure_repo_defaults()
-                self._tlog(f"[bold {THEME['success']}]Reset complete. Previous state fully preserved in backup.[/]", idx, True)
                 meta.update(
                     unrelated_histories=True,
                     after_head=remote_head,
-                    collisions=self._last_collision_count,
-                    collision_backup=self._last_collision_dir,
+                    local_mods_restored=restore_ok,
                 )
                 if meta.get("diff"):
                     persist_last_git_diff(meta)
                 self.app.update_task_state(idx, "success")  # type: ignore
-                for i in range(2, 5):
-                    self.app.update_task_state(i, "skipped")  # type: ignore
                 return True
 
             elif mb_rc != 0:
@@ -3885,6 +3933,10 @@ class DuskyApp(App):
         self.log_task(f"\n[bold {THEME['accent']}]Atomic Snapshot (CoW)[/]", 3)
         if unrelated:
             note = "Full tracked-tree backup performed during diverged-history recovery."
+            if payload.get("local_mods"):
+                note += f" {payload['local_mods']} local tracked modification(s) backed up for restore."
+                if payload.get("local_mods_backup"):
+                    note += f" Backup: {payload['local_mods_backup']}"
         elif payload.get("local_mods") is None:
             note = "No snapshot details recorded."
         elif payload.get("local_mods") == 0:
@@ -3902,13 +3954,12 @@ class DuskyApp(App):
             note = f"Reset applied: {short(before)} -> {short(after)}."
         else:
             note = "Reset applied and synchronized."
-        if not unrelated:
-            if payload.get("local_mods_restored") is True:
-                note += " Local modifications restored."
-            elif payload.get("local_mods_restored") is False:
-                note += " Some local modifications could not be restored (backup preserved)."
-            elif payload.get("local_mods") == 0:
-                note += " No local modifications to restore."
+        if payload.get("local_mods_restored") is True:
+            note += " Local modifications restored."
+        elif payload.get("local_mods_restored") is False:
+            note += " Some local modifications could not be restored (backup preserved)."
+        elif payload.get("local_mods") == 0:
+            note += " No local modifications to restore."
         self.log_task(f"[dim]{note}[/dim]", 4)
 
         self.log_main(f"\n[bold {THEME['accent']}]Update applied. Select a GIT task on the left to review what changed.[/]")

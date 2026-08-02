@@ -1,67 +1,151 @@
-# Dusky Update Sync Behavior — Local Changes vs Upstream
+# Dusky Sync & Update Architecture
 
-Reference notes for how `update_dusky.py` reconciles local work-tree changes with upstream.
-Confirms the behavior of editing/deleting scripts (or any tracked file) across updates.
+Reference guide for `update_dusky.py` synchronization mechanics, backup strategies, file restoration algorithms, and `once` execution markers.
 
-## Core mechanic
+---
 
-- The repo is a **bare** repo in `~/dusky` with the home directory as the **work tree**.
-- Every update the Git engine (`GitEngine.execute_phase`, `update_dusky.py:3366`) does:
-  1. Fetch upstream into a tracking ref.
-  2. **Collision backup** (`_backup_worktree_collisions`, `:2960`): untracked/conflicting
-     files that collide with incoming *tracked* paths are moved to `moved_aside_*`.
-     Tracked files are skipped here.
-  3. **Snapshot** (`_capture_tracked_changes` + `_backup_user_modifications`, `:3064`/`:3096`):
-     any local tracked change (modified/deleted) found via `diff-index HEAD` is backed up to
-     `your_changes_*` with a `MANIFEST.txt`.
-  4. **Reset** (`git reset --hard` to upstream, `:3591`).
-  5. **Restore** (`_restore_user_modifications`, `:3252`): replays your local changes,
-     deciding per file by comparing its content (OID + mode) at the old HEAD vs the new upstream HEAD.
+## 1. Core Mechanics & Repo Layout
 
-The decision in step 5 is purely "did upstream change this file between old HEAD and new HEAD?"
+- **Work Tree (`WORK_TREE`)**: `~` ([user_home()](file:///home/dusk/user_scripts/update_dusky/python/update_dusky.py#L89))
+- **Git Directory (`GIT_DIR`)**: `~/dusky` ([L2314](file:///home/dusk/user_scripts/update_dusky/python/update_dusky.py#L2314)) — Bare repository
+- **Upstream Tracking Ref**: `refs/dusky-updater/upstream/<branch>` ([L3368](file:///home/dusk/user_scripts/update_dusky/python/update_dusky.py#L3368))
 
-## Scenarios
+### The 5 Sync Tasks ([GitEngine.execute_phase: L3367](file:///home/dusk/user_scripts/update_dusky/python/update_dusky.py#L3367))
 
-### 1. You deleted a script; upstream did NOT change it
-- Stays deleted. `diff-index` reports `D`; reset re-creates the file, then restore hits
-  `delete-safe` (new content == old content) and deletes it again (`:3292`).
-- Your deletion is permanent and re-applied on every update. No backup copy is made
-  (manifest records `status=D has_copy=0`).
+| Task | Name | Primary Function | Core Action |
+| :---: | :--- | :--- | :--- |
+| **0** | **Bare Repo Validation** | [_get_repo_state](file:///home/dusk/user_scripts/update_dusky/python/update_dusky.py#L2778) | Validates permissions & ownership. Clears stale locks (>60s). Auto-clones if absent. |
+| **1** | **Fetch & Diff** | [_fetch_with_retry](file:///home/dusk/user_scripts/update_dusky/python/update_dusky.py#L2885) | Fetches upstream ref. Evaluates `merge-base` for fast-forward, diverged, or unrelated history. |
+| **2** | **Collision Backup** | [_backup_worktree_collisions](file:///home/dusk/user_scripts/update_dusky/python/update_dusky.py#L2975) | Moves untracked work-tree files colliding with incoming tracked paths to `moved_aside_<ts>`. |
+| **3** | **Atomic Snapshot** | [_capture_tracked_changes](file:///home/dusk/user_scripts/update_dusky/python/update_dusky.py#L3079) | Backs up local tracked edits/deletions (`diff-index HEAD`) to `your_changes_<ts>` with a `MANIFEST.txt`. |
+| **4** | **Reset & Restore** | [_restore_user_modifications](file:///home/dusk/user_scripts/update_dusky/python/update_dusky.py#L3253) | Runs `git reset --hard`, then restores local changes or stages conflicts in `manual_merge_<ts>`. |
 
-### 2. You edited a script; upstream did NOT change it
-- Your edit survives. Backed up to `your_changes_*`, reset applies upstream's copy, then
-  restore sees new content == old content → `restore` (`:3332`) → your version is put back.
-- The `your_changes_*` backup dir is removed after a successful restore.
+---
 
-### 3. You edited a script; upstream ALSO changed it
-- **Upstream wins.** Because new content != old content, it goes `merge` (`:3309`):
-  your version is saved to `manual_merge_<timestamp>/<path>` and flagged in the TUI
-  ("N file(s) need manual merge... Review in: ..."). The work tree keeps upstream's new version.
+## 2. Sync Pipeline Flow
 
-### 4. You deleted a script; upstream changed it (even slightly)
-- **The file comes back** with upstream's new version. `delete-restored` (`:3305`):
-  your deletion is overridden because the file changed upstream.
+```mermaid
+flowchart TD
+    Start(["Start Sync"]) --> T0["Task 0: Validate Repo"]
+    T0 --> T1["Task 1: Fetch Upstream Ref"]
+    
+    T1 --> Compare{"HEAD vs Upstream"}
+    Compare -- "Equal" --> Success(["Sync Complete"])
+    Compare -- "Different" --> MB{"Merge-Base Analysis"}
+    
+    MB -- "Fast-Forward" --> T2["Task 2: Collision Backup"]
+    MB -- "Diverged / Unrelated" --> Flag{"--allow-diverged-reset?"}
+    Flag -- "No" --> Abort(["Abort (Error)"])
+    Flag -- "Yes" --> HistoryBackup["Backup Git Dir (repo_history_*)"] --> T2
+    
+    T2 --> T3["Task 3: Atomic Snapshot"]
+    T3 --> Reset["Task 4: git reset --hard"]
+    Reset --> Restore["_restore_user_modifications"] --> Success
+```
 
-## Missed scenarios worth knowing
+---
 
-- **You added a new untracked script** (not in upstream): untouched — `reset --hard` only
-  touches tracked files. It persists. **But** if upstream later adds a file at that exact
-  path, your copy is moved aside to `moved_aside_*` and upstream's takes the path (`:2960`).
-- **Upstream deletes a script you modified:** your modified copy is restored from backup
-  (`not new_oid` → `restore`, `:3287`), so the file *survives* upstream's deletion and
-  becomes a permanently untracked local file.
-- **Both you and upstream delete it:** stays deleted, no-op (`delete-preserved`).
-- **Renaming** = delete + new file: the old path follows rule 1 or 4; the new file is
-  untracked and persists.
-- **`once` markers** are separate from file state: checksum-based. Editing a `once:content`
-  script changes its checksum so it may re-run; `once:sealed` / `once:forever` behave
-  differently regardless of file state.
-- **`--skip-sync`** bypasses all of the above entirely (no git operations).
+## 3. History Reconciliation & Safety
 
-## Takeaways
+```mermaid
+graph TD
+    HEAD["Compare HEAD vs Upstream"] --> Match{"Status?"}
+    Match -- "Equal" --> P1["Perfect Match (Skip Sync)"]
+    Match -- "Unborn" --> P2["Bootstrap Init (Hard Reset)"]
+    Match -- "Diverged" --> P3{"Merge-Base Result"}
+    
+    P3 -- "base == local_head" --> FF["Fast-Forward Update"]
+    P3 -- "base != local_head" --> Div["Diverged History (Requires --allow-diverged-reset)"]
+    P3 -- "No common ancestor" --> Unrel["Unrelated History (Requires --allow-diverged-reset)"]
+```
 
-- The two "surprise" behaviors:
-  - Rule 4: a trivial upstream change resurrects a locally-deleted file.
-  - Upstream-deletes-your-modified-file: your version beats upstream.
-- Both are driven by comparing the file's OID at old HEAD vs new upstream HEAD in
-  `_restore_user_modifications` (`update_dusky.py:3252`).
+> [!IMPORTANT]
+> **Safety Overrides for Diverged / Unrelated Histories**:
+> - Aborts unless `--allow-diverged-reset` is passed ([L3513](file:///home/dusk/user_scripts/update_dusky/python/update_dusky.py#L3513)).
+> - Preserves bare repo metadata in `repo_history_<timestamp>` ([L3208](file:///home/dusk/user_scripts/update_dusky/python/update_dusky.py#L3208)).
+> - Creates full work-tree snapshot `full_snapshot_<timestamp>` for unrelated histories ([L3157](file:///home/dusk/user_scripts/update_dusky/python/update_dusky.py#L3157)).
+
+---
+
+## 4. File Restoration Decision Matrix
+
+Post-reset, [_restore_user_modifications](file:///home/dusk/user_scripts/update_dusky/python/update_dusky.py#L3253) compares pre-reset state `(old_oid, old_mode)` with new upstream state `(new_oid, new_mode)`:
+
+```mermaid
+flowchart TD
+    File["Backed-Up Local File"] --> Status{"Local Status?"}
+    
+    Status -- "Deleted (D)" --> NewOidD{"Upstream Changed?<br/>(new_oid != old_oid)"}
+    NewOidD -- "No (Unchanged)" --> SafeDel["delete-safe: Re-apply Deletion"]
+    NewOidD -- "Yes (Modified)" --> RestUp["delete-restored: Restore Upstream File"]
+    NewOidD -- "Deleted Upstream" --> PresDel["delete-preserved: Stay Deleted"]
+    
+    Status -- "Modified (M)" --> SafeMod{"Upstream Changed?<br/>(new_oid != old_oid)"}
+    SafeMod -- "No (Unchanged / Deleted)" --> RestUser["restore: Re-apply User Edit"]
+    SafeMod -- "Yes (Modified)" --> Merge["merge: Save User Copy to manual_merge_*"]
+```
+
+| Local Status | Upstream State | Action Code | Behavior | Work-Tree Result | Line |
+| :---: | :---: | :---: | :--- | :--- | :---: |
+| **Deleted** | Unchanged | `delete-safe` | Re-applies local deletion | Deleted | [L3293](file:///home/dusk/user_scripts/update_dusky/python/update_dusky.py#L3293) |
+| **Deleted** | Also Deleted | `delete-preserved` | No-op (deleted on both sides) | Deleted | [L3290](file:///home/dusk/user_scripts/update_dusky/python/update_dusky.py#L3290) |
+| **Deleted** | Modified | `delete-restored` | **Upstream wins** (overrides deletion) | Upstream file restored | [L3306](file:///home/dusk/user_scripts/update_dusky/python/update_dusky.py#L3306) |
+| **Modified** | Unchanged | `restore` | Restores local modification | Local edited file | [L3333](file:///home/dusk/user_scripts/update_dusky/python/update_dusky.py#L3333) |
+| **Modified** | Deleted | `restore` | Restores local edit (survives upstream drop) | Local untracked file | [L3285](file:///home/dusk/user_scripts/update_dusky/python/update_dusky.py#L3285) |
+| **Modified** | Modified | `merge` | Upstream in work tree; user copy in `manual_merge_*` | Upstream version | [L3310](file:///home/dusk/user_scripts/update_dusky/python/update_dusky.py#L3310) |
+
+---
+
+## 5. Key Edge Cases & Takeaways
+
+> [!WARNING]
+> - **Deletion Resurrection**: If you delete a tracked file locally and upstream modifies it, upstream's version is restored (`delete-restored`).
+> - **Survival Against Upstream Deletion**: If upstream deletes a file you edited locally, your version survives as an untracked file (`restore`).
+
+- **Untracked Local Files**: Ignored by `reset --hard`. If upstream adds a file at the same path, Task 2 moves untracked path to `moved_aside_<timestamp>`.
+- **Local-Only Tracked Files**: Removed by `reset --hard`. Preserved in `full_snapshot_<timestamp>` during unrelated history resets.
+
+---
+
+## 6. Backup Storage Strategy
+
+Backups are saved under `~/.local/share/dusky/backups/` ([backups_dir(): L117](file:///home/dusk/user_scripts/update_dusky/python/update_dusky.py#L117)):
+
+| Directory | Created By | Purpose | Retention |
+| :--- | :--- | :--- | :--- |
+| `moved_aside_<ts>` | Task 2 ([L3040](file:///home/dusk/user_scripts/update_dusky/python/update_dusky.py#L3040)) | Untracked work-tree collisions | Permanent |
+| `your_changes_<ts>` | Task 3 ([L3126](file:///home/dusk/user_scripts/update_dusky/python/update_dusky.py#L3126)) | Pre-reset local tracked edits | Removed after restore |
+| `full_snapshot_<ts>` | Task 3 ([L3171](file:///home/dusk/user_scripts/update_dusky/python/update_dusky.py#L3171)) | Full tracked tree snapshot (unrelated history) | Permanent |
+| `repo_history_<ts>` | Task 1 ([L3216](file:///home/dusk/user_scripts/update_dusky/python/update_dusky.py#L3216)) | Copy of `~/dusky` bare repo before diverged reset | Permanent |
+| `manual_merge_<ts>` | Task 4 ([L3313](file:///home/dusk/user_scripts/update_dusky/python/update_dusky.py#L3313)) | User versions conflicting with upstream updates | Permanent |
+
+---
+
+## 7. Script Execution Markers (`once` System)
+
+`MarkerEngine` ([L918](file:///home/dusk/user_scripts/update_dusky/python/update_dusky.py#L918)) tracks task completion via SQLite (`once_markers` table). Task keys are `BLAKE2b` hashes of profile name, task mode, name, path, and args ([L915](file:///home/dusk/user_scripts/update_dusky/python/update_dusky.py#L915)).
+
+```mermaid
+stateDiagram-v2
+    [*] --> Lookup
+    Lookup --> Mode{"once_mode?"}
+    
+    Mode -- "forever" --> Skip["Action: skip (Never re-runs)"]
+    Mode -- "sealed" --> SealedCheck{"Checksum modified?"}
+    SealedCheck -- "No" --> Skip
+    SealedCheck -- "Yes" --> Notify["Action: notify_sealed (Warn & Skip)"]
+    
+    Mode -- "content (default)" --> ContentCheck{"Checksum matches?"}
+    ContentCheck -- "Match" --> Skip
+    ContentCheck -- "Changed" --> Run["Action: run (Re-executes)"]
+```
+
+---
+
+## 8. CLI Flags Summary
+
+| Flag / Setting | Scope | Effect |
+| :--- | :--- | :--- |
+| `--allow-diverged-reset` | Sync Phase | Allows hard reset on diverged or unrelated history ([L3513](file:///home/dusk/user_scripts/update_dusky/python/update_dusky.py#L3513)). |
+| `--skip-sync` | Entrypoint | Bypasses `GitEngine.execute_phase` completely. |
+| `status.showUntrackedFiles` | Git Config | Set to `no` automatically by `_ensure_repo_defaults()` ([L2860](file:///home/dusk/user_scripts/update_dusky/python/update_dusky.py#L2860)). |
