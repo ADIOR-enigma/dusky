@@ -733,6 +733,27 @@ SCHEMA = {
         ConfigItem(label="Background", key="background-color", scope="app-name=hypr-rotate", type_="color", default="{{colors.surface.default.hex}}1a", options=COLOR_OPTIONS, hints=COLOR_HINTS, parent_ref="menu_hypr_rotate", extended_help="**Rotate Fill Color**" + ALPHA_HELP),
         ConfigItem(label="Text", key="text-color", scope="app-name=hypr-rotate", type_="color", default="{{colors.on_surface.default.hex}}", options=COLOR_OPTIONS, hints=COLOR_HINTS, parent_ref="menu_hypr_rotate", extended_help="**Rotate Text Color**" + ALPHA_HELP),
         ConfigItem(label="Border", key="border-color", scope="app-name=hypr-rotate", type_="color", default="{{colors.outline.default.hex}}33", options=COLOR_OPTIONS, hints=COLOR_HINTS, parent_ref="menu_hypr_rotate", extended_help="**Rotate Border Color**" + ALPHA_HELP),
+
+        ConfigItem(
+            label="Hypr Anim", key="menu_hypr_anim", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Visuals & Rotation",
+            extended_help="**Animation Switcher Overlay**\n\nControls the popup aesthetic for the rofi animation-switcher confirmation. Targets notifications pushed with `app-name=hypr-anim`."
+        ),
+        ConfigItem(label="Anchor", key="anchor", scope="app-name=hypr-anim", type_="cycle", default="bottom-center", options=["top-right", "top-center", "top-left", "bottom-right", "bottom-center", "bottom-left", "center-right", "center-left", "center"], parent_ref="menu_hypr_anim", extended_help="**Anim Anchor**\n\nWhere the animation confirmation pill anchors on screen."),
+        ConfigItem(label="Layer", key="layer", scope="app-name=hypr-anim", type_="cycle", default="overlay", options=["background", "bottom", "top", "overlay"], parent_ref="menu_hypr_anim", extended_help="**Anim Layer**\n\nArranges the notification at a specific Wayland surface layer."),
+        ConfigItem(label="Width", key="width", scope="app-name=hypr-anim", type_="int", default=260, min_val=50, max_val=800, step=5, parent_ref="menu_hypr_anim", extended_help="**Anim Box Width**\n\nTotal width allocated for the animation confirmation pill."),
+        ConfigItem(label="Height", key="height", scope="app-name=hypr-anim", type_="int", default=42, min_val=10, max_val=200, step=2, parent_ref="menu_hypr_anim", extended_help="**Anim Box Height**\n\nTotal height allocated for the animation confirmation pill."),
+        ConfigItem(label="Margin", key="margin", scope="app-name=hypr-anim", type_="string", default="0,0,30,0", parent_ref="menu_hypr_anim", extended_help="**Anim Margin**\n\nSpacing pushing the notification away from screen boundaries."),
+        ConfigItem(label="Padding", key="padding", scope="app-name=hypr-anim", type_="string", default="6,14", parent_ref="menu_hypr_anim", extended_help="**Anim Internal Padding**\n\nInternal spacing separating text/icons from borders."),
+        ConfigItem(label="Radius", key="border-radius", scope="app-name=hypr-anim", type_="int", default=20, min_val=0, max_val=50, step=1, parent_ref="menu_hypr_anim", extended_help="**Anim Corner Smoothing**\n\nApplies rounded arcs to the notification pill."),
+        ConfigItem(label="Size", key="border-size", scope="app-name=hypr-anim", type_="int", default=1, min_val=0, max_val=10, step=1, parent_ref="menu_hypr_anim", extended_help="**Anim Border Stroke**\n\nThickness of the outer border ring."),
+        ConfigItem(label="Icons", key="icons", scope="app-name=hypr-anim", type_="bool", default=True, parent_ref="menu_hypr_anim", extended_help="**Anim Icon Toggle**\n\nEnables display of the system animation icon."),
+        ConfigItem(label="Align", key="text-alignment", scope="app-name=hypr-anim", type_="cycle", default="center", options=["left", "center", "right"], parent_ref="menu_hypr_anim", extended_help="**Anim Alignment**\n\nJustification of the notification text."),
+        ConfigItem(label="Font", key="font", scope="app-name=hypr-anim", type_="string", default="monospace 9.5", parent_ref="menu_hypr_anim", extended_help="**Anim Font Override**\n\nCustom typography for the confirmation pill."),
+        ConfigItem(label="Format", key="format", scope="app-name=hypr-anim", type_="string", default="<b>%s</b>\\n<span size=\"small\">%b</span>", parent_ref="menu_hypr_anim", extended_help="**Anim Text Format**\n\nStructures the two-line payload (bold summary over a smaller body line)."),
+        ConfigItem(label="Timeout", key="default-timeout", scope="app-name=hypr-anim", type_="int", default=1500, min_val=0, max_val=10000, step=100, parent_ref="menu_hypr_anim", extended_help="**Anim Lifespan**\n\nMilliseconds the notification stays visible."),
+        ConfigItem(label="Background", key="background-color", scope="app-name=hypr-anim", type_="color", default="{{colors.surface.default.hex}}1a", options=COLOR_OPTIONS, hints=COLOR_HINTS, parent_ref="menu_hypr_anim", extended_help="**Anim Fill Color**" + ALPHA_HELP),
+        ConfigItem(label="Text", key="text-color", scope="app-name=hypr-anim", type_="color", default="{{colors.on_surface.default.hex}}", options=COLOR_OPTIONS, hints=COLOR_HINTS, parent_ref="menu_hypr_anim", extended_help="**Anim Text Color**" + ALPHA_HELP),
+        ConfigItem(label="Border", key="border-color", scope="app-name=hypr-anim", type_="color", default="{{colors.outline.default.hex}}33", options=COLOR_OPTIONS, hints=COLOR_HINTS, parent_ref="menu_hypr_anim", extended_help="**Anim Border Color**" + ALPHA_HELP),
     ],
 
 
