@@ -394,6 +394,7 @@ class OrchestratorTask:
     timeout: float | None = None
     index: int = 0
     resolved_path: Path | None = None
+    description: str = ""
     interpreter: str = "bash"
     checksum: str = ""
     state_key: str = ""
@@ -2447,6 +2448,41 @@ def _script_metadata(path: Path) -> tuple[bool, str, str]:
     return head == b"\x7fELF", first_line, text
 
 
+def _short_home(path_str: str) -> str:
+    s = str(path_str)
+    home = str(user_home())
+    if home and s == home:
+        return "~"
+    if home and s.startswith(home + os.sep):
+        return "~" + s[len(home):]
+    return s
+
+
+def _script_description(path: Path) -> str:
+    _, _, head = _script_metadata(path)
+    fallback = ""
+    for line in head.splitlines()[:20]:
+        line = line.strip()
+        if not line.startswith("#"):
+            break
+        if line.startswith("#!"):
+            continue
+        body = line[1:].strip()
+        if not body:
+            continue
+        lowered = body.lower()
+        if lowered.startswith(("d:", "desc:", "description:")):
+            return body.split(":", 1)[1].strip()
+        if any(tok in lowered for tok in ("coding:", "vim:", "noqa", "pylint", "flake8", "shellcheck", "shfmt")):
+            continue
+        if _INTERACTIVE_RE.search(line):
+            continue
+        if not fallback:
+            fallback = body
+    return fallback
+
+
+
 def _interpreter_from_shebang(first_line: str) -> str | None:
     if not first_line.startswith("#!"):
         return None
@@ -2536,6 +2572,7 @@ def resolve_and_validate_manifest(profile: ProfileConfig) -> bool:
 
         task.checksum = file_checksum(task.resolved_path)
         is_elf, first_line, full_head = _script_metadata(task.resolved_path)
+        task.description = _script_description(task.resolved_path)
 
         metadata_interactive = False
         for line in full_head.splitlines()[:20]:
@@ -5269,7 +5306,7 @@ class DuskyOrchestratorApp(App):
             txt.append("Run ID: ", style="bold")
             txt.append(self.run_id + "\n")
             txt.append("Log root: ", style="bold")
-            txt.append(str(self.logger.root or "disabled"))
+            txt.append(_short_home(str(self.logger.root or "disabled")))
             return txt
 
         txt = Text()
@@ -5279,7 +5316,10 @@ class DuskyOrchestratorApp(App):
         txt.append("Status: ", style="bold")
         txt.append(task.status.value + "\n")
         txt.append("Path: ", style="bold")
-        txt.append(str(task.resolved_path or "unresolved") + "\n")
+        txt.append(_short_home(str(task.resolved_path or "unresolved")) + "\n")
+        if task.description:
+            txt.append("Description: ", style="bold")
+            txt.append(task.description + "\n")
         txt.append("Interpreter: ", style="bold")
         txt.append((task.interpreter or "direct") + "\n")
         txt.append("Args: ", style="bold")
@@ -5326,7 +5366,7 @@ class DuskyOrchestratorApp(App):
         txt.append("  On failure: ", style="bold")
         txt.append(task.on_failure + "\n")
         txt.append("Log: ", style="bold")
-        txt.append(str(self.logger.task_log_path(task)))
+        txt.append(_short_home(str(self.logger.task_log_path(task))))
         return txt
 
     def _update_details(self, task: OrchestratorTask | None) -> None:
