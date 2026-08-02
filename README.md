@@ -1,10 +1,6 @@
-## If you need help with installation, troubleshooting or just want to hangout, participate on the Discussion tab.
+## If you need help with installation, troubleshooting or just want to hangout, participate on the Community discord server.
 
-[Join Discussions][discussion]
-
-[discussion]: https://github.com/dusklinux/dusky/discussions
-
-The official Discord Server has been deleted. Please refer to [this issue](https://github.com/dusklinux/dusky/issues/271#issuecomment-5150215079).
+### The official Discord Server has been deleted.
 
 A community Discord server has been created! You can join it below. Please note that the original developer is not involved with this community server in any capacity. Alternatively, you can participate on the discussions page mentioned above.
 
