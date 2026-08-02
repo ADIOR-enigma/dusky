@@ -1884,8 +1884,11 @@ def auto_prune() -> None:
         b_dir = backups_dir()
         if b_dir.is_dir():
             backup_prefixes = (
+                "full_snapshot_", "your_changes_", "moved_aside_",
+                "manual_merge_", "repo_history_",
+                # Legacy prefixes included to ensure older backups are still cleaned up
                 "pre_reset_", "user_mods_", "untracked_collisions_",
-                "needs_merge_", "initial_conflicts_", "repo_history_"
+                "needs_merge_"
             )
             with suppress(Exception):
                 for d in b_dir.iterdir():
@@ -1915,16 +1918,28 @@ def ensure_secure_dir(path: Path) -> bool:
         return False
 
 
-def make_private_dir_under(base: Path, prefix: str) -> Optional[Path]:
+def make_private_dir_under(base: Path, folder_name: str) -> Optional[Path]:
     if not ensure_secure_dir(base):
         return None
+    candidate = base / folder_name
     try:
-        d = tempfile.mkdtemp(prefix=prefix, dir=base)
-        dp = Path(d)
-        dp.chmod(0o700)
-        return dp
-    except Exception:
-        return None
+        candidate.mkdir(mode=0o700)
+        candidate.chmod(0o700)
+        return candidate
+    except FileExistsError:
+        for i in range(2, 100):
+            candidate = base / f"{folder_name}_{i}"
+            try:
+                candidate.mkdir(mode=0o700)
+                candidate.chmod(0o700)
+                return candidate
+            except FileExistsError:
+                continue
+            except OSError:
+                break
+    except OSError:
+        pass
+    return None
 
 
 def make_private_file_under(base: Path, prefix: str, suffix: str = ".log") -> Optional[Path]:
@@ -2937,7 +2952,7 @@ class GitEngine:
         if not ensure_free_space_for_bytes(backup_base, required_bytes, "collision backup"):
             return False
 
-        backup_dir = make_private_dir_under(backup_base, f"untracked_collisions_{RUN_TIMESTAMP}_")
+        backup_dir = make_private_dir_under(backup_base, f"moved_aside_{RUN_TIMESTAMP}")
         if not backup_dir:
             self._tlog(f"[bold {THEME['error']}]Failed to create collision backup directory[/]", task_idx, True)
             return False
@@ -3020,7 +3035,7 @@ class GitEngine:
         if not ensure_free_space_for_bytes(backup_base, required_bytes, "modified-files backup"):
             return None
 
-        backup_dir = make_private_dir_under(backup_base, f"user_mods_{RUN_TIMESTAMP}_")
+        backup_dir = make_private_dir_under(backup_base, f"your_changes_{RUN_TIMESTAMP}")
         if not backup_dir:
             self._tlog(f"[bold {THEME['error']}]Failed to create user-mods backup dir[/]", task_idx, True)
             return None
@@ -3079,7 +3094,7 @@ class GitEngine:
         if not ensure_free_space_for_bytes(backup_base, required_bytes, "full tracked-tree backup"):
             return None
 
-        backup_dir = make_private_dir_under(backup_base, f"pre_reset_{RUN_TIMESTAMP}_")
+        backup_dir = make_private_dir_under(backup_base, f"full_snapshot_{RUN_TIMESTAMP}")
         if not backup_dir:
             self._tlog(f"[bold {THEME['error']}]Failed to create full tracked-tree backup dir[/]", task_idx, True)
             return None
@@ -3124,7 +3139,7 @@ class GitEngine:
         if not ensure_free_space_for_bytes(backup_base, required_bytes, "Git history backup"):
             return None
 
-        backup_root = make_private_dir_under(backup_base, f"repo_history_{RUN_TIMESTAMP}_")
+        backup_root = make_private_dir_under(backup_base, f"repo_history_{RUN_TIMESTAMP}")
         if not backup_root:
             self._tlog(f"[bold {THEME['error']}]Failed to create Git history backup dir[/]", task_idx, True)
             return None
@@ -3187,7 +3202,7 @@ class GitEngine:
                 elif old_oid_valid and new_oid == old_oid and new_mode == old_mode:
                     action = "delete-safe"
                 else:
-                    action = "delete-merge"
+                    action = "delete-restored"
             else:
                 has_copy = backup_src.exists() or backup_src.is_symlink()
                 if not has_copy:
@@ -3214,43 +3229,32 @@ class GitEngine:
                     self._tlog(f"[bold {THEME['error']}]Failed to re-apply deletion {escape(path)}: {escape(str(e))}[/]", task_idx, True)
                     all_ok = False
 
-            elif action in ("delete-merge", "merge"):
+            elif action == "delete-restored":
+                restore_count += 1
+                self._tlog(f"[dim]  → Restored: {escape(path)} (accepting upstream's new version over local deletion)[/dim]", task_idx)
+
+            elif action == "merge":
                 if not merge_dir:
                     backup_base = backups_dir()
-                    merge_dir = make_private_dir_under(backup_base, f"needs_merge_{RUN_TIMESTAMP}_")
+                    merge_dir = make_private_dir_under(backup_base, f"manual_merge_{RUN_TIMESTAMP}")
                     if not merge_dir:
                         self._tlog(f"[bold {THEME['error']}]Failed to create merge dir[/]", task_idx, True)
                         all_ok = False
                         continue
 
-                if action == "delete-merge":
-                    marker = merge_dir / (path + ".dusky_deleted")
-                    marker.parent.mkdir(parents=True, exist_ok=True)
-                    try:
-                        marker.write_text(
-                            f"Tracked deletion needs review.\nPath: {path}\n"
-                            f"Old mode: {old_mode} | Old oid: {old_oid}\n"
-                            f"New mode: {new_mode or '<absent>'} | New oid: {new_oid or '<absent>'}\n"
-                        )
-                        marker.chmod(0o600)
+                mdest = merge_dir / path
+                mdest.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    ok = await asyncio.to_thread(_sync_copy_file, backup_src, mdest)
+                    if ok:
                         merge_count += 1
-                        self._tlog(f"[dim]  → Deletion needs manual review: {escape(path)}[/dim]", task_idx)
-                    except Exception:
+                        self._tlog(f"[dim]  → Upstream changed: {escape(path)} (your version saved for merge)[/dim]", task_idx)
+                    else:
+                        self._tlog(f"[bold {THEME['error']}]Failed to save merge copy: {escape(path)}[/]", task_idx, True)
                         all_ok = False
-                else:
-                    mdest = merge_dir / path
-                    mdest.parent.mkdir(parents=True, exist_ok=True)
-                    try:
-                        ok = await asyncio.to_thread(_sync_copy_file, backup_src, mdest)
-                        if ok:
-                            merge_count += 1
-                            self._tlog(f"[dim]  → Upstream changed: {escape(path)} (your version saved for merge)[/dim]", task_idx)
-                        else:
-                            self._tlog(f"[bold {THEME['error']}]Failed to save merge copy: {escape(path)}[/]", task_idx, True)
-                            all_ok = False
-                    except Exception as e:
-                        self._tlog(f"[bold {THEME['error']}]Exception saving merge copy {escape(path)}: {escape(str(e))}[/]", task_idx, True)
-                        all_ok = False
+                except Exception as e:
+                    self._tlog(f"[bold {THEME['error']}]Exception saving merge copy {escape(path)}: {escape(str(e))}[/]", task_idx, True)
+                    all_ok = False
 
             elif action == "restore":
                 target.parent.mkdir(parents=True, exist_ok=True)
@@ -3273,7 +3277,7 @@ class GitEngine:
                     all_ok = False
 
         if restore_count:
-            self._tlog(f"[bold {THEME['success']}]Auto-restored {restore_count} file(s) (upstream had not changed them)[/]", task_idx, True)
+            self._tlog(f"[bold {THEME['success']}]Auto-restored {restore_count} file(s)[/]", task_idx, True)
         if merge_count:
             self._tlog(f"[bold {THEME['warning']}]{merge_count} file(s) need manual merge (upstream also changed them)[/]", task_idx, True)
             if merge_dir:
@@ -3289,7 +3293,7 @@ class GitEngine:
     async def execute_phase(self) -> bool:
         UPSTREAM_TRACKING_REF = f'refs/dusky-updater/upstream/{self.profile.branch}'
 
-        user_mods_backup: Optional[Path] = None
+        your_changes_backup: Optional[Path] = None
         local_head = ""
         change_paths: list = []
         change_status: dict = {}
@@ -3460,8 +3464,8 @@ class GitEngine:
 
             change_paths, change_status, change_old_mode, change_old_oid = await self._capture_tracked_changes()
             if change_paths:
-                user_mods_backup = await self._backup_user_modifications(change_paths, change_status, idx)
-                if user_mods_backup is None:
+                your_changes_backup = await self._backup_user_modifications(change_paths, change_status, idx)
+                if your_changes_backup is None:
                     raise RuntimeError("User modifications backup failed.")
             else:
                 self._tlog(f"[bold {THEME['success']}]No local tracked modifications found. Snapshot skipped.[/]", idx)
@@ -3480,13 +3484,13 @@ class GitEngine:
 
             self._tlog(f"[bold {THEME['success']}]Bare Repository reset applied and synchronized.[/]", idx, True)
 
-            if user_mods_backup and change_paths:
+            if your_changes_backup and change_paths:
                 self._tlog(f"[bold {THEME['accent']}]Restoring your tracked modifications...[/]", idx)
                 ok = await self._restore_user_modifications(
-                    user_mods_backup, change_paths, change_status, change_old_mode, change_old_oid, idx
+                    your_changes_backup, change_paths, change_status, change_old_mode, change_old_oid, idx
                 )
                 if not ok:
-                    self._tlog(f"[bold {THEME['warning']}]Some files could not be restored. Backup preserved at: {user_mods_backup}[/]", idx, True)
+                    self._tlog(f"[bold {THEME['warning']}]Some files could not be restored. Backup preserved at: {your_changes_backup}[/]", idx, True)
 
             await self._ensure_repo_defaults()
             self.app.update_task_state(idx, "success")  # type: ignore
