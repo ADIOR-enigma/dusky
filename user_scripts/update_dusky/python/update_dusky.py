@@ -2761,6 +2761,36 @@ class GitEngine:
         if also_main:
             self.log(msg)
 
+    async def _unstage_managed_paths(self) -> None:
+        """
+        Safeguards internal directories (backups, logs, state) from git tracking hazards.
+        If a user ran 'git add .', these untracked files enter the index. A subsequent
+        'git reset --hard' would physically delete them (data loss), and diff-index would
+        capture them as user modifications (backup loop).
+
+        By syncing the index to HEAD for these paths, new backup files become purely untracked,
+        which secures them against deletion and capture, while leaving any explicitly
+        tracked files (like a .keep file) completely intact.
+        """
+        paths = []
+        for d in (backups_dir(), logs_dir(), state_dir(), askpass_dir(), runtime_dir()):
+            try:
+                rel = d.relative_to(WORK_TREE)
+                paths.append(str(rel))
+            except ValueError:
+                pass
+
+        if not paths:
+            return
+
+        rc, raw_local, _ = await self._run_raw('rev-parse', '--verify', '-q', 'HEAD')
+
+        if rc == 0 and raw_local.strip():
+            await self._run_raw('reset', '-q', 'HEAD', '--', *paths)
+        else:
+            # Unborn repo: no tracked files exist yet, so rm --cached is strictly safe
+            await self._run_raw('rm', '--cached', '-r', '--ignore-unmatch', '--quiet', '--', *paths)
+
     def _detect_git_lock_state(self) -> str:
         for lock_name in ('index.lock', 'config.lock', 'packed-refs.lock',
                           'shallow.lock', 'HEAD.lock', 'ORIG_HEAD.lock', 'FETCH_HEAD.lock'):
@@ -3428,6 +3458,9 @@ class GitEngine:
             idx = 1
             self.app.update_task_state(idx, "running")  # type: ignore
             self._tlog(f"[bold {THEME['accent']}]>>> PROCESS INITIATED:[/] Fetch Upstream & Diff\n", idx)
+
+            # Purge internal managed paths from the index to prevent backup loops and data loss
+            await self._unstage_managed_paths()
 
             op = self._detect_git_operation_state()
             if op != 'none':
