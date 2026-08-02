@@ -952,6 +952,18 @@ def mount(raw_target: str, custom_mount_path: str | None = None, open_gui_prompt
     target_spec = parsed.sshfs_target_spec
     canonical = parsed.canonical_string
 
+    # Clean up any stale/broken FUSE mounts on local machine for target host (e.g. after VM snapshot revert)
+    for active_m in get_active_mounts():
+        if parsed.host in active_m.source:
+            is_h = False
+            with contextlib.suppress(OSError):
+                is_h = active_m.mount_point.is_dir() and os.access(active_m.mount_point, os.R_OK)
+            if not is_h:
+                console.print(
+                    f"[bold yellow][!] Unresponsive mount for {parsed.host} detected at {active_m.mount_point} (VM snapshot reset?). Cleaning up...[/bold yellow]"
+                )
+                cleanup_stale_mount(active_m.mount_point)
+
     info = get_mount_info_for(mount_point)
     if info is not None:
         is_healthy = False
