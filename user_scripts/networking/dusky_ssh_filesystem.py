@@ -1092,6 +1092,15 @@ def mount(raw_target: str, custom_mount_path: str | None = None, open_gui_prompt
     return False
 
 
+def smart_penalty_backoff(seconds: int = 15) -> None:
+    """Live visual countdown to allow OpenSSH PerSourcePenalty timer to expire."""
+    with console.status("[bold cyan][*] OpenSSH rate limit penalty active. Waiting for ban to expire...[/bold cyan]") as status:
+        for remaining in range(seconds, 0, -1):
+            status.update(f"[bold cyan][*] OpenSSH rate limit penalty active. Waiting {remaining}s for ban to expire...[/bold cyan]")
+            time.sleep(1.0)
+    console.print("[bold green][+] Penalty window expired. Retrying connection now...[/bold green]")
+
+
 def handle_mount_flow(
     parsed_target: ParsedTarget, initial_custom_path: str | None, history: list[str]
 ) -> list[str]:
@@ -1112,7 +1121,8 @@ def handle_mount_flow(
         table = Table(show_header=False, box=None, padding=(0, 1), expand=False)
         table.add_column("Key", style="bold cyan", justify="right")
         table.add_column("Action", style="bold white")
-        table.add_row("1", "Retry connection [dim](re-try target after enabling remote SSH/sshd)[/dim]")
+        table.add_row("1", "Retry connection [dim](immediate)[/dim]")
+        table.add_row("w", "Wait 15s for OpenSSH rate limit penalty ban to expire & auto-retry")
         table.add_row("2", "Change SSH target / username")
         table.add_row("0", "Return to Main Menu")
 
@@ -1123,10 +1133,13 @@ def handle_mount_flow(
         except (KeyboardInterrupt, EOFError):
             return history
 
-        if choice == "1":
+        if choice in ("1", "retry", "r"):
             console.print(f"[bold cyan][*] Retrying connection to {target_str}...[/bold cyan]")
             continue
-        elif choice == "2":
+        elif choice in ("w", "wait", "auto", "a"):
+            smart_penalty_backoff(15)
+            continue
+        elif choice in ("2", "change"):
             new_target = Prompt.ask("Enter new SSH target", default=target_str).strip()
             parsed_new = parse_target(new_target)
             if parsed_new:
