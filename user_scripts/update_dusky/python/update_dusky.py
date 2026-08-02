@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ==============================================================================
-#  DUSKY UPDATER (v9.6.0) — BLEEDING EDGE ARCH / PYTHON 3.14 TUI
+#  DUSKY UPDATER (v9.6.0)
 # ==============================================================================
 import argparse
 import asyncio
