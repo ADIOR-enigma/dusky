@@ -442,8 +442,16 @@ def get_mount_info_for(mount_point: Path) -> tuple[str, str] | None:
 
 
 def cleanup_stale_mount(mount_point: Path) -> bool:
-    """Attempt a lazy unmount to clean up stale/broken FUSE mounts (d?????????)."""
+    """Attempt a lazy unmount and kill orphaned background sshfs daemons for stale mounts."""
     target_str = str(mount_point)
+
+    # 1. Terminate any orphaned background sshfs daemon for this mount point
+    pkill = find_executable("pkill")
+    if pkill:
+        with contextlib.suppress(OSError):
+            subprocess.run([pkill, "-9", "-f", f"sshfs.*{target_str}"], check=False, capture_output=True)
+
+    # 2. Unmount FUSE mount point
     fusermount = find_executable("fusermount3")
     if fusermount:
         with contextlib.suppress(OSError):
