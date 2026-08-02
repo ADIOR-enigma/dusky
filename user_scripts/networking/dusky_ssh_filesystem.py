@@ -911,6 +911,10 @@ def display_mount_failure(
     elif "Host key verification failed" in err_text:
         tips.append("• Remote SSH host key changed or is not trusted.")
         tips.append(f"• Run [cyan]ssh {target.host}[/cyan] once to accept the key.")
+    elif "Connection reset" in err_text:
+        tips.append("• OpenSSH 9.8+ PerSourcePenalty (IP rate limit penalty ban) active on remote server.")
+        tips.append("• OpenSSH penalized client IP due to rapid connections or failed authentication.")
+        tips.append("• Wait 15-20 seconds for the penalty window to expire before retrying.")
     elif "not empty" in err_text:
         tips.append("• Mount point directory is not empty.")
     else:
@@ -1045,14 +1049,7 @@ def mount(raw_target: str, custom_mount_path: str | None = None, open_gui_prompt
 
     cmd.extend((target_spec, str(mount_point)))
 
-    # 1. Pre-flight TCP probe BEFORE showing status spinner
-    probe_ok, probe_msg = probe_tcp_connection(parsed.host, parsed.port, timeout=2.5)
-
-    if not probe_ok:
-        display_mount_failure(parsed, mount_point, returncode=1, stderr="", probe_msg=probe_msg)
-        return False
-
-    # 2. Print clean progress without an interactive TTY-clashing spinner thread
+    # Print clean progress without an interactive TTY-clashing spinner thread
     console.print(f"[bold cyan][*] Connecting to {canonical}...[/bold cyan]")
 
     try:
