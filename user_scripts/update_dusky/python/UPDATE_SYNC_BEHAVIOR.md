@@ -123,7 +123,7 @@ Backups are saved under `~/.local/share/dusky/backups/` ([backups_dir(): L117](f
 
 ## 7. Script Execution Markers (`once` System)
 
-`MarkerEngine` ([L918](file:///home/dusk/user_scripts/update_dusky/python/update_dusky.py#L918)) tracks task completion via SQLite (`once_markers` table). Task keys are `BLAKE2b` hashes of profile name, task mode, name, path, and args ([L915](file:///home/dusk/user_scripts/update_dusky/python/update_dusky.py#L915)).
+The `OnceStore` class ([L797](file:///home/dusk/user_scripts/update_dusky/python/update_dusky.py#L797)) manages execution state using SQLite at `state_dir() / "once.db"` ([L799](file:///home/dusk/user_scripts/update_dusky/python/update_dusky.py#L799)). Unique marker keys are generated via [OnceStore.make_key](file:///home/dusk/user_scripts/update_dusky/python/update_dusky.py#L896) using a 16-byte `BLAKE2b` digest ([L916](file:///home/dusk/user_scripts/update_dusky/python/update_dusky.py#L916)) over key material (`once`, scope, profile, mode, task name, relative path, args).
 
 ```mermaid
 stateDiagram-v2
