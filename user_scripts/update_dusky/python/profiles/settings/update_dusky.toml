@@ -40,7 +40,7 @@ error = "#ffb4ab"
 
 # Unicode status icons
 [ui.unicode_symbols]
-logo = "🦅"
+logo = "◈"
 completed = "✓"
 running = "◉"
 failed = "✗"

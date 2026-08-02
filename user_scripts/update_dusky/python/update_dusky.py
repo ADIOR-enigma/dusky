@@ -212,7 +212,7 @@ def askpass_dir() -> Path:
 
 def S(key: str) -> str:
     ASCII_SYMBOLS = {"logo": "DUSKY", "completed": "OK", "running": "RUN", "failed": "ERR", "skipped": "SKIP", "pending": "...", "sep": "|"}
-    UNICODE_SYMBOLS = {"logo": "🦅", "completed": "✓", "running": "◉", "failed": "✗", "skipped": "-", "pending": "○", "sep": "│"}
+    UNICODE_SYMBOLS = {"logo": "◈", "completed": "✓", "running": "◉", "failed": "✗", "skipped": "-", "pending": "○", "sep": "│"}
     return ASCII_SYMBOLS.get(key, key) if ASCII_MODE else UNICODE_SYMBOLS.get(key, key)
 
 
@@ -3698,7 +3698,7 @@ class DuskyApp(App):
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="top_header"):
-            yield Static(f"{S('logo')} DUSKY UPDATER  [{self.profile.name}]", id="header_title", markup=False)
+            yield Static(f"{S('logo')} DUSKY UPDATER", id="header_title", markup=False)
 
         with Horizontal():
             with Vertical(id="sidebar"):
