@@ -60,6 +60,7 @@ SSHFS_OPTIONS: Final[tuple[str, ...]] = (
     "ServerAliveInterval=15",
     "ServerAliveCountMax=3",
     "ConnectTimeout=10",
+    "ConnectionAttempts=5",
     "StrictHostKeyChecking=accept-new",
 )
 
