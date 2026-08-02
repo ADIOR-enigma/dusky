@@ -4408,7 +4408,7 @@ class DuskyApp(App):
             AudioNotifier.play("info")
         else:
             self.log_main(f"\n[bold {THEME['success']}]ARCHITECTURE DEPLOYMENT COMPLETED.[/]")
-            desktop_notify("Dusky Update", "Update completed successfully", urgency="normal")
+            desktop_notify("Dusky updated", "", urgency="normal")
             AudioNotifier.play("complete")
 
         self.log_main("\n[dim]Press 'Ctrl+C' or 'Q' to terminate abstraction shell.[/dim]")
