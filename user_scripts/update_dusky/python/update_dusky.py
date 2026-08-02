@@ -2667,6 +2667,28 @@ def _git_env() -> dict[str, str]:
     return env
 
 
+def last_git_diff_path() -> Path:
+    return runtime_dir() / "last_git_diff.json"
+
+
+def persist_last_git_diff(commits: str, files_changed: int, diff_text: str) -> None:
+    try:
+        payload = json.dumps(
+            {"commits": commits, "files_changed": files_changed, "diff": diff_text},
+            ensure_ascii=False,
+        )
+        last_git_diff_path().write_text(payload, encoding="utf-8")
+    except Exception:
+        pass
+
+
+def remove_last_git_diff() -> None:
+    try:
+        last_git_diff_path().unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 class GitEngine:
     def __init__(self, app: App, profile: ProfileConfig):
         self.app = app
@@ -3453,6 +3475,7 @@ class GitEngine:
                 self._tlog(f"\n[bold {THEME['warning']}]Differential Divergence Detected:[/]\n", idx)
                 self.app.log_task(Syntax(diff_out, "diff", theme="monokai", background_color="default", word_wrap=True), idx)  # type: ignore
                 self.app.git_diff_text = diff_out  # type: ignore
+                persist_last_git_diff(commit_count, len(changed_files), diff_out)
 
             mb_rc, base_commit, _ = await self._run_raw('merge-base', local_head, remote_head)
             base_commit = base_commit.strip()
@@ -3759,6 +3782,36 @@ class DuskyApp(App):
         with suppress(Exception):
             self.query_one(f"#log-task-{index}", RichLog).write(message)
 
+    def _restore_last_git_diff(self) -> None:
+        payload = None
+        path = last_git_diff_path()
+        try:
+            if path.is_file():
+                raw = path.read_text(encoding="utf-8")
+                payload = json.loads(raw)
+        except Exception:
+            payload = None
+        remove_last_git_diff()
+        if not isinstance(payload, dict):
+            return
+        diff = payload.get("diff") or ""
+        if not diff.strip():
+            return
+        commits = payload.get("commits", "?")
+        files_changed = payload.get("files_changed", "?")
+        self.log_task(f"\n[bold {THEME['accent']}]Upstream changes applied by this update:[/]", 1)
+        self.log_task(f"[dim]Commits behind: {commits}  |  Files changed: {files_changed}[/dim]", 1)
+        self.log_task(f"[dim]{'-' * 46}[/dim]", 1)
+        self.log_task(Syntax(diff, "diff", theme="monokai", background_color="default", word_wrap=True), 1)
+        for index, hint in (
+            (0, "Validated before the update. See 'Fetch Upstream & Diff' for the applied changes."),
+            (2, "Skipped during the post-update restart. See 'Fetch Upstream & Diff' for the applied changes."),
+            (3, "Skipped during the post-update restart. See 'Fetch Upstream & Diff' for the applied changes."),
+            (4, "Skipped during the post-update restart. See 'Fetch Upstream & Diff' for the applied changes."),
+        ):
+            self.log_task(f"\n[dim]{hint}[/dim]", index)
+        self.log_main(f"\n[bold {THEME['accent']}]Git diff from the applied update is shown on the 'Fetch Upstream & Diff' task.[/]")
+
     def update_task_state(self, index: int, new_status: str) -> None:
         self.tasks[index].status = new_status  # type: ignore
         list_view = self.query_one("#task_list", ListView)
@@ -4040,6 +4093,8 @@ class DuskyApp(App):
             self.log_main(f"\n[bold {THEME['accent']}]═══ Phase 1: Git Architecture Reconciliation (SKIPPED) ═══[/]\n")
             for index in range(5):
                 self.update_task_state(index, "skipped")
+            if OPT_POST_SELF_UPDATE:
+                self._restore_last_git_diff()
 
         if OPT_SYNC_ONLY:
             msg = "SYNC SIMULATED." if OPT_DRY_RUN else "SYNC COMPLETE."
@@ -4348,6 +4403,7 @@ class DuskyApp(App):
         before = getattr(self, "_self_hash_before", "")
         after = file_checksum(SCRIPT_PATH)
         if not before or not after or after == before:
+            remove_last_git_diff()
             return False
         try:
             sys.stdout.flush()
