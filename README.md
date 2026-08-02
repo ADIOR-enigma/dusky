@@ -4,11 +4,11 @@
 
 [discussion]: https://github.com/dusklinux/dusky/discussions
 
+The official Discord Server has been deleted. Please refer to [this issue](https://github.com/dusklinux/dusky/issues/271#issuecomment-5150215079).
 
-~~[Join Discord Server][discord]~~
+A community Discord server has been created! You can join it below. Please note that the original developer is not involved with this community server in any capacity. Alternatively, you can participate on the discussions page mentioned above.
 
-[discord]: https://github.com/dusklinux/dusky/discussions
-The Discord Server has been deleted. Please Refer to [This Issue](https://github.com/dusklinux/dusky/issues/271#issuecomment-5150215079)
+[Join Community Discord Server](https://discord.gg/V2EeUJwd4)
 
 ## Updated demo video now out on YouTube with all major features covered! 
 (since the release of this video around 5 major features have been added, scroll down to the `overview` section for details)
