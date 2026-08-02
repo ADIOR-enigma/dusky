@@ -4,10 +4,6 @@
 
 [discussion]: https://github.com/dusklinux/dusky/discussions
 
-
-~~[Join Discord Server][discord]~~
-
-[discord]: https://github.com/dusklinux/dusky/discussions
 The official Discord Server has been deleted. Please refer to [this issue](https://github.com/dusklinux/dusky/issues/271#issuecomment-5150215079).
 
 A community Discord server has been created! You can join it below. Please note that the original developer is not involved with this community server in any capacity. Alternatively, you can participate on the discussions page mentioned above.
