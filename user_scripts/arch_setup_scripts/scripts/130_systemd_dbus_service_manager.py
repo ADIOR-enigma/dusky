@@ -1,28 +1,5 @@
 #!/usr/bin/env python3
-"""
-===============================================================================
-Unified Systemd & DBus Service Manager
-===============================================================================
-Context: Arch Linux (Bleeding-Edge) / Python 3.14+
-Description: Installs, symlinks, and manages user and system-level Systemd
-             services and DBus activation files. Replaces legacy bash scripts
-             130, 131, and 132 with a single, highly configurable tool.
-
-Features:
-  - Declarative configuration blocks at top of script.
-  - Native Python 3.14+ (pathlib, dataclasses, typing).
-  - Rich terminal presentation (styled logs, panels, progress tables).
-  - Multi-mode support: --all, --user, --dbus, --system.
-  - Non-interactive mode (--default / -y).
-  - Dry-run mode (--dry-run / -n).
-  - Live unit inspection (--status / -st).
-  - Complete uninstall/reversion mode (--uninstall) with O(1) batching.
-  - Split Execution Architecture (unprivileged user execution + isolated sudo sub-process).
-  - Fast, clean direct file copying (shutil.copy2) without backup clutter or temp files.
-  - Direct symlink creation and updates.
-  - Robust JSON / JSONL state parsing with LoadState tracking.
-===============================================================================
-"""
+#d: Manage systemd and D-Bus services
 
 import argparse
 import datetime

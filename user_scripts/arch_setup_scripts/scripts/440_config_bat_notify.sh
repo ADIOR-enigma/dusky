@@ -1,9 +1,5 @@
 #!/usr/bin/env bash
-# battery notify configurator
-#===============================================================================
-# BATTERY NOTIFY CONFIGURATION
-# Configure battery notification thresholds for battery_notify.sh
-#===============================================================================
+#d: Configure battery notification thresholds
 
 set -euo pipefail
 

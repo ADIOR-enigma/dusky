@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-# =============================================================================
-# Elite Arch Linux Boot-Time Memory Reclaimer - Fixed (Refined)
-# Target: Arch Linux Cutting-Edge (Kernel 7.1+, Python 3.14+, systemd 261+)
-# Scope: force-evicts cold boot-initialization anonymous RAM to ZRAM/swap.
-# =============================================================================
+#d: Reclaim boot-time memory to ZRAM/swap
 
 from __future__ import annotations
 

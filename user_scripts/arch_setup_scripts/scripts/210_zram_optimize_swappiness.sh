@@ -1,9 +1,5 @@
 #!/usr/bin/env bash
-# =============================================================================
-# Elite Arch Linux ZRAM & VM Policy Optimizer — Fixed for 2026.07.13
-# Target: Arch Linux Cutting-Edge (Kernel 7.1.x, systemd 261.1, Bash 5.3+)
-# Verified: kernel 7.1 released 14 Jun 2026, systemd 261 released 26 Jun 2026
-# =============================================================================
+#d: Tune swappiness and VM policy for ZRAM
 
 set -euo pipefail
 

@@ -1,19 +1,6 @@
 #!/usr/bin/env bash
-# To install AUR packages
-# ==============================================================================
-# Script Name: install_pkg_manifest.sh
-# Description: Autonomous AUR/repo package installer with batch-first fallback.
-# Context:     Arch Linux (Rolling) | Hyprland | UWSM
-# ==============================================================================
+#d: Install AUR packages from the manifest
 
-# ------------------------------------------------------------------------------
-# 1. STRICT SAFETY & SETTINGS
-# ------------------------------------------------------------------------------
-# -u: Treat unset variables as an error
-# -o pipefail: Pipeline fails if any command fails
-#
-# Intentionally not using `set -e` because this script relies on controlled
-# retries, fallbacks, and interactive recovery paths.
 set -uo pipefail
 
 # Global runtime state

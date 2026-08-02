@@ -1,10 +1,5 @@
 #!/usr/bin/env bash
-# =============================================================================
-# ELITE HYPRLAND TEXT EDITOR SWITCHER - PLATINUM EDITION (v6.8)
-# =============================================================================
-#
-# BASED ON: Dusky TUI Engine v5.9 (Fully Armored)
-# TARGET:   Arch Linux / Hyprland / Wayland
+#d: Switch the default text editor
 
 set -Eeuo pipefail
 shopt -s extglob

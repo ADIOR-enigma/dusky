@@ -1,15 +1,6 @@
 #!/usr/bin/env bash
-# Installs/uninstalls the battery_notify service.
-# -----------------------------------------------------------------------------
-# Script: install_battery_notify.sh
-# Description: Installs (copies) and enables the battery_notify service,
-#              or uninstalls (removes) and disables it.
-#              When run with --auto, operates non-interactively.
-# Environment: Arch Linux / Hyprland (Wayland) / UWSM
-# Author: DevOps Assistant
-# -----------------------------------------------------------------------------
+#d: Install or uninstall the battery notification service
 
-# --- Strict Error Handling ---
 set -euo pipefail
 
 # --- Styling & Colors ---

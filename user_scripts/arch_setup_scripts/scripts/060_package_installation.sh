@@ -1,13 +1,6 @@
 #!/usr/bin/env bash
-# This script installs ALL PACKAGES. Inspect it manually to remove/add anything you want.
-# It installs packages only. It does not enable systemd services automatically.
-# ------------------------------------------------------------------------------
-# Arch Linux / Hyprland / UWSM - Elite System Installer (v5.0 - Golden)
-# ------------------------------------------------------------------------------
+#d: Install all packages from the manifest
 
-# --- 1. CONFIGURATION ---
-
-# Group 1: Graphics & Drivers
 declare -ar pkgs_graphics=(
   "intel-media-driver" "vpl-gpu-rt" "mesa" "vulkan-intel" "mesa-utils" "intel-gpu-tools" "libva" "libva-utils" "vulkan-icd-loader" "vulkan-tools" "sof-firmware" "linux-firmware" "acpi_call" "base" "base-devel" "kernel-modules-hook"
 )

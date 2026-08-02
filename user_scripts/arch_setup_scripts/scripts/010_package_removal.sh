@@ -1,12 +1,5 @@
 #!/usr/bin/env bash
-# package removal pacman and aur
-#              Supports Repo (pacman) and AUR (natively tracked).
-#              Intelligent Execution: Evaluates co-dependencies natively to 
-#              allow batch removals without blocking.
-# System:      Arch Linux / UWSM / Hyprland
-# Requires:    Bash 5.0+, pacman, sudo
-# Flags:       -Rns = Remove + recursive deps + no config backup
-# -----------------------------------------------------------------------------
+#d: Remove packages via pacman and AUR
 
 set -euo pipefail
 IFS=$' \t\n'

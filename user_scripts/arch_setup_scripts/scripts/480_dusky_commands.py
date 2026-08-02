@@ -1,30 +1,5 @@
 #!/usr/bin/env python3
-"""
-===============================================================================
- DUSKY COMMANDS — Bleeding-Edge Multi-Stage Fleet Orchestrator
-===============================================================================
- Context:     Arch Linux (Bleeding-Edge) / Hyprland / UWSM / Systemd 261
- Target File:  480_dusky_commands.py
- Location:    ~/user_scripts/arch_setup_scripts/scripts/
- Description: Consolidates and modernizes 480_dusky_commands.sh,
-              dusky_commands_before.sh, and dusky_commands_after.sh into a
-              unified, bulletproof Python 3.14 orchestrator.
-
- Features & Security Architecture:
-   - Declarative stage configuration blocks (BEFORE, SETUP, AFTER).
-   - 100% SHA256 state hash parity with original bash scripts.
-   - Atomic state file persistence (os.replace) preventing corruption on reboot.
-   - Headless & Rich UI Dual Presentation (RICH_AVAILABLE guard & native file console).
-   - Machine-readable JSON output mode (--json) with stderr excepthook guard.
-   - UserContext resolution supporting privilege escalation (SUDO_UID / loginuid).
-   - Native Sudo /usr/bin/env IPC environment tunneling without privilege bleed.
-   - Process Group isolation (start_new_session=True) & pgid > 1 system safety guard.
-   - EPERM-safe root process kill fallback via privilege escalator.
-   - Fully detached background task I/O (>/dev/null 2>&1 < /dev/null &) preventing pipe hangs.
-   - Secure POSIX lockfile isolation without TOCTOU unlink races.
-   - Signal handler de-escalation (SystemExit propagation to try...finally cleanup).
-===============================================================================
-"""
+#d: Install and manage dusky commands
 
 from __future__ import annotations
 

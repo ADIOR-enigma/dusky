@@ -1,17 +1,6 @@
 #!/usr/bin/env bash
-# configures pacman.conf for better settings
-# -----------------------------------------------------------------------------
-# Description: True atomic overwrite and rollback of /etc/pacman.conf
-# Target:      /etc/pacman.conf
-# Ecosystem:   Arch Linux / Hyprland / UWSM
-#
-# Supported Flags:
-#   --auto, auto : Run in non-interactive mode. Bypasses user prompts.
-#   --revert     : Bypasses generation. Atomically restores the pacman
-#                  configuration from /etc/pacman.conf.bak.
-# -----------------------------------------------------------------------------
+#d: Tune pacman.conf for better package management
 
-# --- Strict Error Handling ---
 set -euo pipefail
 
 # --- Presentation Constants (Bash 5+ ANSI Quoting) ---

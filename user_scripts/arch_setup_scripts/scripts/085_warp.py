@@ -1,14 +1,5 @@
 #!/usr/bin/env python
-"""
-Cloudflare WARP manager for Arch Linux.
-
-Installs, configures, and manages the cloudflare-warp-nox-bin AUR package
-with autonomous credential backup/restore, PTY-based TOS acceptance, and
-connection verification.
-
-Targets Python 3.14+ on Arch Linux.
-Requires: python-rich (pacman -S python-rich).
-"""
+#d: Install, configure, and manage Cloudflare WARP
 
 import argparse
 import fcntl

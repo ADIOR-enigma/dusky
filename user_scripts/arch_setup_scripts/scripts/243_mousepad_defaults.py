@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+#d: Apply recommended Mousepad text editor settings
+
 import subprocess
 import sys
 import logging

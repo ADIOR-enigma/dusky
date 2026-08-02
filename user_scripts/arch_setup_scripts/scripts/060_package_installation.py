@@ -1,12 +1,6 @@
 #!/usr/bin/env python3
+#d: Install all packages from the manifest (interactive TUI)
 # dusky_interactive=true
-# ==============================================================================
-# DUSKY PACKAGE INSTALLER (v14.0 - Hardened Master-Suite Edition)
-# ==============================================================================
-# Architecture: Asynchronous Buffered PTY Streams | Textual Split-Screen TUI
-# Hardening: Zero-Injection Subprocesses | Atomic Sudoers | O(1) Indexing
-# Compatibility: Python 3.12+ (3.14 verified) | Pacman v7.1+ | Textual 8.2.8+
-# ==============================================================================
 
 from __future__ import annotations
 

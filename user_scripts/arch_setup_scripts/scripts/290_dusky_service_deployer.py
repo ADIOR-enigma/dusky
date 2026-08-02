@@ -1,36 +1,5 @@
 #!/usr/bin/env python3
-"""
-==============================================================================
-Dusky Service Deployer (290_dusky_service_deployer.py)
-==============================================================================
-Context: Arch Linux (Bleeding-Edge) / Hyprland / UWSM / Systemd 261
-Python: 3.14+ with Rich UI presentation & asyncio concurrent engine
-
-Replaces and consolidates:
-  - 290_system_services.sh            (Core System Services)
-  - 065_enabling_user_services.sh      (Core User Session Services)
-  - 110_aur_packages_sudo_services.sh  (AUR System Services)
-  - 115_aur_packages_user_services.sh  (AUR User Session Services)
-
-Features & Architecture:
-  - Declarative ServiceConfig data structures with default enable/disable toggles
-  - Headless JSON execution without requiring python-rich in CI/CD pipelines
-  - PAM/logind & Escalation Context UserContext resolution (SUDO_UID precedence)
-  - Sudo environment tunneling via /usr/bin/env preserving XDG_RUNTIME_DIR/DBus
-  - Reconstructed child args & --child-fork preventing duplicate headers & executions
-  - True O(1) bulk systemctl dictionary parser with Id & Names alias resolution
-  - Python 3.14+ Asyncio TaskGroup concurrent execution with Semaphore(5) DBus throttling
-  - Non-blocking thread offloading (asyncio.to_thread) for directory searches
-  - Clean SIGTERM process termination (proc.terminate()) for sudo child processes
-  - Built-in TimeoutError handling (Python 3.14 unified syntax)
-  - Robust UTF-8/binary decode fallback (errors='replace') for malformed unit logs
-  - Extended systemd start timeout handling (95s limit matching systemd defaults)
-  - Precedence status tracking: BAD, MASKED, FAILED, STATIC, ACTIVATING, MISSING
-  - Interactive prompting (-i/--interactive) & non-interactive modes (-y/--default)
-  - Dual-scope DBus activation reloading via busctl (User & System)
-  - Pure, uncorrupted, merged JSON status and execution output (--json)
-==============================================================================
-"""
+#d: Deploy dusky systemd services
 
 import argparse
 import asyncio

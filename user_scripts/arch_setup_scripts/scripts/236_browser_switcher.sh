@@ -1,22 +1,5 @@
 #!/usr/bin/env bash
-# =============================================================================
-# ELITE HYPRLAND BROWSER SWITCHER - PLATINUM EDITION (v6.8)
-# =============================================================================
-#
-# TARGET:   Arch Linux / Hyprland / UWSM / Wayland
-#
-# =============================================================================
-# HOW TO ADD NEW BROWSERS
-# =============================================================================
-# 1. Locate the 'BROWSER_CATALOG' array in the USER CONFIGURATION section.
-# 2. Add a new line inside the parentheses following this exact syntax:
-#    "key|type|desktop_file|display_name"
-#
-#    - KEY: The string that will be written to $browser in your config.
-#    - TYPE: '0' for GUI (Direct exec) | '1' for Terminal (Wrapped in terminal).
-#    - DESKTOP_FILE: The filename (e.g., firefox.desktop) for MIME association.
-#    - DISPLAY_NAME: The friendly name shown in the TUI menu.
-# =============================================================================
+#d: Switch the default web browser
 
 set -Eeuo pipefail
 shopt -s extglob

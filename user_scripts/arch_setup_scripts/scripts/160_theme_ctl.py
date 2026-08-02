@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-# =============================================================================
-# Target: Arch Linux (Bleeding Edge), Hyprland, Python 3
-# Description: Set the wallpaper reliably under Hyprland using awww.
-# =============================================================================
+#d: Set the wallpaper reliably under Hyprland
 
 import os
 import sys

@@ -1,12 +1,5 @@
 #!/usr/bin/env bash
-# =============================================================================
-# ELITE HYPRLAND TERMINAL SWITCHER - PLATINUM EDITION (v6.7.1)
-# =============================================================================
-#
-# BASED ON: Dusky TUI Engine v5.9 (Template Aligned)
-# TARGET:   Arch Linux / Hyprland / UWSM / Wayland
-#
-# =============================================================================
+#d: Switch the default terminal
 
 set -euo pipefail
 shopt -s extglob

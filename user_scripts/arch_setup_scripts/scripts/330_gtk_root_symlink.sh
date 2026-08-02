@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# configuers gtk theming for root apps
+#d: Apply GTK theming to root apps
+
 set -euo pipefail
 
 # 1. Ensure we are root

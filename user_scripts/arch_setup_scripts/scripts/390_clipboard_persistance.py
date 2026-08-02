@@ -1,14 +1,5 @@
 #!/usr/bin/env python3
-"""
-Clipboard Persistence Manager - FIXED v2.2 (Dedup Data Loss Fix)
-- No skip-flag file (previous version could block forever if left behind)
-- Safe kill: pgrep -x wl-paste + sh wrapper cmdline inspection
-- systemd: set-environment + dbus-update only CLIPHIST_DB_PATH
-- Hyprland: try hyprctl setenv, fallback hyprctl eval hl.env
-- Leak fix: snapshot ids_before, start watchers, sleep, delete ids_after-ids_before
-  (wl-paste --watch auto-stores current OS clipboard on startup -> leak)
-- Dedup safety: aborts leak deletion if cliphist replaced an existing entry
-"""
+#d: Keep the clipboard persistent across reboots
 
 import os, sys, time, signal, argparse, subprocess, shutil, tempfile
 from pathlib import Path

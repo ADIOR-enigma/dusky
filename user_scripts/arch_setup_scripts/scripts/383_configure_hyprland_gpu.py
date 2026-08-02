@@ -1,20 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-from __future__ import annotations
-"""
-035_configure_hyprland_gpu.py
-Arch / Hyprland GPU Configurator -> ~/.config/hypr/gpu.lua
-v2026.07-Final | Python 3.14.6 | systemd 261 | Hyprland 0.55.4+
+#d: Generate the Hyprland GPU config
 
-Rewrites 035_configure_uwsm_gpu.sh (bash) to robust Python.
-- Topology: /sys/class/drm/card* + pyudev bridge + boot_vga
-- Vendors: 0x8086 Intel, 0x1002 AMD, 0x10de NVIDIA + VM vendors
-- VA-API probe: /usr/lib/dri/*_drv_video.so
-- Output: pure Lua hl.env() with dynamic by-path resolve_card() helper
-- Atomic: temp in same dir, 0644, identical check, fsync, chown fix for sudo
-- UI: Rich beautiful TUI, manual menu + --auto fallback
-- Deps: auto-installs python-rich, python-pyudev, pciutils via pacman -S --needed
-"""
+from __future__ import annotations
 
 # ── 1. Rich bootstrap (like systemd-oomd script) ──
 import os, sys, shutil, subprocess

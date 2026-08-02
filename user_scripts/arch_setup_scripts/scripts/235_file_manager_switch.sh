@@ -1,10 +1,5 @@
 #!/usr/bin/env bash
-# =============================================================================
-# ELITE HYPRLAND FILE MANAGER SWITCHER - PLATINUM EDITION (v6.8)
-# =============================================================================
-#
-# BASED ON: Dusky TUI Engine v5.9 (Fully Armored)
-# TARGET:   Arch Linux / Hyprland / UWSM / Wayland
+#d: Switch the default file manager
 
 set -Eeuo pipefail
 shopt -s extglob

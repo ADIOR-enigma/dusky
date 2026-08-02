@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-# configures /etc/tlp.conf for ASUS TUF F15 (personal, dusk)
-# -----------------------------------------------------------------------------
-# Script: 200_tlp_config.py
-# Description: Conditionally configures /etc/tlp.conf for ASUS TUF F15.
-#              Includes auto-installation, backup logic, and service control.
-# -----------------------------------------------------------------------------
+#d: Configure TLP power management for ASUS TUF F15
 
 import sys
 import os

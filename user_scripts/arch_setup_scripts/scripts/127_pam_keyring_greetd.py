@@ -1,46 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-127_pam_keyring_greetd.py — Platinum v4.1 Final Fixed (Python 3.14.6 / Hyprland 0.55.4+ native)
-Target: Arch Linux, greetd + tuigreet + GNOME Keyring SSO + udiskie + pure Hyprland
-
-Forensic rewrite of 127_pam_keyring_greetd.sh (bash) → Python 3.14.6
-
-Mid-2026 specs verified:
-  • Hyprland 0.53+ introduces start-hyprland launcher with crash recovery & safe mode,
-    hyprland-guiutils becomes hard dep, wrapper replaces direct Hyprland invocation
-  • Hyprland no longer recommends uwsm, experimental only, getty launch is start-hyprland
-  • greetd config = [terminal] vt=1 + [default_session] + [initial_session]
-  • tuigreet flags --time --remember --remember-session remain valid
-  • GNOME Keyring PAM = auth optional pam_gnome_keyring.so at end of auth,
-    session optional pam_gnome_keyring.so auto_start at end of session (Arch wiki)
-  • tuigreet cache handling: /var/cache/tuigreet chown greeter:greeter 0755
-  • systemd override KeyringMode=inherit for kernel keyring inheritance
-  • systemd 261+ introduces pam_systemd_loadkey.so which reads LUKS passphrase
-    from kernel keyring (keyname "cryptsetup") and sets it as PAM authtok,
-    then pam_gnome_keyring unlocks — this REPLACES deprecated AUR pam-fde-boot-pw
-  • Python 3.14: free-threaded officially supported, t-strings PEP 750
-
-Changes vs old bash script (intentional, not regressions):
-  - UWSM removed (task requires pure Hyprland, Hyprland upstream says uwsm experimental)
-  - /usr/local/bin/wayland-session now = exec start-hyprland (0755) instead of uwsm start
-  - pam-fde-boot-pw-git AUR build REMOVED — deprecated. Replaced by native
-    systemd 261 pam_systemd_loadkey.so for LUKS→keyring SSO. No AUR build needed.
-  - Global mask of gnome-keyring-daemon.service/socket is REQUIRED by task spec
-    to avoid duplicate daemon race; Hyprland native does dbus-update-activation-environment
-    itself, so PAM-started daemon must win. This is intentional, not breakage.
-  - No pip --break-system-packages fallback — Arch policy forbids pip as root.
-    Only pacman -S --needed is used. If pacman fails, script exits with clear error.
-
-Architectural compliance:
-  1. rich bootstrap via pacman only, no pip, auto re-exec
-  2. UWSM removed
-  3. wayland-session = exec start-hyprland, 0755, atomic
-  4. PAM edits via regex + atomic, standard lines, plus pam_systemd_loadkey for LUKS
-  5. Mask gnome-keyring user units globally per spec
-  6. Retain dual-mode unencrypted vs luks/autologin, udiskie, cache, perms
-  7. All writes atomic (tmpfile + fsync + os.replace)
-"""
+#d: Set up GNOME Keyring for the greetd login screen
 
 from __future__ import annotations
 

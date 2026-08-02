@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-# Create configuration directories for Matugen for theming
-# -----------------------------------------------------------------------------
-# Description:  Bootstrap configuration directories for Hyprland/UWSM environment
-# Target:       Arch Linux / Python 3.14+
-# Standards:    EAFP Idempotency, Strictly Typed, TTY-aware Logging, Atomic
-# -----------------------------------------------------------------------------
+#d: Create Matugen config directories for theming
 
 import sys
 from pathlib import Path

@@ -1,13 +1,6 @@
 #!/usr/bin/env bash
-# increase timout for wrong password attempts
-# -----------------------------------------------------------------------------
-# Description: Configures /etc/security/faillock.conf for Arch Linux
-# Author:      DevOps Architect
-# Context:     Arch / Hyprland / UWSM
-# Standards:   Bash 5+, Strict Mode, Atomic Writes
-# -----------------------------------------------------------------------------
+#d: Increase the lockout timeout after failed logins
 
-# --- Strict Safety Mode ---
 set -euo pipefail
 
 # --- Presentation Constants ---

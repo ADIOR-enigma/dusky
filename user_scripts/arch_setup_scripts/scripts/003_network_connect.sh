@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Requires: bash 5.0+, NetworkManager (nmcli), systemd, coreutils, iproute2
-# Target: Arch Linux / Hyprland Ecosystem
+#d: Connect to Wi-Fi and set up networking
 
 set -Eeuo pipefail
 

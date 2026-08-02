@@ -1,13 +1,6 @@
 #!/usr/bin/env bash
-# Enables systemd system services for packages
-# ==============================================================================
-# Arch Linux System Service Initializer
-# Context: Hyprland / UWSM / Systemd
-# ==============================================================================
+#d: Enable NVIDIA-related systemd services
 
-# ------------------------------------------------------------------------------
-# 1. Strict Environment & Error Handling
-# ------------------------------------------------------------------------------
 set -euo pipefail
 IFS=$'\n\t'
 

@@ -1,14 +1,6 @@
 #!/usr/bin/env bash
-# Enforces specific [Appearance] settings in qt5ct and qt6ct
-# ==============================================================================
-# Script: setup_qt_theme.sh
-# Description: Enforces specific [Appearance] settings in qt5ct and qt6ct.
-# Environment: Arch Linux / Hyprland / UWSM
-# ==============================================================================
+#d: Enforce Qt appearance settings (qt5ct/qt6ct)
 
-# ------------------------------------------------------------------------------
-# 1. Strict Mode & Safety
-# ------------------------------------------------------------------------------
 set -euo pipefail
 IFS=$'\n\t'
 

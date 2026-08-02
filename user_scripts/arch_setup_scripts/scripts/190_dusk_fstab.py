@@ -1,12 +1,5 @@
 #!/usr/bin/env python3
-# Appends entries to /etc/fstab (personal, only for dusk)
-# -----------------------------------------------------------------------------
-# Script: 190_dusk_fstab.py
-# Description: Conditionally appends entries to /etc/fstab using Rich styling.
-#              - User Confirmation Driven (Rich Prompt)
-#              - Atomic Write & Verify Strategy
-#              - Auto-Rollback on failure (Leaves no trace on success)
-# -----------------------------------------------------------------------------
+#d: Add personal mount entries to /etc/fstab
 
 import sys
 import os

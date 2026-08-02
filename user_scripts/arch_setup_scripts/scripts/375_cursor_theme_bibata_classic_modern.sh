@@ -1,15 +1,6 @@
 #!/usr/bin/env bash
-# Bibata cursor installer
-# ==============================================================================
-#  BIBATA CURSOR INSTALLER (FINAL OPTIMIZED)
-#  - Auto-detects LATEST version from GitHub
-#  - Installs to XDG_DATA_HOME (standard: ~/.local/share/icons)
-#  - Clean pipe installation (No temp files)
-#  - Generates index.theme for legacy app compatibility
-#  - Updates Hyprland session live
-# ==============================================================================
+#d: Install the Bibata cursor theme
 
-# 1. Safety & Strict Mode
 set -o errexit   # Exit on error
 set -o nounset   # Error on undefined variables
 set -o pipefail  # Error if any command in a pipe fails

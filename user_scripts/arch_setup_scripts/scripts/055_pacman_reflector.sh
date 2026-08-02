@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
-# Autonomous Pacman Mirror Orchestrator
-# Resolves mirror selection, waits for active pacman locks with a 60s timeout,
-# removes stale locks via /proc inspection, runs mirror benchmarking with 
-# asynchronous visual feedback, and configures systemd timers.
+#d: Benchmark and pick the fastest pacman mirrors
 
 set -euo pipefail
 

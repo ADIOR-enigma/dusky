@@ -1,11 +1,5 @@
 #!/usr/bin/env bash
-# =============================================================================
-# Elite Arch Linux systemd-journald Optimizer
-# Target: Arch Linux Cutting-Edge (systemd 261+, Bash 5.3+, kernel 7.1+)
-# Scope: Caps journal disk and RAM size via journald.conf, mitigates
-#        CVE-2026-40228 (ForwardToWall), and avoids dangerous cgroup limits.
-# Priority: Strikes the right balance between performance and low memory/RAM.
-# =============================================================================
+#d: Cap systemd journal size and limits
 
 set -euo pipefail
 shopt -s inherit_errexit 2>/dev/null || true

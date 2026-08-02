@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+#d: Swap Waybar themes and settings
+
 from __future__ import annotations
 
 import argparse

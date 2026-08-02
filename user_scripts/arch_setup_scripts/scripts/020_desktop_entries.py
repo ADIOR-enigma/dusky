@@ -1,14 +1,5 @@
 #!/usr/bin/env python3
-# desktop entries deployer with sergical edits for the hardcoded username
-"""
-==============================================================================
- DUSKY DESKTOP ENTRY SYNCHRONIZER (Enterprise Atomic Edition)
- Description: Idempotent, zero-trust, hash-based synchronizer.
-              Features true atomic writes, strict XDG compliance, surrogate 
-              escaping, C-optimized file digests, and power-loss safety mechanisms.
- Target:      Arch Linux / Python 3.14+
-==============================================================================
-"""
+#d: Deploy desktop entries with the correct username
 
 import os
 import sys

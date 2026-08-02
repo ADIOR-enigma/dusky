@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# Arch Linux (Btrfs root) | Root & Home Snapper isolated snapshots setup
-# LIVE SYSTEM DEPLOYMENT EDITION (Bash 5.3+)
-# Patched: coordinated snapshot userdata + safer unit generation.
+#d: Set up isolated Snapper snapshots for root and home
 
 set -Eeuo pipefail
 export LC_ALL=C

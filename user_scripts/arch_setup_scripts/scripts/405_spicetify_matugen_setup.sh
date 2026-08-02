@@ -1,14 +1,6 @@
 #!/usr/bin/env bash
-# -----------------------------------------------------------------------------
-# Script: 405_spicetify_matugen_setup.sh
-# Description: "Golden State" Spicetify Setup.
-#              - Resurrection: Detects & fixes deleted/phantom installs.
-#              - Warm-Up: Robust monitor for 'prefs' AND 'offline.bnk'.
-#              - Auto-Heals: Segfaults, Version Mismatches, and Permissions.
-#              - Matugen: Autonomously uncomments TOML block via robust AWK.
-# -----------------------------------------------------------------------------
+#d: Install and configure Spicetify for Spotify
 
-# Strict Mode
 set -Eeuo pipefail
 
 # --- Configuration ---

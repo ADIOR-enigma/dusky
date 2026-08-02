@@ -1,21 +1,5 @@
 #!/usr/bin/env python3
-"""Master DAMON Reclaim optimizer for Arch Linux (kernel 7.1+, systemd 261+, Python 3.14+).
-
-Verified against docs.kernel.org as of 2026-07-13:
-- Interface: /sys/module/damon_reclaim/parameters/ files
-- enabled Y enables, N disables
-- commit_inputs Y re-reads params except enabled, resets to N, must not write until N
-- min_age us, default 120s, quota_ms ms default 10ms,
-  quota_sz bytes default 128 MiB, quota_reset_interval_ms default 1s
-- wmarks per-thousand: high inactive when free > high,
-  mid/low active when between mid and low, low inactive below
-- wmarks_interval minimal wait before checking, 5s default for LRU_SORT (same type)
-- kdamond_pid is PID when enabled else -1
-- min_nr_regions default 10, max_nr_regions 1000
-- systemd-tmpfiles w writes argument without trailing newline,
-  only if file exists, fields: Type Path Mode User Group Age Argument
-- /etc/tmpfiles.d overrides /usr/lib/tmpfiles.d and is for local admin
-"""
+#d: Configure DAMON memory reclamation
 
 from __future__ import annotations
 

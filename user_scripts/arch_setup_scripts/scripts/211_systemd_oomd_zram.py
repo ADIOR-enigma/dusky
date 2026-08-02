@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
-"""
-Hyprland 0.55.4 + systemd 261.1 + kernel 7.1 OOM protection - v6 actual fixed
-Arch Linux latest only (July 2026). systemd 261.1, Python 3.14.6.
-"""
+#d: Configure OOM protection for the system
+
 import os
 import sys
 import subprocess

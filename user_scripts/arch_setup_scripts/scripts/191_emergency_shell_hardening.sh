@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Arch Linux | Systemd Emergency & Rescue Console Hardening
-# Prevents sulogin "Cannot open access to console, the root account is locked" lockout in systemd and initramfs.
+#d: Harden the emergency shell to avoid login lockouts
 
 set -Eeuo pipefail
 export LC_ALL=C

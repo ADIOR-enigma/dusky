@@ -1,13 +1,5 @@
 #!/usr/bin/env bash
-# =============================================================================
-# Elite Arch Linux THP & Sysfs Optimizer - Fixed for Kernel 7.1 / systemd 261
-# Target: Arch Linux Cutting-Edge (Kernel 7.1+, Bash 5.3+, systemd 261+)
-# Scope: Platinum Grade. Dynamically scales mTHP & MGLRU via systemd-tmpfiles.
-# Priority: Absolute Minimum RAM Footprint & Lowest Idle CPU Overhead.
-# Fixes: syntax errors, arg-loss on sudo re-exec, max_ptes_none mTHP constraint,
-# RAM detection truncation, w- robustness, dynamic mTHP size auto-discovery.
-# Verified against: kernel.org doc/next (7.1) transhuge.html and multigen_lru.html
-# =============================================================================
+#d: Tune transparent huge pages for low memory use
 
 set -euo pipefail
 

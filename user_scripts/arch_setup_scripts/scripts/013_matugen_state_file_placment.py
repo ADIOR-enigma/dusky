@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""
-Initializes or overwrites the 'state.conf' user configuration for Dusky Theme.
-Designed for Arch Linux environments using Python 3.
-
-Usage: python 013_matugen_state_file_placment.py
-"""
+#d: Create or reset the Matugen state config
 
 import sys
 import subprocess

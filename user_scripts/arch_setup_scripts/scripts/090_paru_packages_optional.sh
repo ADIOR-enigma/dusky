@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Dusky Optional Package Installer
+#d: Install optional packages from the AUR
 
 set -euo pipefail
 shopt -s extglob

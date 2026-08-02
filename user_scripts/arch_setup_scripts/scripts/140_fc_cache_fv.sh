@@ -1,9 +1,6 @@
 #!/bin/bash
-# Refreshes font cache and verifies font aliasing for Arch/Hyprland environment.
+#d: Refresh the font cache
 
-# -----------------------------------------------------------------------------
-# Configuration
-# -----------------------------------------------------------------------------
 TARGET_FONT="Atkinson Hyperlegible"
 GREEN=$'\033[0;32m'
 YELLOW=$'\033[1;33m'

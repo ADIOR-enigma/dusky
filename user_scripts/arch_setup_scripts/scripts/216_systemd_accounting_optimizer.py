@@ -1,25 +1,5 @@
 #!/usr/bin/env python3
-"""systemd default accounting optimizer for Arch Linux (systemd 260+, Python 3.14+, kernel 7.1+).
-
-CAVEAT FOR STOCK/VANILLA ARCH USERS:
-Setting DefaultMemoryAccounting=no globally will render systemd-oomd ineffective for
-standard system and user root slices (like -.slice, system.slice, user.slice) unless you
-explicitly deploy per-slice MemoryAccounting=yes + ManagedOOMMemoryPressure= overrides
-on your monitored cgroups (as done via 211_systemd_oomd_zram.py).
-
-Features:
-- Robust parsing of `systemctl show` without --value (key=value), order independent.
-- Uses daemon-reexec only (daemon-reload does NOT reload system.conf.d).
-- Atomic write via temp file + rename + chmod 0644 (best practice for /etc/systemd drop-ins).
-- Idempotency based on live manager values, not file existence.
-- Explicitly handles all 4 valid accounting keys in systemd 261: DefaultMemoryAccounting,
-  DefaultTasksAccounting, DefaultIOAccounting, DefaultIPAccounting.
-  Defaults are Memory=yes, Tasks=yes, others no.
-- Warns that disabling memory accounting affects systemd-oomd unless slices explicitly override it.
-- Documents cgroup v2 cgroup controller realities.
-- Adds --quiet, --force, --restore, --status, --yes.
-- Handles ReloadLimit (daemon-reexec rate limiting since v256) with retry.
-"""
+#d: Tune systemd resource accounting defaults
 
 import argparse
 import os
