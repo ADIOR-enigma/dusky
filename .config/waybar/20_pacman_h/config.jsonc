@@ -1,0 +1,287 @@
+{
+  "reload_style_on_change": true,
+  "layer": "top",
+  "position": "top",
+  "mod": "dock",
+  "margin-top": 4,
+  "fixed-center": true,
+  "modules-left": ["custom/launcher","clock","custom/update","hyprland/window","group/network-drawer"],
+  "modules-center": [
+    "hyprland/workspaces",
+    "mpris"
+  ],
+  "modules-right": ["memory","cpu","pulseaudio","backlight","battery","power-profiles-daemon","group/power-drawer"],
+  "hyprland/workspaces": {
+    "format": "{icon}",
+    "on-click": "activate",
+    "disable-scroll": true,
+    "all-outputs": true,
+    "cursor": true,
+    "format-icons": {
+      "active": "󰮯",
+      "default": "󰊠",
+      "empty": "󱙝"
+    },
+    "persistent-workspaces": {"*": 6}
+  },
+"group/network-drawer": {
+    "orientation": "horizontal",
+    "drawer": {
+      "transition-duration": 200,
+      "children-class": "network-drawer",
+      "click-to-reveal": false,
+      "transition-left-to-right": false
+    },
+    "modules": [
+      "custom/net-speed",
+      "network",
+      "bluetooth"
+    ]
+  },
+ "custom/net-speed": {
+    "exec": "$HOME/user_scripts/waybar/network/network_meter_calling.sh --horizontal",
+    "return-type": "json",
+    "format": "{}",
+    "interval": 1,
+    "tooltip": true
+  },
+
+  "network": {
+    "format-wifi": "󰤨",
+    "format-ethernet": "󰈀",
+    "format-disconnected": "󰤭",
+    "format-linked": "󰈁",
+    "tooltip-format-wifi": "󰤨 {essid}\n󱑽 {signalStrength}%\n󰩟 {ipaddr}",
+    "tooltip-format-ethernet": "󰈀 Ethernet\n󰩟 {ipaddr}",
+    "tooltip-format-disconnected": "󰤭 Disconnected",
+    "on-click": "foot --app-id=dusky_tui python $HOME/user_scripts/dusky_tui/python/main/main.py $HOME/user_scripts/network_manager/tui_dusky_network.py"
+  },
+
+  "bluetooth": {
+    "format": "󰂯",
+    "format-disabled": "󰂲",
+    "format-connected": "󰂱 {num_connections}",
+    "format-connected-battery": "󰂱 {device_battery_percentage}%",
+    "tooltip-format": "{controller_alias}\n{controller_address}\n\n{device_enumerate}",
+    "tooltip-format-connected": "{controller_alias}\n\n{device_enumerate}",
+    "tooltip-format-enumerate-connected": "󰂱 {device_alias}",
+    "tooltip-format-enumerate-connected-battery": "󰂱 {device_alias} ({device_battery_percentage}%)",
+    "on-click": "dusky-run blueman-manager",
+    "on-click-right": "dusky-run kitty --class bluetui -e bluetui"
+  },
+
+
+  "custom/launcher": {
+    "format": "󰣇",
+    "on-click": "python3 ~/user_scripts/dusky_system/control_center/dusky_control_center.py",
+    "on-click-right": "gdbus call --session --dest org.dusky.quickpanal --object-path /org/dusky/quickpanal --method org.freedesktop.Application.Activate '{}'",
+    "tooltip-format": "Control Center\n\nSuper + Alt + Space"
+  },
+  "custom/update": {
+    "format": "",
+    "exec": "~/user_scripts/waybar/dusky_update_available.sh",
+    "return-type": "json",
+    "on-click": "dusky-run kitty --class system_update.sh --hold -e ~/user_scripts/update_dusky/system_update.sh --all",
+    "tooltip-format": "System Updates Available",
+    "signal": 7,
+    "interval": 21600
+  },
+  "custom/voxtype": {
+    "exec": "~/user_scripts/waybar/dusky_voxtype_status.sh",
+    "return-type": "json",
+    "format": "{icon}",
+    "format-icons": {
+      "idle": "",
+      "recording": "󰍬",
+      "transcribing": "󰔟"
+    },
+    "tooltip": true
+  },
+  "custom/idle-indicator": {
+    "on-click": "dusky-run ~/user_scripts/waybar/toggle_hypridle.sh",
+    "exec": "~/user_scripts/waybar/dusky_idle_indicator.sh",
+    "signal": 9,
+    "return-type": "json"
+  },
+  "custom/notification-silencing-indicator": {
+    "on-click": "makoctl mode -t do-not-disturb && pkill -RTMIN+8 waybar",
+    "exec": "~/user_scripts/waybar/dusky_notification_silencing.sh",
+    "signal": 10,
+    "return-type": "json"
+  },
+  "custom/screenrecording-indicator": {
+    "on-click": "dusky-run ~/user_scripts/images/dusky_screenshot.sh --region --freeze --no-notify --smart",
+    "exec": "~/user_scripts/waybar/dusky_screen_recording.sh",
+    "signal": 8,
+    "return-type": "json"
+  },
+  "power-profiles-daemon": {
+    "format": "{icon}",
+    "tooltip-format": "Power profile: {profile}\nDriver: {driver}",
+    "format-icons": {
+      "default": "",
+      "performance": "",
+      "balanced": "",
+      "power-saver": "󰾆"
+    }
+  },
+  "idle_inhibitor": {
+    "format": "{icon}",
+    "tooltip-format-activated": "Stay Awake: ON",
+    "tooltip-format-deactivated": "Stay Awake: OFF",
+    "format-icons": {
+      "activated": "󰛨",
+      "deactivated": "󰛩"
+    }
+  },
+  "tray": {
+    "icon-size": 13,
+    "spacing": 4
+  },
+  "mpris": {
+    "format": "{dynamic}",
+    "format-paused": " {status_icon} {dynamic}",
+    "format-disabled": "",
+    "interval": 5,
+    "dynamic-order": ["artist", "position", "length"],
+    "dynamic-importance-order": ["position", "length", "artist"],
+    "tooltip-format": "{player} ({status}):\n{artist} - {title}"
+  },
+ "memory": {
+        "format": "󰍛 {percentage}%",
+        "format-alt": "󰍛 {used:0.1f}G",
+        "interval": 3,
+        "on-click-right": "dusky-run kitty --class io_monitor.sh -e $HOME/user_scripts/drives/io_monitor.sh",
+        "tooltip-format": "RAM: {used:0.2f} GiB / {total:0.2f} GiB ({percentage}%)\nAvailable: {avail:0.2f} GiB\nSwap: {swapUsed:0.2f} GiB / {swapTotal:0.2f} GiB\n\nRMB: I/O Monitor",
+        "states": {
+            "warning": 70,
+            "critical": 85
+        }
+    },
+
+  "cpu": {
+    "format": "󰍛 {usage:02}%",
+    "tooltip-format": "CPU: {usage}%",
+    "on-click": "dusky-run kitty --class htop -e htop"
+  },
+   "pulseaudio": {
+      "format": "{icon} {volume}%",
+      "format-muted": "󰖁",
+      "format-bluetooth": "󰂰 {volume}%",
+      "format-bluetooth-muted": "󰂲",
+      "format-icons": {
+        "headphone": "󰋋",
+        "hands-free": "󰋎",
+        "headset": "󰋎",
+        "phone": "",
+        "portable": "",
+        "car": "",
+        "default": ["󰕿", "󰖀", "󰕾"]
+      },
+      "on-click": "dusky-run pavucontrol",
+      "on-click-right": "dusky-run kitty --class cava -e cava",
+      "on-click-middle": "pactl set-sink-mute @DEFAULT_SINK@ toggle",
+      "on-scroll-up": "pactl set-sink-volume @DEFAULT_SINK@ +5%",
+      "on-scroll-down": "pactl set-sink-volume @DEFAULT_SINK@ -5%",
+      "tooltip-format": "{desc}\nVolume: {volume}%\n\nLMB: Pavucontrol\nRMB: Cava\nMMB: Mute Toggle\nScroll: Volume",
+      "scroll-step": 5,
+      "max-volume": 150
+    },
+
+  "disk": {
+    "format": "DISK {percentage_used}%",
+    "tooltip-format": "Total ROOT: {used}/{total}",
+    "unit": "GB",
+    "path": "/",
+    "interval": 30
+  },
+  "custom/weather": {
+    "format": "{}°",
+    "interval": 1800,
+    "exec": "wttrbar",
+    "return-type": "json"
+  },
+  "battery": {
+        "format": "{icon} {capacity}%",
+        "format-alt": "{icon} {capacity}% {power:.1f}W",
+        "format-charging": "󰂄 {capacity}%",
+        "format-plugged": "󰂄 {capacity}%",
+        "format-full": "󱟢",
+        "format-warning": "{icon} {capacity}%",
+        "format-critical": "󰂃 {capacity}%",
+        "format-icons": ["󰂎", "󰁺", "󰁻", "󰁼", "󰁽", "󰁾", "󰁿", "󰂀", "󰂁", "󰂂", "󰁹"],
+        "interval": 5,
+        "states": {
+            "warning": 30,
+            "critical": 15
+        },
+        "tooltip-format": "{timeTo}\nHealth: {health}%\nPower Draw: {power:.2f} W\nCycles: {cycles}\n\nLMB: Toggle Format\nRMB: Timeout Settings",
+        "on-click-right": "dusky-run kitty --class dusky_hypridle.sh -e $HOME/user_scripts/hypridle/dusky_hypridle.sh"
+    },
+    
+    "tray": {
+      "icon-size": 15,
+      "spacing": 6,
+      "show-passive-items": true
+    },
+    
+ "backlight": {
+      "format": "{icon} {percent}",
+      "tooltip-format": "Brightness: {percent}%\n\n LMB  Brightness\n RMB  Night Light\n MMB  Shaders",
+      "on-click": "dusky-run ~/user_scripts/dusky_system/quickpanal/dusky_quickpanal.py",
+      "on-click-right": "dusky-run ~/user_scripts/dusky_system/quickpanal/dusky_quickpanal.py",
+      "on-click-middle": "dusky-run ~/user_scripts/rofi/shader_menu.sh",
+      "on-scroll-up": "brightnessctl set +5%",
+      "on-scroll-down": "brightnessctl set 5%-",
+      "format-icons": ["󰃞", "󰃟", "󰃠"]
+    },
+"group/power-drawer": {
+        "orientation": "horizontal",
+        "drawer": {
+            "transition-duration": 400,
+            "children-class": "power-drawer",
+            "click-to-reveal": false,
+            "transition-left-to-right": false
+        },
+        "modules": [
+            "custom/power",
+            "custom/inhibit-suspend"
+        ]
+    },
+ "custom/inhibit-suspend": {
+        "format": "{}",
+        "exec": "if pgrep -x 'hypridle' > /dev/null; then echo '{\"text\": \"󰛊\", \"tooltip\": \"Auto-suspend ENABLED\\nClick to disable hypridle\", \"class\": \"enabled\"}'; else echo '{\"text\": \"󰅶\", \"tooltip\": \"Auto-suspend DISABLED\\nClick to enable hypridle\", \"class\": \"disabled\"}'; fi",
+        "return-type": "json",
+        "interval": 5,
+        "signal": 9,
+        "on-click": "dusky-run ~/user_scripts/waybar/toggle_hypridle.sh",
+        "escape": true
+    },
+
+ "custom/power": {
+      "format": "⏻",
+      "on-click": "dusky-run ~/user_scripts/wlogout/wlogout_scale.sh",
+      "tooltip-format": "Power Menu"
+    },
+
+  "hyprland/window": {
+    "format": "{class}",
+    "max-length": 25
+  },
+  "clock": {
+    "format": "{:%A %H:%M\u2004%p}",
+    "interval": 60,
+    "tooltip-format": "<span>{calendar}</span>",
+    "on-click": "dusky-run gnome-clocks",
+    "on-click-right": "dusky-run kitty --class peaclock -e peaclock",
+    "calendar": {
+      "mode": "month",
+      "mode-mon-col": 2,
+      "format": {
+        "month": "<span color='#f6c177'><b>{}</b></span>",
+        "weekdays": "<span color='#c4a7e7'><b>{}</b></span>",
+        "today": "<span color='#eb6f92'><b>{}</b></span>"
+      }
+    }
+  }
+}
