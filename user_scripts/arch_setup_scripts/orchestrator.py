@@ -1830,7 +1830,7 @@ Tree {{
     scrollbar-size-horizontal: 0;
 }}
 
-TaskSearchScreen, ConflictModalScreen, ManualModalScreen, SudoPasswordScreen, ConfirmQuitScreen, HelpScreen, LogSearchScreen, FailureSummaryScreen {{
+TaskSearchScreen, ConflictModalScreen, ManualModalScreen, SudoPasswordScreen, ConfirmQuitScreen, HelpScreen, LogSearchScreen, FailureSummaryScreen, CompletionDialog {{
     align: center middle;
     background: rgba(0,0,0,0.72);
 }}
@@ -1858,7 +1858,7 @@ TaskSearchScreen, ConflictModalScreen, ManualModalScreen, SudoPasswordScreen, Co
     scrollbar-color-active: {p['accent']} {p['bg']};
 }}
 
-#modal_dialog, #manual_dialog, #sudo_dialog, #help_dialog, #summary_dialog {{
+#modal_dialog, #manual_dialog, #sudo_dialog, #help_dialog, #summary_dialog, #completion_dialog {{
     width: 90;
     height: auto;
     background: {p['bg']};
@@ -1899,7 +1899,47 @@ TaskSearchScreen, ConflictModalScreen, ManualModalScreen, SudoPasswordScreen, Co
     height: 75%;
 }}
 
-#modal_title, #manual_title, #sudo_title, #confirm_title, #help_title, #summary_title {{
+#completion_dialog {{
+    width: 72;
+    border: heavy {p['accent']};
+}}
+
+#completion_dialog.-success {{
+    border: heavy {p['success']};
+}}
+
+#completion_dialog.-warning {{
+    border: heavy {p['warning']};
+}}
+
+#completion_dialog.-error {{
+    border: heavy {p['error']};
+}}
+
+#completion_title {{
+    color: {p['accent']};
+}}
+
+#completion_dialog.-success #completion_title {{
+    color: {p['success']};
+}}
+
+#completion_dialog.-warning #completion_title {{
+    color: {p['warning']};
+}}
+
+#completion_dialog.-error #completion_title {{
+    color: {p['error']};
+}}
+
+#completion_message {{
+    color: {p['fg']};
+    max-height: 10;
+    overflow-y: auto;
+    margin-bottom: 1;
+}}
+
+#modal_title, #manual_title, #sudo_title, #confirm_title, #help_title, #summary_title, #completion_title {{
     text-align: center;
     text-style: bold;
     margin-bottom: 1;
@@ -4526,6 +4566,54 @@ class FailureSummaryScreen(ModalScreen[str]):
         self.dismiss("close")
 
 
+class CompletionDialog(ModalScreen[bool]):
+    """Final dialog shown when the sequence finishes: review logs or quit.
+
+    Note: `q`/`escape` are NOT bound here on purpose. The orchestrator's app-
+    level priority bindings route those keys to `action_request_quit`, which
+    special-cases this dialog (quitting directly, since the run is already
+    finished). Enter/space and the buttons both resolve to "stay and review".
+    """
+
+    BINDINGS = [
+        Binding("enter,space", "dismiss_stay", "View Logs"),
+    ]
+
+    def __init__(
+        self,
+        title: str = "SEQUENCE COMPLETE",
+        message: str = "",
+        level: str = "success",
+    ) -> None:
+        super().__init__()
+        self.title_text = title
+        self.message = message
+        self.level = level
+
+    def compose(self) -> ComposeResult:
+        with Container(id="completion_dialog", classes=f"-{self.level}"):
+            yield Label(self.title_text, id="completion_title")
+            yield Static(self.message, id="completion_message", markup=False)
+            with Horizontal(id="button_bar"):
+                yield Button(" View Logs ", id="btn_completion_view")
+                yield Button(" Quit ", variant="primary", id="btn_completion_quit")
+
+    def on_mount(self) -> None:
+        with suppress(Exception):
+            self.query_one("#btn_completion_view", Button).focus()
+
+    def action_dismiss_stay(self) -> None:
+        self.dismiss(False)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "btn_completion_quit")
+
+    @on(events.Click)
+    def on_background_click(self, event: events.Click) -> None:
+        if event.control is self:
+            self.dismiss(False)
+
+
 class AppFooter(Horizontal):
     def compose(self) -> ComposeResult:
         yield Label("[Ctrl+F] Search", classes="footer-shortcut")
@@ -4914,6 +5002,12 @@ class DuskyOrchestratorApp(App):
         if isinstance(self.screen, ConfirmQuitScreen):
             return
 
+        if isinstance(self.screen, CompletionDialog):
+            # The sequence is already finished: quitting from the completion
+            # dialog must not ask about aborting a running run.
+            self.exit()
+            return
+
         async def on_quit_decision(result: str | None) -> None:
             if result == "abort":
                 self.log_system("User requested sequence termination.", is_err=True)
@@ -4924,6 +5018,16 @@ class DuskyOrchestratorApp(App):
 
     def action_quit_app(self) -> None:
         self.action_request_quit()
+
+    def _show_completion_dialog(self, title: str, message: str, level: str) -> None:
+        self.push_screen(
+            CompletionDialog(title=title, message=message, level=level),
+            self._on_completion_reply,
+        )
+
+    def _on_completion_reply(self, quit_now: bool | None) -> None:
+        if quit_now:
+            self.exit()
 
     def action_help(self) -> None:
         if isinstance(self.screen, ModalScreen):
@@ -6227,6 +6331,30 @@ class DuskyOrchestratorApp(App):
                         "Setup completed successfully.",
                         "normal",
                     )
+
+                completed = (
+                    counters.get("completed", 0)
+                    + counters.get("completed_once", 0)
+                    + counters.get("ignored", 0)
+                    + counters.get("manual", 0)
+                )
+                failed = counters.get("failed", 0)
+                skipped = counters.get("skipped", 0) + counters.get("skipped_condition", 0)
+                summary_lines = (
+                    f"Profile: {self.profile.name}\n"
+                    f"Completed: {completed}\n"
+                    f"Failed: {failed}\n"
+                    f"Skipped: {skipped}\n"
+                    f"Elapsed: {self._format_elapsed(self.get_elapsed_seconds())}\n"
+                    f"Logs: {self.logger.root or logs_dir()}\n\n"
+                    "Choose how to continue:"
+                )
+
+                self._show_completion_dialog(
+                    "SEQUENCE FINISHED" if failed_tasks else "SEQUENCE COMPLETE",
+                    summary_lines,
+                    "warning" if failed_tasks else "success",
+                )
 
                 break
 

@@ -1592,10 +1592,12 @@ try:
     from rich.markup import escape
     from rich.syntax import Syntax
     from rich.text import Text
-    from textual import events
+    from textual import events, on
     from textual.app import App, ComposeResult
+    from textual.binding import Binding
     from textual.containers import Horizontal, Vertical
     from textual.reactive import reactive
+    from textual.screen import ModalScreen
     from textual.widgets import ContentSwitcher, Label, ListItem, ListView, ProgressBar, RichLog, Static
 except ImportError:
     sys.stdout.write("\033[1;31m[FATAL]\033[0m UI library import failed post-resolution. Ensure Arch mirrors are synced.\n")
@@ -2260,6 +2262,37 @@ ListItem:focus {{
 ProgressBar {{ dock: bottom; margin: 0; height: 1; }}
 ProgressBar > .progress--bar {{ color: {THEME['accent']}; }}
 ProgressBar > .progress--remaining {{ background: {THEME['muted']}33; }}
+CompletionDialog {{
+    align: center middle;
+    background: rgba(0, 0, 0, 0.75);
+}}
+#completion-dialog {{
+    width: 60; height: auto; max-height: 60%;
+    background: {THEME['bg']}; padding: 1 2;
+}}
+#completion-dialog.-success {{ border: solid {THEME['success']}; }}
+#completion-dialog.-warning {{ border: solid {THEME['warning']}; }}
+#completion-dialog.-danger {{ border: solid {THEME['error']}; }}
+#completion-message {{ color: {THEME['fg']}; margin-bottom: 1; }}
+#modal-title {{
+    color: {THEME['accent']}; margin-bottom: 1; text-style: bold;
+    border-bottom: solid {THEME['muted']};
+    content-align: center middle; width: 100%;
+}}
+.modal-btn-container {{
+    width: 100%; height: auto; align: center middle;
+    margin-top: 1; background: transparent;
+}}
+.modal-close-btn {{
+    background: {THEME['accent']}; color: {THEME['bg']}; text-style: bold;
+    padding: 0 2; width: auto; height: 1; margin: 0 1;
+}}
+.modal-close-btn:hover {{ background: {THEME['fg']}; color: {THEME['bg']}; }}
+.modal-cancel-btn {{
+    background: {THEME['muted']}; color: {THEME['fg']}; text-style: bold;
+    padding: 0 2; width: auto; height: 1; margin: 0 1;
+}}
+.modal-cancel-btn:hover {{ background: {THEME['accent']}; color: {THEME['bg']}; }}
 """
 
 # ==============================================================================
@@ -3575,6 +3608,49 @@ class TaskItem(ListItem):
             self.query_one(Label).update(f" {icon}  {badge}  [{color}]{cmd_str}[/]{suffix}")
 
 
+class CompletionDialog(ModalScreen[bool]):
+    """Final dialog shown when the pipeline finishes: review logs or quit."""
+
+    BINDINGS = [
+        Binding("escape", "dismiss_stay", "View Logs"),
+        Binding("enter,space", "dismiss_stay", "View Logs"),
+        Binding("q", "dismiss_quit", "Quit"),
+    ]
+
+    def __init__(self, title: str = "UPDATE COMPLETE", message: str = "", level: str = "success") -> None:
+        super().__init__()
+        self.title_text = title
+        self.message = message
+        self.level = level
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="completion-dialog", classes=f"-{self.level}"):
+            yield Label(self.title_text, id="modal-title")
+            yield Static(self.message, id="completion-message", markup=False)
+            with Horizontal(classes="modal-btn-container"):
+                yield Label(" View Logs ", classes="modal-close-btn", id="btn-view")
+                yield Label(" Quit ", classes="modal-cancel-btn", id="btn-quit")
+
+    def action_dismiss_stay(self) -> None:
+        self.dismiss(False)
+
+    def action_dismiss_quit(self) -> None:
+        self.dismiss(True)
+
+    @on(events.Click, "#btn-view")
+    def on_view_click(self) -> None:
+        self.dismiss(False)
+
+    @on(events.Click, "#btn-quit")
+    def on_quit_click(self) -> None:
+        self.dismiss(True)
+
+    @on(events.Click)
+    def on_background_click(self, event: events.Click) -> None:
+        if event.control is self:
+            self.dismiss(False)
+
+
 # ==============================================================================
 #  MAIN APPLICATION ENGINE
 # ==============================================================================
@@ -3936,6 +4012,11 @@ class DuskyApp(App):
                     self.log_main(f"\n[bold {THEME['error']} blink]SYSTEM HALTED. GIT INTEGRITY VIOLATION.[/]")
                     for index in range(5, len(self.tasks)):
                         self.update_task_state(index, "skipped")
+                    self._show_completion_dialog(
+                        "UPDATE HALTED",
+                        "Git integrity check failed. The update was stopped to protect your system.\n\nChoose how to continue:",
+                        "danger",
+                    )
                     return
         else:
             self.log_main(f"\n[bold {THEME['accent']}]═══ Phase 1: Git Architecture Reconciliation (SKIPPED) ═══[/]\n")
@@ -3945,6 +4026,11 @@ class DuskyApp(App):
         if OPT_SYNC_ONLY:
             msg = "SYNC SIMULATED." if OPT_DRY_RUN else "SYNC COMPLETE."
             self.log_main(f"\n[bold {THEME['success']}]{msg} (--sync-only specified)[/]")
+            self._show_completion_dialog(
+                "SYNC COMPLETE" if not OPT_DRY_RUN else "SYNC SIMULATED",
+                "Dotfile synchronization finished.\n\nChoose how to continue:",
+                "success",
+            )
             return
 
         self.log_main(f"\n[bold {THEME['accent']}]═══ Phase 2: Configuration Pipeline Execution ═══[/]\n")
@@ -4150,6 +4236,28 @@ class DuskyApp(App):
 
         self.log_main("\n[dim]Press 'Ctrl+C' or 'Q' to terminate abstraction shell.[/dim]")
 
+        summary_lines = [
+            f"Successful: {success_count}",
+            f"Failed: {fail_count}",
+        ]
+        if self.missing_scripts:
+            summary_lines.append(f"Missing: {len(self.missing_scripts)}")
+
+        if self.abort_flag:
+            dialog_title, dialog_level = "UPDATE ABORTED", "danger"
+        elif OPT_DRY_RUN:
+            dialog_title, dialog_level = "DRY-RUN COMPLETE", "success"
+        elif self.missing_scripts:
+            dialog_title, dialog_level = "UPDATE COMPLETE", "warning"
+        else:
+            dialog_title, dialog_level = "UPDATE COMPLETE", "success"
+
+        self._show_completion_dialog(
+            dialog_title,
+            "\n".join(summary_lines) + "\n\nChoose how to continue:",
+            dialog_level,
+        )
+
     def on_resize(self, event: events.Resize) -> None:
         if getattr(self, "current_pty_master", None) is not None:
             with suppress(OSError, ValueError):
@@ -4206,6 +4314,16 @@ class DuskyApp(App):
     def action_quit(self) -> None:
         self.abort_flag = True
         self.exit()
+
+    def _show_completion_dialog(self, title: str, message: str, level: str) -> None:
+        self.push_screen(
+            CompletionDialog(title=title, message=message, level=level),
+            self._on_completion_reply,
+        )
+
+    def _on_completion_reply(self, quit_now: bool | None) -> None:
+        if quit_now:
+            self.exit()
 
 
 if __name__ == "__main__":
