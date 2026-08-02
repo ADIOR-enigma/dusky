@@ -48,6 +48,7 @@ if sys.version_info < (3, 14):
 
 VERSION = "9.6.0"
 SCRIPT_DIR: Path = Path(__file__).resolve().parent
+SCRIPT_PATH: Path = Path(__file__).resolve()
 PROFILES_DIR: Path = Path(
     os.environ.get("DUSKY_UPDATER_PROFILES_DIR", SCRIPT_DIR / "profiles")
 ).resolve()
@@ -1610,6 +1611,7 @@ except ImportError:
 OPT_DRY_RUN = False
 OPT_SKIP_SYNC = False
 OPT_SYNC_ONLY = False
+OPT_POST_SELF_UPDATE = False
 OPT_FORCE = False
 OPT_STOP_ON_FAIL = False
 OPT_ALLOW_DIVERGED_RESET = False
@@ -1697,6 +1699,7 @@ def list_active_scripts(profile: 'ProfileConfig'):
 def parse_args():
     global OPT_DRY_RUN, OPT_SKIP_SYNC, OPT_SYNC_ONLY, OPT_FORCE
     global OPT_STOP_ON_FAIL, OPT_ALLOW_DIVERGED_RESET, OPT_PROFILE_NAME
+    global OPT_POST_SELF_UPDATE
 
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument('--help', '-h', action='store_true')
@@ -1710,6 +1713,7 @@ def parse_args():
     parser.add_argument('--stop-on-fail', action='store_true')
     parser.add_argument('--allow-diverged-reset', action='store_true')
     parser.add_argument('--list', action='store_true')
+    parser.add_argument('--post-self-update', action='store_true')
 
     args, unknown = parser.parse_known_args()
 
@@ -1728,9 +1732,13 @@ def parse_args():
     OPT_DRY_RUN = args.dry_run
     OPT_SKIP_SYNC = args.skip_sync
     OPT_SYNC_ONLY = args.sync_only
+    OPT_POST_SELF_UPDATE = args.post_self_update
     OPT_FORCE = args.force
     OPT_STOP_ON_FAIL = args.stop_on_fail
     OPT_ALLOW_DIVERGED_RESET = args.allow_diverged_reset
+
+    if OPT_POST_SELF_UPDATE:
+        OPT_SKIP_SYNC = True
 
     return args
 
@@ -3998,6 +4006,8 @@ class DuskyApp(App):
                     driver.start_application_mode()
 
     async def execute_pipeline(self) -> None:
+        self._self_hash_before = file_checksum(SCRIPT_PATH)
+
         if not OPT_SKIP_SYNC:
             if OPT_DRY_RUN:
                 self.log_main(f"\n[bold {THEME['accent']}]═══ Phase 1: Git Architecture Reconciliation (DRY-RUN) ═══[/]\n")
@@ -4031,6 +4041,9 @@ class DuskyApp(App):
                 "Dotfile synchronization finished.\n\nChoose how to continue:",
                 "success",
             )
+            return
+
+        if self._maybe_reexec_after_sync():
             return
 
         self.log_main(f"\n[bold {THEME['accent']}]═══ Phase 2: Configuration Pipeline Execution ═══[/]\n")
@@ -4320,6 +4333,27 @@ class DuskyApp(App):
             CompletionDialog(title=title, message=message, level=level),
             self._on_completion_reply,
         )
+
+    def _maybe_reexec_after_sync(self) -> bool:
+        if OPT_POST_SELF_UPDATE or OPT_DRY_RUN or OPT_SYNC_ONLY:
+            return False
+        before = getattr(self, "_self_hash_before", "")
+        after = file_checksum(SCRIPT_PATH)
+        if not before or not after or after == before:
+            return False
+        try:
+            sys.stdout.flush()
+        except Exception:
+            pass
+        sys.stderr.write(
+            "\033[1;33m[updater]\033[0m Script updated during sync — restarting with the new version.\n"
+        )
+        try:
+            sys.stderr.flush()
+        except Exception:
+            pass
+        os.execv(sys.executable, [sys.executable, str(SCRIPT_PATH), "--post-self-update", *sys.argv[1:]])
+        return True
 
     def _on_completion_reply(self, quit_now: bool | None) -> None:
         if quit_now:
