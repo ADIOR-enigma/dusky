@@ -3576,6 +3576,7 @@ class TaskItem(ListItem):
 
     def _update_label(self) -> None:
         if not self.is_mounted:
+            self.call_after_refresh(self._update_label)
             return
 
         if self.dusky_task.mode == 'GIT':
