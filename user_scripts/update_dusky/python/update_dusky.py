@@ -2259,13 +2259,17 @@ ListItem:focus {{
     background: {THEME['accent']}1a; 
     border-left: tall {THEME['accent']};
 }}
-.header-panel {{
-    dock: top; height: 1; 
-    background: {THEME['bg']}; 
+#top_header {{
+    height: 1;
+    dock: top;
+    background: {THEME['bg']};
     color: {THEME['accent']};
-    content-align: center middle; 
     text-style: bold;
-    border-bottom: solid {THEME['muted']}4d;
+    padding: 0 1;
+}}
+#header_title {{
+    width: 100%;
+    text-align: center;
 }}
 ProgressBar {{ dock: bottom; margin: 0; height: 1; }}
 ProgressBar > .progress--bar {{ color: {THEME['accent']}; }}
@@ -3693,7 +3697,8 @@ class DuskyApp(App):
         self.missing_scripts: list[str] = []
 
     def compose(self) -> ComposeResult:
-        yield Static(f" 🦅 DUSKY PIPELINE ENGINE (v{VERSION} — {self.profile.name})", classes="header-panel")
+        with Horizontal(id="top_header"):
+            yield Static(f"{S('logo')} DUSKY UPDATER  [{self.profile.name}]", id="header_title", markup=False)
 
         with Horizontal():
             with Vertical(id="sidebar"):
