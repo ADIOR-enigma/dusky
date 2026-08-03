@@ -198,29 +198,28 @@ panel#autoscroller,
 .autoscroller {
     appearance: none !important;
     -moz-default-appearance: none !important;
+    --panel-background-color: var(--lwt-accent-color, #1c1b22) !important;
+    --panel-border-color: var(--toolbar-field-background-color-focus, #42414d) !important;
     background-color: transparent !important;
     background: transparent !important;
     border: none !important;
+    border-radius: 0 !important;
+    background-image: none !important;
+    position: relative !important;
     box-shadow: none !important;
 }
 
-#autoscroller::part(content),
-panel#autoscroller::part(content),
-.autoscroller::part(content) {
-    background-color: var(--lwt-accent-color, #1c1b22) !important;
-    border: 1px solid var(--toolbar-field-background-color-focus, #42414d) !important;
-    border-radius: 50% !important;
-    padding: 4px !important;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4) !important;
-}
-
-#autoscroller image,
-panel#autoscroller image,
-.autoscroller-icon {
-    -moz-context-properties: fill, stroke !important;
-    fill: var(--toolbarbutton-icon-fill, var(--lwt-text-color, #fbfbfe)) !important;
-    stroke: var(--toolbarbutton-icon-fill, var(--lwt-text-color, #fbfbfe)) !important;
-    color: var(--toolbarbutton-icon-fill, var(--lwt-text-color, #fbfbfe)) !important;
+.autoscroller::after,
+#autoscroller::after {
+    content: "" !important;
+    display: block !important;
+    position: absolute !important;
+    inset: 0 !important;
+    background-color: var(--toolbarbutton-icon-fill, var(--lwt-text-color, #fbfbfe)) !important;
+    mask-image: var(--autoscroll-background-image) !important;
+    mask-repeat: no-repeat !important;
+    mask-position: center !important;
+    mask-size: auto !important;
 }
 
 /* Native Scrollbars, Thumb, Corner & Window Resizer (scrollbars.css) */
