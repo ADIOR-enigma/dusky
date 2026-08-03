@@ -25,6 +25,10 @@ C_YELLOW: str = '\033[1;33m'
 C_RED: str = '\033[0;31m'
 C_RESET: str = '\033[0m'
 
+EXTENSION_ID = "dusky_sites@dusk.com"
+NATIVE_HOST_NAME = "dusky_sites"
+MANIFEST_FILE_NAME = "dusky_sites.json"
+
 def iter_firefox_profiles(base_dir: Path):
     """Yield profile directories from profiles.ini; fallback to prefs.js heuristic."""
     ini = base_dir / "profiles.ini"
@@ -125,8 +129,9 @@ def audit() -> int:
             browser_match = re.search(r"browserTemplate:\s*\{([^}]+)\}", content)
 
             all_roles_valid: bool = True
+            palette_roles: dict[str, str] = {}
             if palette_match:
-                palette_roles: dict[str, str] = dict(re.findall(r"(\w+):\s*[\x27\"](--[\w-]+)[\x27\"]", palette_match.group(1)))
+                palette_roles = dict(re.findall(r"(\w+):\s*[\x27\"](--[\w-]+)[\x27\"]", palette_match.group(1)))
                 print(f"   {C_GREEN}✓{C_RESET} Palette Template Roles ({len(palette_roles)} roles):")
                 for role, var_name in palette_roles.items():
                     if var_name in matugen_vars:
@@ -135,19 +140,26 @@ def audit() -> int:
                         print(f"      • {role:20s} -> {var_name:25s} [{C_RED}❌ UNMAPPED{C_RESET}]")
                         all_roles_valid = False
 
+            browser_roles_ok: bool = True
             if browser_match:
                 browser_elements: dict[str, str] = dict(re.findall(r"(\w+):\s*[\x27\"](\w+)[\x27\"]", browser_match.group(1)))
                 print(f"   {C_GREEN}✓{C_RESET} Browser Theme Elements ({len(browser_elements)} elements mapped)")
+                for element, role in browser_elements.items():
+                    if role not in palette_roles:
+                        print(f"      • {element:25s} -> {role:25s} [{C_RED}❌ ROLE NOT IN PALETTE{C_RESET}]")
+                        browser_roles_ok = False
+                if browser_roles_ok:
+                    print(f"   {C_GREEN}✓{C_RESET} All browser element -> palette role references resolve.")
 
             if live_cache.is_file():
                 try:
                     live_data = json.loads(live_cache.read_text(encoding='utf-8'))
                     live_colors = live_data.get("colors", {})
-                    print(f"   {C_GREEN}✓{C_RESET} Live Firefox C++ Engine Cached Theme: {len(live_colors)} active properties returned by browser.theme.getCurrent()")
+                    print(f"   {C_GREEN}✓{C_RESET} Cached browser.theme snapshot: {len(live_colors)} properties (not a live query; verify freshness separately)")
                 except Exception:
                     pass
 
-            if all_roles_valid and palette_match and browser_match:
+            if all_roles_valid and browser_roles_ok and palette_match and browser_match:
                 passed_checks += 1
         except Exception as e:
             print(f"   {C_RED}❌ Parse Error:{C_RESET} Failed to audit {bg_js}: {e}")
@@ -186,27 +198,64 @@ def audit() -> int:
         home / ".mozilla" / "native-messaging-hosts",
         home / ".config" / "mozilla" / "native-messaging-hosts",
         home / ".librewolf" / "native-messaging-hosts",
-        home / ".zen" / "native-messaging-hosts"
+        home / ".config" / "librewolf" / "native-messaging-hosts",
+        home / ".zen" / "native-messaging-hosts",
+        home / ".config" / "zen" / "native-messaging-hosts",
+        home / ".waterfox" / "native-messaging-hosts",
+        home / ".floorp" / "native-messaging-hosts",
+        home / ".firedragon" / "native-messaging-hosts",
+        home / ".var" / "app" / "org.mozilla.firefox" / ".mozilla" / "native-messaging-hosts",
+        home / ".var" / "app" / "io.gitlab.librewolf-community" / ".librewolf" / "native-messaging-hosts",
     ]
     nmh_found: int = 0
     print(f"\n{C_CYAN}[4/6] Auditing Native Messaging Host Manifests...{C_RESET}")
-    
+
     for d in nmh_dirs:
-        m_file: Path = d / "dusky_sites.json"
+        m_file: Path = d / MANIFEST_FILE_NAME
+
         if not m_file.is_file():
-            m_file = d / "matugenfox.json"
-        if m_file.is_file():
+            continue
+
+        try:
+            data: dict[str, Any] = json.loads(m_file.read_text(encoding="utf-8"))
+
+            manifest_name = data.get("name", "")
+            manifest_type = data.get("type", "")
+            host_raw = str(data.get("path", "")).strip()
+
+            host_path = Path(host_raw).expanduser()
+            if not host_path.is_absolute():
+                host_path = (m_file.parent / host_path).resolve()
+
+            allowed_exts = data.get("allowed_extensions", [])
+            if not isinstance(allowed_exts, list):
+                allowed_exts = []
+
+            name_ok = manifest_name == NATIVE_HOST_NAME
+            type_ok = manifest_type == "stdio"
+            ext_ok = EXTENSION_ID in allowed_exts
+
             try:
-                data: dict[str, Any] = json.loads(m_file.read_text(encoding='utf-8'))
-                host_path: Path = Path(data.get("path", "")).expanduser()
-                allowed_exts: list[str] = data.get("allowed_extensions", [])
-                is_exec: bool = host_path.is_file() and (host_path.stat().st_mode & stat.S_IXUSR != 0 or os.access(host_path, os.X_OK))
-                status: str = f"{C_GREEN}EXECUTABLE{C_RESET}" if is_exec else f"{C_RED}NOT EXECUTABLE{C_RESET}"
-                print(f"   {C_GREEN}✓{C_RESET} Manifest in {d.parent.name}: Host path {host_path.name} [{status}] | ID: {allowed_exts}")
-                if is_exec:
-                    nmh_found += 1
-            except (json.JSONDecodeError, OSError) as e:
-                print(f"   {C_RED}❌ Host Manifest Error in {d}:{C_RESET} {e}")
+                mode = host_path.stat().st_mode
+            except OSError:
+                mode = 0
+
+            exec_bits = bool(mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH))
+            is_exec = host_path.is_file() and exec_bits and os.access(host_path, os.R_OK | os.X_OK)
+
+            status = f"{C_GREEN}EXECUTABLE{C_RESET}" if is_exec else f"{C_RED}NOT EXECUTABLE{C_RESET}"
+            validity = f"{C_GREEN}VALID{C_RESET}" if (name_ok and type_ok and ext_ok) else f"{C_RED}INVALID METADATA{C_RESET}"
+
+            print(
+                f"   {C_GREEN}✓{C_RESET} Manifest in {d.parent.name}: {m_file.name} "
+                f"[{status}] [{validity}] | allowed: {allowed_exts}"
+            )
+
+            if is_exec and name_ok and type_ok and ext_ok:
+                nmh_found += 1
+
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"   {C_RED}❌ Host Manifest Error in {d}:{C_RESET} {e}")
 
     if nmh_found > 0:
         passed_checks += 1
@@ -283,8 +332,24 @@ def audit() -> int:
         user_chrome: Path = p / "chrome" / "userChrome.css"
         user_js: Path = p / "user.js"
 
-        pref_ok: bool = user_js.is_file() and "toolkit.legacyUserProfileCustomizations.stylesheets" in user_js.read_text(encoding='utf-8', errors='ignore')
-        import_ok: bool = user_chrome.is_file() and "dusky_menu.css" in user_chrome.read_text(encoding='utf-8', errors='ignore')
+        user_js_text: str = ""
+        if user_js.is_file():
+            user_js_text = user_js.read_text(encoding='utf-8', errors='ignore')
+        pref_ok: bool = bool(re.search(
+            r'^\s*user_pref\(\s*"toolkit\.legacyUserProfileCustomizations\.stylesheets"\s*,\s*true\s*\)\s*;\s*$',
+            user_js_text,
+            re.MULTILINE,
+        ))
+
+        user_chrome_text: str = ""
+        if user_chrome.is_file():
+            user_chrome_text = user_chrome.read_text(encoding='utf-8', errors='ignore')
+        import_ok: bool = bool(re.search(
+            r'^\s*@import\s+(?:url\(\s*["\']?dusky_menu\.css["\']?\s*\)|["\']dusky_menu\.css["\'])\s*;\s*$',
+            user_chrome_text,
+            re.MULTILINE,
+        ))
+
         file_ok: bool = dusky_menu.is_file()
 
         selectors_ok: bool = False
