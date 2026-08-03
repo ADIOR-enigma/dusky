@@ -4263,6 +4263,11 @@ class TaskSearchScreen(ModalScreen[str | None]):
     def action_cursor_up(self) -> None:
         self.query_one(OptionList).action_cursor_up()
 
+    @on(events.Click)
+    def on_background_click(self, event: events.Click) -> None:
+        if event.control is self:
+            self.dismiss(None)
+
     def action_dismiss_modal(self) -> None:
         self.dismiss(None)
 
@@ -4315,6 +4320,11 @@ class LogSearchScreen(ModalScreen[None]):
     @on(Input.Submitted)
     def on_input_submitted(self, event: Input.Submitted) -> None:
         event.stop()
+
+    @on(events.Click)
+    def on_background_click(self, event: events.Click) -> None:
+        if event.control is self:
+            self.dismiss(None)
 
     def action_dismiss_modal(self) -> None:
         self.dismiss(None)
@@ -4502,6 +4512,11 @@ class ConfirmQuitScreen(ModalScreen[str]):
         elif key in ("c", "n", "escape", "q"):
             self.dismiss("cancel")
 
+    @on(events.Click)
+    def on_background_click(self, event: events.Click) -> None:
+        if event.control is self:
+            self.dismiss("cancel")
+
     def action_confirm_abort(self) -> None:
         self.dismiss("abort")
 
@@ -4522,7 +4537,7 @@ class HelpScreen(ModalScreen[None]):
 
             text = Text()
             text.append("Global Navigation & Shortcuts\n", style="bold cyan")
-            text.append("  F1 / ?         Open this Help screen\n")
+            text.append("  F1 / ?         Open / close (toggle) this Help screen\n")
             text.append("  Ctrl+F         Fuzzy search tasks\n")
             text.append("  Ctrl+L         Search current execution log\n")
             text.append("  F              Cycle filter (all/pending/running/completed/failed/skipped)\n")
@@ -4546,6 +4561,17 @@ class HelpScreen(ModalScreen[None]):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(None)
+
+    def on_key(self, event: events.Key) -> None:
+        key = event.key.lower()
+        if key in ("f1", "question_mark", "escape", "q", "enter", "space", "?") or event.character in ("?", "q"):
+            self.dismiss(None)
+            event.stop()
+
+    @on(events.Click)
+    def on_background_click(self, event: events.Click) -> None:
+        if event.control is self:
+            self.dismiss(None)
 
     def action_dismiss(self) -> None:
         self.dismiss(None)
@@ -5067,6 +5093,9 @@ class DuskyOrchestratorApp(App):
             self.exit()
 
     def action_help(self) -> None:
+        if isinstance(self.screen, HelpScreen):
+            self.screen.dismiss(None)
+            return
         if isinstance(self.screen, ModalScreen):
             return
         self.push_screen(HelpScreen())

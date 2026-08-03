@@ -1596,10 +1596,22 @@ try:
     from textual import events, on
     from textual.app import App, ComposeResult
     from textual.binding import Binding
-    from textual.containers import Horizontal, Vertical
+    from textual.containers import Container, Horizontal, Vertical
     from textual.reactive import reactive
     from textual.screen import ModalScreen
-    from textual.widgets import ContentSwitcher, Label, ListItem, ListView, ProgressBar, RichLog, Static
+    from textual.widgets import (
+        Button,
+        ContentSwitcher,
+        Input,
+        Label,
+        ListItem,
+        ListView,
+        OptionList,
+        ProgressBar,
+        RichLog,
+        Static,
+    )
+    from textual.widgets.option_list import Option
 except ImportError:
     sys.stdout.write("\033[1;31m[FATAL]\033[0m UI library import failed post-resolution. Ensure Arch mirrors are synced.\n")
     sys.exit(1)
@@ -2274,7 +2286,7 @@ ListItem:focus {{
 ProgressBar {{ dock: bottom; margin: 0; height: 1; }}
 ProgressBar > .progress--bar {{ color: {THEME['accent']}; }}
 ProgressBar > .progress--remaining {{ background: {THEME['muted']}33; }}
-CompletionDialog {{
+CompletionDialog, TaskSearchScreen, LogSearchScreen, ConfirmQuitScreen, HelpScreen {{
     align: center middle;
     background: rgba(0, 0, 0, 0.75);
 }}
@@ -2305,6 +2317,51 @@ CompletionDialog {{
     padding: 0 2; width: auto; height: 1; margin: 0 1;
 }}
 .modal-cancel-btn:hover {{ background: {THEME['accent']}; color: {THEME['bg']}; }}
+#search_dialog, #log_search_dialog {{
+    width: 86;
+    height: 75%;
+    background: {THEME['bg']};
+    border: solid {THEME['accent']};
+    padding: 1 2;
+}}
+#search_list, #log_search_list {{
+    height: 1fr;
+    border: none;
+    background: {THEME['bg']};
+    color: {THEME['fg']};
+}}
+#search_input, #log_search_input {{
+    margin-bottom: 1;
+}}
+#search_title, #log_search_title {{
+    color: {THEME['accent']};
+    text-style: bold;
+    margin-bottom: 1;
+}}
+#confirm_dialog {{
+    width: 56;
+    height: auto;
+    background: {THEME['bg']};
+    border: heavy {THEME['warning']};
+    padding: 1 2;
+}}
+#confirm_title {{
+    color: {THEME['error']};
+    text-style: bold;
+    margin-bottom: 1;
+}}
+#confirm_text {{
+    color: {THEME['fg']};
+    margin-bottom: 1;
+}}
+#help_dialog {{
+    width: 80;
+    height: auto;
+    max-height: 80%;
+    background: {THEME['bg']};
+    border: heavy {THEME['accent']};
+    padding: 1 2;
+}}
 """
 
 # ==============================================================================
@@ -3744,8 +3801,6 @@ class TaskItem(ListItem):
             badge = f"[bold {THEME['success']}]USER[/]"
 
         cmd_str = f"{self.dusky_task.name} {' '.join(self.dusky_task.args)}".strip()
-        if len(cmd_str) > 31:
-            cmd_str = cmd_str[:28] + "..."
         cmd_str = escape(cmd_str)
 
         suffix = ""
@@ -3772,6 +3827,266 @@ class TaskItem(ListItem):
 
         with suppress(Exception):
             self.query_one(Label).update(f" {icon}  {badge}  [{color}]{cmd_str}[/]{suffix}")
+
+
+class TaskSearchScreen(ModalScreen[int | None]):
+    BINDINGS = [
+        Binding("escape", "dismiss_modal", "Dismiss"),
+        Binding("ctrl+n", "cursor_down", "Down"),
+        Binding("ctrl+p", "cursor_up", "Up"),
+    ]
+
+    def __init__(self, tasks: list[DuskyTask]):
+        super().__init__()
+        self.tasks = tasks
+        self.results: list[int] = []
+
+    def compose(self) -> ComposeResult:
+        with Container(id="search_dialog"):
+            yield Static(f"{S('logo')} Fuzzy Task Search", id="search_title")
+            yield Input(placeholder="Search tasks...", id="search_input")
+            yield OptionList(id="search_list")
+
+    def on_mount(self) -> None:
+        self.query_one("#search_input", Input).focus()
+        self._update_results("")
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        self._update_results(event.value)
+
+    def _update_results(self, query: str) -> None:
+        ol = self.query_one(OptionList)
+        ol.clear_options()
+        self.results.clear()
+
+        query_lower = query.lower().strip()
+        query_no_space = query_lower.replace(" ", "")
+        limit = GLOBAL_CONFIG.get("ui", {}).get("search_result_limit", 200)
+
+        if not query_lower:
+            scored = [(0, i, t) for i, t in enumerate(self.tasks[:limit])]
+        else:
+            scored_results: list[tuple[int, int, DuskyTask]] = []
+            for idx, item in enumerate(self.tasks):
+                target = item.name.lower()
+                args_text = " ".join(item.args).lower()
+                haystack = f"{target} {args_text}"
+                score = 0
+
+                if query_lower == target:
+                    score += 100
+                elif target.startswith(query_lower):
+                    score += 50
+                elif query_lower in target:
+                    score += 30
+                elif query_lower in haystack:
+                    score += 18
+
+                if query_no_space and query_no_space in target.replace(" ", "").replace("-", "").replace("_", ""):
+                    score += 20
+
+                s_idx = q_idx = 0
+                match_positions: list[int] = []
+                while s_idx < len(target) and q_idx < len(query_no_space):
+                    if target[s_idx] == query_no_space[q_idx]:
+                        match_positions.append(s_idx)
+                        q_idx += 1
+                    s_idx += 1
+
+                if q_idx == len(query_no_space) and query_no_space:
+                    if len(match_positions) > 1:
+                        spread = (match_positions[-1] - match_positions[0]) - (len(match_positions) - 1)
+                        score += max(0, 15 - spread)
+                    else:
+                        score += 15
+                    score += 5
+
+                if score > 0:
+                    scored_results.append((score, idx, item))
+
+            scored_results.sort(key=lambda x: (-x[0], x[1]))
+            scored = scored_results
+
+        options: list[Option] = []
+        for _, idx, item in scored[:limit]:
+            txt = Text()
+            txt.append(f"{idx:03d} ")
+            if item.mode == 'GIT':
+                txt.append(" [GIT] ", style="bold cyan")
+            elif item.mode == 'S':
+                txt.append(" [SUDO] ", style="bold red")
+            else:
+                txt.append(" [USER] ", style="bold green")
+
+            txt.append(item.name, style="bold white")
+            if item.args:
+                txt.append(" " + shlex.join(item.args), style="dim")
+            options.append(Option(txt, id=str(idx)))
+            self.results.append(idx)
+
+        ol.add_options(options)
+
+    @on(OptionList.OptionSelected)
+    def on_selected(self, event: OptionList.OptionSelected) -> None:
+        if event.option and event.option.id is not None:
+            self.dismiss(int(event.option.id))
+        elif event.option_index is not None and event.option_index < len(self.results):
+            self.dismiss(self.results[event.option_index])
+
+    @on(Input.Submitted)
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        event.stop()
+        ol = self.query_one(OptionList)
+        if ol.highlighted is not None and ol.highlighted < len(self.results):
+            self.dismiss(self.results[ol.highlighted])
+        elif self.results:
+            self.dismiss(self.results[0])
+
+    def action_cursor_down(self) -> None:
+        self.query_one(OptionList).action_cursor_down()
+
+    def action_cursor_up(self) -> None:
+        self.query_one(OptionList).action_cursor_up()
+
+    def action_dismiss_modal(self) -> None:
+        self.dismiss(None)
+
+
+class LogSearchScreen(ModalScreen[None]):
+    BINDINGS = [
+        Binding("escape", "dismiss_modal", "Dismiss"),
+    ]
+
+    def __init__(self, title: str, lines: list[str]):
+        super().__init__()
+        self.title = title
+        self.lines = lines
+
+    def compose(self) -> ComposeResult:
+        with Container(id="log_search_dialog"):
+            yield Static(f"{S('logo')} Log Search: {self.title}", id="log_search_title")
+            yield Input(placeholder="Search log...", id="log_search_input")
+            yield OptionList(id="log_search_list")
+
+    def on_mount(self) -> None:
+        self.query_one("#log_search_input", Input).focus()
+        self._update("")
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        self._update(event.value)
+
+    def _update(self, query: str) -> None:
+        ol = self.query_one("#log_search_list", OptionList)
+        ol.clear_options()
+
+        q = query.strip().lower()
+        if not q:
+            return
+
+        options: list[Option] = []
+        for i, line in enumerate(self.lines):
+            clean = ANSI_STRIP_REGEX.sub("", line)
+            if q in clean.lower():
+                txt = Text()
+                txt.append(f"{i + 1:5d}  ", style="dim")
+                txt.append(clean.strip())
+                options.append(Option(txt))
+
+        ol.add_options(options[:300])
+
+    def action_dismiss_modal(self) -> None:
+        self.dismiss(None)
+
+
+class ConfirmQuitScreen(ModalScreen[str]):
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("y,a,enter", "confirm_abort", "Abort"),
+        Binding("n,c,q", "cancel", "Cancel"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Container(id="confirm_dialog"):
+            yield Static(f"{S('failed')}  ABORT DUSKY UPDATER?", id="confirm_title")
+            yield Static("Are you sure you want to terminate the active update process?", id="confirm_text")
+            with Horizontal(classes="modal-btn-container"):
+                yield Label(" Cancel [N/C] ", classes="modal-cancel-btn", id="btn_cancel")
+                yield Label(" Abort [Y/A] ", classes="modal-close-btn", id="btn_abort")
+
+    @on(events.Click, "#btn_abort")
+    def on_abort_click(self) -> None:
+        self.dismiss("abort")
+
+    @on(events.Click, "#btn_cancel")
+    def on_cancel_click(self) -> None:
+        self.dismiss("cancel")
+
+    def on_key(self, event: events.Key) -> None:
+        key = event.key.lower()
+        if key in ("a", "y", "enter", "space"):
+            self.dismiss("abort")
+        elif key in ("c", "n", "escape", "q"):
+            self.dismiss("cancel")
+
+    def action_confirm_abort(self) -> None:
+        self.dismiss("abort")
+
+    def action_cancel(self) -> None:
+        self.dismiss("cancel")
+
+
+class HelpScreen(ModalScreen[None]):
+    BINDINGS = [
+        Binding("escape", "dismiss", "Dismiss"),
+        Binding("f1", "dismiss", "Dismiss"),
+        Binding("question_mark", "dismiss", "Dismiss"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Container(id="help_dialog"):
+            yield Static(f"{S('logo')} Dusky Updater Keybindings & Help", id="modal-title")
+
+            text = Text()
+            text.append("Global Navigation & Shortcuts\n", style=f"bold {THEME['accent']}")
+            text.append("  F1 / ?         Open / close (toggle) this Help screen\n")
+            text.append("  Ctrl+F         Fuzzy search tasks\n")
+            text.append("  Ctrl+L         Search current execution log\n")
+            text.append("  F              Cycle filter (all/pending/running/success/failed/skipped)\n")
+            text.append("  q / Esc / Ctrl+Q / Ctrl+Z   Quit / Abort confirmation dialog\n\n")
+
+            text.append("Pane Resizing & Layout\n", style=f"bold {THEME['accent']}")
+            text.append("  Alt+Right / Alt+L / ]  Expand sidebar width\n")
+            text.append("  Alt+Left / Alt+H / [   Shrink sidebar width\n")
+            text.append("  Mouse Drag     Click and drag split border left or right\n\n")
+
+            text.append("List & Item Selection\n", style=f"bold {THEME['accent']}")
+            text.append("  j / k or Up/Down       Navigate tasks in left sidebar\n")
+            text.append("  Enter                  Select task and view task log\n")
+            text.append("  y / a                  Confirm / Abort in modal dialogs\n")
+            text.append("  n / c / Esc            Cancel in modal dialogs\n")
+
+            yield Static(text)
+
+            with Horizontal(classes="modal-btn-container"):
+                yield Label(" Close [Esc/F1] ", classes="modal-close-btn", id="btn_close")
+
+    def on_key(self, event: events.Key) -> None:
+        key = event.key.lower()
+        if key in ("f1", "question_mark", "escape", "q", "enter", "space", "?") or event.character in ("?", "q"):
+            self.dismiss(None)
+            event.stop()
+
+    @on(events.Click, "#btn_close")
+    def on_close_click(self) -> None:
+        self.dismiss(None)
+
+    @on(events.Click)
+    def on_background_click(self, event: events.Click) -> None:
+        if event.control is self:
+            self.dismiss(None)
+
+    def action_dismiss(self) -> None:
+        self.dismiss(None)
 
 
 class CompletionDialog(ModalScreen[bool]):
@@ -3825,7 +4140,27 @@ class CompletionDialog(ModalScreen[bool]):
 # ==============================================================================
 class DuskyApp(App):
     CSS = DUSKY_CSS
-    BINDINGS = [("q", "quit", "Quit")]
+    BINDINGS = [
+        Binding("ctrl+f", "open_search", "Search Tasks", priority=True),
+        Binding("ctrl+l", "search_log", "Search Log", priority=True),
+        Binding("ctrl+q", "request_quit", "Quit", priority=True),
+        Binding("q", "request_quit", "Quit", priority=True),
+        Binding("escape", "request_quit", "Quit", priority=True),
+        Binding("ctrl+z", "request_quit", "Quit", priority=True),
+        Binding("f1", "help", "Help", priority=True),
+        Binding("question_mark", "help", "Help"),
+        Binding("f", "cycle_filter", "Filter"),
+        Binding("alt+left", "shrink_left_pane", "Shrink Sidebar", priority=True),
+        Binding("alt+right", "expand_left_pane", "Expand Sidebar", priority=True),
+        Binding("alt+h", "shrink_left_pane", "Shrink Sidebar", priority=True),
+        Binding("alt+l", "expand_left_pane", "Expand Sidebar", priority=True),
+        Binding("ctrl+left", "shrink_left_pane", "Shrink Sidebar", priority=True),
+        Binding("ctrl+right", "expand_left_pane", "Expand Sidebar", priority=True),
+        Binding("bracketleft", "shrink_left_pane", "Shrink Sidebar"),
+        Binding("bracketright", "expand_left_pane", "Expand Sidebar"),
+        Binding("j", "tree_down", "Tree Down"),
+        Binding("k", "tree_up", "Tree Up"),
+    ]
 
     def __init__(self, profile: ProfileConfig, tasks: list[DuskyTask], has_sudo: bool):
         super().__init__()
@@ -3848,6 +4183,10 @@ class DuskyApp(App):
         self.run_logger: RunLogger | None = None
         self.once_store: OnceStore | None = None
         self.missing_scripts: list[str] = []
+        self.sidebar_width: int = GLOBAL_CONFIG.get("ui", {}).get("sidebar_width", 35)
+        self.filter_mode: str = "all"
+        self._log_lines: dict[int | str, deque[str]] = {}
+        self._is_dragging_pane: bool = False
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="top_header"):
@@ -3907,10 +4246,18 @@ class DuskyApp(App):
 
     def log_main(self, message: str) -> None:
         self.query_one("#log-main", RichLog).write(message)
+        if "main" not in self._log_lines:
+            max_lines = GLOBAL_CONFIG.get("ui", {}).get("max_log_lines", 6000)
+            self._log_lines["main"] = deque(maxlen=max_lines)
+        self._log_lines["main"].append(str(message))
 
     def log_task(self, message: Any, index: int) -> None:
         with suppress(Exception):
             self.query_one(f"#log-task-{index}", RichLog).write(message)
+        if index not in self._log_lines:
+            max_lines = GLOBAL_CONFIG.get("ui", {}).get("max_log_lines", 6000)
+            self._log_lines[index] = deque(maxlen=max_lines)
+        self._log_lines[index].append(str(message))
 
     def _restore_last_git_diff(self) -> None:
         payload = None
@@ -4519,16 +4866,149 @@ class DuskyApp(App):
             dialog_level,
         )
 
+    def action_open_search(self) -> None:
+        if isinstance(self.screen, ModalScreen):
+            return
+
+        def on_search_selected(task_idx: int | None) -> None:
+            if task_idx is None:
+                return
+            list_view = self.query_one("#task_list", ListView)
+            target_pos = task_idx + 1
+            if 0 <= target_pos < len(list_view.children):
+                list_view.index = target_pos
+
+        self.push_screen(TaskSearchScreen(self.tasks), on_search_selected)
+
+    def action_search_log(self) -> None:
+        if isinstance(self.screen, ModalScreen):
+            return
+
+        list_view = self.query_one("#task_list", ListView)
+        current_idx = list_view.index
+        key: int | str = "main"
+        title = "Main Core Log"
+
+        if current_idx is not None and current_idx > 0 and (current_idx - 1) < len(self.tasks):
+            task_idx = current_idx - 1
+            key = task_idx
+            title = self.tasks[task_idx].name
+
+        lines = list(self._log_lines.get(key, deque()))
+        self.push_screen(LogSearchScreen(title, lines))
+
+    def action_cycle_filter(self) -> None:
+        if isinstance(self.screen, ModalScreen):
+            return
+
+        filters = ["all", "pending", "running", "success", "failed", "skipped"]
+        idx = filters.index(self.filter_mode) if self.filter_mode in filters else 0
+        self.filter_mode = filters[(idx + 1) % len(filters)]
+
+        list_view = self.query_one("#task_list", ListView)
+        for item in list_view.query(TaskItem):
+            if self.filter_mode == "all":
+                item.display = True
+            else:
+                item.display = (item.status == self.filter_mode)
+
+        self.log_main(f"[dim]Task filter set to: [bold]{self.filter_mode}[/bold][/dim]")
+
+    def _set_pane_widths(self, width_pct: int) -> None:
+        min_w = GLOBAL_CONFIG.get("ui", {}).get("min_left_pane_width", 15)
+        max_w = GLOBAL_CONFIG.get("ui", {}).get("max_left_pane_width", 80)
+        self.sidebar_width = max(min_w, min(max_w, width_pct))
+        with suppress(Exception):
+            self.query_one("#sidebar").styles.width = f"{self.sidebar_width}%"
+            self.query_one("#log_container").styles.width = f"{100 - self.sidebar_width}%"
+
+    def _update_pane_width_from_mouse(self, mouse_screen_x: int) -> None:
+        with suppress(Exception):
+            screen_w = self.size.width
+            if screen_w > 0:
+                pct = int(mouse_screen_x * 100 / screen_w)
+                self._set_pane_widths(pct)
+
+    def action_shrink_left_pane(self) -> None:
+        self._set_pane_widths(self.sidebar_width - 4)
+
+    def action_expand_left_pane(self) -> None:
+        self._set_pane_widths(self.sidebar_width + 4)
+
+    def action_tree_down(self) -> None:
+        with suppress(Exception):
+            self.query_one("#task_list", ListView).action_cursor_down()
+
+    def action_tree_up(self) -> None:
+        with suppress(Exception):
+            self.query_one("#task_list", ListView).action_cursor_up()
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        if isinstance(self.screen, ModalScreen):
+            return
+        with suppress(Exception):
+            sidebar = self.query_one("#sidebar")
+            sidebar_x = sidebar.region.x + sidebar.region.width
+            if abs(event.screen_x - sidebar_x) <= 4:
+                self._is_dragging_pane = True
+                self._update_pane_width_from_mouse(event.screen_x)
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        if getattr(self, "_is_dragging_pane", False):
+            if event.button == 0:
+                self._is_dragging_pane = False
+            else:
+                self._update_pane_width_from_mouse(event.screen_x)
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        self._is_dragging_pane = False
+
+    def action_request_quit(self) -> None:
+        if isinstance(self.screen, ConfirmQuitScreen):
+            return
+
+        if isinstance(self.screen, CompletionDialog):
+            self.exit()
+            return
+
+        def on_quit_decision(result: str | None) -> None:
+            if result == "abort":
+                self.log_main("[FATAL] User requested sequence termination.")
+                self.action_quit()
+
+        self.push_screen(ConfirmQuitScreen(), on_quit_decision)
+
+    def action_help(self) -> None:
+        if isinstance(self.screen, HelpScreen):
+            self.screen.dismiss(None)
+            return
+        if isinstance(self.screen, ModalScreen):
+            return
+        self.push_screen(HelpScreen())
+
     def on_resize(self, event: events.Resize) -> None:
         if getattr(self, "current_pty_master", None) is not None:
             with suppress(OSError, ValueError):
-                sidebar_percent = GLOBAL_CONFIG.get("ui", {}).get("sidebar_width", 35)
+                sidebar_percent = self.sidebar_width
                 actual_cols = max(10, int(event.size.width * (1 - (sidebar_percent / 100))) - 2)
                 winsize = struct.pack("HHHH", event.size.height, actual_cols, 0, 0)
                 fcntl.ioctl(self.current_pty_master, termios.TIOCSWINSZ, winsize)
 
     def on_key(self, event: events.Key) -> None:
+        if isinstance(self.screen, ModalScreen):
+            return
+
         if getattr(self, "current_pty_master", None) is not None:
+            if event.key == "ctrl+f":
+                self.action_open_search()
+                event.stop()
+                return
+
+            if event.key == "ctrl+l":
+                self.action_search_log()
+                event.stop()
+                return
+
             if event.key == "ctrl+q":
                 self.log_main("[FATAL] Emergency abort requested from PTY session.")
                 self.action_quit()
