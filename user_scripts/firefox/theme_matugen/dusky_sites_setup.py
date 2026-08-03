@@ -527,7 +527,319 @@ def resolve_source_xpi(script_dir: Path) -> Path | None:
                     return xpi
     return None
 
+# ─────────────────────────────────────────────────────────────
+# Uninstall
+# ─────────────────────────────────────────────────────────────
+def _browser_data_dirs(home: Path) -> list[Path]:
+    """Firefox-family base directories that receive NMH manifests / global XPIs."""
+    return [
+        home / ".mozilla",
+        home / ".config" / "mozilla",
+        home / ".librewolf",
+        home / ".config" / "librewolf",
+        home / ".zen",
+        home / ".config" / "zen",
+        home / ".waterfox",
+        home / ".floorp",
+        home / ".firedragon",
+        home / ".var" / "app" / "org.mozilla.firefox" / ".mozilla",
+        home / ".var" / "app" / "io.gitlab.librewolf-community" / ".librewolf",
+    ]
+
+def _profile_base_dirs(home: Path) -> list[Path]:
+    """Directories whose children are profiles (mirrors setup_user_chrome)."""
+    return [
+        home / ".mozilla" / "firefox",
+        home / ".config" / "mozilla" / "firefox",
+        home / ".librewolf",
+        home / ".config" / "librewolf",
+        home / ".zen",
+        home / ".config" / "zen",
+        home / ".waterfox",
+        home / ".floorp",
+        home / ".firedragon",
+        home / ".var" / "app" / "org.mozilla.firefox" / ".mozilla" / "firefox",
+        home / ".var" / "app" / "io.gitlab.librewolf-community" / ".librewolf",
+    ]
+
+def _browser_processes_running() -> list[str]:
+    """Return names of detected running Firefox-family browsers."""
+    try:
+        import subprocess
+        out = subprocess.run(["pgrep", "-x", "-a", "firefox|librewolf|zen|waterfox|floorp|firedragon"],
+                             capture_output=True, text=True).stdout
+    except OSError:
+        return []
+    names: set[str] = set()
+    for line in out.splitlines():
+        for b in ("firefox", "librewolf", "zen", "waterfox", "floorp", "firedragon"):
+            # pgrep -x matches full process name; token at start or after whitespace
+            if re.search(rf"(^|\s){re.escape(b)}(\s|$)", line):
+                names.add(b)
+    return sorted(names)
+
+def _remove_file(path: Path) -> bool:
+    try:
+        if path.is_symlink() or path.is_file():
+            path.unlink()
+            return True
+    except OSError as e:
+        print_warn(f"Could not remove {path}: {e}")
+    return False
+
+def _remove_tree(path: Path) -> bool:
+    try:
+        if path.is_dir():
+            shutil.rmtree(path)
+            return True
+    except OSError as e:
+        print_warn(f"Could not remove directory {path}: {e}")
+    return False
+
+def unpatch_extensions_json(profile: Path) -> None:
+    """Remove dusky_sites@dusky.com entries from extensions.json and invalidate addon cache."""
+    ext_json_path = profile / "extensions.json"
+    if ext_json_path.is_file():
+        try:
+            data = json.loads(ext_json_path.read_text(encoding="utf-8"))
+            addons = data.get("addons", [])
+            kept = [a for a in addons if a.get("id") != EXTENSION_ID]
+            if len(kept) != len(addons):
+                data["addons"] = kept
+                atomic_write_text(ext_json_path, json.dumps(data, indent=2) + "\n")
+                print_success(f"Removed {EXTENSION_ID} from {ext_json_path}")
+        except Exception as e:
+            print_warn(f"Could not patch extensions.json in {profile}: {e}")
+
+    startup_cache = profile / "addonStartup.json.lz4"
+    if startup_cache.is_file():
+        try:
+            startup_cache.unlink()
+        except OSError as e:
+            print_warn(f"Could not reset addonStartup cache in {profile}: {e}")
+
+def restore_profile_prefs(profile: Path) -> int:
+    """Remove the prefs the installer wrote, only if they still match our values."""
+    user_js = profile / "user.js"
+    if not user_js.is_file():
+        return 0
+    try:
+        content = user_js.read_text(encoding="utf-8")
+    except OSError as e:
+        print_warn(f"Could not read {user_js}: {e}")
+        return 0
+    removed = 0
+    for pref_name, pref_val in PREFS_TO_SET:
+        exact = f'user_pref("{pref_name}", {pref_val});'
+        # remove only exact full-line matches we wrote (never a user-modified value)
+        new_content_lines = []
+        for line in content.splitlines(keepends=True):
+            stripped = line.strip()
+            if stripped == exact:
+                removed += 1
+                continue
+            new_content_lines.append(line)
+        content = "".join(new_content_lines)
+    if removed:
+        try:
+            atomic_write_text(user_js, content)
+            print_success(f"Removed {removed} pref line(s) from {user_js}")
+        except OSError as e:
+            print_warn(f"Could not write {user_js}: {e}")
+    return removed
+
+def restore_user_chrome(profile: Path) -> None:
+    """Remove dusky_menu.css and its @import from userChrome.css."""
+    chrome_dir = profile / "chrome"
+    if not chrome_dir.is_dir():
+        return
+    menu_css = chrome_dir / "dusky_menu.css"
+    import_line = '@import url("dusky_menu.css");'
+    if _remove_file(menu_css):
+        print_success(f"Removed {menu_css}")
+
+    user_chrome = chrome_dir / "userChrome.css"
+    if user_chrome.is_file():
+        try:
+            lines = user_chrome.read_text(encoding="utf-8").splitlines()
+        except OSError as e:
+            print_warn(f"Could not read {user_chrome}: {e}")
+            return
+        kept = [ln for ln in lines if ln.strip() != import_line]
+        # trim blank lines left at the top by the removed import
+        while kept and kept[0].strip() == "":
+            kept.pop(0)
+        new_text = "\n".join(kept).rstrip() + "\n"
+        if new_text.strip():
+            try:
+                atomic_write_text(user_chrome, new_text)
+                print_success(f"Restored {user_chrome}")
+            except OSError as e:
+                print_warn(f"Could not write {user_chrome}: {e}")
+        else:
+            _remove_file(user_chrome)
+            print_success(f"Removed empty {user_chrome}")
+
+def uninstall_manifests(home: Path) -> int:
+    """Remove native messaging manifests that belong to this extension."""
+    removed = 0
+    for base_dir in _browser_data_dirs(home):
+        nmh_dir = base_dir / "native-messaging-hosts"
+        if not nmh_dir.is_dir():
+            continue
+        manifest_file = nmh_dir / MANIFEST_NAME
+        if not manifest_file.is_file():
+            continue
+        try:
+            data = json.loads(manifest_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if data.get("name") == "dusky_sites" and EXTENSION_ID in data.get("allowed_extensions", []):
+            if _remove_file(manifest_file):
+                print_success(f"Removed manifest {manifest_file}")
+                removed += 1
+    return removed
+
+def uninstall_global_xpis(home: Path) -> int:
+    """Remove the XPI from global extension paths."""
+    global_ext_dirs = [
+        home / ".mozilla" / "extensions" / "{ec8030f7-c20a-464f-9b0e-13a3a9e97384}",
+        home / ".config" / "mozilla" / "extensions" / "{ec8030f7-c20a-464f-9b0e-13a3a9e97384}",
+        home / ".librewolf" / "extensions",
+        home / ".zen" / "extensions",
+        home / ".waterfox" / "extensions",
+        home / ".floorp" / "extensions",
+    ]
+    removed = 0
+    for g_dir in global_ext_dirs:
+        xpi = g_dir / f"{EXTENSION_ID}.xpi"
+        if _remove_file(xpi):
+            print_success(f"Removed {xpi}")
+            removed += 1
+    return removed
+
+def uninstall_profile_artifacts(home: Path) -> int:
+    """Per profile: remove XPI, extensions.json entry, storage data, chrome CSS, and prefs."""
+    profiles = 0
+    for base_dir in _profile_base_dirs(home):
+        if not base_dir.is_dir():
+            continue
+        for profile in iter_firefox_profiles(base_dir):
+            profiles += 1
+            xpi = profile / "extensions" / f"{EXTENSION_ID}.xpi"
+            if _remove_file(xpi):
+                print_success(f"Removed {xpi}")
+            data_dir = profile / "browser-extension-data" / EXTENSION_ID
+            if _remove_tree(data_dir):
+                print_success(f"Removed {data_dir}")
+            unpatch_extensions_json(profile)
+            restore_user_chrome(profile)
+            restore_profile_prefs(profile)
+    return profiles
+
+def uninstall_host(data_home: Path) -> bool:
+    installed_host = data_home / "dusky-sites" / HOST_INSTALL_NAME
+    removed = _remove_file(installed_host)
+    if removed:
+        print_success(f"Removed host {installed_host}")
+    # drop the container dir if now empty
+    host_dir = data_home / "dusky-sites"
+    try:
+        if host_dir.is_dir() and not any(host_dir.iterdir()):
+            host_dir.rmdir()
+            print_success(f"Removed empty directory {host_dir}")
+    except OSError as e:
+        print_warn(f"Could not remove {host_dir}: {e}")
+    return removed
+
+def run_uninstall(home: Path, purge: bool = False) -> None:
+    print(f"\n{C_CYAN}🧹 Dusky Sites Uninstaller{C_RESET}\n")
+
+    running = _browser_processes_running()
+    if running:
+        print_warn(f"Detected running browser(s): {', '.join(running)}")
+        print_warn("It is strongly recommended to close them before continuing.")
+
+    xdg_data_home_raw = os.environ.get("XDG_DATA_HOME", "").strip()
+    if xdg_data_home_raw:
+        data_home = Path(xdg_data_home_raw).expanduser()
+        if not data_home.is_absolute():
+            data_home = home / ".local" / "share"
+    else:
+        data_home = home / ".local" / "share"
+
+    print_step("Removing native messaging manifests...")
+    manifests = uninstall_manifests(home)
+    print_success(f"{manifests} manifest(s) removed.") if manifests else print_warn("No manifests found to remove.")
+
+    print_step("Removing global extension XPI copies...")
+    global_xpis = uninstall_global_xpis(home)
+    print_success(f"{global_xpis} global XPI(s) removed.") if global_xpis else print_warn("No global XPI copies found.")
+
+    print_step("Removing per-profile extension, chrome CSS and prefs...")
+    profiles = uninstall_profile_artifacts(home)
+    if profiles:
+        print_success(f"Cleaned {profiles} browser profile(s).")
+    else:
+        print_warn("No browser profiles found.")
+
+    print_step("Removing native host...")
+    if uninstall_host(data_home):
+        print_success("Host removed.")
+    else:
+        print_warn("No host file found.")
+
+    if purge:
+        print_step("Purging configuration and site templates...")
+        purged = 0
+        config_dir = home / ".config" / "dusky" / "settings" / "dusky_sites"
+        if _remove_tree(config_dir):
+            print_success(f"Removed {config_dir}")
+            purged += 1
+        sites_dir = home / ".config" / "dusky_sites"
+        if _remove_tree(sites_dir):
+            print_success(f"Removed {sites_dir}")
+            purged += 1
+        gen_css = home / ".config" / "matugen" / "generated" / "dusky_sites.css"
+        if _remove_file(gen_css):
+            print_success(f"Removed {gen_css}")
+            purged += 1
+        if not purged:
+            print_warn("No config or template files found to purge.")
+
+    print(f"\n{C_GREEN}✅ Uninstall complete.{C_RESET}")
+    print("------------------------------------------------------------------")
+    print(f"Removed: {manifests} manifest(s), {global_xpis} global XPI(s), host, {profiles} profile(s) cleaned.")
+    if purge:
+        print("Purging: config, site templates and generated CSS removed.")
+    else:
+        print("Note: config and site templates were kept. Use --purge to remove them too.")
+    print("The dev/source directory under ~/.config/firefox_extentions/dusky_sites was left intact.")
+    print("------------------------------------------------------------------\n")
+
 def main() -> None:
+    args = [a for a in sys.argv[1:]]
+    if "--uninstall" in args or "--purge" in args or "--help" in args or "-h" in args:
+        if "--help" in args or "-h" in args:
+            print(__doc__)
+            print("Options:")
+            print("  --uninstall   Remove the installed extension, host, manifests and chrome CSS.")
+            print("  --purge       Like --uninstall but also deletes config and site templates.")
+            print("  --yes         Skip the confirmation prompt.")
+            return
+
+        purge = "--purge" in args
+        auto_yes = "--yes" in args
+        label = "Dusky Sites (PURGE: config & templates too)" if purge else "Dusky Sites"
+        if not auto_yes:
+            resp = input(f"Are you sure you want to uninstall {label}? [y/N] ").strip().lower()
+            if resp not in ("y", "yes"):
+                print("Aborted.")
+                return
+        home = Path.home()
+        run_uninstall(home, purge=purge)
+        return
+
     print(f"\n{C_CYAN}🦊 Dusky Sites Setup Script (Arch Linux / Python 3.12+){C_RESET}\n")
 
     script_dir = Path(__file__).parent.resolve()
