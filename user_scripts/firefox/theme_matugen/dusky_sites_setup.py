@@ -151,15 +151,11 @@ sidebarheader {
 }
 
 menupopup,
-panel:not(#autoscroller),
-panelview,
-panelmultiview,
-#unified-extensions-panel,
-#unified-extensions-view,
-.panel-subview-body,
-.popup-notification-body {
+panel:not(#autoscroller) {
     appearance: none !important;
     -moz-default-appearance: none !important;
+    background-color: transparent !important;
+    background: transparent !important;
     --panel-background-color: var(--lwt-accent-color, #1c1b22) !important;
     --panel-background: var(--lwt-accent-color, #1c1b22) !important;
     --panel-text-color: var(--lwt-text-color, #fbfbfe) !important;
@@ -169,8 +165,30 @@ panelmultiview,
     --menu-color: var(--lwt-text-color, #fbfbfe) !important;
     --menu-border-color: var(--toolbar-field-background-color-focus, #42414d) !important;
     --panel-menuitem-border-radius: 6px !important;
+}
+
+menupopup::part(content),
+panel::part(content),
+.popup-notification-body {
     background-color: var(--lwt-accent-color, #1c1b22) !important;
-    background: var(--lwt-accent-color, #1c1b22) !important;
+    color: var(--lwt-text-color, #fbfbfe) !important;
+    border: 1px solid var(--toolbar-field-background-color-focus, #42414d) !important;
+    border-radius: 8px !important;
+}
+
+panelview,
+panelmultiview,
+#unified-extensions-panel,
+#unified-extensions-view,
+#unified-extensions-area,
+.unified-extensions-list,
+.panel-subview-body,
+.panel-subview-footer {
+    background-color: transparent !important;
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    outline: none !important;
     color: var(--lwt-text-color, #fbfbfe) !important;
 }
 
@@ -192,12 +210,6 @@ panel#autoscroller {
 panel#autoscroller image {
     fill: var(--toolbarbutton-icon-fill, var(--lwt-text-color, #fbfbfe)) !important;
     color: var(--toolbarbutton-icon-fill, var(--lwt-text-color, #fbfbfe)) !important;
-}
-
-menupopup::part(content) {
-    background-color: var(--lwt-accent-color) !important;
-    color: var(--lwt-text-color) !important;
-    border: 1px solid var(--toolbar-field-background-color-focus, #42414d) !important;
 }
 
 menu,
