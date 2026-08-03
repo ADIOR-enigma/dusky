@@ -54,7 +54,7 @@ tab0_items = [
         default=False,
         value=engine.cache.get("webThemeEnabled", False),
         group="Global Settings",
-        extended_help="**Global Web Theme Switch**\n\nMaster toggle for webpage CSS color variable injection across all websites."
+        extended_help="**Global Webpage Color Injection**\n\nDisabled by default (OPT-IN ONLY).\n\nWhen OFF, Dusky Sites themes ONLY the outer Firefox browser UI (tabs, toolbars, popups, sidebars). Webpages remain completely untouched unless this toggle is explicitly enabled."
     ),
     ConfigItem(
         label="Theme Templateless Sites",
@@ -64,7 +64,7 @@ tab0_items = [
         default=False,
         value=engine.cache.get("forceUnthemedWebsites", False),
         group="Fallback Theming",
-        extended_help="**Theme Websites Without Templates**\n\nWhen enabled alongside 'Enable Webpage Color Injection', uses Dark Reader fallback rules and dynamic luminance analysis to theme websites that don't have custom templates in `~/.config/dusky_sites/`."
+        extended_help="**Fallback Templateless Theming**\n\nDisabled by default (OPT-IN ONLY).\n\nWhen 'Enable Webpage Color Injection' is ON, this toggle enables Dark Reader fallback rules and dynamic luminance analysis for websites that lack a custom CSS template in `~/.config/dusky_sites/`."
     ),
 ]
 
@@ -146,26 +146,15 @@ SCHEMA = {
             extended_help="**Install / Update**\n\nRuns `dusky_sites_setup.py` with `--yes`, dynamically discovering every browser profile (Firefox, LibreWolf, Zen, Waterfox, Floorp, FireDragon, Flatpak variants) and installing the native host, messaging manifests, per-profile XPI, and userChrome.css styling."
         ),
         ConfigItem(
-            label="Uninstall",
+            label="Uninstall System",
             key="action_uninstall",
             scope="DEFAULT",
             type_="action",
             default=f"{_SETUP_CMD} --uninstall --yes",
             options=["trigger"],
             group="Uninstall / Remove",
-            confirm_message="Uninstall Dusky Sites from all detected browser profiles? Your dev/source files will be kept.",
-            extended_help="**Uninstall**\n\nRuns `dusky_sites_setup.py --uninstall --yes`, removing the native host, messaging manifests, per-profile XPI, storage data, and userChrome.css styling from every detected profile. Dev/source files and user data are left intact."
-        ),
-        ConfigItem(
-            label="Uninstall & Purge",
-            key="action_uninstall_purge",
-            scope="DEFAULT",
-            type_="action",
-            default=f"{_SETUP_CMD} --uninstall --purge --yes",
-            options=["trigger"],
-            group="Uninstall / Remove",
-            confirm_message="FULLY uninstall AND purge all configuration, site templates, and generated CSS? This cannot be undone.",
-            extended_help="**Uninstall & Purge**\n\nRuns `dusky_sites_setup.py --uninstall --purge --yes`, removing everything from browser profiles plus `~/.config/dusky`, `~/.config/dusky_sites`, and `~/.config/matugen/generated/dusky_sites.css`. Dev/source files are still kept."
+            confirm_message="Uninstall Dusky Sites and reset user configuration? Site templates in ~/.config/dusky_sites/ and dev source files will be preserved.",
+            extended_help="**Uninstall System**\n\nRuns `dusky_sites_setup.py --uninstall --yes`, removing the native host, messaging manifests, per-profile XPI, userChrome.css styling, and user configuration (config.json) from every profile. Custom site templates in `~/.config/dusky_sites/` and dev files remain safe."
         ),
     ],
 }

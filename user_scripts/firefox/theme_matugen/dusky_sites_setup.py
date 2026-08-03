@@ -833,7 +833,7 @@ def uninstall_host(data_home: Path) -> bool:
         print_warn(f"Could not remove {host_dir}: {e}")
     return removed
 
-def run_uninstall(home: Path, purge: bool = False) -> None:
+def run_uninstall(home: Path) -> None:
     print(f"\n{C_CYAN}🧹 Dusky Sites Uninstaller{C_RESET}\n")
 
     running = _browser_processes_running()
@@ -870,32 +870,24 @@ def run_uninstall(home: Path, purge: bool = False) -> None:
     else:
         print_warn("No host file found.")
 
-    if purge:
-        print_step("Purging configuration and site templates...")
-        purged = 0
-        config_dir = home / ".config" / "dusky" / "settings" / "dusky_sites"
-        if _remove_tree(config_dir):
-            print_success(f"Removed {config_dir}")
-            purged += 1
-        sites_dir = home / ".config" / "dusky_sites"
-        if _remove_tree(sites_dir):
-            print_success(f"Removed {sites_dir}")
-            purged += 1
-        gen_css = home / ".config" / "matugen" / "generated" / "dusky_sites.css"
-        if _remove_file(gen_css):
-            print_success(f"Removed {gen_css}")
-            purged += 1
-        if not purged:
-            print_warn("No config or template files found to purge.")
+    print_step("Purging user configuration...")
+    purged = 0
+    config_dir = home / ".config" / "dusky" / "settings" / "dusky_sites"
+    if _remove_tree(config_dir):
+        print_success(f"Removed {config_dir}")
+        purged += 1
+    gen_css = home / ".config" / "matugen" / "generated" / "dusky_sites.css"
+    if _remove_file(gen_css):
+        print_success(f"Removed {gen_css}")
+        purged += 1
+    if not purged:
+        print_warn("No configuration files found to purge.")
 
     print(f"\n{C_GREEN}✅ Uninstall complete.{C_RESET}")
     print("------------------------------------------------------------------")
     print(f"Removed: {manifests} manifest(s), {global_xpis} global XPI(s), host, {profiles} profile(s) cleaned.")
-    if purge:
-        print("Purging: config, site templates and generated CSS removed.")
-    else:
-        print("Note: config and site templates were kept. Use --purge to remove them too.")
-    print("The dev/source directory under ~/.config/firefox_extentions/dusky_sites was left intact.")
+    print("Purging: User configuration (config.json) and generated CSS removed.")
+    print("Site templates under ~/.config/dusky_sites and dev files under ~/.config/firefox_extentions/dusky_sites were left intact.")
     print("------------------------------------------------------------------\n")
 
 def main() -> None:
@@ -904,21 +896,19 @@ def main() -> None:
         if "--help" in args or "-h" in args:
             print(__doc__)
             print("Options:")
-            print("  --uninstall   Remove the installed extension, host, manifests and chrome CSS.")
-            print("  --purge       Like --uninstall but also deletes config and site templates.")
+            print("  --uninstall   Completely remove installed extension, host, manifests, chrome CSS & config.json.")
             print("  --yes         Skip the confirmation prompt.")
             return
 
-        purge = "--purge" in args
         auto_yes = "--yes" in args
-        label = "Dusky Sites (PURGE: config & templates too)" if purge else "Dusky Sites"
+        label = "Dusky Sites (extension, host, manifests & user config.json)"
         if not auto_yes:
             resp = input(f"Are you sure you want to uninstall {label}? [y/N] ").strip().lower()
             if resp not in ("y", "yes"):
                 print("Aborted.")
                 return
         home = Path.home()
-        run_uninstall(home, purge=purge)
+        run_uninstall(home)
         return
 
     print(f"\n{C_CYAN}🦊 Dusky Sites Setup Script (Arch Linux / Python 3.12+){C_RESET}\n")
