@@ -404,9 +404,43 @@ identity-credential-notification,
     color: var(--lwt-text-color, #fbfbfe) !important;
 }
 
+/* Vertical Tab Groups & Tab Tree (tab-list-tree.css & smartwindowGroupTabs.css) */
+.tab-group-header,
+.tab-group-container,
+.tab-list-tree-item,
+tab-item[selected],
+tab-item:hover {
+    background-color: var(--toolbarbutton-background-color-hover, rgba(255, 255, 255, 0.1)) !important;
+    color: var(--lwt-text-color) !important;
+}
+
+/* Address Bar & Autocomplete Popups (urlbar-searchbar.css & autocomplete.css) */
+#urlbar-results,
+.urlbarView,
+.autocomplete-history-popup {
+    background-color: var(--lwt-accent-color, #1c1b22) !important;
+    color: var(--lwt-text-color, #fbfbfe) !important;
+}
+
 .urlbarView-row:is([selected], :hover) {
     background-color: var(--toolbarbutton-background-color-hover, rgba(255, 255, 255, 0.1)) !important;
     color: var(--lwt-text-color) !important;
+}
+
+/* Form Autofill & Credit Card Popups (formautofill-notification.css) */
+formautofill-creditcard-popup,
+.formautofill-popup {
+    background-color: var(--toolbar-field-background-color, #2b2a33) !important;
+    color: var(--lwt-text-color, #fbfbfe) !important;
+    border: 1px solid var(--toolbar-field-background-color-focus, #42414d) !important;
+    border-radius: 6px !important;
+}
+
+/* Page Info Window (pageInfo.css) */
+#pageInfoWindow,
+.page-info-container {
+    background-color: var(--lwt-accent-color, #1c1b22) !important;
+    color: var(--lwt-text-color, #fbfbfe) !important;
 }
 """
 
