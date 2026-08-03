@@ -48,6 +48,11 @@ from python.frontend.core_types import (
 # =============================================================================
 _AUDIO_PLAYER_CACHE: str | None = None
 
+# Nerd Font glyphs (render cleanly in terminals with a Nerd Font installed).
+_ICON_WARNING = "\uf071"   # nf-fa-warning  (exclamation triangle)
+_ICON_PENCIL = "\uf040"    # nf-fa-pencil
+_ICON_ARROW  = "\uf061"    # nf-fa-arrow-right
+
 _RE_RGB = re.compile(r"rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)")
 _RE_HSL = re.compile(r"hsla?\(\s*([\d.]+)\s*,\s*([\d.]+)%?\s*,\s*([\d.]+)%?")
 _RE_OKLCH = re.compile(r"oklch\(\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)")
@@ -1011,7 +1016,7 @@ class DiffScreen(ModalScreen[None]):
                     txt.append(f"[{self.app.tabs[tab_idx]}] ", style=self.app.theme_colors["accent"])
                     txt.append(f"{item.label}: ", style="bold")
                     txt.append(f"{item.initial_value} ", style=f"strike {self.app.theme_colors['error']}")
-                    txt.append("➜ ", style=self.app.theme_colors["muted"])
+                    txt.append(f"{_ICON_ARROW} ", style=self.app.theme_colors["muted"])
                     txt.append(f"{item.value}", style=f"bold {self.app.theme_colors['success']}")
 
                     ol.add_option(Option(txt, disabled=True))
@@ -1082,7 +1087,7 @@ class ShortcutsInfoScreen(ModalScreen[None]):
         for keys, desc in bindings_info:
             txt = Text()
             txt.append(f"{keys:<20}", style=self.app.theme_colors["accent"] + " bold")
-            txt.append(" ➜ ", style=self.app.theme_colors["muted"])
+            txt.append(f" {_ICON_ARROW} ", style=self.app.theme_colors["muted"])
             txt.append(desc, style=self.app.theme_colors["fg"])
             ol.add_option(Option(txt, disabled=True))
 
@@ -2421,7 +2426,7 @@ Tooltip {
                 txt.append("●  ", style=dot_color)
 
         # Label rendering.
-        warning_marker = "⚠️ " if item.warning_msg else ""
+        warning_marker = f"{_ICON_WARNING} " if item.warning_msg else ""
 
         if exists:
             if item.type_ == "preset" and is_active_preset:
@@ -2521,9 +2526,9 @@ Tooltip {
 
                 case "string":
                     if val_str == "":
-                        txt.append("[✎] Unset", style=f"italic {self.theme_colors['muted']}")
+                        txt.append(f"[{_ICON_PENCIL}] Unset", style=f"italic {self.theme_colors['muted']}")
                     else:
-                        txt.append(f"[✎] {val_str}", style=accent)
+                        txt.append(f"[{_ICON_PENCIL}] {val_str}", style=accent)
 
                 case "picker":
                     txt.append(f"[+] {val_str}", style=accent)
@@ -3634,7 +3639,7 @@ Tooltip {
                 help_text = ""
 
                 if item.warning_msg:
-                    help_text += f"> **⚠️ WARNING:** {item.warning_msg}\n"
+                    help_text += f"> **{_ICON_WARNING} WARNING:** {item.warning_msg}\n"
 
                 help_text += item.extended_help or f"**{item.label}**\nNo extended documentation available."
 
