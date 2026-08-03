@@ -57,14 +57,14 @@ tab0_items = [
         extended_help="**Global Web Theme Switch**\n\nMaster toggle for webpage CSS color variable injection across all websites."
     ),
     ConfigItem(
-        label="Theme Unthemed Websites (No Template)",
+        label="Theme Templateless Sites",
         key="forceUnthemedWebsites",
         scope="DEFAULT",
         type_="bool",
         default=False,
         value=engine.cache.get("forceUnthemedWebsites", False),
-        group="Global Settings",
-        extended_help="**Theme Websites Without Templates**\n\nWhen enabled alongside 'Enable Webpage Color Injection', forces Matugen CSS color variables into websites even if no custom template exists in `~/.config/dusky_sites/`."
+        group="Fallback Theming",
+        extended_help="**Theme Websites Without Templates**\n\nWhen enabled alongside 'Enable Webpage Color Injection', uses Dark Reader fallback rules and dynamic luminance analysis to theme websites that don't have custom templates in `~/.config/dusky_sites/`."
     ),
 ]
 
