@@ -323,7 +323,8 @@ def audit() -> int:
         "--panel-menuitem-border-radius", "--toolbar-field-background-color-focus",
         "--tab-loading-fill", "--chrome-content-separator-color", "#sidebar-box",
         "findbar", "tooltip", ".urlbarView-row", "message-bar",
-        "--message-bar-background-color"
+        "--message-bar-background-color", "#ai-window-sidebar", "#webRTC-sharing-icon",
+        "identity-credential-notification", "#sanitizeDialog"
     ]
 
     profile_audits_passed: bool = True

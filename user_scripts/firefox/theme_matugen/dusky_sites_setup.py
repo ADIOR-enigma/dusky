@@ -369,6 +369,41 @@ tooltip {
     border-radius: 6px !important;
 }
 
+/* AI Sidebar Container (aiWindowSidebar.css) */
+#sidebar-box[sidebarcommand*="ai"],
+.ai-sidebar-container,
+#ai-window-sidebar {
+    background-color: var(--sidebar-background-color, var(--lwt-accent-color, #1c1b22)) !important;
+    color: var(--sidebar-text-color, var(--lwt-text-color, #fbfbfe)) !important;
+}
+
+/* WebRTC Active Camera/Mic Sharing Indicators (webRTC-indicator.css) */
+#webRTC-sharing-icon,
+#webRTC-sharing-container,
+.webrtc-indicator,
+.webrtc-indicator-icon {
+    background-color: var(--toolbar-field-background-color, #2b2a33) !important;
+    color: var(--toolbarbutton-icon-fill, var(--lwt-text-color)) !important;
+    border: 1px solid var(--toolbar-field-background-color-focus, #42414d) !important;
+    border-radius: 6px !important;
+}
+
+/* Federated Identity Credential Notifications (identity-credential-notification.css) */
+identity-credential-notification,
+.identity-credential-panel {
+    background-color: var(--toolbar-field-background-color, #2b2a33) !important;
+    color: var(--lwt-text-color, #fbfbfe) !important;
+    border: 1px solid var(--toolbar-field-background-color-focus, #42414d) !important;
+    border-radius: 6px !important;
+}
+
+/* Clear Browsing Data Dialog (sanitizeDialog_v2.css) */
+#sanitizeDialog,
+.sanitize-dialog-container {
+    background-color: var(--lwt-accent-color, #1c1b22) !important;
+    color: var(--lwt-text-color, #fbfbfe) !important;
+}
+
 .urlbarView-row:is([selected], :hover) {
     background-color: var(--toolbarbutton-background-color-hover, rgba(255, 255, 255, 0.1)) !important;
     color: var(--lwt-text-color) !important;
