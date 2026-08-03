@@ -6,7 +6,7 @@
   "homepage_url": "https://github.com/dusklinux/dusky",
   "browser_specific_settings": {
     "gecko": {
-      "id": "dusky_sites@dusk.com",
+      "id": "dusky_sites@dusky.com",
       "data_collection_permissions": {
         "required": [
           "none"
@@ -20,6 +20,9 @@
     "theme"
   ],
   "host_permissions": [
+    "<all_urls>"
+  ],
+  "optional_host_permissions": [
     "<all_urls>"
   ],
   "background": {

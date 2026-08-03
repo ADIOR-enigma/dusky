@@ -551,5 +551,18 @@ browser.tabs.onRemoved.addListener(tabId => {
     }
 });
 
+// ─── Site Access ───
+// Host permission is pre-granted by dusky_sites_setup.py (patches
+// extensions.json userPermissions.origins). The toolbar icon is a manual
+// refresh only; it never prompts for permissions.
+browser.action.onClicked.addListener(() => {
+    connectNative();
+    broadcastToTabs(true);
+});
+
+browser.permissions.onAdded.addListener(() => {
+    broadcastToTabs(true);
+});
+
 // ─── Init ───
 loadConfig();

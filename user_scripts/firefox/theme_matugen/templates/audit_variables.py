@@ -25,7 +25,7 @@ C_YELLOW: str = '\033[1;33m'
 C_RED: str = '\033[0;31m'
 C_RESET: str = '\033[0m'
 
-EXTENSION_ID = "dusky_sites@dusk.com"
+EXTENSION_ID = "dusky_sites@dusky.com"
 NATIVE_HOST_NAME = "dusky_sites"
 MANIFEST_FILE_NAME = "dusky_sites.json"
 
@@ -320,8 +320,10 @@ def audit() -> int:
 
     required_selectors: list[str] = [
         "menupopup", "panel", "panelview", "panelmultiview", "menuitem",
-        "--arrowpanel-background", "#sidebar-box", "findbar", "tooltip",
-        ".urlbarView-row", "message-bar", "--message-bar-background-color"
+        "--panel-menuitem-border-radius", "--toolbar-field-background-color-focus",
+        "--tab-loading-fill", "--chrome-content-separator-color", "#sidebar-box",
+        "findbar", "tooltip", ".urlbarView-row", "message-bar",
+        "--message-bar-background-color"
     ]
 
     profile_audits_passed: bool = True
