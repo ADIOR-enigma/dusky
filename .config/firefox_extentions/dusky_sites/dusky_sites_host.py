@@ -654,16 +654,58 @@ def parse_static_theme_fixes(fixes_path: Path) -> dict[str, str]:
         pass
     return fixes
 
+def parse_detector_hints(hints_path: Path) -> dict[str, list[str]]:
+    if not hints_path or not hints_path.is_file():
+        return {}
+    hints: dict[str, list[str]] = {}
+    try:
+        content = hints_path.read_text(encoding="utf-8", errors="replace")
+        sections = content.split("================================")
+        for sec in sections:
+            sec = sec.strip()
+            if not sec:
+                continue
+            lines = sec.splitlines()
+            domains: list[str] = []
+            matches: list[str] = []
+            in_match = False
+            for line in lines:
+                l = line.strip()
+                if not l:
+                    continue
+                if l == "MATCH":
+                    in_match = True
+                    continue
+                if l in ("TARGET", "NO DARK THEME"):
+                    in_match = False
+                    continue
+                if in_match:
+                    matches.append(l)
+                else:
+                    expanded = expand_domain_pattern(l)
+                    domains.extend(expanded)
+
+            if matches and domains:
+                for domain in domains:
+                    if domain:
+                        if domain not in hints:
+                            hints[domain] = []
+                        hints[domain].extend(matches)
+    except Exception:
+        pass
+    return hints
+
 def get_domain_fix_css(domain: str, websites_dir: str) -> dict:
     if not domain:
-        return {"css": "", "isDarkSite": False}
+        return {"css": "", "isDarkSite": False, "detectorHints": []}
     p_sites = Path(websites_dir).expanduser() if websites_dir else Path.home() / ".config" / "dusky_sites"
     
     if is_native_dark_site(domain, p_sites):
-        return {"css": "", "isDarkSite": True}
+        return {"css": "", "isDarkSite": True, "detectorHints": []}
 
     combined_css_parts: list[str] = []
-    
+    detector_hints: list[str] = []
+
     # 1. Load dynamic-theme-fixes.config
     dt_file = resolve_fallback_file(p_sites, "dynamic-theme-fixes.config")
     if dt_file and dt_file.is_file():
@@ -685,7 +727,14 @@ def get_domain_fix_css(domain: str, websites_dir: str) -> dict:
         if st_fixes.get(domain.lower()):
             combined_css_parts.append(st_fixes[domain.lower()])
 
-    return {"css": "\n\n".join(combined_css_parts), "isDarkSite": False}
+    # 4. Load detector-hints.config
+    dh_file = resolve_fallback_file(p_sites, "detector-hints.config")
+    if dh_file and dh_file.is_file():
+        dh_hints = parse_detector_hints(dh_file)
+        if dh_hints.get(domain.lower()):
+            detector_hints = dh_hints[domain.lower()]
+
+    return {"css": "\n\n".join(combined_css_parts), "isDarkSite": False, "detectorHints": detector_hints}
 
 def message_handler() -> None:
     global running, fetch_requested
@@ -743,7 +792,8 @@ def message_handler() -> None:
                     "type": "DOMAIN_FIX_RESPONSE",
                     "domain": domain,
                     "css": res_dict.get("css", ""),
-                    "isDarkSite": res_dict.get("isDarkSite", False)
+                    "isDarkSite": res_dict.get("isDarkSite", False),
+                    "detectorHints": res_dict.get("detectorHints", [])
                 })
 
             elif msg_type in {"GET_PROFILE_PATHS", "WRITE_USER_CHROME", "WRITE_USER_CONTENT", "SET_FONT_SIZE", "QUERY_LIVE_THEME"}:
