@@ -34,7 +34,10 @@ THEME_FILE = "~/.config/matugen/generated/dusky_tui.json"
 ENABLE_USER_PRESETS = False
 USER_PRESETS_TAB = None
 
-TABS = ["Websites", "Engine Settings"]
+TABS = ["Websites", "Engine Settings", "Setup"]
+
+_SETUP_SCRIPT = Path(__file__).resolve().parent / "dusky_sites_setup.py"
+_SETUP_CMD = f"{shlex.quote(sys.executable)} {shlex.quote(str(_SETUP_SCRIPT))}"
 
 # =============================================================================
 # DYNAMIC SCHEMA GENERATION
@@ -119,7 +122,42 @@ tab1_items = [
 
 SCHEMA = {
     0: tab0_items,
-    1: tab1_items
+    1: tab1_items,
+    2: [
+        ConfigItem(
+            label="Install / Update",
+            key="action_install",
+            scope="DEFAULT",
+            type_="action",
+            default=f"{_SETUP_CMD} --yes",
+            options=["trigger"],
+            group="Install / Update",
+            confirm_message="Install or update Dusky Sites across all detected browser profiles? This runs the full setup script.",
+            extended_help="**Install / Update**\n\nRuns `dusky_sites_setup.py` with `--yes`, dynamically discovering every browser profile (Firefox, LibreWolf, Zen, Waterfox, Floorp, FireDragon, Flatpak variants) and installing the native host, messaging manifests, per-profile XPI, and userChrome.css styling."
+        ),
+        ConfigItem(
+            label="Uninstall",
+            key="action_uninstall",
+            scope="DEFAULT",
+            type_="action",
+            default=f"{_SETUP_CMD} --uninstall --yes",
+            options=["trigger"],
+            group="Uninstall / Remove",
+            confirm_message="Uninstall Dusky Sites from all detected browser profiles? Your dev/source files will be kept.",
+            extended_help="**Uninstall**\n\nRuns `dusky_sites_setup.py --uninstall --yes`, removing the native host, messaging manifests, per-profile XPI, storage data, and userChrome.css styling from every detected profile. Dev/source files and user data are left intact."
+        ),
+        ConfigItem(
+            label="Uninstall & Purge",
+            key="action_uninstall_purge",
+            scope="DEFAULT",
+            type_="action",
+            default=f"{_SETUP_CMD} --uninstall --purge --yes",
+            options=["trigger"],
+            group="Uninstall / Remove",
+            confirm_message="FULLY uninstall AND purge all configuration, site templates, and generated CSS? This cannot be undone.",
+            extended_help="**Uninstall & Purge**\n\nRuns `dusky_sites_setup.py --uninstall --purge --yes`, removing everything from browser profiles plus `~/.config/dusky`, `~/.config/dusky_sites`, and `~/.config/matugen/generated/dusky_sites.css`. Dev/source files are still kept."
+        ),
+    ],
 }
 
 # =============================================================================
