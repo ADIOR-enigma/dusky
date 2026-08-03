@@ -79,6 +79,7 @@ class DuskySitesEngine(BaseEngine):
         with self._lock:
             data = self._read_config_json()
             web_enabled = bool(data.get("webThemeEnabled", False))
+            force_unthemed = bool(data.get("forceUnthemedWebsites", False))
             eco_mode = bool(data.get("ecoMode", True))
             browser_enabled = bool(data.get("browserThemeEnabled", True))
             chrome_enabled = bool(data.get("userChromeEnabled", True))
@@ -89,6 +90,8 @@ class DuskySitesEngine(BaseEngine):
             self.cache = {
                 "webThemeEnabled": web_enabled,
                 "DEFAULT/webThemeEnabled": web_enabled,
+                "forceUnthemedWebsites": force_unthemed,
+                "DEFAULT/forceUnthemedWebsites": force_unthemed,
                 "ecoMode": eco_mode,
                 "DEFAULT/ecoMode": eco_mode,
                 "browserThemeEnabled": browser_enabled,
@@ -141,6 +144,10 @@ class DuskySitesEngine(BaseEngine):
                 if key == "webThemeEnabled":
                     data["webThemeEnabled"] = bool_val
                     status_messages.append(f"Web theming set to {bool_val}")
+
+                elif key == "forceUnthemedWebsites":
+                    data["forceUnthemedWebsites"] = bool_val
+                    status_messages.append(f"Theme unthemed websites set to {bool_val}")
 
                 elif key == "ecoMode":
                     data["ecoMode"] = bool_val

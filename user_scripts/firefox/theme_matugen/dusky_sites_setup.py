@@ -888,6 +888,7 @@ def main() -> None:
             "colorsPath": "~/.config/matugen/generated/dusky_sites.css",
             "websitesDir": "~/.config/dusky_sites",
             "webThemeEnabled": False,
+            "forceUnthemedWebsites": False,
             "disabledSites": [],
         }
         try:

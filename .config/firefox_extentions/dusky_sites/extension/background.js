@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════
-   Dusky Sites Background — Central State v2.0
+   Dusky Sites Background — Central State v3.1
    ═══════════════════════════════════════════ */
 
 'use strict';
@@ -16,6 +16,7 @@ const BUILTIN_DEFAULT_CONFIG = {
     ecoMode: true,
     browserThemeEnabled: true,
     webThemeEnabled: false,
+    forceUnthemedWebsites: false,
     userChromeEnabled: true,
     userContentEnabled: true,
     fontSize: 13,
@@ -100,6 +101,16 @@ const broadcastQueue = new Map();
 // ─── Utilities ───
 function notifyUI(msg) {
     browser.runtime.sendMessage(msg).catch(e => console.warn('Dusky Sites:', e));
+}
+
+function isInternalProtocol(url) {
+    if (!url) return true;
+    try {
+        const u = new URL(url);
+        return ['about:', 'chrome:', 'moz-extension:', 'view-source:', 'blob:', 'data:'].includes(u.protocol);
+    } catch {
+        return true;
+    }
 }
 
 // ─── Native Host ───
@@ -205,49 +216,6 @@ function isColorLight(hex) {
     return ((0.299 * r + 0.587 * g + 0.114 * b) / 255) > 0.5;
 }
 
-function adjustLuminance(hex, lum) {
-    if (!hex) return hex;
-    let c = hex.replace('#', '');
-    if (c.length === 3) c = c.split('').map(x => x + x).join('');
-    if (c.length !== 6) return hex;
-    let rgb = '#';
-    for (let i = 0; i < 3; i++) {
-        let val = parseInt(c.substr(i * 2, 2), 16);
-        val = Math.round(Math.min(Math.max(0, val + (val * lum)), 255)).toString(16);
-        rgb += ('00' + val).substr(val.length);
-    }
-    return rgb;
-}
-
-// ─── Dark Reader Extension Integration (Borrowed from Pywalfox) ───
-const DARKREADER_ID = 'addon@darkreader.org';
-
-function syncDarkReaderTheme(colors) {
-    if (!colors) return;
-    try {
-        const bg = colors['--background'] || colors['--surface'] || '#121212';
-        const fg = colors['--on_background'] || colors['--on_surface'] || '#e0e0e0';
-        const isDark = !isColorLight(bg);
-
-        const port = browser.runtime.connect(DARKREADER_ID);
-        if (port) {
-            port.postMessage({
-                type: 'setTheme',
-                data: isDark ? {
-                    darkSchemeBackgroundColor: bg,
-                    darkSchemeTextColor: fg
-                } : {
-                    lightSchemeBackgroundColor: bg,
-                    lightSchemeTextColor: fg
-                }
-            });
-            port.disconnect();
-        }
-    } catch (e) {
-        // Silent fallback if Dark Reader is not installed
-    }
-}
-
 function applyBrowserTheme(colors) {
     if (!colors || !state.config.browserThemeEnabled) return;
     const themeColors = buildBrowserThemeColors(colors);
@@ -257,7 +225,6 @@ function applyBrowserTheme(colors) {
         colors: themeColors,
         properties: { color_scheme: scheme, content_color_scheme: scheme },
     }).then(() => {
-        // syncDarkReaderTheme(colors);
         browser.theme.getCurrent().then(cur => {
             safePostMessage({ type: 'LIVE_THEME_RESPONSE', theme: cur });
         }).catch(() => {});
@@ -269,8 +236,6 @@ function resetBrowserTheme() {
     browser.theme.reset().catch(e => console.warn('Dusky Sites:', e));
     state.isApplied = false;
 }
-
-
 
 // ─── Domain Matching Engine ───
 function hostMatchesDomain(hostname, domain, allowSingleLabel = false) {
@@ -341,16 +306,16 @@ function broadcastToTabs(force = false) {
     }).catch(e => console.warn('Dusky Sites:', e));
 }
 
-
-
 function sendToTab(tabId, data, url, force = false) {
-    if (!url) return;
+    if (!url || isInternalProtocol(url)) return;
     if (!state.config.webThemeEnabled || isSiteDisabled(url, data?.disabledSites)) {
         browser.tabs.sendMessage(tabId, { type: 'MATUGEN_ROLLBACK' }).catch(() => {});
         return;
     }
     const siteCss = filterWebsiteCss(url, data?.websites);
-    if (!siteCss) {
+    const allowUnthemed = !!state.config.forceUnthemedWebsites;
+
+    if (!siteCss && !allowUnthemed) {
         browser.tabs.sendMessage(tabId, { type: 'MATUGEN_ROLLBACK' }).catch(() => {});
         return;
     }
@@ -373,7 +338,9 @@ function sendToTab(tabId, data, url, force = false) {
 function broadcastRollback() {
     browser.tabs.query({}).then(tabs => {
         for (const t of tabs) {
-            browser.tabs.sendMessage(t.id, { type: 'MATUGEN_ROLLBACK' }).catch(e => console.warn('Dusky Sites:', e));
+            if (!isInternalProtocol(t.url)) {
+                browser.tabs.sendMessage(t.id, { type: 'MATUGEN_ROLLBACK' }).catch(e => console.warn('Dusky Sites:', e));
+            }
         }
     }).catch(e => console.warn('Dusky Sites:', e));
 }
@@ -405,9 +372,11 @@ function handleHostMessage(msg) {
     switch (msg.type) {
         case 'MATUGEN_UPDATE': {
             if (!msg.data?.colors) return;
-            const oldWeb = state.config.webThemeEnabled;
             if (typeof msg.data.webThemeEnabled === 'boolean') {
                 state.config.webThemeEnabled = msg.data.webThemeEnabled;
+            }
+            if (typeof msg.data.forceUnthemedWebsites === 'boolean') {
+                state.config.forceUnthemedWebsites = msg.data.forceUnthemedWebsites;
             }
             state.lastThemeData = msg.data;
             browser.storage.local.set({ themeData: msg.data, config: state.config }).catch(e => console.warn('Dusky Sites: storage error:', e));
@@ -451,13 +420,15 @@ browser.runtime.onMessage.addListener((req, sender) => {
         case 'UPDATE_CONFIG': {
             const oldBrowser = state.config.browserThemeEnabled;
             const oldWeb = state.config.webThemeEnabled;
+            const oldForceUnthemed = state.config.forceUnthemedWebsites;
             state.config = mergeConfig({ ...state.config, ...req.partialUpdate });
             return saveConfig().then(() => {
                 const data = resolveThemeData();
                 if ('browserThemeEnabled' in req.partialUpdate && oldBrowser !== state.config.browserThemeEnabled) {
                     state.config.browserThemeEnabled ? applyBrowserTheme(data?.colors) : resetBrowserTheme();
                 }
-                if ('webThemeEnabled' in req.partialUpdate && oldWeb !== state.config.webThemeEnabled) {
+                if (('webThemeEnabled' in req.partialUpdate && oldWeb !== state.config.webThemeEnabled) ||
+                    ('forceUnthemedWebsites' in req.partialUpdate && oldForceUnthemed !== state.config.forceUnthemedWebsites)) {
                     if (state.config.webThemeEnabled) {
                         broadcastToTabs(true);
                     } else {
@@ -471,32 +442,41 @@ browser.runtime.onMessage.addListener((req, sender) => {
             });
         }
         case 'GET_THEME_DATA': {
-            if (!state.config.webThemeEnabled) return Promise.resolve(null);
+            const status = {
+                connected: !!state.port,
+                manuallyStopped: !state.shouldConnect,
+                lastSyncTime: state.lastThemeData?.timestamp || null,
+                isApplied: state.isApplied,
+            };
+            if (!state.config.webThemeEnabled) return Promise.resolve({ data: null, status });
             const url = sender.url || sender.tab?.url;
+            if (isInternalProtocol(url)) return Promise.resolve({ data: null, status });
+
             const data = resolveThemeData();
-            if (data && isSiteDisabled(url, data.disabledSites)) return Promise.resolve(null);
-            if (!data) {
-                return browser.storage.local.get('themeData').then(res => {
-                    if (!res.themeData || !res.themeData.colors) return null;
-                    if (isSiteDisabled(url, res.themeData.disabledSites)) return null;
-                    const siteCss = filterWebsiteCss(url, res.themeData.websites);
-                    if (!siteCss) return null;
-                    return {
-                        colors: res.themeData.colors,
+            if (data && isSiteDisabled(url, data.disabledSites)) return Promise.resolve({ data: null, status });
+
+            const resolveData = (themeSource) => {
+                if (!themeSource || !themeSource.colors) return { data: null, status };
+                if (isSiteDisabled(url, themeSource.disabledSites)) return { data: null, status };
+                const siteCss = filterWebsiteCss(url, themeSource.websites || {});
+                const allowUnthemed = !!state.config.forceUnthemedWebsites;
+                if (!siteCss && !allowUnthemed) return { data: null, status };
+
+                return {
+                    data: {
+                        colors: themeSource.colors,
                         websiteCss: siteCss,
-                        timestamp: res.themeData.timestamp,
-                        status: res.themeData.status,
-                    };
-                });
+                        timestamp: themeSource.timestamp,
+                        status: themeSource.status,
+                    },
+                    status,
+                };
+            };
+
+            if (!data) {
+                return browser.storage.local.get('themeData').then(res => resolveData(res.themeData));
             }
-            const siteCss = filterWebsiteCss(url, data.websites);
-            if (!siteCss) return Promise.resolve(null);
-            return Promise.resolve({
-                colors: data.colors,
-                websiteCss: siteCss,
-                timestamp: data.timestamp,
-                status: data.status,
-            });
+            return Promise.resolve(resolveData(data));
         }
         case 'GET_STATUS':
             return Promise.resolve({
@@ -526,11 +506,22 @@ browser.runtime.onMessage.addListener((req, sender) => {
     }
 });
 
-// ─── Tab Events ───
+// ─── Tab & Window Events ───
 browser.tabs.onActivated.addListener((activeInfo) => {
     if (state.config.ecoMode && state.lastThemeData) {
         browser.tabs.get(activeInfo.tabId).then(tab => {
             sendToTab(tab.id, resolveThemeData(), tab.url);
+        }).catch(e => console.warn('Dusky Sites:', e));
+    }
+});
+
+browser.windows.onFocusChanged.addListener((windowId) => {
+    if (windowId === browser.windows.WINDOW_ID_NONE) return;
+    if (state.config.ecoMode && state.lastThemeData) {
+        browser.tabs.query({ active: true, windowId }).then(tabs => {
+            if (tabs[0] && tabs[0].url) {
+                sendToTab(tabs[0].id, resolveThemeData(), tabs[0].url);
+            }
         }).catch(e => console.warn('Dusky Sites:', e));
     }
 });
@@ -541,8 +532,6 @@ browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     }
 });
 
-
-
 // ─── Tab Cleanup ───
 browser.tabs.onRemoved.addListener(tabId => {
     if (broadcastQueue.has(tabId)) {
@@ -552,9 +541,6 @@ browser.tabs.onRemoved.addListener(tabId => {
 });
 
 // ─── Site Access ───
-// Host permission is pre-granted by dusky_sites_setup.py (patches
-// extensions.json userPermissions.origins). The toolbar icon is a manual
-// refresh only; it never prompts for permissions.
 browser.action.onClicked.addListener(() => {
     connectNative();
     broadcastToTabs(true);
