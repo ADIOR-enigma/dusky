@@ -3357,10 +3357,14 @@ class GitEngine:
             new_mode, new_oid = await self._get_head_path_meta(path)
             old_oid_valid = bool(old_oid and old_oid.strip("0"))
 
+            same_oid = (new_oid.lower() == old_oid.lower()) if (new_oid and old_oid) else False
+            same_mode = (new_mode.lstrip('0') == old_mode.lstrip('0')) if (new_mode and old_mode) else False
+            same_meta = same_oid and same_mode
+
             if status == 'D':
                 if not new_oid:
                     action = "delete-preserved"
-                elif old_oid_valid and new_oid == old_oid and new_mode == old_mode:
+                elif old_oid_valid and same_meta:
                     action = "delete-safe"
                 else:
                     action = "delete-restored"
@@ -3369,7 +3373,7 @@ class GitEngine:
                 if not has_copy:
                     continue
                 if old_oid_valid:
-                    safe = (new_oid == old_oid and new_mode == old_mode) or not new_oid
+                    safe = same_meta or not new_oid
                 else:
                     safe = not new_oid
                 action = "restore" if safe else "merge"
@@ -3559,12 +3563,16 @@ class GitEngine:
                 return True
 
             if local_head == remote_head:
-                self._tlog(f"[bold {THEME['success']}]Repository synchronization perfect. Origin matched.[/]", idx, True)
-                await self._ensure_repo_defaults()
-                self.app.update_task_state(idx, "success")  # type: ignore
-                for i in range(2, 5):
-                    self.app.update_task_state(i, "skipped")  # type: ignore
-                return True
+                await self._unstage_managed_paths()
+                change_paths, change_status, change_old_mode, change_old_oid = await self._capture_tracked_changes()
+                if not change_paths:
+                    self._tlog(f"[bold {THEME['success']}]Repository synchronization perfect. Origin matched.[/]", idx, True)
+                    await self._ensure_repo_defaults()
+                    self.app.update_task_state(idx, "success")  # type: ignore
+                    for i in range(2, 5):
+                        self.app.update_task_state(i, "skipped")  # type: ignore
+                    return True
+                self._tlog(f"[bold {THEME['accent']}]Origin matched, but work-tree has {len(change_paths)} tracked change(s). Processing...[/]", idx, True)
 
             rc, commit_count_raw, _ = await self._run_raw('rev-list', '--count', f'{local_head}..{remote_head}')
             commit_count = commit_count_raw.strip() or "?"
@@ -3629,6 +3637,7 @@ class GitEngine:
                 if not await self._backup_full_tracked_tree(idx):
                     raise RuntimeError("Full tracked-tree backup failed.")
 
+                await self._unstage_managed_paths()
                 change_paths, change_status, change_old_mode, change_old_oid = await self._capture_tracked_changes()
                 if change_paths:
                     your_changes_backup = await self._backup_user_modifications(change_paths, change_status, idx)
@@ -3707,6 +3716,7 @@ class GitEngine:
             self.app.update_task_state(idx, "running")  # type: ignore
             self._tlog(f"[bold {THEME['accent']}]>>> PROCESS INITIATED:[/] Atomic Snapshot (CoW)\n", idx)
 
+            await self._unstage_managed_paths()
             change_paths, change_status, change_old_mode, change_old_oid = await self._capture_tracked_changes()
             if change_paths:
                 your_changes_backup = await self._backup_user_modifications(change_paths, change_status, idx)
