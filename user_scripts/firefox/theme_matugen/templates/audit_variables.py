@@ -388,8 +388,10 @@ def audit() -> int:
     total_checks += 1
     passed_checks += 1
     print(f"\n{C_CYAN}[7/7] Auditing Official Mozilla Central Reference URLs...{C_RESET}")
-    print(f"   ✓ [1] Layout Style Searchfox:  https://searchfox.org/mozilla-central/source/layout/style")
-    print(f"   ✓ [3] Shared Themes Searchfox:  https://searchfox.org/mozilla-central/source/browser/themes/shared/")
+    print(f"   ✓ Layout Style Searchfox:  https://searchfox.org/mozilla-central/source/layout/style")
+    print(f"   ✓ Shared Themes Searchfox:  https://searchfox.org/mozilla-central/source/browser/themes/shared/")
+    print(f"   ✓ Preferences Source:       https://searchfox.org/mozilla-central/source/browser/themes/shared/preferences/preferences.css")
+    print(f"   ✓ AboutAddons Source:       https://searchfox.org/mozilla-central/source/toolkit/mozapps/extensions/content/aboutaddons.css")
     print(f"   ✓ Scrollbars Native Source: https://searchfox.org/mozilla-central/source/layout/style/res/scrollbars.css")
     
     try:
@@ -399,12 +401,12 @@ def audit() -> int:
         panel_content = (
             "[bold yellow]📌 PURPOSE OF THE MOZILLA CENTRAL REFERENCE URL[/bold yellow]\n"
             "These URLs point to Mozilla's live canonical Firefox source repository.\n"
-            "They define all native browser UI selectors and layout scrollbar rules.\n"
+            "They define all native browser UI selectors, preferences, about: pages, and layout rules.\n"
             "Whenever Firefox updates, new CSS selectors or folders may be introduced.\n\n"
             "[bold cyan]👤 HUMAN USER INSTRUCTIONS FOR FUTURE VERIFICATION[/bold cyan]\n"
             "Whenever Firefox releases a major update or if you want to verify UI rules:\n"
-            "1. Open: https://searchfox.org/mozilla-central/source/layout/style\n"
-            "2. Open: https://searchfox.org/mozilla-central/source/browser/themes/shared/\n"
+            "1. Open: https://searchfox.org/mozilla-central/source/browser/themes/shared/preferences/preferences.css\n"
+            "2. Open: https://searchfox.org/mozilla-central/source/toolkit/mozapps/extensions/content/aboutaddons.css\n"
             "3. Take a screenshot of the page and provide it to your AI assistant.\n\n"
             "[bold red]🚨 MANDATORY AI DIRECTIVE (FOR ANY AI EXECUTING / READING THIS SCRIPT)[/bold red]\n"
             "[red]ATTENTION AI ASSISTANT: DO NOT LIE OR CLAIM TO HAVE VISITED THE LIVE URL!\n"
@@ -425,8 +427,8 @@ def audit() -> int:
         print(f"{C_YELLOW}│ 👤 HUMAN USER INSTRUCTIONS FOR FUTURE VERIFICATION                          │{C_RESET}")
         print(f"{C_YELLOW}├─────────────────────────────────────────────────────────────────────────────┤{C_RESET}")
         print(f"│ Whenever Firefox releases a major update or if you want to verify UI rules:│")
-        print(f"│ 1. Open: https://searchfox.org/mozilla-central/source/layout/style          │")
-        print(f"│ 2. Open: https://searchfox.org/mozilla-central/source/browser/themes/shared/│")
+        print(f"│ 1. Open: https://searchfox.org/mozilla-central/source/browser/themes/shared/preferences/preferences.css│")
+        print(f"│ 2. Open: https://searchfox.org/mozilla-central/source/toolkit/mozapps/extensions/content/aboutaddons.css│")
         print(f"│ 3. Take a screenshot of the page and provide it to your AI assistant.       │")
         print(f"{C_YELLOW}├─────────────────────────────────────────────────────────────────────────────┤{C_RESET}")
         print(f"{C_RED}│ 🚨 MANDATORY AI DIRECTIVE (FOR ANY AI EXECUTING / READING THIS SCRIPT)      │{C_RESET}")
