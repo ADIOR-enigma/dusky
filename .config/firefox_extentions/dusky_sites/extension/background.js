@@ -306,18 +306,67 @@ function broadcastToTabs(force = false) {
     }).catch(e => console.warn('Dusky Sites:', e));
 }
 
+const DEFAULT_UNTHEMED_FALLBACK_CSS = `@media screen {
+    /* Matugen Generic Fallback for Unthemed Websites */
+    html, body {
+        background-color: var(--background, var(--surface, #121212)) !important;
+        color: var(--on_background, var(--on_surface, #e0e0e0)) !important;
+    }
+
+    h1, h2, h3, h4, h5, h6, p, li, dt, dd, label, td, th, blockquote {
+        color: var(--on_background, var(--on_surface, inherit));
+    }
+
+    a, a * {
+        color: var(--primary, #89b4fa) !important;
+    }
+
+    pre, code, kbd, samp {
+        background-color: var(--surface_container_high, var(--surface, #2b2a33)) !important;
+        color: var(--on_surface, inherit) !important;
+        border-radius: 4px;
+    }
+
+    button, input, select, textarea {
+        background-color: var(--surface_container, var(--surface, #2b2a33)) !important;
+        color: var(--on_surface, #fbfbfe) !important;
+        border-color: var(--outline, #42414d) !important;
+    }
+
+    img, video, canvas, iframe, embed, object {
+        background-color: transparent !important;
+    }
+
+    hr {
+        border-color: var(--outline_variant, var(--outline, #42414d)) !important;
+    }
+
+    ::selection {
+        background-color: var(--primary_container, var(--primary, #364765)) !important;
+        color: var(--on_primary_container, var(--on_primary, #ffffff)) !important;
+    }
+
+    * {
+        scrollbar-color: var(--outline, #42414d) var(--surface, #1c1b22);
+    }
+}
+`;
+
 function sendToTab(tabId, data, url, force = false) {
     if (!url || isInternalProtocol(url)) return;
     if (!state.config.webThemeEnabled || isSiteDisabled(url, data?.disabledSites)) {
         browser.tabs.sendMessage(tabId, { type: 'MATUGEN_ROLLBACK' }).catch(() => {});
         return;
     }
-    const siteCss = filterWebsiteCss(url, data?.websites);
+    let siteCss = filterWebsiteCss(url, data?.websites);
     const allowUnthemed = !!state.config.forceUnthemedWebsites;
 
-    if (!siteCss && !allowUnthemed) {
-        browser.tabs.sendMessage(tabId, { type: 'MATUGEN_ROLLBACK' }).catch(() => {});
-        return;
+    if (!siteCss) {
+        if (!allowUnthemed) {
+            browser.tabs.sendMessage(tabId, { type: 'MATUGEN_ROLLBACK' }).catch(() => {});
+            return;
+        }
+        siteCss = DEFAULT_UNTHEMED_FALLBACK_CSS;
     }
 
     if (broadcastQueue.has(tabId)) clearTimeout(broadcastQueue.get(tabId));
@@ -458,9 +507,12 @@ browser.runtime.onMessage.addListener((req, sender) => {
             const resolveData = (themeSource) => {
                 if (!themeSource || !themeSource.colors) return { data: null, status };
                 if (isSiteDisabled(url, themeSource.disabledSites)) return { data: null, status };
-                const siteCss = filterWebsiteCss(url, themeSource.websites || {});
+                let siteCss = filterWebsiteCss(url, themeSource.websites || {});
                 const allowUnthemed = !!state.config.forceUnthemedWebsites;
-                if (!siteCss && !allowUnthemed) return { data: null, status };
+                if (!siteCss) {
+                    if (!allowUnthemed) return { data: null, status };
+                    siteCss = DEFAULT_UNTHEMED_FALLBACK_CSS;
+                }
 
                 return {
                     data: {
