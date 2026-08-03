@@ -192,14 +192,22 @@ panelmultiview,
     color: var(--lwt-text-color, #fbfbfe) !important;
 }
 
-/* Middle-Click Auto-Scroll Floating Disc */
+/* Middle-Click Auto-Scroll Floating Disc (autoscroll.css) */
 #autoscroller,
-panel#autoscroller {
+panel#autoscroller,
+.autoscroller {
     appearance: none !important;
     -moz-default-appearance: none !important;
+    background-color: transparent !important;
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+}
+
+#autoscroller::part(content),
+panel#autoscroller::part(content),
+.autoscroller::part(content) {
     background-color: var(--lwt-accent-color, #1c1b22) !important;
-    background: var(--lwt-accent-color, #1c1b22) !important;
-    color: var(--lwt-text-color, #fbfbfe) !important;
     border: 1px solid var(--toolbar-field-background-color-focus, #42414d) !important;
     border-radius: 50% !important;
     padding: 4px !important;
@@ -207,9 +215,56 @@ panel#autoscroller {
 }
 
 #autoscroller image,
-panel#autoscroller image {
+panel#autoscroller image,
+.autoscroller-icon {
+    -moz-context-properties: fill, stroke !important;
     fill: var(--toolbarbutton-icon-fill, var(--lwt-text-color, #fbfbfe)) !important;
+    stroke: var(--toolbarbutton-icon-fill, var(--lwt-text-color, #fbfbfe)) !important;
     color: var(--toolbarbutton-icon-fill, var(--lwt-text-color, #fbfbfe)) !important;
+}
+
+/* Native Scrollbars, Thumb, Corner & Window Resizer (scrollbars.css) */
+scrollbar,
+thumb,
+scrollbarbutton,
+scrollcorner,
+resizer {
+    appearance: none !important;
+    -moz-default-appearance: none !important;
+}
+
+scrollbar {
+    background-color: var(--lwt-accent-color, #1c1b22) !important;
+    border: none !important;
+}
+
+scrollbar[vertical] {
+    background-color: var(--lwt-accent-color, #1c1b22) !important;
+}
+
+thumb {
+    background-color: var(--toolbarbutton-background-color-hover, rgba(255, 255, 255, 0.2)) !important;
+    border-radius: 6px !important;
+    border: 2px solid var(--lwt-accent-color, #1c1b22) !important;
+}
+
+thumb:hover,
+thumb[active] {
+    background-color: var(--toolbarbutton-icon-fill, var(--lwt-text-color, #fbfbfe)) !important;
+}
+
+scrollbarbutton {
+    display: none !important;
+}
+
+scrollcorner {
+    background-color: var(--lwt-accent-color, #1c1b22) !important;
+}
+
+resizer {
+    background-color: transparent !important;
+    -moz-context-properties: fill, stroke !important;
+    fill: var(--toolbarbutton-icon-fill, var(--lwt-text-color, #fbfbfe)) !important;
 }
 
 menu,

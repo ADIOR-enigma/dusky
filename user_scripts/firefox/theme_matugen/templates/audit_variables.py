@@ -325,7 +325,8 @@ def audit() -> int:
         "findbar", "tooltip", ".urlbarView-row", "message-bar",
         "--message-bar-background-color", "#ai-window-sidebar", "#webRTC-sharing-icon",
         "identity-credential-notification", "#sanitizeDialog", ".tab-group-header",
-        "#urlbar-results", "formautofill-creditcard-popup", "#pageInfoWindow"
+        "#urlbar-results", "formautofill-creditcard-popup", "#pageInfoWindow",
+        "scrollbar", "thumb", "resizer", "scrollcorner"
     ]
 
     profile_audits_passed: bool = True
