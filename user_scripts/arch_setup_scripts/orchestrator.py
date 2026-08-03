@@ -3550,12 +3550,16 @@ def _restore_user_mods(
         new_mode, new_oid = _git_head_path_meta(base_cmd, path)
         old_valid = not _is_null_oid(old_oid)
 
+        same_oid = (new_oid.lower() == old_oid.lower()) if (new_oid and old_oid) else False
+        same_mode = (new_mode.lstrip("0") == old_mode.lstrip("0")) if (new_mode and old_mode) else False
+        same_meta = same_oid and same_mode
+
         if status == "D":
             if not new_oid:
                 deleted += 1
                 continue
 
-            if old_valid and new_oid == old_oid and new_mode == old_mode:
+            if old_valid and same_meta:
                 with suppress(OSError):
                     _delete_path(target)
                 deleted += 1
@@ -3585,7 +3589,7 @@ def _restore_user_mods(
         safe = False
 
         if old_valid:
-            if new_oid == old_oid and new_mode == old_mode:
+            if same_meta:
                 safe = True
         elif not new_oid:
             safe = True
@@ -3855,8 +3859,11 @@ def run_git_self_update(
             local_head = _git_check(base_cmd + ["rev-parse", "HEAD"])
 
         if local_head and local_head == remote_head:
-            sys.stdout.write("[GIT] Orchestrator is up to date.\n")
-            return False
+            changes = _capture_tracked_changes(base_cmd)
+            if not changes:
+                sys.stdout.write("[GIT] Orchestrator is up to date.\n")
+                return False
+            sys.stdout.write(f"[GIT] Origin matched, but work-tree has {len(changes)} tracked change(s). Processing...\n")
 
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_root = backups_dir() / f"dusky_backup_{timestamp}_{remote_head[:7]}"
