@@ -307,18 +307,38 @@ function broadcastToTabs(force = false) {
 }
 
 const DEFAULT_UNTHEMED_FALLBACK_CSS = `@media screen {
-    /* Matugen Generic Fallback for Unthemed Websites */
-    html, body {
-        background-color: var(--background, var(--surface, #121212)) !important;
+    /* Matugen Generic Structural Engine for Unthemed Websites */
+    html, body,
+    header, nav, main, footer, aside, section, article,
+    form, table, thead, tbody, tfoot, tr, td, th, ul, ol, li, dl, dt, dd,
+    details, summary, figure, fieldset, legend,
+    [class*="card"], [class*="header"], [class*="footer"],
+    [class*="sidebar"], [class*="panel"], [class*="box"] {
+        background-color: var(--background, var(--surface, #181a1b)) !important;
         color: var(--on_background, var(--on_surface, #e0e0e0)) !important;
+        border-color: var(--outline_variant, rgba(255, 255, 255, 0.08)) !important;
     }
 
-    h1, h2, h3, h4, h5, h6, p, li, dt, dd, label, td, th, blockquote {
-        color: var(--on_background, var(--on_surface, inherit));
+    /* Keep generic div, span, and overlay containers transparent so layout wrappers never block page content */
+    [class*="overlay"], [class*="backdrop"], [class*="off-canvas"], [class*="dialog-off-canvas"], [class*="canvas"], [class*="wrapper"], [id*="wrapper"], [class*="screenshot"] {
+        background-color: transparent !important;
     }
 
-    a, a * {
-        color: var(--primary, #89b4fa) !important;
+    h1, h2, h3, h4, h5, h6, p, li, dt, dd, label, b, strong, i, em, small, mark, blockquote {
+        color: var(--on_background, var(--on_surface, inherit)) !important;
+    }
+
+    a:link, a:link *, [role="link"], h3 a, h3 a * {
+        color: #8ab4f8 !important;
+    }
+
+    a:visited, a:visited * {
+        color: #c58af9 !important;
+    }
+
+    a:hover, a:hover * {
+        color: #8ab4f8 !important;
+        text-decoration: underline;
     }
 
     pre, code, kbd, samp {
@@ -327,18 +347,45 @@ const DEFAULT_UNTHEMED_FALLBACK_CSS = `@media screen {
         border-radius: 4px;
     }
 
-    button, input, select, textarea {
+    button, select, textarea, option, optgroup, [role="button"], [role="combobox"], [role="option"], [role="listbox"] {
         background-color: var(--surface_container, var(--surface, #2b2a33)) !important;
         color: var(--on_surface, #fbfbfe) !important;
-        border-color: var(--outline, #42414d) !important;
+        border-color: var(--outline, rgba(255, 255, 255, 0.12)) !important;
     }
 
-    img, video, canvas, iframe, embed, object {
+    [class*="search"] input, form input, [role="combobox"] input, input[type="text"], input[type="search"], .gLFyf {
+        background-color: transparent !important;
+        color: #e0e0e0 !important;
+        box-shadow: none !important;
+    }
+
+    input[type="checkbox"], input[type="radio"], input[type="range"], progress {
+        accent-color: var(--primary_container, #8ab4f8) !important;
+    }
+
+    input::placeholder, textarea::placeholder {
+        color: var(--on_surface_variant, rgba(255, 255, 255, 0.5)) !important;
+    }
+
+    table th {
+        background-color: var(--surface_container_high, var(--surface, #2b2a33)) !important;
+        color: var(--on_surface, #fbfbfe) !important;
+    }
+
+    tbody tr:nth-child(even) {
+        background-color: var(--surface_container_low, var(--surface, #1e1d27)) !important;
+    }
+
+    img, video, canvas, iframe, embed, object, svg {
         background-color: transparent !important;
     }
 
+    ::backdrop {
+        background-color: rgba(0, 0, 0, 0.7) !important;
+    }
+
     hr {
-        border-color: var(--outline_variant, var(--outline, #42414d)) !important;
+        border-color: var(--outline_variant, rgba(255, 255, 255, 0.12)) !important;
     }
 
     ::selection {
@@ -352,21 +399,59 @@ const DEFAULT_UNTHEMED_FALLBACK_CSS = `@media screen {
 }
 `;
 
+const domainFixCache = new Map();
+
+function getHostname(url) {
+    if (!url) return '';
+    try {
+        return new URL(url).hostname.toLowerCase();
+    } catch {
+        return '';
+    }
+}
+
+function resolveSiteCss(url, themeSource, allowUnthemed) {
+    if (!url || !themeSource) return { siteCss: '', isUnthemedFallback: false };
+    // Priority 1: Explicit custom template from ~/.config/dusky_sites/
+    let siteCss = filterWebsiteCss(url, themeSource.websites || {});
+    if (siteCss) return { siteCss, isUnthemedFallback: false };
+
+    // If unthemed website forcing is OFF, return empty (unthemed)
+    if (!allowUnthemed) return { siteCss: '', isUnthemedFallback: false };
+
+    const hostname = getHostname(url);
+    if (hostname) {
+        let domainFix = domainFixCache.get(hostname);
+        if (!domainFix) {
+            safePostMessage({ type: 'GET_DOMAIN_FIX', domain: hostname });
+        } else {
+            if (domainFix.isDarkSite) {
+                return { siteCss: '', isUnthemedFallback: false };
+            }
+            if (domainFix.css) {
+                return {
+                    siteCss: DEFAULT_UNTHEMED_FALLBACK_CSS + '\n\n' + domainFix.css,
+                    isUnthemedFallback: true
+                };
+            }
+        }
+    }
+
+    return { siteCss: DEFAULT_UNTHEMED_FALLBACK_CSS, isUnthemedFallback: true };
+}
+
 function sendToTab(tabId, data, url, force = false) {
     if (!url || isInternalProtocol(url)) return;
     if (!state.config.webThemeEnabled || isSiteDisabled(url, data?.disabledSites)) {
         browser.tabs.sendMessage(tabId, { type: 'MATUGEN_ROLLBACK' }).catch(() => {});
         return;
     }
-    let siteCss = filterWebsiteCss(url, data?.websites);
     const allowUnthemed = !!state.config.forceUnthemedWebsites;
+    const { siteCss, isUnthemedFallback } = resolveSiteCss(url, data, allowUnthemed);
 
     if (!siteCss) {
-        if (!allowUnthemed) {
-            browser.tabs.sendMessage(tabId, { type: 'MATUGEN_ROLLBACK' }).catch(() => {});
-            return;
-        }
-        siteCss = DEFAULT_UNTHEMED_FALLBACK_CSS;
+        browser.tabs.sendMessage(tabId, { type: 'MATUGEN_ROLLBACK' }).catch(() => {});
+        return;
     }
 
     if (broadcastQueue.has(tabId)) clearTimeout(broadcastQueue.get(tabId));
@@ -377,6 +462,7 @@ function sendToTab(tabId, data, url, force = false) {
             data: {
                 colors: data.colors,
                 websiteCss: siteCss,
+                isUnthemedFallback,
                 timestamp: data.timestamp,
                 force,
             },
@@ -395,12 +481,15 @@ function broadcastRollback() {
 }
 
 // ─── Config Management ───
+let configInitPromise = null;
+
 function loadConfig() {
-    browser.storage.local.get(['config', 'themeData']).then(res => {
+    configInitPromise = browser.storage.local.get(['config', 'themeData']).then(res => {
         if (res.config) state.config = mergeConfig(res.config);
         if (res.themeData) state.lastThemeData = res.themeData;
         connectNative();
     }).catch(err => console.error('Dusky Sites: loadConfig error:', err));
+    return configInitPromise;
 }
 
 function saveConfig(partial = null) {
@@ -437,6 +526,24 @@ function handleHostMessage(msg) {
             }
             if (state.config.browserThemeEnabled) applyBrowserTheme(msg.data.colors);
             notifyUI({ type: 'THEME_APPLIED', colors: msg.data.colors });
+            break;
+        }
+        case 'DOMAIN_FIX_RESPONSE': {
+            if (msg.domain) {
+                const dom = msg.domain.toLowerCase();
+                domainFixCache.set(dom, {
+                    css: msg.css || '',
+                    isDarkSite: !!msg.isDarkSite
+                });
+                browser.tabs.query({}).then(tabs => {
+                    for (const t of tabs) {
+                        if (t.url && hostMatchesDomain(getHostname(t.url), dom)) {
+                            const data = resolveThemeData();
+                            if (data) sendToTab(t.id, data, t.url, true);
+                        }
+                    }
+                }).catch(() => {});
+            }
             break;
         }
         case 'STORED_CONFIG': {
@@ -491,44 +598,44 @@ browser.runtime.onMessage.addListener((req, sender) => {
             });
         }
         case 'GET_THEME_DATA': {
-            const status = {
-                connected: !!state.port,
-                manuallyStopped: !state.shouldConnect,
-                lastSyncTime: state.lastThemeData?.timestamp || null,
-                isApplied: state.isApplied,
-            };
-            if (!state.config.webThemeEnabled) return Promise.resolve({ data: null, status });
-            const url = sender.url || sender.tab?.url;
-            if (isInternalProtocol(url)) return Promise.resolve({ data: null, status });
-
-            const data = resolveThemeData();
-            if (data && isSiteDisabled(url, data.disabledSites)) return Promise.resolve({ data: null, status });
-
-            const resolveData = (themeSource) => {
-                if (!themeSource || !themeSource.colors) return { data: null, status };
-                if (isSiteDisabled(url, themeSource.disabledSites)) return { data: null, status };
-                let siteCss = filterWebsiteCss(url, themeSource.websites || {});
-                const allowUnthemed = !!state.config.forceUnthemedWebsites;
-                if (!siteCss) {
-                    if (!allowUnthemed) return { data: null, status };
-                    siteCss = DEFAULT_UNTHEMED_FALLBACK_CSS;
-                }
-
-                return {
-                    data: {
-                        colors: themeSource.colors,
-                        websiteCss: siteCss,
-                        timestamp: themeSource.timestamp,
-                        status: themeSource.status,
-                    },
-                    status,
+            return (configInitPromise || Promise.resolve()).then(() => {
+                const status = {
+                    connected: !!state.port,
+                    manuallyStopped: !state.shouldConnect,
+                    lastSyncTime: state.lastThemeData?.timestamp || null,
+                    isApplied: state.isApplied,
                 };
-            };
+                if (!state.config.webThemeEnabled) return { data: null, status };
+                const url = sender.url || sender.tab?.url;
+                if (isInternalProtocol(url)) return { data: null, status };
 
-            if (!data) {
-                return browser.storage.local.get('themeData').then(res => resolveData(res.themeData));
-            }
-            return Promise.resolve(resolveData(data));
+                const data = resolveThemeData();
+                if (data && isSiteDisabled(url, data.disabledSites)) return { data: null, status };
+
+                const resolveData = (themeSource) => {
+                    if (!themeSource || !themeSource.colors) return { data: null, status };
+                    if (isSiteDisabled(url, themeSource.disabledSites)) return { data: null, status };
+                    const allowUnthemed = !!state.config.forceUnthemedWebsites;
+                    const { siteCss, isUnthemedFallback } = resolveSiteCss(url, themeSource, allowUnthemed);
+                    if (!siteCss) return { data: null, status };
+
+                    return {
+                        data: {
+                            colors: themeSource.colors,
+                            websiteCss: siteCss,
+                            isUnthemedFallback,
+                            timestamp: themeSource.timestamp,
+                            status: themeSource.status,
+                        },
+                        status,
+                    };
+                };
+
+                if (!data) {
+                    return browser.storage.local.get('themeData').then(res => resolveData(res.themeData));
+                }
+                return resolveData(data);
+            });
         }
         case 'GET_STATUS':
             return Promise.resolve({

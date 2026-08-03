@@ -366,6 +366,82 @@ def parse_colors(colors_file: str) -> dict[str, str]:
     except Exception:
         return {}
 
+COMMON_TLDS = ["com", "org", "net", "gov", "edu", "co.uk", "co.in", "ca", "de", "fr", "it", "es", "com.au", "io", "dev", "ai"]
+
+def expand_domain_pattern(pattern: str) -> list[str]:
+    pattern = pattern.lower().strip()
+    if not pattern:
+        return []
+    if "*" not in pattern:
+        return [pattern]
+    expanded = []
+    if "google." in pattern:
+        for tld in COMMON_TLDS:
+            expanded.append(f"google.{tld}")
+            expanded.append(f"www.google.{tld}")
+    else:
+        for tld in ("com", "org", "net"):
+            expanded.append(pattern.replace("*.", "").replace("*", tld))
+    return expanded
+
+def parse_dynamic_theme_fixes(fixes_path: Path) -> dict[str, str]:
+    if not fixes_path or not fixes_path.is_file():
+        return {}
+    fixes: dict[str, str] = {}
+    try:
+        content = fixes_path.read_text(encoding="utf-8")
+        sections = content.split("================================")
+        for sec in sections:
+            sec = sec.strip()
+            if not sec:
+                continue
+            lines = sec.splitlines()
+            domains: list[str] = []
+            css_lines: list[str] = []
+            invert_selectors: list[str] = []
+            mode = None
+            for line in lines:
+                l = line.strip()
+                if not l:
+                    continue
+                if l in ("INVERT", "CSS", "IGNORE INLINE STYLE", "IGNORE IMAGE ANALYSIS", "IGNORE CSS URL"):
+                    mode = l
+                    continue
+                if mode == "CSS":
+                    css_lines.append(line)
+                elif mode == "INVERT":
+                    invert_selectors.append(l)
+                elif mode is None:
+                    expanded = expand_domain_pattern(l)
+                    domains.extend(expanded)
+
+            built_css_parts: list[str] = []
+            if invert_selectors:
+                built_css_parts.append(",\n".join(invert_selectors) + " {\n  filter: invert(100%) hue-rotate(180deg) !important;\n}")
+            if css_lines:
+                raw_css = "\n".join(css_lines)
+                css = (raw_css
+                    .replace("var(--darkreader-neutral-background)", "var(--background, var(--surface, #181a1b))")
+                    .replace("var(--darkreader-neutral-text)", "var(--on_background, var(--on_surface, #e0e0e0))")
+                    .replace("var(--darkreader-selection-background)", "var(--primary_container, #364765)")
+                    .replace("var(--darkreader-selection-text)", "var(--on_primary_container, #ffffff)")
+                    .replace("var(--darkreader-inline-background)", "var(--surface, #181a1b)")
+                    .replace("var(--darkreader-inline-color)", "var(--on_surface, #e0e0e0)")
+                )
+                css = re.sub(r"\$\{[^}]+\}", "var(--surface_container, var(--primary, #8ab4f8))", css)
+                built_css_parts.append(css)
+            if built_css_parts and domains:
+                final_domain_css = "\n\n".join(built_css_parts)
+                for domain in domains:
+                    if domain:
+                        if domain in fixes:
+                            fixes[domain] += "\n\n" + final_domain_css
+                        else:
+                            fixes[domain] = final_domain_css
+    except Exception:
+        pass
+    return fixes
+
 def parse_websites(websites_dir: str, disabled_sites: list[str] | None = None) -> dict[str, str]:
     p = Path(websites_dir).expanduser() if websites_dir else None
     if not p or not p.is_dir():
@@ -409,6 +485,14 @@ def get_theme_data(colors_file: str, websites_dir: str, web_theme_enabled: bool 
     disabled = _norm_sites(disabled_sites)
     colors = parse_colors(colors_file)
     websites = parse_websites(websites_dir, disabled)
+
+    fallback_fixes: dict[str, str] = {}
+    if p_sites:
+        fixes_file = p_sites / "dynamic-theme-fixes.config"
+        if not fixes_file.is_file():
+            fixes_file = Path.home() / ".config" / "dusky" / "settings" / "dusky_sites" / "dynamic-theme-fixes.config"
+        if fixes_file.is_file():
+            fallback_fixes = parse_dynamic_theme_fixes(fixes_file)
 
     if not colors and not any("not found" in s.lower() for s in status):
         status.append(f"Colors empty or unreadable: {colors_file}")
@@ -470,6 +554,139 @@ def apply_set_config(new_config: dict) -> bool:
         persist_config(snapshot)
     return changed
 
+def resolve_fallback_file(p_sites: Path | None, filename: str) -> Path | None:
+    if p_sites:
+        f1 = p_sites / "fallback" / filename
+        if f1.is_file():
+            return f1
+        f2 = p_sites / filename
+        if f2.is_file():
+            return f2
+    f3 = Path.home() / ".config" / "dusky" / "settings" / "dusky_sites" / "fallback" / filename
+    if f3.is_file():
+        return f3
+    f4 = Path.home() / ".config" / "dusky" / "settings" / "dusky_sites" / filename
+    if f4.is_file():
+        return f4
+    return None
+
+def is_native_dark_site(domain: str, p_sites: Path | None) -> bool:
+    if not domain:
+        return False
+    dark_sites_file = resolve_fallback_file(p_sites, "dark-sites.config")
+    if not dark_sites_file or not dark_sites_file.is_file():
+        return False
+    try:
+        lines = [line.strip().lower() for line in dark_sites_file.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip() and not line.startswith("#")]
+        d = domain.lower()
+        for pat in lines:
+            clean_pat = pat[2:] if pat.startswith("*.") else (pat[1:] if pat.startswith("*") else pat)
+            if d == clean_pat or d.endswith("." + clean_pat):
+                return True
+    except Exception:
+        pass
+    return False
+
+def parse_static_theme_fixes(fixes_path: Path) -> dict[str, str]:
+    if not fixes_path or not fixes_path.is_file():
+        return {}
+    fixes: dict[str, str] = {}
+    try:
+        content = fixes_path.read_text(encoding="utf-8")
+        sections = content.split("================================")
+        for sec in sections:
+            sec = sec.strip()
+            if not sec:
+                continue
+            lines = sec.splitlines()
+            domains: list[str] = []
+            css_rules: list[str] = []
+            current_mode = None
+            selectors: list[str] = []
+
+            def flush_mode():
+                nonlocal current_mode, selectors, css_rules
+                if not current_mode or not selectors:
+                    return
+                sel_str = ",\n".join(selectors)
+                if current_mode == "NEUTRAL BG":
+                    css_rules.append(f"{sel_str} {{\n  background-color: var(--background, var(--surface, #181a1b)) !important;\n}}")
+                elif current_mode == "NEUTRAL TEXT":
+                    css_rules.append(f"{sel_str} {{\n  color: var(--on_background, var(--on_surface, #e0e0e0)) !important;\n}}")
+                elif current_mode in ("RED TEXT", "GREEN TEXT", "BLUE TEXT ACTIVE"):
+                    css_rules.append(f"{sel_str} {{\n  color: var(--primary, #8ab4f8) !important;\n}}")
+                elif current_mode in ("BLUE BG ACTIVE", "GREEN BG ACTIVE"):
+                    css_rules.append(f"{sel_str} {{\n  background-color: var(--primary_container, #364765) !important;\n}}")
+                selectors = []
+
+            for line in lines:
+                l = line.strip()
+                if not l:
+                    continue
+                if l in ("NEUTRAL BG", "NEUTRAL TEXT", "RED TEXT", "GREEN TEXT", "BLUE BG ACTIVE", "BLUE TEXT ACTIVE", "BLUE BORDER", "FADE BG", "FADE TEXT", "NO IMAGE", "CSS"):
+                    flush_mode()
+                    current_mode = l
+                    continue
+
+                if current_mode == "CSS":
+                    css_rules.append(line)
+                elif current_mode:
+                    selectors.append(l)
+                else:
+                    expanded = expand_domain_pattern(l)
+                    domains.extend(expanded)
+
+            flush_mode()
+
+            if css_rules and domains:
+                final_css = "\n\n".join(css_rules)
+                final_css = (final_css
+                    .replace("var(--darkreader-neutral-background)", "var(--background, var(--surface, #181a1b))")
+                    .replace("var(--darkreader-neutral-text)", "var(--on_background, var(--on_surface, #e0e0e0))")
+                )
+                for domain in domains:
+                    if domain:
+                        if domain in fixes:
+                            fixes[domain] += "\n\n" + final_css
+                        else:
+                            fixes[domain] = final_css
+    except Exception:
+        pass
+    return fixes
+
+def get_domain_fix_css(domain: str, websites_dir: str) -> dict:
+    if not domain:
+        return {"css": "", "isDarkSite": False}
+    p_sites = Path(websites_dir).expanduser() if websites_dir else Path.home() / ".config" / "dusky_sites"
+    
+    if is_native_dark_site(domain, p_sites):
+        return {"css": "", "isDarkSite": True}
+
+    combined_css_parts: list[str] = []
+    
+    # 1. Load dynamic-theme-fixes.config
+    dt_file = resolve_fallback_file(p_sites, "dynamic-theme-fixes.config")
+    if dt_file and dt_file.is_file():
+        dt_fixes = parse_dynamic_theme_fixes(dt_file)
+        if dt_fixes.get(domain.lower()):
+            combined_css_parts.append(dt_fixes[domain.lower()])
+
+    # 2. Load inversion-fixes.config
+    inv_file = resolve_fallback_file(p_sites, "inversion-fixes.config")
+    if inv_file and inv_file.is_file():
+        inv_fixes = parse_dynamic_theme_fixes(inv_file)
+        if inv_fixes.get(domain.lower()):
+            combined_css_parts.append(inv_fixes[domain.lower()])
+
+    # 3. Load static-themes.config
+    st_file = resolve_fallback_file(p_sites, "static-themes.config")
+    if st_file and st_file.is_file():
+        st_fixes = parse_static_theme_fixes(st_file)
+        if st_fixes.get(domain.lower()):
+            combined_css_parts.append(st_fixes[domain.lower()])
+
+    return {"css": "\n\n".join(combined_css_parts), "isDarkSite": False}
+
 def message_handler() -> None:
     global running, fetch_requested
     error_count = 0
@@ -516,6 +733,18 @@ def message_handler() -> None:
                     tmp.replace(cache_file)
                 except Exception:
                     pass
+
+            elif msg_type == "GET_DOMAIN_FIX":
+                domain = msg.get("domain", "")
+                with config_lock:
+                    w_dir = config.get("websites_dir", "")
+                res_dict = get_domain_fix_css(domain, w_dir)
+                send_message({
+                    "type": "DOMAIN_FIX_RESPONSE",
+                    "domain": domain,
+                    "css": res_dict.get("css", ""),
+                    "isDarkSite": res_dict.get("isDarkSite", False)
+                })
 
             elif msg_type in {"GET_PROFILE_PATHS", "WRITE_USER_CHROME", "WRITE_USER_CONTENT", "SET_FONT_SIZE", "QUERY_LIVE_THEME"}:
                 send_message({
