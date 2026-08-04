@@ -2203,7 +2203,8 @@ def compile_theme() -> dict[str, str]:
     theme: dict[str, str] = dict(default_palette)
 
     search_paths = GLOBAL_CONFIG.get("ui", {}).get("theme_paths", [
-        ".config/matugen/generated/dusky_tui.json"
+        ".config/matugen/generated/dusky_tui.json",
+        ".config/matugen/generated_fresh/dusky_tui.json",
     ])
 
     for raw in search_paths:
@@ -2257,7 +2258,7 @@ Screen {{ background: {THEME['bg']}; color: {THEME['fg']}; }}
 ContentSwitcher {{ height: 1fr; width: 100%; }}
 RichLog {{
     height: 1fr; background: transparent; color: {THEME['fg']};
-    border: none; padding: 1 2;
+    border: none; padding: 0 0 0 1;
     scrollbar-size-vertical: 1;
 }}
 ScrollBar {{

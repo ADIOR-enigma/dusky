@@ -1745,6 +1745,7 @@ def load_palette() -> dict[str, str]:
 
     return theme
 
+PALETTE = load_palette()
 
 def build_app_css(p: dict[str, str]) -> str:
     return f"""
@@ -4142,33 +4143,39 @@ def run_git_self_update(
 def _status_badge(status: TaskStatus) -> Text:
     match status:
         case TaskStatus.COMPLETED:
-            return Text(S("completed"), style="green")
+            return Text(S("completed"), style=f"bold {PALETTE['success']}")
         case TaskStatus.RUNNING:
-            return Text(S("running"), style="yellow")
+            return Text(S("running"), style=f"bold {PALETTE['accent']}")
         case TaskStatus.FAILED:
-            return Text(S("failed"), style="red")
+            return Text(S("failed"), style=f"bold {PALETTE['error']}")
         case TaskStatus.SKIPPED:
-            return Text(S("skipped"), style="dim")
+            return Text(S("skipped"), style=f"dim {PALETTE['warning']}")
         case _:
-            return Text(S("pending"), style="dim")
+            return Text(S("pending"), style=f"dim {PALETTE['muted']}")
 
 
 def _task_label(task: OrchestratorTask) -> Text:
     txt = Text()
     txt.append_text(_status_badge(task.status))
-    txt.append(f" [{task.mode}] {task.script_name}")
+
+    if task.mode == "S":
+        txt.append(" SUDO ", style=f"bold {PALETTE['error']}")
+    else:
+        txt.append(" USER ", style=f"bold {PALETTE['success']}")
+
+    txt.append(f"{task.script_name}")
     if task.always:
-        txt.append(" ⟳", style="bold magenta")
+        txt.append(" ⟳", style=f"bold {PALETTE['accent']}")
     if task.once:
-        txt.append(" [once]", style="bold blue")
+        txt.append(" [once]", style=f"bold {PALETTE['accent']}")
     if task.duration > 0:
         secs = task.duration
         if secs < 60:
-            txt.append(f" ({secs:.1f}s)", style="dim cyan")
+            txt.append(f" ({secs:.1f}s)", style=f"dim {PALETTE['warning']}")
         else:
             m = int(secs) // 60
             s = int(secs) % 60
-            txt.append(f" ({m}m{s:02d}s)", style="dim cyan")
+            txt.append(f" ({m}m{s:02d}s)", style=f"dim {PALETTE['warning']}")
     return txt
 
 
@@ -4256,7 +4263,7 @@ class TaskSearchScreen(ModalScreen[str | None]):
             txt = Text()
             txt.append(f"{item.index:03d} ")
             txt.append_text(_status_badge(item.status))
-            txt.append(f" [{item.mode}] ", style="bold yellow")
+            txt.append(f" [{item.mode}] ", style=f"bold {PALETTE['accent']}")
             txt.append(item.script_name, style="bold white")
             if item.args:
                 txt.append(" " + shlex.join(item.args), style="dim")
@@ -4376,7 +4383,7 @@ class ConflictModalScreen(ModalScreen[str]):
             details.append("Exit code: ", style="bold")
             details.append(str(self.exit_code) + "\n", style="red bold")
             details.append("Diagnostics:\n", style="bold")
-            details.append(self.error_msg, style="yellow")
+            details.append(self.error_msg, style=f"{PALETTE['warning']}")
 
             yield Static(details, id="error_details")
 
@@ -4429,7 +4436,7 @@ class ManualModalScreen(ModalScreen[str]):
     def compose(self) -> ComposeResult:
         with Container(id="manual_dialog"):
             yield Static(
-                Text(f"{S('running')} MANUAL OVERRIDE: {self.script_name}", style="bold cyan"),
+                Text(f"{S('running')} MANUAL OVERRIDE: {self.script_name}", style=f"bold {PALETTE['accent']}"),
                 id="manual_title",
             )
 
@@ -4559,19 +4566,19 @@ class HelpScreen(ModalScreen[None]):
             yield Static(f"{S('logo')} Dusky Orchestrator Keybindings & Help", id="help_title")
 
             text = Text()
-            text.append("Global Navigation & Shortcuts\n", style="bold cyan")
+            text.append("Global Navigation & Shortcuts\n", style=f"bold {PALETTE['accent']}")
             text.append("  F1 / ?         Open / close (toggle) this Help screen\n")
             text.append("  Ctrl+F         Fuzzy search tasks\n")
             text.append("  Ctrl+L         Search current execution log\n")
             text.append("  F              Cycle filter (all/pending/running/completed/failed/skipped)\n")
             text.append("  q / Ctrl+Q / Ctrl+Z   Quit / Abort confirmation dialog\n\n")
 
-            text.append("Pane Resizing & Layout\n", style="bold cyan")
+            text.append("Pane Resizing & Layout\n", style=f"bold {PALETTE['accent']}")
             text.append("  Alt+Right / Alt+L / ]  Expand left sidebar width\n")
             text.append("  Alt+Left / Alt+H / [   Shrink left sidebar width\n")
             text.append("  Mouse Drag     Click and drag split border left or right\n\n")
 
-            text.append("Tree & Item Selection\n", style="bold cyan")
+            text.append("Tree & Item Selection\n", style=f"bold {PALETTE['accent']}")
             text.append("  j / k or Up/Down       Navigate tasks in left sidebar\n")
             text.append("  Enter                  Select task and open task log view\n")
             text.append("  y / a                  Confirm / Abort in modal dialogs\n")
@@ -4629,9 +4636,9 @@ class FailureSummaryScreen(ModalScreen[str]):
             details.append("\nFailed tasks:\n", style="bold red")
             if self.failed_tasks:
                 for t in self.failed_tasks:
-                    details.append(f"  {t.index:03d}. [{t.mode}] {t.script_name}\n", style="yellow")
+                    details.append(f"  {t.index:03d}. [{t.mode}] {t.script_name}\n", style=f"{PALETTE['warning']}")
             else:
-                details.append("  none\n", style="green")
+                details.append("  none\n", style=f"{PALETTE['success']}")
 
             details.append(f"\nLogs: {self.log_root}\n", style="dim")
 
@@ -5370,7 +5377,7 @@ class DuskyOrchestratorApp(App):
         total_tasks = len(self.tasks)
         txt = Text()
         txt.append(f"{task.index:03d}. {task.script_name}", style="bold")
-        txt.append(f"  [{task.index:03d} / {total_tasks:03d}]\n", style="bold cyan")
+        txt.append(f"  [{task.index:03d} / {total_tasks:03d}]\n", style=f"bold {PALETTE['accent']}")
         txt.append("Mode: ", style="bold")
         txt.append(task.mode + "  ")
         txt.append("Status: ", style="bold")
@@ -5406,7 +5413,7 @@ class DuskyOrchestratorApp(App):
                 s = int(secs) % 60
                 dur_str = f"{m}m {s:02d}s ({secs:.2f}s)"
             txt.append("Duration: ", style="bold")
-            txt.append(dur_str + "\n", style="cyan")
+            txt.append(dur_str + "\n", style=f"{PALETTE['warning']}")
 
         txt.append("Once: ", style="bold")
         if task.once:
@@ -5414,9 +5421,9 @@ class DuskyOrchestratorApp(App):
             txt.append(f"true ({task.once_mode}/{task.once_scope})", style="bold")
             txt.append("  Once marker: ", style="bold")
             if once_valid:
-                txt.append("valid", style="green")
+                txt.append("valid", style=f"{PALETTE['success']}")
             else:
-                txt.append("absent/mismatch", style="yellow")
+                txt.append("absent/mismatch", style=f"{PALETTE['warning']}")
             txt.append("\n")
         else:
             txt.append("false\n")
@@ -6657,7 +6664,7 @@ def main() -> None:
         Console(stderr=True).print("[bold yellow]:: No profiles found in profiles/ directory.[/bold yellow]")
         sys.exit(1)
 
-    palette = load_palette()
+    palette = PALETTE
     ProfileSelectorApp.CSS = build_selector_css(palette)
 
     if args.list:
