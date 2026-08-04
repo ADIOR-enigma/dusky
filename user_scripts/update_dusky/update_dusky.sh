@@ -244,7 +244,7 @@ declare -ra UPDATE_SEQUENCE=(
     "S | 211_systemd_oomd_zram.py"
 #    "S | 215_powerkey_lid_close_behaviour.sh"
 #    "S | 220_logrotate_optimization.sh"
-#    "S | 225_faillock_timeout.py"
+    "S | 225_faillock_timeout.py --preset lenient -y"
 #    "U | 230_asus_tuf_tweaks.sh"
     "U | 235_file_manager_switch.sh --apply-state"
     "U | 236_browser_switcher.sh --apply-state"
