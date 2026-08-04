@@ -2279,8 +2279,8 @@ ListItem {{
     background: transparent;
 }}
 ListItem:focus, ListItem.--highlight {{ 
-    background: {THEME['accent']}1a; 
-    border-left: tall {THEME['accent']};
+    background: {THEME['warning']}2a; 
+    border-left: tall {THEME['warning']};
 }}
 #top_header {{
     height: 1;
@@ -4077,7 +4077,6 @@ class ConfirmQuitScreen(ModalScreen[str]):
 
 class HelpScreen(ModalScreen[None]):
     BINDINGS = [
-        Binding("escape", "dismiss", "Dismiss"),
         Binding("f1", "dismiss", "Dismiss"),
         Binding("question_mark", "dismiss", "Dismiss"),
     ]
@@ -4092,7 +4091,7 @@ class HelpScreen(ModalScreen[None]):
             text.append("  Ctrl+F         Fuzzy search tasks\n")
             text.append("  Ctrl+L         Search current execution log\n")
             text.append("  F              Cycle filter (all/pending/running/success/failed/skipped)\n")
-            text.append("  q / Esc / Ctrl+Q / Ctrl+Z   Quit / Abort confirmation dialog\n\n")
+            text.append("  q / Ctrl+Q / Ctrl+Z   Quit / Abort confirmation dialog\n\n")
 
             text.append("Pane Resizing & Layout\n", style=f"bold {THEME['accent']}")
             text.append("  Alt+Right / Alt+L / ]  Expand sidebar width\n")
@@ -4108,11 +4107,14 @@ class HelpScreen(ModalScreen[None]):
             yield Static(text)
 
             with Horizontal(classes="modal-btn-container"):
-                yield Label(" Close [Esc/F1] ", classes="modal-close-btn", id="btn_close")
+                yield Label(" Close [F1/?] ", classes="modal-close-btn", id="btn_close")
 
     def on_key(self, event: events.Key) -> None:
         key = event.key.lower()
-        if key in ("f1", "question_mark", "escape", "q", "enter", "space", "?") or event.character in ("?", "q"):
+        if key == "escape":
+            event.stop()
+            return
+        if key in ("f1", "question_mark", "q", "enter", "space", "?") or event.character in ("?", "q"):
             self.dismiss(None)
             event.stop()
 

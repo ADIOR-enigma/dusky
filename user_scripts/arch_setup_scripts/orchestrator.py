@@ -1732,40 +1732,18 @@ def load_palette() -> dict[str, str]:
             "error": "#ffb4ab",
         },
     )
+    theme: dict[str, str] = dict(default_palette)
 
     theme_file = get_theme_path()
-    if not theme_file.exists():
-        return default_palette
+    if theme_file.is_file():
+        try:
+            data = json.loads(theme_file.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                theme.update({str(k): str(v) for k, v in data.items()})
+        except (json.JSONDecodeError, OSError):
+            pass
 
-    try:
-        raw = json.loads(theme_file.read_text(encoding="utf-8"))
-    except Exception:
-        return default_palette
-
-    candidates: list[dict] = []
-    if isinstance(raw, dict):
-        candidates.append(raw)
-        for key in ("dark", "colors", "palette", "tones", "theme"):
-            value = raw.get(key)
-            if isinstance(value, dict):
-                candidates.append(value)
-
-    merged: dict = {}
-    for candidate in reversed(candidates):
-        merged.update(candidate)
-
-    if not merged:
-        return default_palette
-
-    return {
-        "bg": _pick_color(merged, ["bg", "background", "base", "surface"], default_palette["bg"]),
-        "fg": _pick_color(merged, ["fg", "foreground", "text", "on_surface"], default_palette["fg"]),
-        "accent": _pick_color(merged, ["accent", "primary", "secondary"], default_palette["accent"]),
-        "warning": _pick_color(merged, ["warning", "warn", "tertiary"], default_palette["warning"]),
-        "success": _pick_color(merged, ["success", "green"], default_palette["success"]),
-        "muted": _pick_color(merged, ["muted", "outline", "surface_variant"], default_palette["muted"]),
-        "error": _pick_color(merged, ["error", "danger", "red"], default_palette["error"]),
-    }
+    return theme
 
 
 def build_app_css(p: dict[str, str]) -> str:
@@ -4177,7 +4155,6 @@ def _status_badge(status: TaskStatus) -> Text:
 
 def _task_label(task: OrchestratorTask) -> Text:
     txt = Text()
-    txt.append(f"{task.index:03d} ")
     txt.append_text(_status_badge(task.status))
     txt.append(f" [{task.mode}] {task.script_name}")
     if task.always:
@@ -4573,7 +4550,6 @@ class ConfirmQuitScreen(ModalScreen[str]):
 
 class HelpScreen(ModalScreen[None]):
     BINDINGS = [
-        Binding("escape", "dismiss", "Dismiss"),
         Binding("f1", "dismiss", "Dismiss"),
         Binding("question_mark", "dismiss", "Dismiss"),
     ]
@@ -4588,7 +4564,7 @@ class HelpScreen(ModalScreen[None]):
             text.append("  Ctrl+F         Fuzzy search tasks\n")
             text.append("  Ctrl+L         Search current execution log\n")
             text.append("  F              Cycle filter (all/pending/running/completed/failed/skipped)\n")
-            text.append("  q / Esc / Ctrl+Q / Ctrl+Z   Quit / Abort confirmation dialog\n\n")
+            text.append("  q / Ctrl+Q / Ctrl+Z   Quit / Abort confirmation dialog\n\n")
 
             text.append("Pane Resizing & Layout\n", style="bold cyan")
             text.append("  Alt+Right / Alt+L / ]  Expand left sidebar width\n")
@@ -4604,14 +4580,17 @@ class HelpScreen(ModalScreen[None]):
             yield Static(text)
 
             with Horizontal(id="button_bar"):
-                yield Button("Close [Esc/F1]", variant="primary", id="btn_close")
+                yield Button("Close [F1/?]", variant="primary", id="btn_close")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(None)
 
     def on_key(self, event: events.Key) -> None:
         key = event.key.lower()
-        if key in ("f1", "question_mark", "escape", "q", "enter", "space", "?") or event.character in ("?", "q"):
+        if key == "escape":
+            event.stop()
+            return
+        if key in ("f1", "question_mark", "q", "enter", "space", "?") or event.character in ("?", "q"):
             self.dismiss(None)
             event.stop()
 
