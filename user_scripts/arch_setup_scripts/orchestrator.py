@@ -6878,4 +6878,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        Console(stderr=True).print("\n[bold red]:: Interrupted by user.[/bold red]")
+        sys.exit(130)
