@@ -4730,7 +4730,7 @@ class ProfileSelectorApp(App):
 
     def compose(self) -> ComposeResult:
         with Container(id="selector_container"):
-            yield Static(f"{S('logo')} DUSKY ARCH MASTER ORCHESTRATOR", id="title")
+            yield Static(f"{S('logo')} DUSKY ORCHESTRATOR PROFILES", id="title")
 
             options = []
             for i, p in enumerate(self.profiles):
