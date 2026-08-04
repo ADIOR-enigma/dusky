@@ -754,6 +754,55 @@ SCHEMA = {
         ConfigItem(label="Background", key="background-color", scope="app-name=hypr-anim", type_="color", default="{{colors.surface.default.hex}}1a", options=COLOR_OPTIONS, hints=COLOR_HINTS, parent_ref="menu_hypr_anim", extended_help="**Anim Fill Color**" + ALPHA_HELP),
         ConfigItem(label="Text", key="text-color", scope="app-name=hypr-anim", type_="color", default="{{colors.on_surface.default.hex}}", options=COLOR_OPTIONS, hints=COLOR_HINTS, parent_ref="menu_hypr_anim", extended_help="**Anim Text Color**" + ALPHA_HELP),
         ConfigItem(label="Border", key="border-color", scope="app-name=hypr-anim", type_="color", default="{{colors.outline.default.hex}}33", options=COLOR_OPTIONS, hints=COLOR_HINTS, parent_ref="menu_hypr_anim", extended_help="**Anim Border Color**" + ALPHA_HELP),
+
+        # =====================================================================
+        # GROUP: IDLE (hypridle toggle)
+        # =====================================================================
+        ConfigItem(
+            label="Idle", key="menu_idle", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Idle",
+            extended_help="**Idle Protection Toggle**\n\nStyles the compact confirmation pill pushed by the Waybar hypridle toggle (`notify-send -a dusky-hypridle`)."
+        ),
+        ConfigItem(label="Anchor", key="anchor", scope="app-name=dusky-hypridle", type_="cycle", default="bottom-center", options=["top-right", "top-center", "top-left", "bottom-right", "bottom-center", "bottom-left", "center-right", "center-left", "center"], parent_ref="menu_idle", extended_help="**Idle Position**\n\nScreen anchor for the suspend toggle pill."),
+        ConfigItem(label="Layer", key="layer", scope="app-name=dusky-hypridle", type_="cycle", default="overlay", options=["background", "bottom", "top", "overlay"], parent_ref="menu_idle", extended_help="**Idle Layer**\n\nArranges the toggle pill at a specific Wayland surface layer."),
+        ConfigItem(label="Width", key="width", scope="app-name=dusky-hypridle", type_="int", default=220, min_val=100, max_val=800, step=5, parent_ref="menu_idle", extended_help="**Idle Pill Width**\n\nHorizontal size of the toggle confirmation pill."),
+        ConfigItem(label="Height", key="height", scope="app-name=dusky-hypridle", type_="int", default=46, min_val=10, max_val=200, step=2, parent_ref="menu_idle", extended_help="**Idle Pill Height**\n\nVertical limit of the toggle pill."),
+        ConfigItem(label="Margin", key="margin", scope="app-name=dusky-hypridle", type_="string", default="0,0,30,0", parent_ref="menu_idle", extended_help="**Idle Offset Margin**\n\nScreen offset raising the pill above the bottom edge."),
+        ConfigItem(label="Padding", key="padding", scope="app-name=dusky-hypridle", type_="string", default="6,14", parent_ref="menu_idle", extended_help="**Idle Padding**\n\nSpace between the icon/text and the pill border."),
+        ConfigItem(label="Radius", key="border-radius", scope="app-name=dusky-hypridle", type_="int", default=20, min_val=0, max_val=50, step=1, parent_ref="menu_idle", extended_help="**Idle Rounding**\n\nCorner radius for the capsule shape."),
+        ConfigItem(label="Size", key="border-size", scope="app-name=dusky-hypridle", type_="int", default=2, min_val=0, max_val=10, step=1, parent_ref="menu_idle", extended_help="**Idle Border Stroke**\n\nThickness of the accent border ring."),
+        ConfigItem(label="Icons", key="icons", scope="app-name=dusky-hypridle", type_="bool", default=True, parent_ref="menu_idle", extended_help="**Idle Icon Toggle**\n\nRenders the sleep/coffee icon inside the pill."),
+        ConfigItem(label="MaxIcon", key="max-icon-size", scope="app-name=dusky-hypridle", type_="int", default=22, min_val=16, max_val=64, step=2, parent_ref="menu_idle", extended_help="**Idle Icon Size**\n\nPixel bound for the toggle icon."),
+        ConfigItem(label="Align", key="text-alignment", scope="app-name=dusky-hypridle", type_="cycle", default="left", options=["left", "center", "right"], parent_ref="menu_idle", extended_help="**Idle Alignment**\n\nJustification of the toggle text."),
+        ConfigItem(label="Font", key="font", scope="app-name=dusky-hypridle", type_="string", default="monospace 9.5", parent_ref="menu_idle", extended_help="**Idle Font Override**\n\nCustom typography for the toggle pill."),
+        ConfigItem(label="Format", key="format", scope="app-name=dusky-hypridle", type_="string", default="<b>%s</b>\\n<span size=\"small\">%b</span>", parent_ref="menu_idle", extended_help="**Idle Text Format**\n\nStructures the two-line payload (bold summary over a smaller body line)."),
+        ConfigItem(label="Timeout", key="default-timeout", scope="app-name=dusky-hypridle", type_="int", default=2200, min_val=0, max_val=10000, step=100, parent_ref="menu_idle", extended_help="**Idle Lifespan**\n\nMilliseconds the toggle pill stays visible."),
+        ConfigItem(label="Background", key="background-color", scope="app-name=dusky-hypridle", type_="color", default="{{colors.surface.default.hex}}cc", options=COLOR_OPTIONS, hints=COLOR_HINTS, parent_ref="menu_idle", extended_help="**Idle Fill Color**" + ALPHA_HELP),
+        ConfigItem(label="Text", key="text-color", scope="app-name=dusky-hypridle", type_="color", default="{{colors.on_surface.default.hex}}", options=COLOR_OPTIONS, hints=COLOR_HINTS, parent_ref="menu_idle", extended_help="**Idle Text Color**" + ALPHA_HELP),
+        ConfigItem(label="Border", key="border-color", scope="app-name=dusky-hypridle", type_="color", default="{{colors.primary.default.hex}}66", options=COLOR_OPTIONS, hints=COLOR_HINTS, parent_ref="menu_idle", extended_help="**Idle Border Color**" + ALPHA_HELP),
+        # =====================================================================
+        # GROUP: WARP (Cloudflare WARP manager)
+        # =====================================================================
+        ConfigItem(
+            label="WARP", key="menu_warp", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="WARP",
+            extended_help="**Cloudflare WARP Notifications**\n\nStyles the connect/disconnect/mode pills pushed by warp-manager (`notify-send -a dusky-warp`)."
+        ),
+        ConfigItem(label="Anchor", key="anchor", scope="app-name=dusky-warp", type_="cycle", default="bottom-center", options=["top-right", "top-center", "top-left", "bottom-right", "bottom-center", "bottom-left", "center-right", "center-left", "center"], parent_ref="menu_warp", extended_help="**WARP Position**\n\nScreen anchor for the tunnel status pill."),
+        ConfigItem(label="Layer", key="layer", scope="app-name=dusky-warp", type_="cycle", default="overlay", options=["background", "bottom", "top", "overlay"], parent_ref="menu_warp", extended_help="**WARP Layer**\n\nArranges the status pill at a specific Wayland surface layer."),
+        ConfigItem(label="Width", key="width", scope="app-name=dusky-warp", type_="int", default=230, min_val=100, max_val=800, step=5, parent_ref="menu_warp", extended_help="**WARP Pill Width**\n\nHorizontal size of the tunnel status pill."),
+        ConfigItem(label="Height", key="height", scope="app-name=dusky-warp", type_="int", default=46, min_val=10, max_val=200, step=2, parent_ref="menu_warp", extended_help="**WARP Pill Height**\n\nVertical limit of the status pill."),
+        ConfigItem(label="Margin", key="margin", scope="app-name=dusky-warp", type_="string", default="0,0,30,0", parent_ref="menu_warp", extended_help="**WARP Offset Margin**\n\nScreen offset raising the pill above the bottom edge."),
+        ConfigItem(label="Padding", key="padding", scope="app-name=dusky-warp", type_="string", default="6,14", parent_ref="menu_warp", extended_help="**WARP Padding**\n\nSpace between the icon/text and the pill border."),
+        ConfigItem(label="Radius", key="border-radius", scope="app-name=dusky-warp", type_="int", default=20, min_val=0, max_val=50, step=1, parent_ref="menu_warp", extended_help="**WARP Rounding**\n\nCorner radius for the capsule shape."),
+        ConfigItem(label="Size", key="border-size", scope="app-name=dusky-warp", type_="int", default=2, min_val=0, max_val=10, step=1, parent_ref="menu_warp", extended_help="**WARP Border Stroke**\n\nThickness of the accent border ring."),
+        ConfigItem(label="Icons", key="icons", scope="app-name=dusky-warp", type_="bool", default=True, parent_ref="menu_warp", extended_help="**WARP Icon Toggle**\n\nRenders the VPN/tunnel icon inside the pill."),
+        ConfigItem(label="MaxIcon", key="max-icon-size", scope="app-name=dusky-warp", type_="int", default=22, min_val=16, max_val=64, step=2, parent_ref="menu_warp", extended_help="**WARP Icon Size**\n\nPixel bound for the tunnel icon."),
+        ConfigItem(label="Align", key="text-alignment", scope="app-name=dusky-warp", type_="cycle", default="left", options=["left", "center", "right"], parent_ref="menu_warp", extended_help="**WARP Alignment**\n\nJustification of the status text."),
+        ConfigItem(label="Font", key="font", scope="app-name=dusky-warp", type_="string", default="monospace 9.5", parent_ref="menu_warp", extended_help="**WARP Font Override**\n\nCustom typography for the status pill."),
+        ConfigItem(label="Format", key="format", scope="app-name=dusky-warp", type_="string", default="<b>%s</b>\\n<span size=\"small\">%b</span>", parent_ref="menu_warp", extended_help="**WARP Text Format**\n\nStructures the two-line payload (bold summary over a smaller body line)."),
+        ConfigItem(label="Timeout", key="default-timeout", scope="app-name=dusky-warp", type_="int", default=2500, min_val=0, max_val=10000, step=100, parent_ref="menu_warp", extended_help="**WARP Lifespan**\n\nMilliseconds the status pill stays visible."),
+        ConfigItem(label="Background", key="background-color", scope="app-name=dusky-warp", type_="color", default="{{colors.surface.default.hex}}cc", options=COLOR_OPTIONS, hints=COLOR_HINTS, parent_ref="menu_warp", extended_help="**WARP Fill Color**" + ALPHA_HELP),
+        ConfigItem(label="Text", key="text-color", scope="app-name=dusky-warp", type_="color", default="{{colors.on_surface.default.hex}}", options=COLOR_OPTIONS, hints=COLOR_HINTS, parent_ref="menu_warp", extended_help="**WARP Text Color**" + ALPHA_HELP),
+        ConfigItem(label="Border", key="border-color", scope="app-name=dusky-warp", type_="color", default="{{colors.tertiary.default.hex}}66", options=COLOR_OPTIONS, hints=COLOR_HINTS, parent_ref="menu_warp", extended_help="**WARP Border Color**" + ALPHA_HELP),
     ],
 
 

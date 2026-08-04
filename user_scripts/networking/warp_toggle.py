@@ -18,7 +18,7 @@ import time
 
 # ─── Constants ───────────────────────────────────────────────────────────
 
-APP_NAME = "Cloudflare WARP"
+APP_NAME = "dusky-warp"             # Mako app-name override target
 POLL_TIMEOUT_SEC = 10
 CMD_TIMEOUT_SEC = 6
 NOTIFY_TIMEOUT_SEC = 4
@@ -104,6 +104,7 @@ def notify_user(
         return
     cmd = [
         "notify-send", "-u", urgency, "-a", APP_NAME, "-i", icon,
+        "-h", "string:x-canonical-private-synchronous:dusky-warp",
         "--", title, message,
     ]
     try:
