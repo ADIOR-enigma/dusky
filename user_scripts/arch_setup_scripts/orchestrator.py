@@ -4165,14 +4165,37 @@ def _status_badge(status: TaskStatus) -> Text:
 
 def _task_label(task: OrchestratorTask) -> Text:
     txt = Text()
+    txt.append(" ")
     txt.append_text(_status_badge(task.status))
+    txt.append("  ")
 
     if task.mode == "S":
-        txt.append(" SUDO ", style=f"bold {PALETTE['error']}")
+        txt.append("SUDO", style=f"bold {PALETTE['error']}")
+    elif task.mode == "GIT":
+        txt.append("GIT", style=f"bold {PALETTE['accent']}")
     else:
-        txt.append(" USER ", style=f"bold {PALETTE['success']}")
+        txt.append("USER", style=f"bold {PALETTE['success']}")
 
-    txt.append(f"{task.script_name}")
+    txt.append("  ")
+
+    match task.status:
+        case TaskStatus.COMPLETED:
+            script_style = f"bold {PALETTE['success']}"
+        case TaskStatus.RUNNING:
+            script_style = f"bold {PALETTE['fg']}"
+        case TaskStatus.FAILED:
+            script_style = f"bold {PALETTE['error']}"
+        case TaskStatus.SKIPPED:
+            script_style = f"dim {PALETTE['warning']}"
+        case _:
+            script_style = f"dim {PALETTE['muted']}"
+
+    cmd_str = task.script_name
+    if task.args:
+        cmd_str += f" {' '.join(task.args)}"
+
+    txt.append(cmd_str, style=script_style)
+
     if task.always:
         txt.append(" ⟳", style=f"bold {PALETTE['accent']}")
     if task.once:
@@ -4272,7 +4295,12 @@ class TaskSearchScreen(ModalScreen[str | None]):
             txt = Text()
             txt.append(f"{item.index:03d} ")
             txt.append_text(_status_badge(item.status))
-            txt.append(f" [{item.mode}] ", style=f"bold {PALETTE['accent']}")
+            if item.mode == "S":
+                txt.append(" SUDO ", style=f"bold {PALETTE['error']}")
+            elif item.mode == "GIT":
+                txt.append(" GIT ", style=f"bold {PALETTE['accent']}")
+            else:
+                txt.append(" USER ", style=f"bold {PALETTE['success']}")
             txt.append(item.script_name, style="bold white")
             if item.args:
                 txt.append(" " + shlex.join(item.args), style="dim")
