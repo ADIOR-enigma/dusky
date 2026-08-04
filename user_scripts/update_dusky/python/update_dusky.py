@@ -2279,9 +2279,13 @@ ListItem {{
     border-left: tall transparent;
     background: transparent;
 }}
-ListItem:focus, ListItem.--highlight {{ 
-    background: {THEME['warning']}2a; 
-    border-left: tall {THEME['warning']};
+ListView > ListItem.-highlight {{ 
+    background: {THEME['muted']}; 
+    border-left: tall {THEME['accent']};
+}}
+ListView:focus > ListItem.-highlight {{ 
+    background: {THEME['muted']}; 
+    border-left: tall {THEME['accent']};
 }}
 #top_header {{
     height: 1;
