@@ -115,7 +115,12 @@ def cache_sudo_privileges() -> bool:
         proc = subprocess.run(["sudo", "-n", "true"], capture_output=True)
         if proc.returncode == 0:
             return True
-        if RICH_AVAILABLE and sys.stdin.isatty():
+        if not sys.stdin.isatty():
+            # Never attempt an interactive password prompt in a non-interactive
+            # session: sudo's failed conversation is logged by pam_unix as an
+            # auth failure, which pam_faillock counts toward a lockout.
+            return False
+        if RICH_AVAILABLE:
             console.print("[bold yellow]󰌆 Sudo privileges required for hardware thermal & SMBIOS probing.[/bold yellow]")
         subprocess.run(["sudo", "-v"], check=True, capture_output=True)
         return True
