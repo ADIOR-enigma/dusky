@@ -36,6 +36,8 @@ except ImportError:
 
 console = Console() if RICH_AVAILABLE else None
 
+SUDO_AVAILABLE = False
+
 
 def cleanup_orphaned_tmp():
     """Robust cleanup using rmtree to bypass ENOTEMPTY os errors."""
@@ -160,18 +162,20 @@ def run_bench_priv(cmd: list[str], timeout: int) -> tuple[str, bool]:
     """Run a benchmark binary with SCHED_FIFO priority via sudo when possible;
     returns (stdout, privileged). Falls back to unprivileged execution when
     sudo is unavailable so latency tests never hard-fail on missing root."""
-    try:
-        return run_sudo_cmd(cmd, timeout=timeout), True
-    except (RuntimeError, OSError, subprocess.TimeoutExpired):
-        proc = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            timeout=timeout,
-            check=True,
-        )
-        return proc.stdout or "", False
+    if SUDO_AVAILABLE:
+        try:
+            return run_sudo_cmd(cmd, timeout=timeout), True
+        except (RuntimeError, OSError, subprocess.TimeoutExpired):
+            pass
+    proc = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=timeout,
+        check=True,
+    )
+    return proc.stdout or "", False
 
 
 def get_online_cpu_count() -> int:
@@ -298,7 +302,7 @@ def check_and_install_deps() -> None:
         sys.exit(1)
 
 
-def detect_hardware_specs() -> HardwareSpecs:
+def detect_hardware_specs(skip_sudo: bool = False) -> HardwareSpecs:
     cpu_model = "Unknown Processor"
     if tool_exists("lscpu"):
         try:
@@ -324,7 +328,7 @@ def detect_hardware_specs() -> HardwareSpecs:
     dimm_count, channels, bus_width_bits, max_gb_s = None, None, None, None
     manufacturer, part_number, form_factor = None, None, None
 
-    if tool_exists("dmidecode"):
+    if tool_exists("dmidecode") and not skip_sudo:
         try:
             dmi_out = run_sudo_cmd(["dmidecode", "-t", "memory"], timeout=10)
             types = re.findall(r"Type:\s+(DDR[3-9]|LPDDR[3-9]|HBM\d?|LPCAMM\d?|CAMM\d?|MRDIMM)", dmi_out)
@@ -1353,22 +1357,23 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    has_sudo = cache_sudo_privileges()
-
-    check_and_install_deps()
-    specs = detect_hardware_specs()
-
-    render_header(specs, governor_active=not args.no_governor)
-
-    workers = args.workers or specs.online_cpus
-    results: list[TestResult] = []
-    cache_hierarchy: CacheHierarchyResult | None = None
-
-    governor_ctx = (
-        contextlib.nullcontext() if args.no_governor else set_cpu_performance()
-    )
-
     try:
+        has_sudo = cache_sudo_privileges()
+
+        check_and_install_deps()
+        specs = detect_hardware_specs(skip_sudo=not has_sudo)
+
+        render_header(specs, governor_active=not args.no_governor and has_sudo)
+
+        workers = args.workers or specs.online_cpus
+        results: list[TestResult] = []
+        cache_hierarchy: CacheHierarchyResult | None = None
+
+        SUDO_AVAILABLE = has_sudo
+        governor_ctx = (
+            contextlib.nullcontext() if (args.no_governor or not has_sudo) else set_cpu_performance()
+        )
+
         with governor_ctx:
             if RICH_AVAILABLE:
                 with Progress(
