@@ -292,6 +292,13 @@ post_hook   = '''
   fi
 '''
 
+[templates.fastfetch]
+input_path  = '~/.config/matugen/templates/fastfetch.jsonc'
+output_path = '~/.config/matugen/generated/fastfetch.jsonc'
+post_hook   = '''
+  ln -nfs "$HOME/.config/matugen/generated/fastfetch.jsonc" "$HOME/.config/fastfetch/config.jsonc"
+'''
+
 [templates.dusky_sites]
 input_path = '~/.config/matugen/templates/dusky_sites.css'
 output_path = '~/.config/matugen/generated/dusky_sites.css'
