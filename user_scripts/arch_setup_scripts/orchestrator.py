@@ -1723,12 +1723,12 @@ def load_palette() -> dict[str, str]:
     ).get(
         "default_palette",
         {
-            "bg": "#0a1612",
-            "fg": "#d8e6df",
-            "accent": "#00e0b8",
-            "warning": "#a0d0cb",
-            "success": "#8dd2da",
-            "muted": "#1a2e28",
+            "bg": "#1a110e",
+            "fg": "#f1dfd9",
+            "accent": "#ffb59b",
+            "warning": "#e7bdaf",
+            "success": "#d5c68e",
+            "muted": "#53433e",
             "error": "#ffb4ab",
         },
     )
@@ -1796,9 +1796,9 @@ Screen {{
 
 #left_pane {{
     width: 38%;
-    border-right: solid {p['muted']};
+    border-right: solid {p['muted']}4d;
     background: {p['bg']};
-    padding: 0 1;
+    padding: 0;
     height: 100%;
 }}
 
@@ -1807,6 +1807,7 @@ Screen {{
     height: 100%;
     layout: vertical;
     background: {p['bg']};
+    padding: 0;
 }}
 
 #telemetry_box {{
@@ -1853,6 +1854,21 @@ Tree {{
     color: {p['fg']};
     scrollbar-size-vertical: 1;
     scrollbar-size-horizontal: 0;
+    padding: 0;
+}}
+
+Tree > .tree--cursor {{
+    background: {p['accent']}1a;
+    color: {p['fg']};
+    text-style: bold;
+    border-left: tall {p['accent']};
+}}
+
+Tree:focus > .tree--cursor {{
+    background: {p['accent']}1a;
+    color: {p['fg']};
+    text-style: bold;
+    border-left: tall {p['accent']};
 }}
 
 TaskSearchScreen, ConflictModalScreen, ManualModalScreen, SudoPasswordScreen, ConfirmQuitScreen, HelpScreen, LogSearchScreen, FailureSummaryScreen, CompletionDialog {{
@@ -4977,7 +4993,8 @@ class DuskyOrchestratorApp(App):
             self._set_pty_size(self.current_pty_master)
 
     @on(Tree.NodeSelected)
-    def on_node_selected(self, event: Tree.NodeSelected) -> None:
+    @on(Tree.NodeHighlighted)
+    def on_node_selected(self, event: Tree.NodeSelected | Tree.NodeHighlighted) -> None:
         node = event.node
         switcher = self.query_one("#log_switcher", ContentSwitcher)
 
@@ -5227,6 +5244,8 @@ class DuskyOrchestratorApp(App):
         with suppress(Exception):
             self.tree_widget.clear()
 
+        self.tree_widget.show_guides = False
+        self.tree_widget.show_root = False
         self.tree_nodes_map.clear()
         self.tree_widget.root.label = f"{S('logo')} Sequence [{self.filter_mode}]"
         self.tree_widget.root.expand()
@@ -5369,8 +5388,10 @@ class DuskyOrchestratorApp(App):
             txt.append(_short_home(str(self.logger.root or "disabled")))
             return txt
 
+        total_tasks = len(self.tasks)
         txt = Text()
-        txt.append(f"{task.index:03d}. {task.script_name}\n", style="bold")
+        txt.append(f"{task.index:03d}. {task.script_name}", style="bold")
+        txt.append(f"  [{task.index:03d} / {total_tasks:03d}]\n", style="bold cyan")
         txt.append("Mode: ", style="bold")
         txt.append(task.mode + "  ")
         txt.append("Status: ", style="bold")
