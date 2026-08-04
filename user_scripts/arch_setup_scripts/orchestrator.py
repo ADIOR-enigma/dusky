@@ -4013,24 +4013,11 @@ def run_git_self_update(
             collision_roots = _collect_incoming_collisions(base_cmd, remote_ref, work_tree)
             changes = _capture_tracked_changes(base_cmd)
 
-            if not destructive and (collision_roots or changes) and not assume_yes:
-                choice = _prompt_choice(
-                    [
-                        "\n[LOCAL CHANGES DETECTED]\n",
-                        f"  Modified tracked files: {len(changes)}\n",
-                        f"  Untracked incoming collisions: {len(collision_roots)}\n",
-                        "  1) Abort [DEFAULT]\n",
-                        "  2) Backup and reset to upstream\n",
-                        "Choice [1-2] (default: 1): ",
-                    ],
-                    default="1",
-                    assume_yes=False,
-                    yes_choice="2",
+            if (collision_roots or changes):
+                sys.stdout.write(
+                    f"[GIT] Local changes detected ({len(changes)} modified file(s), {len(collision_roots)} collision(s)). "
+                    "Backing up and applying updates...\n"
                 )
-
-                if choice != "2":
-                    sys.stdout.write("Aborting update by user request.\n")
-                    return False
 
             try:
                 _backup_collision_roots(work_tree, collision_roots, collision_dir)
