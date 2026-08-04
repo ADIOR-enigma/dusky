@@ -18,13 +18,22 @@ Everything you need to write, edit, and debug orchestrator `.toml` profiles.
 
 ## 2. Profile TOML Structure
 
-A profile has six top-level tables. Only `[sequence]` is required.
+A profile is a TOML file that tells the orchestrator what to run and how. The
+six tables each serve one purpose:
+
+- `[profile]` — identity and metadata
+- `[policy]` — run-wide defaults (notifications, timeouts, failure handling)
+- `[git]` — optional dotfiles self-update before the run
+- `[search_dirs]` — where to find scripts by name
+- `[conflict_resolutions]` — pin duplicate script names to exact paths
+- `[sequence]` — the ordered task list (the only required table)
 
 ```toml
 # ─── IDENTITY ────────────────────────────────────────────────────────────────
 [profile]
 name = "Main Setup"                 # Display name (defaults to filename stem)
 description = "Full Arch install"   # One-line summary shown in profile selector
+schema_version = 2                  # Profile format version; same in all profiles; ignored today
 post_script_delay = 0               # Seconds to pause between tasks (default: 0)
 
 # ─── EXECUTION POLICY ────────────────────────────────────────────────────────
@@ -43,12 +52,15 @@ enabled = true              # Pull latest dotfiles before running tasks (default
 git_dir = "~/dusky"         # Bare repo path (--git-dir)
 work_tree = "~/"            # Working tree path (--work-tree)
 remote = "origin"           # Remote name (default: "origin")
+url = "https://github.com/dusklinux/dusky"  # Repo URL override (alias: repo_url; default from global settings)
 
 # ─── SCRIPT SEARCH DIRECTORIES ───────────────────────────────────────────────
 # Searched IN ORDER to find each script name. First match wins.
 # If a name appears in multiple directories, the orchestrator raises a
 # [CONFLICT] error — resolve it in [conflict_resolutions] below.
-# Paths support ~ and environment variables.
+# Paths support ~ and environment variables. Relative paths resolve against the
+# orchestrator directory. Script names containing "/" are treated as direct
+# paths, not search terms.
 [search_dirs]
 dirs = [
     "~/user_scripts/arch_setup_scripts/scripts",
@@ -67,6 +79,9 @@ dirs = [
 scripts = [ ... ]           # Compact string entries (see §3)
 tasks = [ ... ]             # Detailed TOML table entries (see §7, optional)
 ```
+
+> If `[git] enabled = true`, the git self-update runs automatically before every
+> execution. `--no-git-update` skips it; `--git-update-only` runs just the update.
 
 ---
 
@@ -105,7 +120,10 @@ scripts = [
 
 ## 4. Conditions (`if:<condition>`)
 
-Conditions decide whether a task runs. If false, the task is **silently skipped**.
+Conditions decide whether a task runs. A false condition **defers** the task: it
+is re-checked after every other task (so an earlier task can satisfy it), and is
+marked condition-skipped if still unmet when the run ends. It is re-evaluated on
+every future run.
 
 | Condition | True when… |
 | :--- | :--- |
@@ -138,17 +156,15 @@ Conditions decide whether a task runs. If false, the task is **silently skipped*
 
 ### Compound Conditions
 
-Multiple conditions are **AND**'d. Two equivalent ways to write them:
+Multiple conditions are AND'd. **Every sub-condition must carry a `:` value** —
+bare keywords such as `wayland` or `battery` are only valid as a **single**
+condition. Inside a compound they are not evaluated correctly (the task may
+never run, or may always run):
 
 ```toml
-# Shorthand: omit repeated "if:" after the first
-"U | if:wayland,battery | 455_hyprctl_reload.sh"
-
-# Explicit: each sub-condition gets its own "if:" prefix
-"U | if:wayland,if:battery | 455_hyprctl_reload.sh"
+"U | if:gpu:nvidia,if:not:vm | 380_nvidia_open_source.sh --auto"
+"U | if:wayland | 455_hyprctl_reload.sh"
 ```
-
-Both mean: run only if Wayland is active **and** a battery is present.
 
 ---
 
@@ -253,7 +269,7 @@ once_mode = "forever"               # "content" or "forever"
 once_scope = "profile"              # "profile" or "global"
 always = false                      # Re-run regardless of state
 force = false                       # Export DUSKY_FORCE=1, append --force
-interactive = false                 # Force interactive PTY
+interactive = false                 # true = force interactive PTY, false = force inline
 ignore_fail = false                 # Ignore failures
 ```
 
@@ -276,8 +292,10 @@ Every executed script receives these variables automatically:
 | `DUSKY_TASK_PATH` | Resolved absolute path to the script |
 | `DUSKY_TASK_MODE` | `U` or `S` |
 | `DUSKY_TASK_INDEX` | Position in the sequence (1-based) |
+| `DUSKY_TASK_STATE_KEY` | State-database key for this task occurrence |
 | `DUSKY_TASK_LOG_FILE` | Path to this task's individual log file |
 | `DUSKY_USER` | Target username |
+| `DUSKY_TARGET_USER` | Target username (alias of `DUSKY_USER`) |
 | `DUSKY_USER_HOME` | Target user's home directory |
 | `DUSKY_LOG_DIR` | Log directory path |
 | `DUSKY_STATE_DIR` | State database directory path |
@@ -381,4 +399,29 @@ The orchestrator determines how to run each script automatically:
 | Cache | `~/.cache/dusky/` |
 | Runtime lock | `/run/user/<UID>/dusky/orchestrator.lock` |
 
+> These are the **defaults** — every path is overridable in
+> `profiles/settings/orchestrator.toml` (§12).
 > Run `./orchestrator.sh --doctor` to see exact resolved paths.
+
+---
+
+## 12. Global Settings (`profiles/settings/orchestrator.toml`)
+
+Optional global config next to the profiles. Every key has a safe default, so the
+file only needs to exist when you want to change something. Paths accept relative
+(under `~`), `~/...`, and absolute forms.
+
+| Table | Controls |
+| :--- | :--- |
+| `[ui]` | ASCII mode, pane widths, PTY fallback size, log buffers, TUI theme JSON paths, palette, symbols |
+| `[paths]` | `documents_dir`, `namespace`, `lock_file`, `state_subdir`, `logs_subdir`, `backups_subdir`, askpass prefix |
+| `[logging]` | Logging on/off, per-task log files, run reports |
+| `[execution]` | Disk-space reserve, SQLite busy timeout, default interpreter, extension→interpreter map |
+| `[conditions]` | Commands for `package:` / `service_active:` / `user_service_active:` checks, GPU PCI vendor IDs |
+| `[notifications]` | Audio on/off, audio players, sound files, desktop notifications, app name |
+| `[sudo]` | Heartbeat interval, sudoers drop-in dir/prefix/timeout, `env_keep` |
+| `[git]` | Upstream branch/ref, default repo URL, fetch timeouts/retries, backup retention, env strip/inject |
+| `[prompts]` | Auto-answer rules for interactive prompts (sudo password, pacman `[Y/n]`, PGP imports) |
+
+Set the `DUSKY_PROFILES_DIR` environment variable to load profiles from a
+different directory (default: `profiles/` next to the orchestrator).
