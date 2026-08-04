@@ -2242,7 +2242,16 @@ sidebar_w = GLOBAL_CONFIG.get("ui", {}).get("sidebar_width", 35)
 log_w = 100 - sidebar_w
 
 DUSKY_CSS = f"""
-Screen {{ background: {THEME['bg']}; color: {THEME['fg']}; }}
+Screen {{ 
+    background: {THEME['bg']}; 
+    color: {THEME['fg']}; 
+    scrollbar-color: {THEME['accent']}80;
+    scrollbar-color-hover: {THEME['accent']};
+    scrollbar-color-active: {THEME['accent']};
+    scrollbar-background: transparent;
+    scrollbar-background-hover: transparent;
+    scrollbar-background-active: transparent;
+}}
 #sidebar {{
     width: {sidebar_w}%; 
     border-right: solid {THEME['muted']}4d; 
@@ -2260,18 +2269,6 @@ RichLog {{
     height: 1fr; background: transparent; color: {THEME['fg']};
     border: none; padding: 0 0 0 1;
     scrollbar-size-vertical: 1;
-}}
-ScrollBar {{
-    background: transparent;
-}}
-ScrollBar > .scrollbar--track {{
-    background: transparent;
-}}
-ScrollBar > .scrollbar--bar {{
-    color: {THEME['accent']}66;
-}}
-ScrollBar > .scrollbar--bar:hover {{
-    color: {THEME['accent']}cc;
 }}
 ListView {{ background: transparent; overflow-x: hidden; height: 100%; scrollbar-size-vertical: 1; }}
 ListView:focus {{ background-tint: transparent 0%; }}

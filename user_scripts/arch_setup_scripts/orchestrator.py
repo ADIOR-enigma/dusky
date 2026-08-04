@@ -1752,6 +1752,12 @@ def build_app_css(p: dict[str, str]) -> str:
 Screen {{
     background: {p['bg']};
     color: {p['fg']};
+    scrollbar-color: {p['accent']}80;
+    scrollbar-color-hover: {p['accent']};
+    scrollbar-color-active: {p['accent']};
+    scrollbar-background: transparent;
+    scrollbar-background-hover: transparent;
+    scrollbar-background-active: transparent;
 }}
 
 #top_header {{
