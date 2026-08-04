@@ -107,7 +107,7 @@ INSTALL_SEQUENCE=(
 #    "S | 215_powerkey_lid_close_behaviour.sh"
 
     "S | 220_logrotate_optimization.sh"
-#    "S | 225_faillock_timeout.sh"
+#    "S | 225_faillock_timeout.py"
 #    "U | 230_asus_tuf_tweaks.sh"
     "U | 235_file_manager_switch.sh --thunar"
     "U | 236_browser_switcher.sh --firefox"

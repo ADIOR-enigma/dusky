@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ram_bandwidth.py - Ultimate DDR Memory Bandwidth & Latency Benchmark Suite
+ram_test.py - Ultimate DDR Memory Bandwidth & Latency Benchmark Suite
 Target: Arch Linux | Kernel 7.1.5+ | Python 3.14.6+
 """
 
@@ -41,7 +41,7 @@ SUDO_AVAILABLE = False
 
 def cleanup_orphaned_tmp():
     """Robust cleanup using rmtree to bypass ENOTEMPTY os errors."""
-    cache_dir = Path.home() / ".cache" / "ram_bandwidth_bench"
+    cache_dir = Path.home() / ".cache" / "ram_test_bench"
     if cache_dir.exists():
         shutil.rmtree(cache_dir, ignore_errors=True)
 
@@ -226,7 +226,7 @@ def get_executable_tmpdir() -> Path:
         subprocess.run([str(test_file)], check=True, capture_output=True)
         return default_tmp
     except (PermissionError, OSError, subprocess.CalledProcessError):
-        cache_dir = Path.home() / ".cache" / "ram_bandwidth_bench"
+        cache_dir = Path.home() / ".cache" / "ram_test_bench"
         cache_dir.mkdir(parents=True, exist_ok=True)
         return cache_dir
     finally:
