@@ -2,124 +2,115 @@
     "$schema": "https://github.com/fastfetch-cli/fastfetch/raw/dev/doc/json_schema.json",
     "logo": {
         "type": "data",
-        "source": "       \u001b[36m/\\\n      /  \\\n     \u001b[34m/    \\\n    /      \\\n   /   ,,   \\\n  /   |  |   \\\n /_-''    ''-_\\\u001b[0m\n\n   \u001b[1;35md u s k y\u001b[0m",
+        "source": "\u001b[38;2;142;113;204m       /\\\n\u001b[38;2;142;113;204m      /  \\\n\u001b[38;2;187;154;247m     /    \\\n\u001b[38;2;187;154;247m    /      \\\n\u001b[38;2;255;158;100m   /   ,,   \\\n\u001b[38;2;255;158;100m  /   |  |   \\\n\u001b[38;2;255;158;100m /_-''    ''-_\\\n\n\u001b[38;2;247;118;142m   d u s k y\u001b[0m",
         "padding": {
-            "top": 5,
-            "left": 1,
-            "right": 3
+            "top": 6,
+            "right": 3,
+            "left": 3
         }
     },
     "display": {
-        "separator": "  "
+        "separator": " \u001b[38;5;239m󰇙\u001b[0m ",
+        "color": {
+            "output": "white"
+        }
     },
     "modules": [
         {
             "type": "title",
-            "key": "{#36}╭─ {#35} user    ",
-            "keyWidth": 14,
-            "format": "{user-name} @ {host-name}"
+            "format": "\u001b[38;2;247;118;142m{user-name}\u001b[0m \u001b[38;5;239m@\u001b[0m \u001b[38;2;187;154;247m{host-name}\u001b[0m"
         },
+        "break",
         {
             "type": "os",
-            "key": "{#36}├─ {#34}󰣇 os      ",
+            "key": "\u001b[38;2;142;113;204m \u001b[38;5;245mos\u001b[0m",
             "keyWidth": 14,
             "format": "{2} {8}"
         },
         {
             "type": "kernel",
-            "key": "{#36}├─ {#34} kernel  ",
+            "key": "\u001b[38;2;142;113;204m \u001b[38;5;245mkernel\u001b[0m",
             "keyWidth": 14,
             "format": "{2}"
         },
         {
             "type": "command",
-            "key": "{#36}├─ {#34}󱦟 install ",
+            "key": "\u001b[38;2;142;113;204m󰦚 \u001b[38;5;245minstall\u001b[0m",
             "keyWidth": 14,
             "text": "birth_install=$(stat -c %W /); current=$(date +%s); time_progression=$((current - birth_install)); days_difference=$((time_progression / 86400)); echo $days_difference days"
         },
         {
             "type": "packages",
-            "key": "{#36}├─ {#34}󰏖 pkgs    ",
+            "key": "\u001b[38;2;142;113;204m󰏖 \u001b[38;5;245mpkgs\u001b[0m",
             "keyWidth": 14
         },
         {
             "type": "localip",
-            "key": "{#36}├─ {#34}󰩟 ip      ",
+            "key": "\u001b[38;2;142;113;204m󰩟 \u001b[38;5;245mip\u001b[0m",
             "keyWidth": 14,
-            "showPrefixLen": false,
-            "format": "{ipv4}"
+            "format": "{ipv4}",
+            "showPrefixLen": false
         },
-        {
-            "type": "custom",
-            "format": "{#36}├─────────────────────────────────────────"
-        },
+        "break",
         {
             "type": "wm",
-            "key": "{#36}├─ {#35} wm      ",
+            "key": "\u001b[38;2;187;154;247m󰈹 \u001b[38;5;245mwm\u001b[0m",
             "keyWidth": 14,
             "format": "{1} ({3})"
         },
         {
             "type": "shell",
-            "key": "{#36}├─ {#35} shell   ",
+            "key": "\u001b[38;2;187;154;247m󰒉 \u001b[38;5;245mshell\u001b[0m",
             "keyWidth": 14,
             "format": "{1}"
         },
         {
             "type": "terminal",
-            "key": "{#36}├─ {#35} term    ",
+            "key": "\u001b[38;2;187;154;247m \u001b[38;5;245mterm\u001b[0m",
             "keyWidth": 14,
             "format": "{1}"
         },
         {
             "type": "display",
-            "key": "{#36}├─ {#35}󰍹 display ",
+            "key": "\u001b[38;2;187;154;247m󰹍 \u001b[38;5;245mdisplay\u001b[0m",
             "keyWidth": 14,
             "format": "{4}x{5} @ {3}Hz"
         },
-        {
-            "type": "custom",
-            "format": "{#36}├─────────────────────────────────────────"
-        },
+        "break",
         {
             "type": "cpu",
-            "key": "{#36}├─ {#32}󰍛 cpu     ",
+            "key": "\u001b[38;2;255;158;100m󰍛 \u001b[38;5;245mcpu\u001b[0m",
             "keyWidth": 14,
             "format": "{1}"
         },
         {
             "type": "command",
-            "key": "{#36}├─ {#32}󰆧 arch    ",
+            "key": "\u001b[38;2;255;158;100m󰆧 \u001b[38;5;245march\u001b[0m",
             "keyWidth": 14,
             "text": "/lib/ld-linux-x86-64.so.2 --help | awk '/supported, searched/ {print $1; exit}'"
         },
         {
             "type": "gpu",
-            "key": "{#36}├─ {#32}󰢮 gpu     ",
+            "key": "\u001b[38;2;255;158;100m󰢮 \u001b[38;5;245mgpu\u001b[0m",
             "keyWidth": 14,
             "format": "{2}"
         },
         {
             "type": "memory",
-            "key": "{#36}├─ {#32} memory  ",
+            "key": "\u001b[38;2;255;158;100m󰉿 \u001b[38;5;245mmemory\u001b[0m",
             "keyWidth": 14,
             "format": "{1} / {2} ({3})"
         },
         {
             "type": "disk",
-            "key": "{#36}├─ {#32}󰉉 disk    ",
+            "key": "\u001b[38;2;255;158;100m󰉋 \u001b[38;5;245mdisk\u001b[0m",
             "keyWidth": 14,
-            "folders": "/",
-            "format": "{1} / {2} ({3}) - {9}"
+            "format": "{1} / {2} ({3}) - {9}",
+            "folders": "/"
         },
-        {
-            "type": "custom",
-            "format": "{#36}├─────────────────────────────────────────"
-        },
+        "break",
         {
             "type": "colors",
-            "key": "{#36}╰─ {#37} colors  ",
-            "keyWidth": 14,
             "symbol": "circle"
         }
     ]
