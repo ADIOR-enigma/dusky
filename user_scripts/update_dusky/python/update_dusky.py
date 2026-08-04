@@ -1041,6 +1041,11 @@ class ConditionEvaluator:
         if not condition:
             return False
         cond = condition.strip()
+        if "," in cond:
+            # A compound condition is volatile if ANY of its AND'ed parts is
+            # volatile (e.g. "gpu:nvidia,command:sddm" must re-check sddm each
+            # pass so an earlier task can install it mid-run).
+            return any(self._volatile(part) for part in cond.split(","))
         if cond.lower() in ("always", "true", "yes", "never", "false", "no"):
             return False
 
@@ -1074,15 +1079,15 @@ class ConditionEvaluator:
 
     def _eval(self, cond: str) -> bool:
         if "," in cond:
-            parts: list[str] = []
-            for token in cond.split(","):
-                if parts and ":" not in token:
-                    parts[-1] += "," + token
-                else:
-                    parts.append(token)
-
+            # Commas are a strict AND separator between sub-conditions. Values
+            # are comma-free (see documented DSL contract), so NO token merging.
+            parts: list[str] = [p.strip() for p in cond.split(",") if p.strip()]
             if len(parts) > 1:
                 return all(self.check(part) for part in parts)
+            if parts:
+                cond = parts[0]
+            else:
+                return True
 
         kind, _, value = cond.partition(":")
         kind = kind.strip().lower()
@@ -1564,7 +1569,7 @@ class SleepInhibitor:
 #  PRE-FLIGHT BOOTSTRAP & DEPENDENCY RESOLUTION
 # ==============================================================================
 def bootstrap_dependencies() -> bool:
-    if any(flag in sys.argv for flag in {"-h", "--help", "--version", "--doctor", "--list"}):
+    if any(flag in sys.argv for flag in {"-h", "--help", "--version", "--doctor", "--list", "--list-once", "--forget-once"}):
         return False
 
     missing = [
@@ -1646,6 +1651,8 @@ Options:
   --stop-on-fail           Abort script execution on first hard failure
   --allow-diverged-reset   In non-interactive mode, allow reset on diverged or unrelated history
   --list                   List all active scripts in the update sequence
+  --list-once              List persistent run-once markers and exit
+  --forget-once SCRIPT...  Remove persistent run-once marker(s) and exit
   --doctor                 Run system diagnostics check and exit
 
 Update sequence entry formats:
@@ -1658,7 +1665,9 @@ Field 1:
   S = run with sudo
 
 Field 2:
-  Optional flags. Supported values: ignore-fail, interactive
+  Optional comma/space separated flags. Supported: ignore-fail, interactive,
+  no-interactive (force non-interactive), once, once:content, once:forever,
+  once:sealed, once:global, if:CONDITION, timeout:S, retry:N, retry_delay:S
 
 Logs are saved to:
   {logs_dir()}
@@ -1725,6 +1734,8 @@ def parse_args():
     parser.add_argument('--stop-on-fail', action='store_true')
     parser.add_argument('--allow-diverged-reset', action='store_true')
     parser.add_argument('--list', action='store_true')
+    parser.add_argument('--list-once', action='store_true')
+    parser.add_argument('--forget-once', nargs='+', metavar='SCRIPT', default=None)
     parser.add_argument('--post-self-update', action='store_true')
 
     args, unknown = parser.parse_known_args()
@@ -2381,6 +2392,7 @@ class DuskyTask:
     ignore_fail: bool
     interactive: bool
     args: list[str]
+    interactive_override: bool | None = None
     status: Literal['pending', 'running', 'success', 'failed', 'skipped'] = 'pending'
     resolved_path: Optional[Path] = None
     interpreter: Optional[list[str]] = None
@@ -2441,6 +2453,7 @@ def parse_manifest(profile: ProfileConfig) -> list[DuskyTask]:
 
         ignore_fail = False
         interactive = False
+        interactive_override = None
         condition = None
         timeout = None
         retry = 0
@@ -2456,6 +2469,10 @@ def parse_manifest(profile: ProfileConfig) -> list[DuskyTask]:
                     ignore_fail = True
                 case ["interactive" | "tui" | "prompt" | "fullscreen" | "tty" | "suspend"]:
                     interactive = True
+                    interactive_override = True
+                case ["no-interactive" | "noninteractive" | "inline" | "embedded"]:
+                    interactive = False
+                    interactive_override = False
                 case ["once" | "run_once" | "sticky"]:
                     once = True
                 case ["once", "content" | "hash"]:
@@ -2488,6 +2505,7 @@ def parse_manifest(profile: ProfileConfig) -> list[DuskyTask]:
         tasks.append(DuskyTask(
             name=script_name, mode=mode,  # type: ignore
             ignore_fail=ignore_fail, interactive=interactive,
+            interactive_override=interactive_override,
             condition=condition, timeout=timeout, retry=retry,
             retry_delay=retry_delay, once=once,
             once_mode=once_mode, once_scope=once_scope, args=args
@@ -2599,6 +2617,9 @@ def resolve_and_validate_manifest(profile: ProfileConfig, tasks: list[DuskyTask]
 
         if is_script_interactive(script_path):
             task.interactive = True
+
+        if task.interactive_override is not None:
+            task.interactive = task.interactive_override
 
         first_line = ""
         with suppress(OSError):
@@ -4608,6 +4629,160 @@ class DuskyApp(App):
                 with suppress(Exception):
                     driver.start_application_mode()
 
+    async def _execute_task(self, index: int) -> str:
+        task = self.tasks[index]
+
+        if task.condition:
+            condition_met = await asyncio.to_thread(self.condition_evaluator.check, task.condition)
+            if not condition_met:
+                self.log_main(f"[dim]Condition '{task.condition}' false; deferring: {escape(task.name)}[/dim]")
+                return "deferred"
+
+        if task.once and self.once_store:
+            once_status = await asyncio.to_thread(self.once_store.check_marker_status, task, self.profile.name)
+            if once_status == "notify_sealed":
+                msg = f"[bold {THEME['warning']}][WARN][/] Run-once:sealed script modified since last run; not re-run: {escape(task.name)}"
+                self.log_main(msg)
+                self.log_task(msg, index)
+                desktop_notify("Dusky Update", f"Sealed script modified: {task.name}", urgency="normal")
+                if not OPT_DRY_RUN:
+                    await asyncio.to_thread(self.once_store.mark_sealed_notified, task, self.profile.name)
+                self.update_task_state(index, "skipped")
+                if self.state_store and not OPT_DRY_RUN:
+                    await asyncio.to_thread(self.state_store.mark, task, "skipped", note="Run-once:sealed modified")
+                return "skipped"
+            elif once_status == "skip":
+                self.log_main(f"[dim]Run-once marker valid. Skipping: {escape(task.name)}[/dim]")
+                self.update_task_state(index, "skipped")
+                if self.state_store and not OPT_DRY_RUN:
+                    await asyncio.to_thread(self.state_store.mark, task, "skipped", note="Run-once marker valid")
+                return "skipped"
+
+        self.update_task_state(index, "running")
+
+        cmd_str = f"{task.name} {' '.join(task.args)}".strip()
+        self.log_main(f"\n[bold {THEME['warning']}]>[/] Executing Process: [bold {THEME['fg']}]{escape(cmd_str)}[/]")
+        self.log_task(f"[bold {THEME['accent']}]>>> PROCESS INITIATED:[/] {escape(cmd_str)}\n", index)
+
+        if not (task.resolved_path and task.path_state == "ok" and task.resolved_path.is_file()):
+            self.missing_scripts.append(task.name)
+            err = f"[bold {THEME['warning']}][WARN][/] Script missing or conflicting in preflight: {escape(task.name)}"
+            self.log_main(err)
+            self.log_task(err, index)
+            self.update_task_state(index, "skipped")
+            if self.state_store and not OPT_DRY_RUN:
+                await asyncio.to_thread(self.state_store.mark, task, "skipped", note="Script missing or unresolvable")
+            if self.run_logger:
+                self.run_logger.close_task(task, index, "skipped", 1, 0.0)
+            return "skipped"
+
+        resolved_path = task.resolved_path
+
+        interpreter = task.interpreter or []
+        exec_cmd = interpreter + [str(resolved_path)] + task.args
+        if not interpreter:
+            exec_cmd = [str(resolved_path)] + task.args
+        if task.mode == 'S':
+            exec_cmd = SudoEngine.sudo_prefix() + exec_cmd
+
+        start_t = time.monotonic()
+        try:
+            if OPT_DRY_RUN:
+                self.log_main(f"[dim][DRY-RUN] Would execute: {escape(' '.join(exec_cmd))}[/dim]")
+                self.log_task(f"[dim][DRY-RUN] Execution bypassed.[/dim]", index)
+                rc = 0
+                await asyncio.sleep(0.05)
+            elif task.interactive:
+                self.log_main(f"[dim]Suspending UI abstraction... Passing raw PTY control...[/]")
+                self.log_task(f"[dim]Interactive flag detected. Console control delegated to user.[/]", index)
+
+                with self._suspend_ui():
+                    r, g, b = get_rgb_color(THEME['accent'])
+                    sys.stdout.write(f"\n\033[1;38;2;{r};{g};{b}m=== DUSKY INTERACTIVE ABSTRACTION: {task.name} ===\033[0m\n\n")
+                    sys.stdout.flush()
+
+                    try:
+                        proc = await asyncio.create_subprocess_exec(*exec_cmd, cwd=str(WORK_TREE))
+                        await proc.wait()
+                        rc = proc.returncode
+                    except KeyboardInterrupt:
+                        rc = 130
+
+                    sys.stdout.write(f"\n\033[1;38;2;{r};{g};{b}m=== ABSTRACTION TERMINATED (Code: {rc}) ===\033[0m\n")
+                    sys.stdout.flush()
+
+                self.log_task(f"\n[bold {THEME['success']}]PTY control returned. Exit Code: {rc}[/]", index)
+
+            else:
+                max_attempts = (task.retry + 1) if task.retry > 0 else 1
+                for attempt in range(1, max_attempts + 1):
+                    success, rc = await self.execute_pty_command(
+                        exec_cmd,
+                        timeout=task.timeout if task.timeout else 0.0,
+                        task_index=index
+                    )
+                    if rc is None:
+                        rc = 1
+                        break
+
+                    if rc == 0 or self.abort_flag:
+                        break
+
+                    if attempt < max_attempts:
+                        reason = "Timeout (124)" if rc == 124 else f"Code {rc}"
+                        self.log_task(f"[bold {THEME['warning']}]Attempt {attempt} failed ({reason}). Retrying in {task.retry_delay}s...[/]", index)
+                        await asyncio.sleep(task.retry_delay)
+
+            duration = time.monotonic() - start_t
+
+            if rc == 0:
+                self.update_task_state(index, "success")
+                if self.state_store and not OPT_DRY_RUN:
+                    await asyncio.to_thread(self.state_store.mark, task, "completed", exit_code=0, duration=duration)
+                if task.once and self.once_store and not OPT_DRY_RUN:
+                    await asyncio.to_thread(self.once_store.mark_success, task, self.profile.name, exit_code=0, run_id=getattr(self, "run_id", ""))
+                if self.run_logger:
+                    self.run_logger.close_task(task, index, "completed", 0, duration)
+                self.log_main(f"[bold {THEME['success']}][OK][/] Process Complete ({duration:.2f}s).")
+                self.log_task(f"\n[bold {THEME['success']}]>>> EXECUTION SUCCESSFUL ({duration:.2f}s)[/]", index)
+                return "completed"
+            else:
+                if task.ignore_fail and not OPT_STOP_ON_FAIL:
+                    self.update_task_state(index, "skipped")
+                    if self.state_store and not OPT_DRY_RUN:
+                        await asyncio.to_thread(self.state_store.mark, task, "skipped", exit_code=rc, duration=duration)
+                    if self.run_logger:
+                        self.run_logger.close_task(task, index, "skipped", rc, duration)
+                    self.log_main(f"[bold {THEME['warning']}][WARN][/] Process failure (Code {rc}) suppressed by manifest.")
+                    self.log_task(f"\n[bold {THEME['warning']}]>>> EXECUTION FAILED / SUPPRESSED (Code {rc})[/]", index)
+                    return "skipped"
+                else:
+                    self.update_task_state(index, "failed")
+                    if self.state_store and not OPT_DRY_RUN:
+                        await asyncio.to_thread(self.state_store.mark, task, "failed", exit_code=rc, duration=duration)
+                    if self.run_logger:
+                        self.run_logger.close_task(task, index, "failed", rc, duration)
+                    self.log_main(f"[bold {THEME['error']}][FATAL][/] Process aborted execution sequence (Code {rc}).")
+                    self.log_task(f"\n[bold {THEME['error']}]>>> FATAL EXECUTION FAILURE (Code {rc})[/]", index)
+                    self.abort_flag = True
+                    return "failed"
+
+        except Exception as e:
+            duration = time.monotonic() - start_t
+            err_msg = f"[bold {THEME['error']}][ERROR][/] Internal Exception: {escape(str(e))}"
+            self.log_main(err_msg)
+            self.log_task(err_msg, index)
+            self.update_task_state(index, "failed")
+            if self.state_store and not OPT_DRY_RUN:
+                await asyncio.to_thread(self.state_store.mark, task, "failed", exit_code=1, note=str(e), duration=duration)
+            if self.run_logger:
+                self.run_logger.close_task(task, index, "failed", 1, duration)
+            if not task.ignore_fail or OPT_STOP_ON_FAIL:
+                self.abort_flag = True
+            return "failed"
+        finally:
+            await asyncio.sleep(0.01)
+
     async def execute_pipeline(self) -> None:
         self._self_hash_before = file_checksum(SCRIPT_PATH)
 
@@ -4654,165 +4829,57 @@ class DuskyApp(App):
         self.log_main(f"\n[bold {THEME['accent']}]═══ Phase 2: Configuration Pipeline Execution ═══[/]\n")
 
         success_count, fail_count = 0, 0
+        deferred_indices: list[int] = []
 
         for index in range(5, len(self.tasks)):
             if self.abort_flag:
                 self.update_task_state(index, "skipped")
                 continue
 
-            task = self.tasks[index]
+            outcome = await self._execute_task(index)
+            if outcome == "deferred":
+                deferred_indices.append(index)
+            elif outcome == "completed":
+                success_count += 1
+            elif outcome == "failed":
+                fail_count += 1
 
-            if task.condition:
-                condition_met = await asyncio.to_thread(self.condition_evaluator.check, task.condition)
-                if not condition_met:
-                    self.log_main(f"[dim]Condition '{task.condition}' false. Skipping: {escape(task.name)}[/dim]")
-                    self.update_task_state(index, "skipped")
-                    if self.state_store and not OPT_DRY_RUN:
-                        await asyncio.to_thread(self.state_store.mark, task, "skipped", note=f"Condition false: {task.condition}")
-                    continue
+        if deferred_indices:
+            max_defer_passes = max(1, int(GLOBAL_CONFIG.get("execution", {}).get("max_defer_passes", 3)))
+            pending: list[int] = deferred_indices
+            leftover: list[int] = deferred_indices
+            for pass_no in range(1, max_defer_passes + 1):
+                if self.abort_flag:
+                    break
+                progressed = False
+                next_pending: list[int] = []
+                for index in pending:
+                    outcome = await self._execute_task(index)
+                    if outcome == "deferred":
+                        next_pending.append(index)
+                    else:
+                        progressed = True
+                        if outcome == "completed":
+                            success_count += 1
+                        elif outcome == "failed":
+                            fail_count += 1
+                    if self.abort_flag:
+                        break
+                leftover = next_pending
+                if not next_pending or self.abort_flag:
+                    break
+                if not progressed:
+                    break
+                pending = next_pending
 
-            if task.once and self.once_store:
-                once_status = await asyncio.to_thread(self.once_store.check_marker_status, task, self.profile.name)
-                if once_status == "notify_sealed":
-                    msg = f"[bold {THEME['warning']}][WARN][/] Run-once:sealed script modified since last run; not re-run: {escape(task.name)}"
-                    self.log_main(msg)
-                    self.log_task(msg, index)
-                    desktop_notify("Dusky Update", f"Sealed script modified: {task.name}", urgency="normal")
-                    if not OPT_DRY_RUN:
-                        await asyncio.to_thread(self.once_store.mark_sealed_notified, task, self.profile.name)
-                    self.update_task_state(index, "skipped")
-                    if self.state_store and not OPT_DRY_RUN:
-                        await asyncio.to_thread(self.state_store.mark, task, "skipped", note="Run-once:sealed modified")
-                    continue
-                elif once_status == "skip":
-                    self.log_main(f"[dim]Run-once marker valid. Skipping: {escape(task.name)}[/dim]")
-                    self.update_task_state(index, "skipped")
-                    if self.state_store and not OPT_DRY_RUN:
-                        await asyncio.to_thread(self.state_store.mark, task, "skipped", note="Run-once marker valid")
-                    continue
-
-            self.update_task_state(index, "running")
-
-            cmd_str = f"{task.name} {' '.join(task.args)}".strip()
-            self.log_main(f"\n[bold {THEME['warning']}]>[/] Executing Process: [bold {THEME['fg']}]{escape(cmd_str)}[/]")
-            self.log_task(f"[bold {THEME['accent']}]>>> PROCESS INITIATED:[/] {escape(cmd_str)}\n", index)
-
-            if not (task.resolved_path and task.path_state == "ok" and task.resolved_path.is_file()):
-                self.missing_scripts.append(task.name)
-                err = f"[bold {THEME['warning']}][WARN][/] Script missing or conflicting in preflight: {escape(task.name)}"
-                self.log_main(err)
-                self.log_task(err, index)
+            for index in leftover:
+                task = self.tasks[index]
                 self.update_task_state(index, "skipped")
                 if self.state_store and not OPT_DRY_RUN:
-                    await asyncio.to_thread(self.state_store.mark, task, "skipped", note="Script missing or unresolvable")
+                    await asyncio.to_thread(self.state_store.mark, task, "skipped", note=f"Condition never met: {task.condition}")
                 if self.run_logger:
-                    self.run_logger.close_task(task, index, "skipped", 1, 0.0)
-                continue
-
-            resolved_path = task.resolved_path
-
-            interpreter = task.interpreter or []
-            exec_cmd = interpreter + [str(resolved_path)] + task.args
-            if not interpreter:
-                exec_cmd = [str(resolved_path)] + task.args
-            if task.mode == 'S':
-                exec_cmd = SudoEngine.sudo_prefix() + exec_cmd
-
-            start_t = time.monotonic()
-            try:
-                if OPT_DRY_RUN:
-                    self.log_main(f"[dim][DRY-RUN] Would execute: {escape(' '.join(exec_cmd))}[/dim]")
-                    self.log_task(f"[dim][DRY-RUN] Execution bypassed.[/dim]", index)
-                    rc = 0
-                    await asyncio.sleep(0.05)
-                elif task.interactive:
-                    self.log_main(f"[dim]Suspending UI abstraction... Passing raw PTY control...[/]")
-                    self.log_task(f"[dim]Interactive flag detected. Console control delegated to user.[/]", index)
-
-                    with self._suspend_ui():
-                        r, g, b = get_rgb_color(THEME['accent'])
-                        sys.stdout.write(f"\n\033[1;38;2;{r};{g};{b}m=== DUSKY INTERACTIVE ABSTRACTION: {task.name} ===\033[0m\n\n")
-                        sys.stdout.flush()
-
-                        try:
-                            proc = await asyncio.create_subprocess_exec(*exec_cmd, cwd=str(WORK_TREE))
-                            await proc.wait()
-                            rc = proc.returncode
-                        except KeyboardInterrupt:
-                            rc = 130
-
-                        sys.stdout.write(f"\n\033[1;38;2;{r};{g};{b}m=== ABSTRACTION TERMINATED (Code: {rc}) ===\033[0m\n")
-                        sys.stdout.flush()
-
-                    self.log_task(f"\n[bold {THEME['success']}]PTY control returned. Exit Code: {rc}[/]", index)
-
-                else:
-                    max_attempts = (task.retry + 1) if task.retry > 0 else 1
-                    for attempt in range(1, max_attempts + 1):
-                        success, rc = await self.execute_pty_command(
-                            exec_cmd,
-                            timeout=task.timeout if task.timeout else 0.0,
-                            task_index=index
-                        )
-                        if rc is None:
-                            rc = 1
-                            break
-
-                        if rc == 0 or self.abort_flag:
-                            break
-
-                        if attempt < max_attempts:
-                            reason = "Timeout (124)" if rc == 124 else f"Code {rc}"
-                            self.log_task(f"[bold {THEME['warning']}]Attempt {attempt} failed ({reason}). Retrying in {task.retry_delay}s...[/]", index)
-                            await asyncio.sleep(task.retry_delay)
-
-                duration = time.monotonic() - start_t
-
-                if rc == 0:
-                    self.update_task_state(index, "success")
-                    if self.state_store and not OPT_DRY_RUN:
-                        await asyncio.to_thread(self.state_store.mark, task, "completed", exit_code=0, duration=duration)
-                    if task.once and self.once_store and not OPT_DRY_RUN:
-                        await asyncio.to_thread(self.once_store.mark_success, task, self.profile.name, exit_code=0, run_id=getattr(self, "run_id", ""))
-                    if self.run_logger:
-                        self.run_logger.close_task(task, index, "completed", 0, duration)
-                    success_count += 1
-                    self.log_main(f"[bold {THEME['success']}][OK][/] Process Complete ({duration:.2f}s).")
-                    self.log_task(f"\n[bold {THEME['success']}]>>> EXECUTION SUCCESSFUL ({duration:.2f}s)[/]", index)
-                else:
-                    if task.ignore_fail and not OPT_STOP_ON_FAIL:
-                        self.update_task_state(index, "skipped")
-                        if self.state_store and not OPT_DRY_RUN:
-                            await asyncio.to_thread(self.state_store.mark, task, "skipped", exit_code=rc, duration=duration)
-                        if self.run_logger:
-                            self.run_logger.close_task(task, index, "skipped", rc, duration)
-                        self.log_main(f"[bold {THEME['warning']}][WARN][/] Process failure (Code {rc}) suppressed by manifest.")
-                        self.log_task(f"\n[bold {THEME['warning']}]>>> EXECUTION FAILED / SUPPRESSED (Code {rc})[/]", index)
-                    else:
-                        self.update_task_state(index, "failed")
-                        if self.state_store and not OPT_DRY_RUN:
-                            await asyncio.to_thread(self.state_store.mark, task, "failed", exit_code=rc, duration=duration)
-                        if self.run_logger:
-                            self.run_logger.close_task(task, index, "failed", rc, duration)
-                        fail_count += 1
-                        self.log_main(f"[bold {THEME['error']}][FATAL][/] Process aborted execution sequence (Code {rc}).")
-                        self.log_task(f"\n[bold {THEME['error']}]>>> FATAL EXECUTION FAILURE (Code {rc})[/]", index)
-                        self.abort_flag = True
-
-            except Exception as e:
-                duration = time.monotonic() - start_t
-                err_msg = f"[bold {THEME['error']}][ERROR][/] Internal Exception: {escape(str(e))}"
-                self.log_main(err_msg)
-                self.log_task(err_msg, index)
-                self.update_task_state(index, "failed")
-                if self.state_store and not OPT_DRY_RUN:
-                    await asyncio.to_thread(self.state_store.mark, task, "failed", exit_code=1, note=str(e), duration=duration)
-                if self.run_logger:
-                    self.run_logger.close_task(task, index, "failed", 1, duration)
-                if not task.ignore_fail or OPT_STOP_ON_FAIL:
-                    self.abort_flag = True
-
-            await asyncio.sleep(0.01)
+                    self.run_logger.close_task(task, index, "skipped", 0, 0.0)
+                self.log_main(f"[dim]Condition '{task.condition}' never satisfied; skipping: {escape(task.name)}[/dim]")
 
         if self.run_logger:
             self.run_logger.write_report(
@@ -5102,6 +5169,28 @@ class DuskyApp(App):
 if __name__ == "__main__":
     try:
         args = parse_args()
+
+        if args.list_once:
+            store = OnceStore()
+            try:
+                store.print_list()
+            finally:
+                store.close()
+            sys.exit(0)
+
+        if args.forget_once:
+            setup_runtime_dir()
+            if not acquire_lock():
+                sys.exit(1)
+            store = OnceStore()
+            try:
+                for script in args.forget_once:
+                    removed = store.forget(script)
+                    sys.stdout.write(f"Forgot {removed} marker(s): {script}\n")
+            finally:
+                store.close()
+            sys.exit(0)
+
         profile = load_profile(OPT_PROFILE_NAME)
         tasks = parse_manifest(profile)
         profile.tasks = tasks

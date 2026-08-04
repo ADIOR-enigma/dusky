@@ -106,8 +106,11 @@ tasks = [
 
 ## 4. Conditions (`if:<condition>`)
 
-Conditions decide whether a task runs. A false condition **skips** the task for
-this run (it is re-evaluated on every future run).
+Conditions decide whether a task runs. A false condition **defers** the task: it
+is re-checked in later passes (so an earlier task can satisfy it — e.g. a package
+installed mid-run), up to `max_defer_passes` (default 3, §12). If it is still
+unmet when the passes run out, the task is marked skipped for this run (it is
+re-evaluated on every future run).
 
 | Condition | True when… |
 | :--- | :--- |
@@ -143,15 +146,17 @@ this run (it is re-evaluated on every future run).
 
 ### Compound Conditions
 
-Multiple `if:` flags are AND'd. **Every sub-condition must carry a `:` value** —
-bare keywords such as `wayland` or `battery` are only valid as a **single**
-condition. Inside a compound they are not evaluated correctly (the task may
-never run, or may always run):
+Multiple `if:` flags are AND'd. Both colon forms and bare keywords work together:
+a bare keyword (`wayland`, `battery`, `x11`, …) is treated as its own condition.
 
 ```toml
 "U | if:gpu:nvidia,if:not:vm | 380_nvidia_open_source.sh --auto"   # ✓ all parts carry a value
-"U | if:wayland,if:not:vm | 455_hyprctl_reload.sh"                 # ✗ bare keyword breaks AND
+"U | if:wayland,if:not:vm | 455_hyprctl_reload.sh"                 # ✓ bare keyword ANDs correctly
 ```
+
+> A comma inside a single condition value (`command:ls,battery`) is not
+> currently supported — commas separate conditions, and a value is not split
+> back. Keep condition values comma-free.
 
 ### Evaluation Caching
 
@@ -172,6 +177,7 @@ case-insensitively): `"MODE | flags | script.sh"`.
 | :--- | :--- |
 | `ignore-fail` | Ignore failure and continue (aliases: `ignore`, `true`) |
 | `interactive` | Suspend TUI, give script full terminal control (aliases: `tui`, `prompt`, `fullscreen`, `tty`, `suspend`) |
+| `no-interactive` | Force inline execution, no PTY; overrides name/marker auto-detection (aliases: `noninteractive`, `inline`, `embedded`) |
 | `once` | Run-once marker, content mode (aliases: `run_once`, `sticky`, `once:content`, `once:hash`) |
 | `once:forever` | Run once, **never re-run** (aliases: `once:exact`, `once:permanent`) |
 | `once:sealed` | Never re-run; warn once if the script content changes (aliases: `once:locked`) |
@@ -190,6 +196,9 @@ The updater also hands over the terminal when:
   `dusky_firefox_tui.sh`, **or**
 - the script contains `#dusky_interactive=true` / `#dusky_interactive=1` in its
   first 20 lines (spaces are ignored, matching is case-insensitive).
+
+The `no-interactive` (or `interactive`) flag **overrides** auto-detection:
+explicit flags always win over name and marker heuristics.
 
 ---
 
@@ -257,6 +266,8 @@ python3 update_dusky.py [OPTIONS]
 | `--doctor` | Print environment diagnostics (paths, profiles) and exit |
 | `--profile NAME` | Profile to run: stem, filename, or path (default: `01_update_default`) |
 | `--list` | List the active scripts of the selected profile and exit |
+| `--list-once` | List persistent run-once markers and exit |
+| `--forget-once SCRIPT...` | Delete persistent run-once marker(s) and exit |
 | `--dry-run` | Simulate: skip git sync, run every check, execute nothing |
 | `--skip-sync` | Skip the git sync phase, run only the script sequence |
 | `--sync-only` | Run the git sync phase and exit |
@@ -278,10 +289,11 @@ skipped). `--sync-only` ends after this phase. If the updater script itself was
 changed by the sync, the updater re-executes itself with the new version before
 starting Phase 2.
 
-**Phase 2 — Sequence.** For each task: condition check (§4), once-marker check
-(§6), then execution. Failed runs are retried up to `retry` + 1 times with
-`retry_delay` between attempts. A timeout kills the whole process group and is
-reported as exit 124.
+**Phase 2 — Sequence.** For each task: condition check (§4 — a false condition
+defers the task and it is re-checked in later passes up to `max_defer_passes`),
+once-marker check (§6), then execution. Failed runs are retried up to `retry` +
+1 times with `retry_delay` between attempts. A timeout kills the whole process
+group and is reported as exit 124.
 
 **Failure handling:**
 
@@ -347,7 +359,7 @@ the file only needs to exist when you want to change something.
 | `[ui]` | ASCII mode, sidebar width, log buffer size, theme paths, color palette, Unicode/ASCII symbols |
 | `[paths]` | `documents_dir`, `namespace`, `lock_file`, askpass prefix, `logs_subdir`, `backups_subdir`, `state_subdir`, log/backup retention days |
 | `[logging]` | Log files on/off, per-task logs, run reports |
-| `[execution]` | Disk-space minimums, SQLite busy timeout, default interpreter, extension→interpreter map |
+| `[execution]` | Disk-space minimums, SQLite busy timeout, `max_defer_passes` (condition-deferral pass limit, default 3), default interpreter, extension→interpreter map |
 | `[conditions]` | Commands for `package:` / `service_active:` / `user_service_active:` checks, GPU PCI vendor IDs |
 | `[notifications]` | Desktop notifications, audio cues, audio players, sound files |
 | `[sudo]` | Heartbeat interval, sudoers drop-in dir/prefix/timeout, `env_keep` |

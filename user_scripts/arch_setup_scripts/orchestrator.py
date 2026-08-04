@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from importlib import metadata as importlib_metadata
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 try:
     from rich.console import Console
@@ -616,6 +616,9 @@ CREATE TABLE IF NOT EXISTS once_markers (
 )
 """
         )
+        with suppress(sqlite3.OperationalError):
+            self.conn.execute("ALTER TABLE once_markers ADD COLUMN notified_checksum TEXT DEFAULT '';")
+
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_once_script ON once_markers(script_name);"
         )
@@ -638,23 +641,44 @@ CREATE TABLE IF NOT EXISTS once_markers (
         return hashlib.blake2b(material, digest_size=16).hexdigest()
 
     def marker_valid(self, task: OrchestratorTask, profile_name: str) -> bool:
+        return self.check_marker_status(task, profile_name) == "skip"
+
+    def check_marker_status(self, task: OrchestratorTask, profile_name: str) -> Literal["run", "skip", "notify_sealed"]:
         if not task.once:
-            return False
+            return "run"
 
         key = self.make_key(task, profile_name)
         cur = self.conn.execute(
-            "SELECT checksum, once_mode FROM once_markers WHERE marker_key = ?",
+            "SELECT checksum, once_mode, notified_checksum FROM once_markers WHERE marker_key = ?",
             (key,),
         )
         row = cur.fetchone()
         if row is None:
-            return False
+            return "run"
 
-        stored_checksum, stored_mode = row
+        stored_checksum, stored_mode, notified_checksum = row
+
         if task.once_mode == "forever" or stored_mode == "forever":
-            return True
+            return "skip"
 
-        return bool(task.checksum) and stored_checksum == task.checksum
+        if task.once_mode == "sealed" or stored_mode == "sealed":
+            if bool(task.checksum) and stored_checksum != task.checksum:
+                if notified_checksum != task.checksum:
+                    return "notify_sealed"
+            return "skip"
+
+        if bool(task.checksum) and stored_checksum == task.checksum:
+            return "skip"
+
+        return "run"
+
+    def mark_sealed_notified(self, task: OrchestratorTask, profile_name: str) -> None:
+        key = self.make_key(task, profile_name)
+        self.conn.execute(
+            "UPDATE once_markers SET notified_checksum = ?, checksum = ?, updated = ? WHERE marker_key = ?",
+            (task.checksum, task.checksum, now_iso(), key),
+        )
+        self.conn.commit()
 
     def mark_success(
         self,
@@ -2146,6 +2170,9 @@ def parse_task_entry(raw_entry: str, index: int) -> OrchestratorTask:
         elif f in ("once:forever", "once:exact", "once:permanent"):
             once = True
             once_mode = "forever"
+        elif f in ("once:sealed", "once:locked"):
+            once = True
+            once_mode = "sealed"
         elif f in ("once:profile", "once:local"):
             once = True
             once_scope = "profile"
@@ -2255,8 +2282,10 @@ def parse_task_table(table: dict, index: int) -> OrchestratorTask:
 
     once = bool(table.get("once", False))
     once_mode = str(table.get("once_mode", "content")).lower()
-    if once_mode not in ("content", "forever"):
+    if once_mode not in ("content", "forever", "sealed", "locked"):
         once_mode = "content"
+    if once_mode == "locked":
+        once_mode = "sealed"
 
     once_scope = str(table.get("once_scope", "profile")).lower()
     if once_scope not in ("profile", "global"):
@@ -2287,6 +2316,9 @@ def parse_task_table(table: dict, index: int) -> OrchestratorTask:
         elif f in ("once:forever", "once:exact", "once:permanent"):
             once = True
             once_mode = "forever"
+        elif f in ("once:sealed", "once:locked"):
+            once = True
+            once_mode = "sealed"
         elif f in ("once:profile", "once:local"):
             once = True
             once_scope = "profile"
@@ -2667,6 +2699,11 @@ class ConditionEvaluator:
         if not condition:
             return False
         cond = condition.strip()
+        if "," in cond:
+            # A compound condition is volatile if ANY of its AND'ed parts is
+            # volatile (e.g. "gpu:nvidia,command:sddm" must re-check sddm each
+            # pass so an earlier task can install it mid-run).
+            return any(self._volatile(part) for part in cond.split(","))
         if cond.lower() in ("always", "true", "yes", "never", "false", "no"):
             return False
 
@@ -2700,15 +2737,15 @@ class ConditionEvaluator:
 
     def _eval(self, cond: str) -> bool:
         if "," in cond:
-            parts: list[str] = []
-            for token in cond.split(","):
-                if parts and ":" not in token:
-                    parts[-1] += "," + token
-                else:
-                    parts.append(token)
-
+            # Commas are a strict AND separator between sub-conditions. Values
+            # are comma-free (see documented DSL contract), so NO token merging.
+            parts: list[str] = [p.strip() for p in cond.split(",") if p.strip()]
             if len(parts) > 1:
                 return all(self.check(part) for part in parts)
+            if parts:
+                cond = parts[0]
+            else:
+                return True
 
         kind, _, value = cond.partition(":")
         kind = kind.strip().lower()
@@ -6312,13 +6349,28 @@ class DuskyOrchestratorApp(App):
                         if key in handled:
                             continue
 
-                        if task.once and self.once_store.marker_valid(task, self.profile.name):
-                            self.log_system(
-                                f"Already completed once; skipping: {task.script_name}"
-                            )
-                            self.finish_task(task, "completed_once", None, "once marker")
-                            handled.add(key)
-                            continue
+                        if task.once and self.once_store:
+                            once_status = self.once_store.check_marker_status(task, self.profile.name)
+                            if once_status == "notify_sealed":
+                                self.log_system(
+                                    f"Run-once:sealed script modified since last run; not re-running: {task.script_name}"
+                                )
+                                DesktopNotifier.notify(
+                                    "Dusky Orchestrator",
+                                    f"Sealed script modified: {task.script_name}",
+                                    "normal",
+                                )
+                                self.once_store.mark_sealed_notified(task, self.profile.name)
+                                self.finish_task(task, "skipped", None, "run-once:sealed modified")
+                                handled.add(key)
+                                continue
+                            if once_status == "skip":
+                                self.log_system(
+                                    f"Already completed once; skipping: {task.script_name}"
+                                )
+                                self.finish_task(task, "completed_once", None, "once marker")
+                                handled.add(key)
+                                continue
 
                         if task.always and key in self._always_handled:
                             handled.add(key)

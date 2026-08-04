@@ -156,15 +156,16 @@ every future run.
 
 ### Compound Conditions
 
-Multiple conditions are AND'd. **Every sub-condition must carry a `:` value** —
-bare keywords such as `wayland` or `battery` are only valid as a **single**
-condition. Inside a compound they are not evaluated correctly (the task may
-never run, or may always run):
+Multiple conditions are AND'd. Both colon forms (`if:gpu:nvidia`) and bare
+keywords (`if:wayland`) work together in a compound condition:
 
 ```toml
 "U | if:gpu:nvidia,if:not:vm | 380_nvidia_open_source.sh --auto"
 "U | if:wayland | 455_hyprctl_reload.sh"
 ```
+
+A TOML table `condition` field with a bare last keyword also works, e.g.
+`condition = "wayland,battery"` is the AND of both checks.
 
 ---
 
@@ -224,6 +225,7 @@ Tasks flagged with `once` track successful execution in a **separate database**
 | :--- | :--- |
 | `once` | Run once; re-run only if the **script file changes** (aliases: `run_once`, `sticky`, `once:content`, `once:hash`) |
 | `once:forever` | Run once, **never re-run** — even if the file changes (aliases: `once:exact`, `once:permanent`) |
+| `once:sealed` | Run once; if the file changes afterwards, **warn once** (desktop notification) instead of re-running (aliases: `once:locked`) |
 
 ### Shared Across Profiles?
 
