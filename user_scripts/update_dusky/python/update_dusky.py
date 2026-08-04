@@ -2274,6 +2274,7 @@ ScrollBar > .scrollbar--bar:hover {{
     color: {THEME['accent']}cc;
 }}
 ListView {{ background: transparent; overflow-x: hidden; height: 100%; scrollbar-size-vertical: 1; }}
+ListView:focus {{ background-tint: transparent 0%; }}
 ListItem {{ 
     padding: 0 1; 
     border-left: tall transparent;

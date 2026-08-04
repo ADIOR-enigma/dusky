@@ -1836,15 +1836,24 @@ Tree {{
     padding: 0;
 }}
 
+Tree:focus {{
+    background-tint: transparent 0%;
+    background: {p['bg']};
+}}
+
+Tree > .tree--highlight-line {{
+    background: transparent;
+}}
+
 Tree > .tree--cursor {{
-    background: {p['accent']}1a;
+    background: {p['muted']};
     color: {p['fg']};
     text-style: bold;
     border-left: tall {p['accent']};
 }}
 
 Tree:focus > .tree--cursor {{
-    background: {p['accent']}1a;
+    background: {p['muted']};
     color: {p['fg']};
     text-style: bold;
     border-left: tall {p['accent']};
