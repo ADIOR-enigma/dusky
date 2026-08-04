@@ -1749,7 +1749,7 @@ PALETTE = load_palette()
 
 def build_app_css(p: dict[str, str]) -> str:
     return f"""
-Screen {{
+Screen, Tree, RichLog, ScrollBar, #left_pane {{
     background: {p['bg']};
     color: {p['fg']};
     scrollbar-color: {p['accent']}80;

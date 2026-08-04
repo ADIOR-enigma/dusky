@@ -2242,7 +2242,7 @@ sidebar_w = GLOBAL_CONFIG.get("ui", {}).get("sidebar_width", 35)
 log_w = 100 - sidebar_w
 
 DUSKY_CSS = f"""
-Screen {{ 
+Screen, ListView, RichLog, ScrollBar, #sidebar {{ 
     background: {THEME['bg']}; 
     color: {THEME['fg']}; 
     scrollbar-color: {THEME['accent']}80;
