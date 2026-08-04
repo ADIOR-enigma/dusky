@@ -23,6 +23,7 @@ TARGET_DIRS: tuple[str, ...] = (
     "~/.config/zellij/themes",
     "~/.config/kitty",
     "~/.config/foot",
+    "~/.config/fastfetch",
     "~/.config/opencode/themes",
     "~/.config/VSCodium/User",
     "~/.config/alacritty",
