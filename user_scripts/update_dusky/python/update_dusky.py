@@ -2278,7 +2278,7 @@ ListItem {{
     border-left: tall transparent;
     background: transparent;
 }}
-ListItem:focus {{ 
+ListItem:focus, ListItem.--highlight {{ 
     background: {THEME['accent']}1a; 
     border-left: tall {THEME['accent']};
 }}
@@ -3835,6 +3835,15 @@ class TaskItem(ListItem):
         cmd_str = escape(cmd_str)
 
         suffix = ""
+        if getattr(self.dusky_task, "duration", 0) > 0:
+            secs = self.dusky_task.duration
+            if secs < 60:
+                suffix = f" [dim {THEME['warning']}]({secs:.1f}s)[/]"
+            else:
+                m = int(secs) // 60
+                s = int(secs) % 60
+                suffix = f" [dim {THEME['warning']}]({m}m{s:02d}s)[/]"
+
         symbols = GLOBAL_CONFIG.get("ui", {}).get(
             "ascii_symbols" if ASCII_MODE else "unicode_symbols",
             {"pending": "○", "running": "◉", "success": "✓", "failed": "✗", "skipped": "-"}
@@ -4239,20 +4248,20 @@ class DuskyApp(App):
     async def on_mount(self) -> None:
         self.progress = self.query_one("#main_progress", ProgressBar)
 
-        list_view = self.query_one("#task_list", ListView)
-        list_view.append(MainLogItem())
-        for i, task in enumerate(self.tasks):
-            list_view.append(TaskItem(task, i))
-
-        self.log_main(f"[bold {THEME['accent']}]======================================================[/]")
-        self.log_main(f"[bold {THEME['fg']}] ARCHITECTURE INITIALIZATION — {datetime.now().strftime('%H:%M:%S')}[/]")
-        self.log_main(f"[bold {THEME['accent']}] Profile: {self.profile.name}[/]")
-        self.log_main(f"[bold {THEME['accent']}]======================================================[/]")
-
         self.sleep_inhibitor = SleepInhibitor(enabled=True)
         self.state_store = StateStore(self.profile)
         self.run_logger = RunLogger(self.profile, self.run_id)
         self.once_store = OnceStore()
+
+        stored_durations = self.state_store.durations()
+        for t in self.tasks:
+            if t.state_key in stored_durations and stored_durations[t.state_key] > 0:
+                t.duration = stored_durations[t.state_key]
+
+        list_view = self.query_one("#task_list", ListView)
+        list_view.append(MainLogItem())
+        for i, task in enumerate(self.tasks):
+            list_view.append(TaskItem(task, i))
 
         if self.has_sudo:
             self.heartbeat_task = asyncio.create_task(
@@ -4734,6 +4743,7 @@ class DuskyApp(App):
                         await asyncio.sleep(task.retry_delay)
 
             duration = time.monotonic() - start_t
+            task.duration = duration
 
             if rc == 0:
                 self.update_task_state(index, "success")
