@@ -222,9 +222,55 @@ def get_list_pathspecs() -> list[str] | None:
             
     return valid_paths
 
+def prune_unlisted_tracked_files(verbose: bool = True) -> list[str]:
+    """Identifies and untracks files from Git index that are no longer in .git_dusky_list."""
+    valid_paths = get_list_pathspecs()
+    if not valid_paths:
+        return []
+
+    _, ls_out, _ = run_git("ls-files", "-z")
+    if not ls_out:
+        return []
+
+    tracked_files = [f for f in ls_out.split("\0") if f]
+    stale_files = [f for f in tracked_files if not matches_pathspec(f, valid_paths)]
+
+    if not stale_files:
+        return []
+
+    if verbose:
+        c_wrn = COLORS.get("warning", "yellow")
+        console.print(Panel.fit(
+            f"[bold {c_wrn}]⚠ Found {len(stale_files)} tracked file(s) no longer present in {DOTFILES_LIST}:[/bold {c_wrn}]\n" +
+            "\n".join(f"  [dim]➔ {f}[/dim]" for f in sorted(stale_files)),
+            title=f"[bold {c_wrn}]INDEX PRUNING[/bold {c_wrn}]",
+            border_style=c_wrn,
+            title_align="left",
+            box=box.ROUNDED
+        ))
+
+    payload = "\0".join(stale_files) + "\0"
+    try:
+        run_git(
+            "rm", "--cached", "-r", "--ignore-unmatch",
+            "--pathspec-from-file=-",
+            "--pathspec-file-nul",
+            input_data=payload.encode("utf-8"),
+            check=True,
+            literal_pathspecs=True
+        )
+        if verbose:
+            console.print("[bold green]✔[/bold green] Stale files successfully untracked from Git index (local files preserved on disk).")
+    except subprocess.CalledProcessError:
+        if verbose:
+            console.print("[bold red]✖ Failed to untrack stale files from Git index.[/bold red]")
+
+    return stale_files
+
 # --- 4. EXECUTION PAYLOADS ---
 def sync_all(local_only: bool = False) -> None:
     """Smart-stages paths mathematically cross-referenced with fnmatch globs."""
+    prune_unlisted_tracked_files()
     valid_paths = get_list_pathspecs()
     
     if valid_paths is None:
@@ -798,6 +844,7 @@ def safe_revert_last_commit() -> None:
 
 def show_delta() -> None:
     """Pipes differential directly through Delta."""
+    prune_unlisted_tracked_files()
     console.print("[bold blue]Executing Delta differential...[/bold blue]")
     run_git("-c", "core.pager=delta", "diff", "HEAD", capture=False)
 
