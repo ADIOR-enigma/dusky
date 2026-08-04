@@ -4263,6 +4263,11 @@ class DuskyApp(App):
         for i, task in enumerate(self.tasks):
             list_view.append(TaskItem(task, i))
 
+        self.log_main(f"[bold {THEME['accent']}]======================================================[/]")
+        self.log_main(f"[bold {THEME['fg']}] DUSKY UPDATER — {datetime.now().strftime('%H:%M:%S')}[/]")
+        self.log_main(f"[bold {THEME['accent']}] Profile: {self.profile.name}[/]")
+        self.log_main(f"[bold {THEME['accent']}]======================================================[/]")
+
         if self.has_sudo:
             self.heartbeat_task = asyncio.create_task(
                 SudoEngine.maintain_heartbeat(
