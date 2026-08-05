@@ -174,7 +174,7 @@ ALL_GROUPS: Dict[str, List[str]] = {
     "appearance": [
         "qt5-wayland", "qt6-wayland", "gtk3", "gtk4", "nwg-look", "qt5ct", "qt6ct", "qt6-svg",
         "qt6-multimedia-ffmpeg", "adw-gtk-theme", "upower", "plocate", "matugen",
-        "ttf-font-awesome", "ttf-jetbrains-mono-nerd", "otf-atkinsonhyperlegiblemono-nerd",
+        "otf-font-awesome", "ttf-jetbrains-mono-nerd", "otf-atkinsonhyperlegiblemono-nerd",
         "ttf-atkinson-hyperlegible", "otf-atkinson-hyperlegible",
         "noto-fonts-emoji", "sassc", "python-packaging", "python", "python-gobject",
         "python-cairo", "python-opengl", "gtk-layer-shell", "python-evdev", "python-pyudev",

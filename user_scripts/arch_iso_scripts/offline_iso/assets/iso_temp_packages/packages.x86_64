@@ -42,7 +42,7 @@ linux-firmware
 linux-firmware-marvell
 lvm2
 yazi
-nvim
+neovim
 mdadm
 mkinitcpio
 mkinitcpio-archiso

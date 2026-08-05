@@ -75,7 +75,7 @@ Media       | cantarell-fonts       | Humanist sans serif font
 Media       | ttf-bitstream-vera    | Bitstream Vera fonts
 Media       | ttf-dejavu            | Font based on Bitstream Vera (wider range of characters)
 Media       | ttf-liberation        | Font family metric compatibility with Arial, Times New Roman, and Courier New
-Media       | ttf-font-awesome      | Iconic font designed for Bootstrap - woff2 format
+Media       | otf-font-awesome      | Iconic font designed for Bootstrap - otf format
 Media       | woff2-font-awesome    | Iconic font designed for Bootstrap - woff2 format
 Media       | ttf-jetbrains-mono-nerd | Patched font JetBrains Mono from nerd fonts library
 Media       | otf-atkinsonhyperlegiblemono-nerd | Atkinson Hyperlegible Mono Nerd Font
