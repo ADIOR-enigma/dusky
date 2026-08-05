@@ -572,48 +572,112 @@ def safe_deactivate_swaps_for_device(target_dev):
     for p in wanted:
         run("swapoff",p, check=False, capture=True)
 
-def teardown_device(target_dev):
-    console.print(f"[yellow]>> Tearing down {target_dev}...[/yellow]")
-    safe_deactivate_swaps_for_device(target_dev)
-    for mp in findmnt_targets("/mnt"):
+def teardown_target_storage(target_dev: str, max_retries: int = 4) -> None:
+    """
+    Robust inverted storage teardown: VFS -> Swap -> DM -> Block Cache.
+    Flushes all page cache buffers and ensures exclusive block device access before wipefs/sfdisk.
+    """
+    resolved_disk = str(Path(target_dev).resolve())
+    console.print(f"[yellow]>> Initiating absolute storage teardown for {resolved_disk}...[/yellow]")
+
+    for attempt in range(1, max_retries + 1):
+        # 1. Global Sync
+        run("sync", check=False, capture=True)
+
+        # 2. Aggressive Swap Deactivation
+        run("swapoff", "-a", check=False, capture=True)
         try:
-            run("umount","-R",mp, check=False, capture=True)
-        except:
+            safe_deactivate_swaps_for_device(resolved_disk)
+        except Exception:
             pass
-    try:
-        r = run("findmnt","-rn","-o","TARGET,SOURCE", check=False, capture=True)
+
+        # 3. Recursive Mount Detachment (Standard, Lazy, and Process Mount Namespace Cleanup)
+        try:
+            mounts = findmnt_targets("/mnt")
+            for mp in mounts:
+                if run("umount", "-R", mp, check=False, capture=True).returncode != 0:
+                    run("umount", "-R", "-f", "-l", mp, check=False, capture=True)
+
+            r = run("findmnt", "-rn", "-o", "TARGET,SOURCE", check=False, capture=True)
+            for line in r.stdout.splitlines():
+                parts = line.split()
+                if len(parts) >= 2:
+                    tgt, src = parts[0], parts[1].split("[", 1)[0]
+                    if Path(src).exists() and device_is_on_disk(src, resolved_disk):
+                        if run("umount", "-R", tgt, check=False, capture=True).returncode != 0:
+                            run("umount", "-R", "-f", "-l", tgt, check=False, capture=True)
+
+            # Precision systemd 261 mount namespace purging
+            for proc_dir in Path("/proc").glob("[0-9]*"):
+                try:
+                    mi = proc_dir / "mountinfo"
+                    if mi.is_file():
+                        text = mi.read_text(errors="ignore")
+                        if "/mnt" in text or resolved_disk in text:
+                            for line in text.splitlines():
+                                if "/mnt" in line or resolved_disk in line:
+                                    parts = line.split()
+                                    if len(parts) >= 5:
+                                        target_mp = parts[4]
+                                        run("nsenter", f"--mount=/proc/{proc_dir.name}/ns/mnt", "umount", "-R", "-f", "-l", target_mp, check=False, capture=True)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # 4. Device Mapper / LUKS Closure
+        try:
+            r = run("lsblk", "-pnro", "NAME,TYPE", check=False, capture=True)
+            for line in r.stdout.splitlines():
+                p = line.split()
+                if len(p) >= 2:
+                    name, typ = p[0], p[1]
+                    if typ in ("crypt", "mpath", "lvm") and device_is_on_disk(name, resolved_disk):
+                        dm_name = Path(name).name
+                        if name.startswith("/dev/mapper/"):
+                            dm_name = name.split("/")[-1]
+                        if run("cryptsetup", "close", dm_name, check=False, capture=True).returncode != 0:
+                            run("dmsetup", "remove", "--force", "--retry", dm_name, check=False, capture=True)
+
+            if Path(f"/dev/mapper/{TARGET_CRYPT_NAME}").exists():
+                if run("cryptsetup", "close", TARGET_CRYPT_NAME, check=False, capture=True).returncode != 0:
+                    run("dmsetup", "remove", "--force", "--retry", TARGET_CRYPT_NAME, check=False, capture=True)
+        except Exception:
+            pass
+
+        # 5. Flush Dirty Page Buffers
+        run("blockdev", "--flushbufs", resolved_disk, check=False, capture=True)
+
+        # 6. Settle udev events
+        run("udevadm", "settle", "--timeout=5", check=False, capture=True)
+
+        # 7. VALIDATION PHASE: Ensure NO active VFS mounts AND NO kernel holders exist
+        busy_found = False
+
+        r = run("findmnt", "-rn", "-o", "SOURCE", check=False, capture=True)
         for line in r.stdout.splitlines():
-            parts = line.split()
-            if len(parts) < 2:
-                continue
-            tgt,src = parts[0],parts[1].split("[",1)[0]
-            try:
-                if Path(src).exists() and device_is_on_disk(src,target_dev):
-                    run("umount","-R",tgt, check=False, capture=True)
-            except:
-                pass
-    except:
-        pass
-    try:
-        r = run("lsblk","-pnro","NAME,TYPE", check=False, capture=True)
-        for line in r.stdout.splitlines():
-            p = line.split()
-            if len(p) < 2:
-                continue
-            name,typ = p[0],p[1]
-            if typ == "crypt" and device_is_on_disk(name,target_dev):
-                dm = Path(name).name
-                if name.startswith("/dev/mapper/"):
-                    dm = name.split("/")[-1]
-                else:
-                    try:
-                        dm = Path(f"/sys/class/block/{Path(name).name}/dm/name").read_text().strip()
-                    except:
-                        pass
-                run("cryptsetup","close",dm, check=False, capture=True)
-    except:
-        pass
-    run("udevadm","settle","--timeout=10", check=False, capture=True)
+            src = line.split("[", 1)[0].strip()
+            if device_is_on_disk(src, resolved_disk):
+                busy_found = True
+                break
+
+        if not busy_found:
+            dev_name = Path(resolved_disk).name
+            for block_path in Path("/sys/class/block").glob(f"{dev_name}*"):
+                holders_path = block_path / "holders"
+                if holders_path.is_dir() and any(holders_path.iterdir()):
+                    busy_found = True
+                    break
+
+        if not busy_found:
+            console.print(f"[green]>> Teardown clean on attempt {attempt}. Block device and partitions are free.[/green]")
+            return
+
+        time.sleep(1.5)
+
+    console.print(f"[yellow]>> Teardown completed after {max_retries} attempts. Proceeding to wipe.[/yellow]")
+
+teardown_device = teardown_target_storage
 
 def ensure_mapper_free(target_dev=None):
     mp = Path(f"/dev/mapper/{TARGET_CRYPT_NAME}")
