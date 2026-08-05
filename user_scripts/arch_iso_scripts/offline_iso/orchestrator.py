@@ -17,6 +17,7 @@ import subprocess
 import time
 import fcntl
 import hashlib
+import tarfile
 import shlex
 import argparse
 import shutil
@@ -897,6 +898,70 @@ def discover_profiles() -> List[ProfileConfig]:
         except Exception as e:
             sys.stderr.write(f"Warning: Failed to load profile {f.name}: {e}\n")
     return profiles
+
+
+def verify_offline_repo_fast(repo_dir: str = "/offline_repo") -> Tuple[bool, str]:
+    """
+    Fast verification of offline package repository integrity.
+    Checks archrepo.db tar metadata, file existence, non-zero file sizes,
+    and SHA256 checksums of repository package files.
+    Returns (is_valid, reason).
+    """
+    r_path = Path(repo_dir)
+    if not r_path.is_dir():
+        return False, f"Offline repository directory '{repo_dir}' does not exist."
+    
+    db_path = r_path / "archrepo.db"
+    if not db_path.is_file():
+        return False, f"Repository database '{db_path}' not found."
+
+    expected_pkgs: Dict[str, str] = {}
+    try:
+        with tarfile.open(db_path, "r:*") as tar:
+            for member in tar.getmembers():
+                if member.name.endswith("/desc"):
+                    f = tar.extractfile(member)
+                    if not f:
+                        continue
+                    lines = f.read().decode('utf-8', errors='ignore').splitlines()
+                    filename = None
+                    sha256sum = None
+                    for i, line in enumerate(lines):
+                        if line.strip() == "%FILENAME%" and i + 1 < len(lines):
+                            filename = lines[i + 1].strip()
+                        elif line.strip() == "%SHA256SUM%" and i + 1 < len(lines):
+                            sha256sum = lines[i + 1].strip()
+                    if filename and sha256sum:
+                        expected_pkgs[filename] = sha256sum
+    except Exception as e:
+        return False, f"Failed to parse database '{db_path}': {e}"
+
+    if not expected_pkgs:
+        return False, "Repository database contains no valid package metadata."
+
+    for filename, expected_sha in expected_pkgs.items():
+        pkg_file = r_path / filename
+        if not pkg_file.is_file():
+            return False, f"Missing offline package: {filename}"
+        
+        try:
+            st = pkg_file.stat()
+            if st.st_size == 0:
+                return False, f"Corrupted 0-byte package file: {filename}"
+        except Exception:
+            return False, f"Cannot stat package file: {filename}"
+
+        h = hashlib.sha256()
+        try:
+            with open(pkg_file, "rb") as f:
+                for chunk in iter(lambda: f.read(65536), b""):
+                    h.update(chunk)
+            if h.hexdigest().lower() != expected_sha.lower():
+                return False, f"SHA256 checksum mismatch on {filename} (corrupted copy/unplug)"
+        except Exception as e:
+            return False, f"Read error on {filename}: {e}"
+
+    return True, "Offline repository clean and verified."
 
 
 # ==============================================================================
@@ -1910,13 +1975,66 @@ def main():
                     sys.stderr.write(f"Error loading profile '{args.profile}': {e}\n")
                     sys.exit(1)
 
+    repo_valid, repo_reason = verify_offline_repo_fast("/offline_repo")
+
     if not selected_profile:
-        for p in profiles:
-            if p.filepath and p.filepath.name.startswith("001_") and p.filepath.name.endswith(".toml"):
+        if args.auto or not sys.stdin.isatty():
+            if repo_valid:
+                for p in profiles:
+                    if p.filepath and "offline" in p.name.lower():
+                        selected_profile = p
+                        break
+            else:
+                sys.stderr.write(f"\n[WARN] Offline repository verification failed: {repo_reason}\n")
+                sys.stderr.write("[WARN] Auto-selecting ONLINE profile to prevent pacstrap failures.\n\n")
+                for p in profiles:
+                    if p.filepath and "online" in p.name.lower():
+                        selected_profile = p
+                        break
+            if not selected_profile and profiles:
+                selected_profile = profiles[0]
+        else:
+            from rich.panel import Panel
+            from rich.console import Console
+            from rich.prompt import Prompt
+            console = Console()
+
+            console.print("\n")
+            console.print(Panel("[bold cyan]Dusky Arch Installer Profile Selection[/bold cyan]", box=box.ROUNDED))
+
+            profile_choices = []
+            for i, p in enumerate(profiles, start=1):
+                p_name = p.name
+                p_desc = p.description
+                is_offline = "offline" in p_name.lower() or (p.filepath and "offline" in p.filepath.name.lower())
+
+                if is_offline and not repo_valid:
+                    status_str = f"[bold red][CORRUPTED - UNAVAILABLE][/bold red]"
+                    available = False
+                elif is_offline:
+                    status_str = "[bold green][VERIFIED CLEAN][/bold green]"
+                    available = True
+                else:
+                    status_str = "[bold green][AVAILABLE][/bold green]"
+                    available = True
+
+                console.print(f"  [bold yellow]{i}.[/bold yellow] [bold white]{p_name}[/bold white] — [dim]{p_desc}[/dim] {status_str}")
+                profile_choices.append((p, available))
+
+            if not repo_valid:
+                console.print(Panel(f"[bold red]OFFLINE REPO CORRUPTION DETECTED:[/bold red]\n{repo_reason}\n"
+                                    "[yellow]Offline installation disabled. Please select Online Profile or re-copy ISO cleanly.[/yellow]", box=box.ROUNDED))
+
+            default_idx = "2" if (not repo_valid and len(profiles) >= 2) else "1"
+            while True:
+                choice = Prompt.ask("\nSelect Profile Number", choices=[str(i) for i in range(1, len(profiles) + 1)], default=default_idx)
+                idx = int(choice) - 1
+                p, avail = profile_choices[idx]
+                if not avail:
+                    console.print(f"[red]Profile '{p.name}' is unavailable because the offline repository is corrupted. Please choose another option.[/red]")
+                    continue
                 selected_profile = p
                 break
-        if not selected_profile and profiles:
-            selected_profile = profiles[0]
 
     if not selected_profile:
         sys.stderr.write(f"Error: No valid installer profile found in '{PROFILES_DIR}'. Installation aborted.\n")
