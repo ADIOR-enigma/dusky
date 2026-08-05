@@ -12,7 +12,7 @@ scripts = [
     "U | 040_disk_mount.py --auto",
     "U | 045_repo_bind_mount.py",
     # "U | 050_mirrorlist.sh",
-    "U | 051_pacman_repo_switch.sh --offline",
+    "U | 051_pacman_repo_switch.py --offline",
     "U | 060_console_fix.sh",
     "U | 070_pacstrap_and_disable_mkinitcpio.py --auto",
     "U | 080_script_directories_population_in_chroot.sh",
@@ -21,7 +21,7 @@ scripts = [
 
 [phase2]
 scripts = [
-    "U | 051_pacman_repo_switch.sh --offline",
+    "U | 051_pacman_repo_switch.py --offline",
     "U | 100_etc_skel.sh --auto",
     "U | 101_skel_files_precision_edit.sh --inject",
     "U | 103_configure_hyprland_gpu.py --auto",
@@ -37,5 +37,5 @@ scripts = [
     "U | 160_zram_config.sh",
     "U | 165_deploy_dusky_run.py",
     "U | 170_services.sh",
-    "U | 051_pacman_repo_switch.sh --online"
+    "U | 051_pacman_repo_switch.py --online"
 ]

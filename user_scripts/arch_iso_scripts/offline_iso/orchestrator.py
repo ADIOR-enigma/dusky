@@ -42,6 +42,7 @@ from contextlib import suppress, contextmanager, nullcontext
 try:
     from rich.console import Console
     from rich.text import Text
+    from rich import box
 
     from textual.app import App, ComposeResult
     from textual.containers import Container, Horizontal, Vertical
