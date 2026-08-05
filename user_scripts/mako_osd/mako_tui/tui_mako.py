@@ -590,6 +590,24 @@ SCHEMA = {
         ConfigItem(label="Text", key="text-color", scope='app-name="Dusky Updater"', type_="color", default="{{colors.on_surface.default.hex}}ff", options=COLOR_OPTIONS, hints=COLOR_HINTS, parent_ref="menu_updater", extended_help="**Completion Typography**\n\nText color inside the completion pill." + ALPHA_HELP),
         ConfigItem(label="Border", key="border-color", scope='app-name="Dusky Updater"', type_="color", default="{{colors.outline.default.hex}}66", options=COLOR_OPTIONS, hints=COLOR_HINTS, parent_ref="menu_updater", extended_help="**Completion Border Color**\n\nStroke color around the completion pill." + ALPHA_HELP),
 
+        ConfigItem(
+            label="Recorder", key="menu_recorder", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Apps",
+            extended_help="**Dusky Recorder Status Overlay**\n\nControls the popup notification when starting/stopping screen recording or saving replay buffer. Targets notifications pushed with `app-name=dusky-recorder-status`."
+        ),
+        ConfigItem(label="Anchor", key="anchor", scope="app-name=dusky-recorder-status", type_="cycle", default="bottom-center", options=["top-right", "top-center", "top-left", "bottom-right", "bottom-center", "bottom-left", "center-right", "center-left", "center"], parent_ref="menu_recorder", extended_help="**Recorder Anchor**\n\nWhere the recorder status notification anchors on screen."),
+        ConfigItem(label="Layer", key="layer", scope="app-name=dusky-recorder-status", type_="cycle", default="overlay", options=["background", "bottom", "top", "overlay"], parent_ref="menu_recorder", extended_help="**Recorder Layer**\n\nArranges the notification at a specific Wayland surface layer."),
+        ConfigItem(label="Width", key="width", scope="app-name=dusky-recorder-status", type_="int", default=220, min_val=50, max_val=800, step=5, parent_ref="menu_recorder", extended_help="**Recorder Box Width**\n\nTotal width allocated for the recorder status notification pill."),
+        ConfigItem(label="Height", key="height", scope="app-name=dusky-recorder-status", type_="int", default=46, min_val=10, max_val=200, step=2, parent_ref="menu_recorder", extended_help="**Recorder Box Height**\n\nTotal height allocated for the recorder status notification pill."),
+        ConfigItem(label="Margin", key="margin", scope="app-name=dusky-recorder-status", type_="string", default="0,0,30,0", parent_ref="menu_recorder", extended_help="**Recorder Margin**\n\nSpacing pushing the notification away from screen boundaries."),
+        ConfigItem(label="Padding", key="padding", scope="app-name=dusky-recorder-status", type_="string", default="6,14", parent_ref="menu_recorder", extended_help="**Recorder Internal Padding**\n\nInternal spacing separating text/icons from borders."),
+        ConfigItem(label="Radius", key="border-radius", scope="app-name=dusky-recorder-status", type_="int", default=20, min_val=0, max_val=50, step=1, parent_ref="menu_recorder", extended_help="**Recorder Corner Smoothing**\n\nApplies rounded arcs to the notification pill."),
+        ConfigItem(label="Size", key="border-size", scope="app-name=dusky-recorder-status", type_="int", default=2, min_val=0, max_val=10, step=1, parent_ref="menu_recorder", extended_help="**Recorder Border Stroke**\n\nThickness of the outer border ring."),
+        ConfigItem(label="Icons", key="icons", scope="app-name=dusky-recorder-status", type_="bool", default=True, parent_ref="menu_recorder", extended_help="**Recorder Icon Toggle**\n\nEnables display of status icon."),
+        ConfigItem(label="Timeout", key="default-timeout", scope="app-name=dusky-recorder-status", type_="int", default=2200, min_val=0, max_val=10000, step=100, parent_ref="menu_recorder", extended_help="**Recorder Lifespan**\n\nMilliseconds the notification stays visible."),
+        ConfigItem(label="Background", key="background-color", scope="app-name=dusky-recorder-status", type_="color", default="{{colors.surface.default.hex}}cc", options=COLOR_OPTIONS, hints=COLOR_HINTS, parent_ref="menu_recorder", extended_help="**Recorder Fill Color**" + ALPHA_HELP),
+        ConfigItem(label="Text", key="text-color", scope="app-name=dusky-recorder-status", type_="color", default="{{colors.on_surface.default.hex}}", options=COLOR_OPTIONS, hints=COLOR_HINTS, parent_ref="menu_recorder", extended_help="**Recorder Text Color**" + ALPHA_HELP),
+        ConfigItem(label="Border", key="border-color", scope="app-name=dusky-recorder-status", type_="color", default="{{colors.primary.default.hex}}66", options=COLOR_OPTIONS, hints=COLOR_HINTS, parent_ref="menu_recorder", extended_help="**Recorder Border Color**" + ALPHA_HELP),
+
         # =====================================================================
         # GROUP: OSD (On-Screen Display for Volume/Brightness)
         # =====================================================================

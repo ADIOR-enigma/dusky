@@ -164,7 +164,7 @@ stop_recording() {
             for pid in $pids; do
                 kill -SIGINT "$pid"
             done
-            notify-send -u normal -i media-playback-stop 'Dusky Recorder' '  Recording stopped'
+            notify-send -a "dusky-recorder-status" -u normal -i media-playback-stop 'Dusky Recorder' '  Recording stopped'
             manage_indicator "stop"
         fi
     fi
@@ -177,7 +177,7 @@ save_replay() {
             for pid in $pids; do
                 kill -SIGUSR1 "$pid"
             done
-            notify-send -u normal -i media-record 'Dusky Replay' '  Replay buffer saved'
+            notify-send -a "dusky-recorder-status" -u normal -i media-record 'Dusky Replay' '  Replay buffer saved'
         fi
     fi
 }
@@ -189,7 +189,7 @@ start_recording() {
     if [[ "$target_mode" == "region" ]]; then
         sleep 0.5 
         if ! region_coords=$(slurp -f "%wx%h+%x+%y" 2>/dev/null); then
-            notify-send -u critical 'Dusky Recorder Error' 'Region selection cancelled'
+            notify-send -a "dusky-recorder-status" -u critical 'Dusky Recorder Error' 'Region selection cancelled'
             exit 1
         fi
         [[ -z "$region_coords" ]] && exit 1
@@ -247,13 +247,13 @@ start_recording() {
 
     sleep 0.5
     if ! kill -0 "$new_pid" 2>/dev/null; then
-        notify-send -u critical 'Dusky Recorder Error' "Failed to start. Check /tmp/gsr.log"
+        notify-send -a "dusky-recorder-status" -u critical 'Dusky Recorder Error' "Failed to start. Check /tmp/gsr.log"
         exit 1
     else
         if [[ -n "$replay_buffer" && "$replay_buffer" -gt 0 ]]; then
-            notify-send -u normal -i media-record 'Dusky Recorder' '  Replay daemon started'
+            notify-send -a "dusky-recorder-status" -u normal -i media-record 'Dusky Recorder' '  Replay daemon started'
         else
-            notify-send -u normal -i media-record 'Dusky Recorder' '  Recording started'
+            notify-send -a "dusky-recorder-status" -u normal -i media-record 'Dusky Recorder' '  Recording started'
         fi
         manage_indicator "start"
     fi
