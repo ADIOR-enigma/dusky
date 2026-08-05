@@ -158,6 +158,7 @@ def unmount_mount_tree():
             if Path(n).name=="swapfile" and (n in ("/mnt/swap/swapfile","/swap/swapfile") or n.startswith("/mnt/")):
                 run("swapoff",n, check=False, capture=True)
         safe_deactivate_swaps()
+        run("swapoff", "-a", check=False, capture=True)
     except:
         pass
     mnts = findmnt_json("/mnt")
@@ -168,15 +169,36 @@ def unmount_mount_tree():
             targets.append(t)
     for mp in sorted(set(targets), key=lambda p:(p.count("/"),len(p)), reverse=True):
         try:
-            run("umount","-R",mp, check=False, capture=True)
+            if run("umount","-R",mp, check=False, capture=True).returncode != 0:
+                run("umount", "-R", "-f", "-l", mp, check=False, capture=True)
         except:
             pass
     try:
         r = run("findmnt","-rn","-o","TARGET", check=False, capture=True)
         remaining = [l.strip() for l in r.stdout.splitlines() if l.strip().startswith("/mnt")]
-        for mp in sorted(remaining, key=lambda p:p.count("/"), reverse=True):
-            run("umount",mp, check=False, capture=True)
+        for mp in sorted(remaining, key=lambda p:(p.count("/"),len(p)), reverse=True):
+            if run("umount",mp, check=False, capture=True).returncode != 0:
+                run("umount", "-f", "-l", mp, check=False, capture=True)
     except:
+        pass
+
+    # Purge systemd 261 slave mount namespaces holding /mnt
+    try:
+        for proc_dir in Path("/proc").glob("[0-9]*"):
+            try:
+                mi = proc_dir / "mountinfo"
+                if mi.is_file():
+                    text = mi.read_text(errors="ignore")
+                    if "/mnt" in text:
+                        for line in text.splitlines():
+                            if "/mnt" in line:
+                                parts = line.split()
+                                if len(parts) >= 5:
+                                    target_mp = parts[4]
+                                    run("nsenter", f"--mount=/proc/{proc_dir.name}/ns/mnt", "umount", "-R", "-f", "-l", target_mp, check=False, capture=True)
+            except Exception:
+                pass
+    except Exception:
         pass
 
 def is_empty_dir(p: Path):
@@ -488,6 +510,7 @@ def assemble_fhs(mapped_root,efi_part):
     for mp in ["home",".snapshots","var/log","var/cache","var/tmp","var/lib/machines","var/lib/portables","var/lib/libvirt","var/lib/mysql","var/lib/postgres","swap","boot"]:
         Path(f"/mnt/{mp}").mkdir(parents=True,exist_ok=True)
         
+    swap_opts = BTRFS_OPTS.replace("compress=zstd:3", "compress=no")
     mounts=[
         (f"{BTRFS_OPTS},subvol=@home","/mnt/home"),
         (f"{BTRFS_OPTS},subvol=@snapshots","/mnt/.snapshots"),
@@ -499,7 +522,7 @@ def assemble_fhs(mapped_root,efi_part):
         (f"{BTRFS_OPTS},subvol=@var_lib_libvirt","/mnt/var/lib/libvirt"),
         (f"{BTRFS_OPTS},subvol=@var_lib_mysql","/mnt/var/lib/mysql"),
         (f"{BTRFS_OPTS},subvol=@var_lib_postgres","/mnt/var/lib/postgres"),
-        (f"{BTRFS_OPTS},subvol=@swap","/mnt/swap"),
+        (f"{swap_opts},subvol=@swap","/mnt/swap"),
     ]
     for opts,tgt in mounts:
         run("mount","-o",opts,str(mapped_root),tgt,capture=True)
@@ -513,12 +536,13 @@ def assemble_fhs(mapped_root,efi_part):
         run("mount","-t","vfat","-o","fmask=0177,dmask=0077,noexec,nosuid,nodev",str(efi_part),"/mnt/boot",capture=True)
         sync_secondary_efi_bootloaders("/mnt/boot")
 
-    try:
-        chroot_etc = Path("/mnt/etc")
-        chroot_etc.mkdir(parents=True, exist_ok=True)
-        (chroot_etc / "dusky_state.json").write_text(STATE_JSON.read_text())
-    except Exception:
-        pass
+    if STATE_JSON.exists():
+        try:
+            chroot_etc = Path("/mnt/etc")
+            chroot_etc.mkdir(parents=True, exist_ok=True)
+            (chroot_etc / "dusky_state.json").write_text(STATE_JSON.read_text(errors="ignore"))
+        except Exception:
+            pass
 
 def sync_secondary_efi_bootloaders(primary_esp_mnt: str = "/mnt/boot"):
     if BOOT_MODE != "UEFI":
@@ -609,7 +633,9 @@ def initialize_swapfile():
             pass
         try:
             SWAPFILE_PATH.unlink()
-        except:
+            run("sync", check=False, capture=True)
+            run("udevadm", "settle", "--timeout=5", check=False, capture=True)
+        except Exception:
             pass
     run("btrfs","filesystem","mkswapfile","--size","4G","--uuid","clear",str(SWAPFILE_PATH),capture=True)
     run("swapon",str(SWAPFILE_PATH),capture=True)
