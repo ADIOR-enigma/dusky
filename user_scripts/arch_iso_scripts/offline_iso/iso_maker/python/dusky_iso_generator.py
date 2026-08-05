@@ -2169,7 +2169,7 @@ def configure_live_hooks(cfg: ISOConfig) -> None:
         "  systemctl is-system-running >/dev/null 2>&1 || true\n"
         "  chmod -R +x /root/arch_install/ 2>/dev/null || true\n"
         "  clear\n"
-        "  cd /root/arch_install/ 2>/dev/null && ./000_dusky_arch_install.sh || true\n"
+        "  cd /root/arch_install/ 2>/dev/null && ./000_dusky_arch_install.sh --auto || true\n"
         "fi\n",
         encoding="utf-8",
     )

@@ -1107,6 +1107,7 @@ def parse_args():
     parser.add_argument("--force", action="store_true", help="Pass --force flag to subscripts")
     parser.add_argument("--manual", "-m", action="store_true", help="Manual mode: prompt before each script")
     parser.add_argument("--stop-on-fail", action="store_true", help="Halt execution if any script fails")
+    parser.add_argument("--auto", action="store_true", help="Non-interactive automatic mode")
     parser.add_argument("--profile", type=str, help="Specify profile TOML to execute")
     parser.add_argument("--list-profiles", action="store_true", help="List all available installer profiles and exit")
     parser.add_argument("--list-scripts", action="store_true", help="List all tasks in the selected profile and exit")
