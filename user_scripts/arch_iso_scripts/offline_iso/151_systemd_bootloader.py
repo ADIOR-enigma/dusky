@@ -314,6 +314,14 @@ def install_systemd_boot_uefi(primary_opts: str, fallback_opts: str):
     except Exception as e:
         console.print(f"[yellow]NVRAM sanity check warning: {e}[/yellow]")
 
+    # Ensure removable media EFI fallback exists for strict/legacy laptop EFI firmware (InsydeH2O)
+    fallback_efi = ESP_MNT / "EFI" / "BOOT" / "BOOTX64.EFI"
+    systemd_efi = ESP_MNT / "EFI" / "systemd" / "systemd-bootx64.efi"
+    if systemd_efi.is_file() and not fallback_efi.is_file():
+        fallback_efi.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(systemd_efi, fallback_efi)
+        console.print(f"[green]Copied removable fallback EFI: {fallback_efi}[/green]")
+
     console.print("[green]systemd-boot deployed, random-seed auto-handled since systemd 257+[/green]")
 
     LOADER_CONF.parent.mkdir(parents=True, exist_ok=True)
