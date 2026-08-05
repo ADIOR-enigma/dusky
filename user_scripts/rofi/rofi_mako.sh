@@ -10,16 +10,40 @@ HISTORY=$(makoctl history -j 2>/dev/null || echo "[]")
 BLACKLIST_FILE="${XDG_RUNTIME_DIR:-/tmp}/mako_rofi_blacklist"
 BLACKLIST_RAW=$(cat "$BLACKLIST_FILE" 2>/dev/null || echo "")
 
+IGNORED_APPS_TOML="${HOME}/user_scripts/dusky_system/quickpanal/ignored_apps.toml"
+
+IGNORED_JSON=$(python3 -c '
+import tomllib, json, sys, os
+from pathlib import Path
+
+p = Path(os.path.expanduser(sys.argv[1]))
+if p.is_file():
+    try:
+        with open(p, "rb") as f:
+            d = tomllib.load(f)
+            apps = d.get("ignored", {}).get("apps", [])
+            print(json.dumps(apps))
+            sys.exit(0)
+    except Exception:
+        pass
+print("[]")
+' "$IGNORED_APPS_TOML" 2>/dev/null)
+
+[[ -z "$IGNORED_JSON" ]] && IGNORED_JSON="[]"
+
 # 1. Parse JSON: Tag sources, sanitize Pango, and format for Rofi
 MENU_PAYLOAD=$(jq -r -n \
   --argjson active "$ACTIVE" \
   --argjson history "$HISTORY" \
+  --argjson ignored "$IGNORED_JSON" \
   --arg bl "$BLACKLIST_RAW" '
   
   # SAFELY define all the apps and modules we want to ignore
-  def is_ignored:
-    . == "OSD" or . == "dusky-recorder" or . ==  "dusky-keys" or . == "dusky-cava" or . == "dusky-cava-alert" or 
-    (type == "string" and startswith("dusky-glance")) or . == "dusky-tlp" or . == "dusky-high-ram-alert" or . == "Spotify" or . == "matugen-theme" or . == "dusky-fav-wal";
+  def is_ignored($list):
+    . as $app |
+    if $app == null then false
+    else ($list | any(. == $app or (endswith("*") and ($app | startswith(.[0:-1])))))
+    end;
 
   def escape_pango: 
       if type == "string" then 
@@ -58,7 +82,7 @@ MENU_PAYLOAD=$(jq -r -n \
   | select(.summary != null and .summary != "") 
   
   # Apply the ignore filter securely
-  | select(.app_name | is_ignored | not)
+  | select(.app_name | is_ignored($ignored) | not)
   
   # Filter out blacklisted IDs
   | select((.id | tostring) as $id_str | $blacklisted_ids | index($id_str) | not)

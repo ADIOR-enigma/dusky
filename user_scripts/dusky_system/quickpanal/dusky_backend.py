@@ -7,6 +7,7 @@ hardware interfaces, and notification DBUS states.
 
 from __future__ import annotations
 
+from datetime import datetime
 import contextvars
 import ctypes
 import gc
@@ -22,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import tomllib
 import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
@@ -406,15 +408,46 @@ class NotificationData:
     source: str
     desktop_entry: str
 
+NOTIF_CACHE_FILE: Final = Path(os.environ.get("XDG_RUNTIME_DIR", tempfile.gettempdir())) / "dusky_notif_times.json"
+MAKO_BLACKLIST_FILE: Final = Path(os.environ.get("XDG_RUNTIME_DIR", tempfile.gettempdir())) / "mako_rofi_blacklist"
+IGNORED_APPS_FILE: Final = Path(HOME) / "user_scripts" / "dusky_system" / "quickpanal" / "ignored_apps.toml"
+
+def load_ignored_apps() -> set[str]:
+    """Load ignored app names/patterns exclusively from ~/user_scripts/dusky_system/quickpanal/ignored_apps.toml."""
+    target = IGNORED_APPS_FILE
+    if target.is_file():
+        try:
+            with open(target, "rb") as f:
+                data = tomllib.load(f)
+                if isinstance(data, dict) and "ignored" in data:
+                    apps = data["ignored"].get("apps", [])
+                    if isinstance(apps, list):
+                        return {str(a) for a in apps if a}
+        except Exception as e:
+            LOG.error(f"Failed loading {target}: {e}")
+    return set()
+
+def is_app_ignored(app_name: str, ignored_set: set[str]) -> bool:
+    """Check if app name matches ignored set (supporting wildcard suffix *)."""
+    if not app_name: return False
+    if app_name in ignored_set: return True
+    for item in ignored_set:
+        if item.endswith("*") and app_name.startswith(item[:-1]):
+            return True
+    return False
+
+# Loaded ONCE at process startup for maximum efficiency (0 disk I/O during fetch loops)
+IGNORED_APPS_SET: Final[set[str]] = load_ignored_apps()
+
 def fetch_notifications() -> list[NotificationData]:
     """Fetch and merge active and history buffers from Mako, respecting blacklists."""
-    bl_path = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "mako_rofi_blacklist"
+    bl_path = MAKO_BLACKLIST_FILE
     blacklist = set()
     if bl_path.is_file():
         try: blacklist = set(bl_path.read_text(encoding="utf-8").splitlines())
         except OSError: pass
 
-    ignored_apps = {"OSD", "dusky-keys", "dusky-cava", "dusky-cava-alert", "dusky-recorder", "dusky-tlp", "dusky-high-ram-alert", "Spotify", "matugen-theme", "dusky-fav-wal"}
+    ignored_apps = IGNORED_APPS_SET
 
     def _fetch_mako_json(cmd: list[str]) -> list[dict]:
         r = run_command(cmd, timeout=1.0, capture_stdout=True)
@@ -441,7 +474,7 @@ def fetch_notifications() -> list[NotificationData]:
                 nid = int(item.get("id", -1))
                 if nid < 0 or str(nid) in blacklist: continue
                 app = item.get("app-name", item.get("app_name", ""))
-                if app in ignored_apps or app.startswith("dusky-glance"): continue
+                if is_app_ignored(app, ignored_apps): continue
                 summary = item.get("summary", "")
                 if not summary: continue
                 
@@ -458,7 +491,82 @@ def fetch_notifications() -> list[NotificationData]:
     return sorted(combined.values(), key=lambda x: x.id, reverse=True)
 
 
-# ==============================================================================
+def atomic_write_json(path: Path, data: Any) -> None:
+    """Safely write JSON data using atomic file replacement to prevent race conditions."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_suffix(".tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        os.replace(tmp_path, path)
+    except Exception as e:
+        LOG.error(f"Failed atomic json write to {path}: {e}")
+
+
+class NotificationTimeTracker:
+    """Continuous background daemon thread that tracks exact system arrival time for notifications."""
+    def __init__(self, interval_seconds: float = 2.0):
+        self.interval = interval_seconds
+        self._running = False
+        self._thread: threading.Thread | None = None
+        self._cache_file = NOTIF_CACHE_FILE
+
+    def start(self) -> None:
+        if self._running: return
+        self._running = True
+        self._thread = threading.Thread(target=self._run_loop, name="notif-time-tracker", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._running = False
+
+    def _run_loop(self) -> None:
+        while self._running:
+            try:
+                self.sync_timestamps()
+            except Exception:
+                pass
+            time.sleep(self.interval)
+
+    def sync_timestamps(self) -> None:
+        notifs = fetch_notifications()
+        if not notifs: return
+
+        cached: dict[str, str] = {}
+        if self._cache_file.is_file():
+            try:
+                with open(self._cache_file, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+                    if isinstance(raw, dict):
+                        for k, v in raw.items():
+                            try:
+                                dt = datetime.strptime(str(v), "%H:%M")
+                                cached[str(k)] = dt.strftime("%I:%M %p").lstrip("0")
+                            except ValueError:
+                                cached[str(k)] = str(v)
+            except Exception:
+                pass
+
+        now_str = datetime.now().strftime("%I:%M %p").lstrip("0")
+        changed = False
+
+        for n in notifs:
+            str_id = str(n.id)
+            if str_id not in cached:
+                cached[str_id] = now_str
+                changed = True
+
+        if len(cached) > 1000:
+            excess = len(cached) - 1000
+            for k in list(cached.keys())[:excess]:
+                del cached[k]
+            changed = True
+
+        if changed:
+            atomic_write_json(self._cache_file, cached)
+
+NOTIF_TRACKER: Final = NotificationTimeTracker()
+
 # HARDWARE CONTROL
 # ==============================================================================
 def get_volume() -> float | None:

@@ -21,7 +21,8 @@ from gi.repository import Gdk, Gio, GLib, Gtk, Pango
 
 from dusky_backend import (
     HOME, LOG, execute_cmd, run_command, snap_to_step, 
-    fetch_notifications, NotificationData, RefreshPool
+    fetch_notifications, NotificationData, RefreshPool,
+    NOTIF_CACHE_FILE, MAKO_BLACKLIST_FILE, atomic_write_json
 )
 
 def _add_css_class(widget: Gtk.Widget, cls: str) -> None:
@@ -420,19 +421,28 @@ class NotificationsPanel(Gtk.Box):
 
     def _render_notifs_list(self, notifs: list[NotificationData]):
         import datetime, json, os
-        cache_file = "/tmp/dusky_notif_times.json"
+        cache_file = NOTIF_CACHE_FILE
         
+        changed = False
         if not hasattr(self, "_notif_times_loaded"):
             self._notif_times_loaded = True
-            if os.path.exists(cache_file):
+            if cache_file.is_file():
                 try:
                     with open(cache_file, "r") as f:
-                        self.notif_times = json.load(f)
+                        cached = json.load(f)
+                        converted = {}
+                        for k, v in cached.items():
+                            try:
+                                dt = datetime.datetime.strptime(v, "%H:%M")
+                                converted[k] = dt.strftime("%I:%M %p").lstrip("0")
+                                changed = True
+                            except ValueError:
+                                converted[k] = v
+                        self.notif_times = converted
                 except Exception:
                     pass
 
-        now_str = datetime.datetime.now().strftime("%H:%M")
-        changed = False
+        now_str = datetime.datetime.now().strftime("%I:%M %p").lstrip("0")
         
         for n in notifs:
             str_id = str(n.id)
@@ -449,11 +459,7 @@ class NotificationsPanel(Gtk.Box):
             changed = True
             
         if changed:
-            try:
-                with open(cache_file, "w") as f:
-                    json.dump(self.notif_times, f)
-            except Exception:
-                pass
+            atomic_write_json(cache_file, self.notif_times)
                 
         groups = {}
         for n in notifs[:50]:
@@ -555,7 +561,7 @@ class NotificationsPanel(Gtk.Box):
     def _on_row_closed(self, row: NotificationRow):
         """Triggered explicitly by the 'X' button. Safely dismisses and blacklists without launching."""
         n = row.notif
-        bl_path = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "mako_rofi_blacklist"
+        bl_path = MAKO_BLACKLIST_FILE
         try:
             with open(bl_path, "a") as f: f.write(f"{n.id}\n")
         except Exception: pass
@@ -572,7 +578,7 @@ class NotificationsPanel(Gtk.Box):
 
     def _on_stack_closed(self, app_name: str):
         """Triggered by the 'X' button on a stack header. Dismisses all notifications in the group."""
-        bl_path = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "mako_rofi_blacklist"
+        bl_path = MAKO_BLACKLIST_FILE
         for child in self.listbox.get_children():
             if isinstance(child, NotificationRow):
                 n = child.notif
@@ -604,7 +610,7 @@ class NotificationsPanel(Gtk.Box):
         if not isinstance(row, NotificationRow): return
         n = row.notif
 
-        bl_path = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "mako_rofi_blacklist"
+        bl_path = MAKO_BLACKLIST_FILE
         try:
             with open(bl_path, "a") as f: f.write(f"{n.id}\n")
         except Exception: pass
@@ -632,7 +638,7 @@ class NotificationsPanel(Gtk.Box):
         GLib.timeout_add(150, lambda: (self.refresh_async(), GLib.SOURCE_REMOVE)[1])
 
     def _on_clear_all(self, _btn):
-        bl_path = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "mako_rofi_blacklist"
+        bl_path = MAKO_BLACKLIST_FILE
         try: bl_path.unlink(missing_ok=True)
         except OSError: pass
         

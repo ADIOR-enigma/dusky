@@ -47,7 +47,8 @@ from dusky_backend import (
     HAS_VOLUME, HAS_BRIGHTNESS, HAS_LOCAL_BRIGHTNESS, HAS_SUNSET, DDC_MANAGER,
     get_volume, apply_volume, get_brightness, apply_local_brightness, 
     get_hyprsunset_state, _RE_MAKO_BADGE, _RE_UPDATES_TOTAL,
-    BRIGHTNESS_POST_SUBMIT_REFRESH_GRACE_SECONDS, SUNSET_STATE_WRITE_DEBOUNCE_SECONDS
+    BRIGHTNESS_POST_SUBMIT_REFRESH_GRACE_SECONDS, SUNSET_STATE_WRITE_DEBOUNCE_SECONDS,
+    NOTIF_TRACKER
 )
 
 from dusky_ui import (
@@ -738,7 +739,8 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
             target_x = int(mon_x + mon_w - win_w - 20)
             target_y = int(mon_y + mon_h - win_h - 20)
 
-            run_command(["hyprctl", "dispatch", f"hl.dsp.window.move({{ window = \"class:dusky_quickpanal.py\", x = {target_x}, y = {target_y} }})"],
+            win_target = f"address:{win['address']}" if win.get("address") else "class:dusky_quickpanal.py"
+            run_command(["hyprctl", "dispatch", f"hl.dsp.window.move({{ window = \"{win_target}\", x = {target_x}, y = {target_y} }})"],
                         timeout=1.0, capture_stdout=True)
         except Exception:
             pass
@@ -799,6 +801,7 @@ class QuickPanalApp(Gtk.Application):
         config_data = load_or_create_config()
 
         if DDC_MANAGER: DDC_MANAGER.start()
+        if NOTIF_TRACKER: NOTIF_TRACKER.start()
 
         self.pool = RefreshPool(max_workers=4)
         self._volume_worker = LatestValueWorker("volume", apply_volume) if HAS_VOLUME else None
