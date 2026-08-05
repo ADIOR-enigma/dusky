@@ -1232,9 +1232,17 @@ class DuskyOrchestratorApp(App):
     ENABLE_COMMAND_PALETTE = False
 
     CSS = """
-    Screen {
+    Screen, RichLog, Vertical, Horizontal, ScrollBar {
         background: #0d1117;
         color: #c9d1d9;
+        scrollbar-color: #58a6ff80;
+        scrollbar-color-hover: #58a6ff;
+        scrollbar-color-active: #58a6ff;
+        scrollbar-background: transparent;
+        scrollbar-background-hover: transparent;
+        scrollbar-background-active: transparent;
+    }
+    Screen {
         layout: vertical;
     }
     #top_header {
@@ -1260,6 +1268,9 @@ class DuskyOrchestratorApp(App):
         margin: 0 1;
         width: 100%;
     }
+    ProgressBar > .progress--bar {
+        color: #58a6ff;
+    }
     #main_content {
         layout: horizontal;
         height: 1fr;
@@ -1272,11 +1283,14 @@ class DuskyOrchestratorApp(App):
         overflow-y: auto;
         background: #0d1117;
     }
+    #left_pane:focus {
+        background-tint: transparent 0%;
+    }
     #right_pane {
         width: 62%;
         height: 100%;
         padding: 0 1;
-        background: #161b22;
+        background: #0d1117;
     }
     .task_row {
         layout: horizontal;
@@ -1284,14 +1298,16 @@ class DuskyOrchestratorApp(App):
     }
     .task_icon { width: 3; text-align: center; }
     .task_mode { width: 5; text-align: center; color: #d29922; }
+    .task_mode_sudo { width: 5; text-align: center; color: #f85149; text-style: bold; }
+    .task_mode_user { width: 5; text-align: center; color: #3fb950; text-style: bold; }
     .task_name { width: 1fr; color: #c9d1d9; }
     
     RichLog {
         height: 100%;
         border: none;
-        background: #161b22;
+        background: #0d1117;
         color: #c9d1d9;
-        scrollbar-gutter: stable;
+        scrollbar-size-vertical: 1;
     }
     #footer {
         dock: bottom;
@@ -1449,11 +1465,29 @@ class DuskyOrchestratorApp(App):
             else:
                 icon = f"[#8b949e]{S('pending')}[/]"
 
-            name = t.script_name[:28]
+            if t.mode == "S":
+                mode_cls = "task_mode_sudo"
+                mode_str = "SUDO"
+            else:
+                mode_cls = "task_mode_user"
+                mode_str = "USER"
+
+            if t.status == TaskStatus.COMPLETED or t.state_key in self.completed_keys:
+                name_style = "bold #3fb950"
+            elif t.status == TaskStatus.RUNNING:
+                name_style = "bold #58a6ff"
+            elif t.status == TaskStatus.FAILED:
+                name_style = "bold #f85149"
+            elif t.status == TaskStatus.SKIPPED:
+                name_style = "dim #d29922"
+            else:
+                name_style = "dim #8b949e"
+
+            name_text = f"[{name_style}]{t.script_name}[/]"
             row = Horizontal(
                 Static(icon, classes="task_icon"),
-                Static(t.mode, classes="task_mode"),
-                Static(name, classes="task_name"),
+                Static(mode_str, classes=mode_cls),
+                Static(name_text, classes="task_name"),
                 classes="task_row",
                 id=f"row_{i}",
             )
@@ -1464,14 +1498,20 @@ class DuskyOrchestratorApp(App):
         try:
             row = self.query_one(f"#row_{idx}")
             icon_w = row.children[0]
+            name_w = row.children[2]
+            t = self.tasks[idx]
             if status == TaskStatus.RUNNING:
                 icon_w.update(f"[bold #58a6ff]{S('running')}[/]")
+                name_w.update(f"[bold #58a6ff]{t.script_name}[/]")
             elif status == TaskStatus.COMPLETED:
                 icon_w.update(f"[bold #3fb950]{S('completed')}[/]")
+                name_w.update(f"[bold #3fb950]{t.script_name}[/]")
             elif status == TaskStatus.FAILED:
                 icon_w.update(f"[bold #f85149]{S('failed')}[/]")
+                name_w.update(f"[bold #f85149]{t.script_name}[/]")
             elif status == TaskStatus.SKIPPED:
                 icon_w.update(f"[bold #d29922]{S('skipped')}[/]")
+                name_w.update(f"[dim #d29922]{t.script_name}[/]")
         except Exception:
             pass
 
