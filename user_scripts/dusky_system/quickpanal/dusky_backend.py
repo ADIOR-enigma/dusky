@@ -116,6 +116,12 @@ def _reclaim_idle_memory() -> None:
         _LIBC.malloc_trim(0)
     except Exception:
         pass
+    try:
+        while True:
+            pid, _ = os.waitpid(-1, os.WNOHANG)
+            if pid <= 0: break
+    except OSError:
+        pass
     if _should_pageout():
         _pageout_idle_pages()
 
@@ -503,69 +509,7 @@ def atomic_write_json(path: Path, data: Any) -> None:
         LOG.error(f"Failed atomic json write to {path}: {e}")
 
 
-class NotificationTimeTracker:
-    """Continuous background daemon thread that tracks exact system arrival time for notifications."""
-    def __init__(self, interval_seconds: float = 2.0):
-        self.interval = interval_seconds
-        self._running = False
-        self._thread: threading.Thread | None = None
-        self._cache_file = NOTIF_CACHE_FILE
 
-    def start(self) -> None:
-        if self._running: return
-        self._running = True
-        self._thread = threading.Thread(target=self._run_loop, name="notif-time-tracker", daemon=True)
-        self._thread.start()
-
-    def stop(self) -> None:
-        self._running = False
-
-    def _run_loop(self) -> None:
-        while self._running:
-            try:
-                self.sync_timestamps()
-            except Exception:
-                pass
-            time.sleep(self.interval)
-
-    def sync_timestamps(self) -> None:
-        notifs = fetch_notifications()
-        if not notifs: return
-
-        cached: dict[str, str] = {}
-        if self._cache_file.is_file():
-            try:
-                with open(self._cache_file, "r", encoding="utf-8") as f:
-                    raw = json.load(f)
-                    if isinstance(raw, dict):
-                        for k, v in raw.items():
-                            try:
-                                dt = datetime.strptime(str(v), "%H:%M")
-                                cached[str(k)] = dt.strftime("%I:%M %p").lstrip("0")
-                            except ValueError:
-                                cached[str(k)] = str(v)
-            except Exception:
-                pass
-
-        now_str = datetime.now().strftime("%I:%M %p").lstrip("0")
-        changed = False
-
-        for n in notifs:
-            str_id = str(n.id)
-            if str_id not in cached:
-                cached[str_id] = now_str
-                changed = True
-
-        if len(cached) > 1000:
-            excess = len(cached) - 1000
-            for k in list(cached.keys())[:excess]:
-                del cached[k]
-            changed = True
-
-        if changed:
-            atomic_write_json(self._cache_file, cached)
-
-NOTIF_TRACKER: Final = NotificationTimeTracker()
 
 # HARDWARE CONTROL
 # ==============================================================================
@@ -952,7 +896,37 @@ def apply_local_brightness(value: float) -> None:
     if (base_cmd := _brightnessctl_command_base()) is None: return
     run_command([*base_cmd, "--quiet", "set", f"{brightness}%"], timeout=CONTROL_TIMEOUT)
 
-def get_hyprsunset_state() -> float:
+_IS_SUNSET_SERVICE_ENABLED: bool | None = None
+_IS_NOTIF_TIME_SERVICE_ENABLED: bool | None = None
+
+def is_dusky_notif_time_service_enabled(force_check: bool = False) -> bool:
+    global _IS_NOTIF_TIME_SERVICE_ENABLED
+    if _IS_NOTIF_TIME_SERVICE_ENABLED is not None and not force_check:
+        return _IS_NOTIF_TIME_SERVICE_ENABLED
+    if SYSTEMCTL is None:
+        _IS_NOTIF_TIME_SERVICE_ENABLED = False
+        return False
+    result = run_command([SYSTEMCTL, "--user", "is-enabled", "dusky_notif_time.service"], timeout=0.5, capture_stdout=True)
+    _IS_NOTIF_TIME_SERVICE_ENABLED = result is not None and result.returncode == 0
+    return _IS_NOTIF_TIME_SERVICE_ENABLED
+
+def is_hyprsunset_service_enabled(force_check: bool = False) -> bool:
+    global _IS_SUNSET_SERVICE_ENABLED
+    if _IS_SUNSET_SERVICE_ENABLED is not None and not force_check:
+        return _IS_SUNSET_SERVICE_ENABLED
+    if SYSTEMCTL is None or HYPRSUNSET is None:
+        _IS_SUNSET_SERVICE_ENABLED = False
+        return False
+    result = run_command([SYSTEMCTL, "--user", "is-enabled", "hyprsunset.service"], timeout=0.5, capture_stdout=True)
+    _IS_SUNSET_SERVICE_ENABLED = result is not None and result.returncode == 0
+    return _IS_SUNSET_SERVICE_ENABLED
+
+def get_hyprsunset_state(controller: HyprsunsetController | None = None) -> float | None:
+    if not is_hyprsunset_service_enabled():
+        return None
+    if controller is not None:
+        if (target := controller.get_target_temperature()) is not None:
+            return float(target)
     if STATE_FILE is None: return DEFAULT_SUNSET
     try: value = parse_float(STATE_FILE.read_text(encoding="utf-8"))
     except OSError: return DEFAULT_SUNSET
@@ -964,17 +938,23 @@ def write_hyprsunset_state(value: float) -> None:
         atomic_write_text(STATE_FILE, f"{kelvin_value(value)}\n", durable=True)
 
 class HyprsunsetController:
-    __slots__ = ("_fallback_process", "_process_lock", "_ready", "_state_writer", "_worker")
+    __slots__ = ("_current_target", "_fallback_process", "_process_lock", "_ready", "_state_writer", "_worker")
 
     def __init__(self) -> None:
+        self._current_target: float | None = None
         self._state_writer = DebouncedValueWriter("sunset-state", write_hyprsunset_state, delay_seconds=SUNSET_STATE_WRITE_DEBOUNCE_SECONDS)
         self._worker = LatestValueWorker("sunset", self._apply)
         self._ready = threading.Event()
         self._process_lock = threading.Lock()
         self._fallback_process: subprocess.Popen[bytes] | None = None
 
+    def get_target_temperature(self) -> float | None:
+        return self._current_target
+
     def submit(self, value: float) -> None:
-        self._worker.submit(float(kelvin_value(value)))
+        target = float(kelvin_value(value))
+        self._current_target = target
+        self._worker.submit(target)
 
     def start(self) -> None:
         self._worker.start()
@@ -996,7 +976,8 @@ class HyprsunsetController:
 
     def _mark_applied(self, target: int) -> None:
         self._ready.set()
-        self._state_writer.schedule(float(target))
+        self._current_target = float(target)
+        write_hyprsunset_state(float(target))
 
     def _wait_until_applied(self, target: int, timeout: float) -> bool:
         deadline = time.monotonic() + timeout

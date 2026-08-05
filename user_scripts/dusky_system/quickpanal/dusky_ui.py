@@ -22,7 +22,8 @@ from gi.repository import Gdk, Gio, GLib, Gtk, Pango
 from dusky_backend import (
     HOME, LOG, execute_cmd, run_command, snap_to_step, 
     fetch_notifications, NotificationData, RefreshPool,
-    NOTIF_CACHE_FILE, MAKO_BLACKLIST_FILE, atomic_write_json
+    NOTIF_CACHE_FILE, MAKO_BLACKLIST_FILE, atomic_write_json,
+    is_dusky_notif_time_service_enabled
 )
 
 def _add_css_class(widget: Gtk.Widget, cls: str) -> None:
@@ -192,12 +193,12 @@ class CompactSliderRow(Gtk.Box):
         if token == self._refresh_token: self._refresh_future = None
         if token != self._refresh_token or user_revision != self._user_revision: return GLib.SOURCE_REMOVE
         if value is None:
-            if not self._has_value:
-                self.scale.set_sensitive(False)
-                self.value_label.set_label("…")
+            self.set_visible(False)
             self._pending_local_value = None
             return GLib.SOURCE_REMOVE
 
+        self.set_visible(True)
+        self.show_all()
         clamped = snap_to_step(value, self.adjustment.get_lower(), self.adjustment.get_upper(), self.adjustment.get_step_increment())
         if self._pending_local_value is not None:
             if math.isclose(clamped, self._pending_local_value, rel_tol=0.0, abs_tol=max(self.adjustment.get_step_increment() * 0.5, 1e-9)):
@@ -421,45 +422,37 @@ class NotificationsPanel(Gtk.Box):
 
     def _render_notifs_list(self, notifs: list[NotificationData]):
         import datetime, json, os
-        cache_file = NOTIF_CACHE_FILE
         
-        changed = False
-        if not hasattr(self, "_notif_times_loaded"):
-            self._notif_times_loaded = True
+        self.notif_times = {}
+        if is_dusky_notif_time_service_enabled():
+            cache_file = NOTIF_CACHE_FILE
             if cache_file.is_file():
                 try:
-                    with open(cache_file, "r") as f:
+                    with open(cache_file, "r", encoding="utf-8") as f:
                         cached = json.load(f)
-                        converted = {}
-                        for k, v in cached.items():
-                            try:
-                                dt = datetime.datetime.strptime(v, "%H:%M")
-                                converted[k] = dt.strftime("%I:%M %p").lstrip("0")
-                                changed = True
-                            except ValueError:
-                                converted[k] = v
-                        self.notif_times = converted
+                        if isinstance(cached, dict):
+                            self.notif_times = {str(k): str(v) for k, v in cached.items()}
                 except Exception:
                     pass
 
-        now_str = datetime.datetime.now().strftime("%I:%M %p").lstrip("0")
-        
-        for n in notifs:
-            str_id = str(n.id)
-            if str_id not in self.notif_times:
-                self.notif_times[str_id] = now_str
+        if is_dusky_notif_time_service_enabled():
+            now_str = datetime.datetime.now().strftime("%I:%M %p").lstrip("0")
+            changed = False
+            for n in notifs:
+                str_id = str(n.id)
+                if str_id not in self.notif_times:
+                    self.notif_times[str_id] = now_str
+                    changed = True
+                    
+            if len(self.notif_times) > 1000:
+                excess = len(self.notif_times) - 1000
+                keys_to_remove = list(self.notif_times.keys())[:excess]
+                for k in keys_to_remove:
+                    del self.notif_times[k]
                 changed = True
                 
-        # Limit cache size to 1000 to prevent indefinite growth while avoiding transient deletion bugs
-        if len(self.notif_times) > 1000:
-            excess = len(self.notif_times) - 1000
-            keys_to_remove = list(self.notif_times.keys())[:excess]
-            for k in keys_to_remove:
-                del self.notif_times[k]
-            changed = True
-            
-        if changed:
-            atomic_write_json(cache_file, self.notif_times)
+            if changed:
+                atomic_write_json(NOTIF_CACHE_FILE, self.notif_times)
                 
         groups = {}
         for n in notifs[:50]:

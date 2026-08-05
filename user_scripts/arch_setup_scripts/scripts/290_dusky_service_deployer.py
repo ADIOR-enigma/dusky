@@ -96,6 +96,7 @@ USER_SERVICES: Final[list[ServiceConfig]] = [
     ServiceConfig("mako.service", True, "Mako notification daemon"),
     # Optional / Disabled by Default:
     ServiceConfig("hyprsunset.service", False, "Hyprland blue-light temperature daemon"),
+    ServiceConfig("dusky_notif_time.service", False, "Dusky Notification Timestamp Tracking Daemon"),
 ]
 
 # AUR User Services (User Session Scope - Executed as User)

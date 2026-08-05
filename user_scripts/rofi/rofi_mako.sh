@@ -31,11 +31,13 @@ print("[]")
 
 [[ -z "$IGNORED_JSON" ]] && IGNORED_JSON="[]"
 
-TIMES_FILE="${XDG_RUNTIME_DIR:-/tmp}/dusky_notif_times.json"
-TIMES_RAW=$(cat "$TIMES_FILE" 2>/dev/null || echo "{}")
-[[ -z "$TIMES_RAW" ]] && TIMES_RAW="{}"
-
-NOW_TIME=$(date +"%I:%M %p" | sed 's/^0//')
+if systemctl --user is-enabled --quiet dusky_notif_time.service 2>/dev/null; then
+    TIMES_FILE="${XDG_RUNTIME_DIR:-/tmp}/dusky_notif_times.json"
+    TIMES_RAW=$(cat "$TIMES_FILE" 2>/dev/null || echo "{}")
+    [[ -z "$TIMES_RAW" ]] && TIMES_RAW="{}"
+else
+    TIMES_RAW="{}"
+fi
 
 # 1. Parse JSON: Tag sources, sanitize Pango, and format for Rofi
 MENU_PAYLOAD=$(jq -r -n \
@@ -43,7 +45,6 @@ MENU_PAYLOAD=$(jq -r -n \
   --argjson history "$HISTORY" \
   --argjson ignored "$IGNORED_JSON" \
   --argjson times "$TIMES_RAW" \
-  --arg now_t "$NOW_TIME" \
   --arg bl "$BLACKLIST_RAW" '
   
   # SAFELY define all the apps and modules we want to ignore
@@ -75,9 +76,9 @@ MENU_PAYLOAD=$(jq -r -n \
         "[\(.app_name | escape_pango)] " 
       end;
 
-  def clean_time($t_dict; $fallback):
-      (($t_dict[.id | tostring]) // $fallback) as $t |
-      " <span alpha=\"50%\" size=\"smaller\">• \($t)</span>";
+  def clean_time($t_dict):
+      ($t_dict[.id | tostring]) as $t |
+      if $t == null or $t == "" then "" else " <span alpha=\"50%\" size=\"smaller\">• \($t)</span>" end;
 
   def clean_body:
       if .body == null or .body == "" then
@@ -107,7 +108,7 @@ MENU_PAYLOAD=$(jq -r -n \
   | select((.id | tostring) as $id_str | $blacklisted_ids | index($id_str) | not)
   
   # Output Format: ID [TAB] APP [TAB] SOURCE [TAB] UI_STRING [RECORD_SEPARATOR]
-  | "\(.id)\t\(.desktop_entry // .app_name // "" | gsub("\t";" "))\t\(.__source)\t<b>\(clean_app)\(.summary | gsub("<[^>]+>"; "") | escape_pango)</b>\(clean_time($times; $now_t))\(clean_body)\u001e"
+  | "\(.id)\t\(.desktop_entry // .app_name // "" | gsub("\t";" "))\t\(.__source)\t<b>\(clean_app)\(.summary | gsub("<[^>]+>"; "") | escape_pango)</b>\(clean_time($times))\(clean_body)\u001e"
 ')
 
 if [[ -z "$MENU_PAYLOAD" ]]; then

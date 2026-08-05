@@ -46,9 +46,8 @@ from dusky_backend import (
     LatestValueWorker, RefreshPool, HyprsunsetController, LOG,
     HAS_VOLUME, HAS_BRIGHTNESS, HAS_LOCAL_BRIGHTNESS, HAS_SUNSET, DDC_MANAGER,
     get_volume, apply_volume, get_brightness, apply_local_brightness, 
-    get_hyprsunset_state, _RE_MAKO_BADGE, _RE_UPDATES_TOTAL,
-    BRIGHTNESS_POST_SUBMIT_REFRESH_GRACE_SECONDS, SUNSET_STATE_WRITE_DEBOUNCE_SECONDS,
-    NOTIF_TRACKER
+    get_hyprsunset_state, is_hyprsunset_service_enabled, _RE_MAKO_BADGE, _RE_UPDATES_TOTAL,
+    BRIGHTNESS_POST_SUBMIT_REFRESH_GRACE_SECONDS, SUNSET_STATE_WRITE_DEBOUNCE_SECONDS
 )
 
 from dusky_ui import (
@@ -145,6 +144,7 @@ def _get_active_monitor_scaled_height() -> float:
 class QuickPanalWindow(Gtk.ApplicationWindow):
     def __init__(self, app: Gtk.Application, pool: RefreshPool, config: dict, volume_submit: Any, brightness_submit: Any, sunset_submit: Any):
         super().__init__(application=app)
+        self.app = app
         self.pool = pool
         self.config = config
         self.layout_cfg = self.config.get("layout", {})
@@ -380,7 +380,9 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
                 self._slider_rows.append(row)
                 self.sliders_box.pack_start(row, False, False, 0)
             if HAS_SUNSET:
-                row = CompactSliderRow("󰡬", "sunset", 1000.0, 6000.0, 50.0, get_hyprsunset_state, sunset_submit, self.pool, post_submit_refresh_grace_seconds=BRIGHTNESS_POST_SUBMIT_REFRESH_GRACE_SECONDS)
+                row = CompactSliderRow("󰡬", "sunset", 1000.0, 6000.0, 50.0, lambda: get_hyprsunset_state(getattr(self.app, "_sunset_controller", None)), sunset_submit, self.pool, post_submit_refresh_grace_seconds=BRIGHTNESS_POST_SUBMIT_REFRESH_GRACE_SECONDS)
+                if not is_hyprsunset_service_enabled():
+                    row.set_visible(False)
                 self._slider_rows.append(row)
                 self.sliders_box.pack_start(row, False, False, 0)
             if self._slider_rows: main_box.pack_start(self.sliders_box, False, False, 0)
@@ -801,7 +803,6 @@ class QuickPanalApp(Gtk.Application):
         config_data = load_or_create_config()
 
         if DDC_MANAGER: DDC_MANAGER.start()
-        if NOTIF_TRACKER: NOTIF_TRACKER.start()
 
         self.pool = RefreshPool(max_workers=4)
         self._volume_worker = LatestValueWorker("volume", apply_volume) if HAS_VOLUME else None
