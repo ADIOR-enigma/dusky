@@ -41,8 +41,16 @@ MENU_PAYLOAD=$(jq -r -n \
   # SAFELY define all the apps and modules we want to ignore
   def is_ignored($list):
     . as $app |
-    if $app == null then false
-    else ($list | any(. == $app or (endswith("*") and ($app | startswith(.[0:-1])))))
+    if $app == null or $app == "" then false
+    else
+      ($list | any(
+        . as $pat |
+        if ($pat | endswith("*")) then
+          ($app | startswith($pat[0:-1]))
+        else
+          ($app == $pat)
+        end
+      ))
     end;
 
   def escape_pango: 
@@ -79,7 +87,7 @@ MENU_PAYLOAD=$(jq -r -n \
   | sort_by(.id) 
   | reverse 
   | .[] 
-  | select(.summary != null and .summary != "") 
+  | select(.summary != null and .summary != "" and .summary != "󰎟 Notifications") 
   
   # Apply the ignore filter securely
   | select(.app_name | is_ignored($ignored) | not)
