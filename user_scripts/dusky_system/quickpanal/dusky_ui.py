@@ -478,6 +478,13 @@ class NotificationsPanel(Gtk.Box):
             else:
                 self.listbox.add(NotificationRow(group_notifs[0], self._on_row_closed, show_app_name=True, time_str=self.notif_times.get(str(group_notifs[0].id), "")))
 
+    def _request_layout_update(self):
+        win = self.get_toplevel()
+        if win and isinstance(win, Gtk.Window):
+            win.resize(320, 1)
+            if hasattr(win, "request_reposition"):
+                win.request_reposition()
+
     def _on_stack_toggled(self, app_name: str, expanded: bool):
         if expanded:
             self.expanded_apps.add(app_name)
@@ -494,6 +501,7 @@ class NotificationsPanel(Gtk.Box):
                     else:
                         child.set_no_show_all(True)
                         child.hide()
+        self._request_layout_update()
 
     def refresh_async(self):
         self._refresh_token += 1
@@ -541,6 +549,7 @@ class NotificationsPanel(Gtk.Box):
             
             self.show_all()
             
+        self._request_layout_update()
         return GLib.SOURCE_REMOVE
 
     def _on_row_closed(self, row: NotificationRow):
@@ -559,6 +568,7 @@ class NotificationsPanel(Gtk.Box):
             self.hide()
         else:
             self.refresh_async()
+        self._request_layout_update()
 
     def _on_stack_closed(self, app_name: str):
         """Triggered by the 'X' button on a stack header. Dismisses all notifications in the group."""
@@ -582,11 +592,13 @@ class NotificationsPanel(Gtk.Box):
             self.hide()
         else:
             self.refresh_async()
+        self._request_layout_update()
 
     def _on_row_activated(self, listbox: Gtk.ListBox, row: Gtk.ListBoxRow):
         """Triggered by clicking the row body. Blacklists and launches app/action."""
         if isinstance(row, NotificationStackHeader):
             row.toggle()
+            self._request_layout_update()
             return
             
         if not isinstance(row, NotificationRow): return
@@ -613,6 +625,7 @@ class NotificationsPanel(Gtk.Box):
             self.hide()
         else:
             self.refresh_async()
+        self._request_layout_update()
 
     def _on_dnd_toggle(self, _btn):
         execute_cmd("makoctl mode | grep -qw 'do-not-disturb' && makoctl mode -r do-not-disturb || makoctl mode -a do-not-disturb")
@@ -631,6 +644,7 @@ class NotificationsPanel(Gtk.Box):
         self.set_no_show_all(True)
         self.hide() # Instantly collapse
         self.refresh_async()
+        self._request_layout_update()
 
 # ==============================================================================
 # CSS THEME (~15% Proportional Reduction on everything)

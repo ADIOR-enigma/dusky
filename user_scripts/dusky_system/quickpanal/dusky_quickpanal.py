@@ -149,6 +149,7 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
         self.layout_cfg = self.config.get("layout", {})
         
         self._timer_id: int | None = None
+        self._reposition_scheduled = False
         self._cpu_last = (0, 0)
         self._updating_power = False
         self._slider_rows: list[CompactSliderRow] = []
@@ -174,6 +175,7 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
         self.connect("map", self._on_map)
         self.connect("unmap", self._on_unmap)
         self.connect("key-press-event", self._on_key_pressed)
+        self.connect("size-allocate", self._on_size_allocate)
 
         self._grab_cb = CB_TYPE(self._on_grab_cleared) if LIBGRAB else None
 
@@ -695,12 +697,32 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
         if event.keyval == Gdk.KEY_Escape: self.hide(); return True
         return False
 
+    def request_reposition(self):
+        if not self.get_visible(): return
+        self.resize(320, 1)
+        if not self._reposition_scheduled:
+            self._reposition_scheduled = True
+            GLib.idle_add(self._do_reposition_idle)
+
+    def _do_reposition_idle(self):
+        self._reposition_scheduled = False
+        self._reposition_to_corner()
+        return GLib.SOURCE_REMOVE
+
+    def _on_size_allocate(self, widget, allocation):
+        if self.get_visible() and not self._reposition_scheduled:
+            self._reposition_scheduled = True
+            GLib.idle_add(self._do_reposition_idle)
+
     def _reposition_to_corner(self):
+        if not self.get_visible(): return
         try:
             r = run_command(["hyprctl", "-j", "monitors"], timeout=1.0, capture_stdout=True)
             if r is None or r.returncode != 0 or not r.stdout: return
             monitors = json.loads(r.stdout)
             mon = next((m for m in monitors if m.get("focused")), monitors[0])
+            mon_x = float(mon.get("x", 0))
+            mon_y = float(mon.get("y", 0))
             scale = float(mon.get("scale", 1.0))
             mon_w = float(mon["width"]) / scale
             mon_h = float(mon["height"]) / scale
@@ -713,10 +735,10 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
             win_w = float(win["size"][0])
             win_h = float(win["size"][1])
 
-            target_x = int(mon_w - win_w - 20)
-            target_y = int(mon_h - win_h - 20)
+            target_x = int(mon_x + mon_w - win_w - 20)
+            target_y = int(mon_y + mon_h - win_h - 20)
 
-            run_command(["hyprctl", "dispatch", f"hl.dsp.window.move({{ x = {target_x}, y = {target_y} }})"],
+            run_command(["hyprctl", "dispatch", f"hl.dsp.window.move({{ window = \"class:dusky_quickpanal.py\", x = {target_x}, y = {target_y} }})"],
                         timeout=1.0, capture_stdout=True)
         except Exception:
             pass
@@ -727,6 +749,7 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
         if self._timer_id is None:
             self._update_ui_state()
             self._timer_id = GLib.timeout_add(2000, self._update_ui_state)
+        self.request_reposition()
         GLib.timeout_add(150, self._reposition_to_corner)
 
     def _on_hide(self, *args):
