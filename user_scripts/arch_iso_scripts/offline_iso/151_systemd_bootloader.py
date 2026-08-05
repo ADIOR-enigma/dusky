@@ -275,9 +275,26 @@ def generate_secondary_linux_bls_entries(esp_mnt: Path):
             conf_path.write_text(content)
             console.print(f"[green]Generated secondary Linux BLS entry: {conf_path}[/green]")
 
+def ensure_udev_bind_mount_in_chroot():
+    run_udev_data = Path("/run/udev/data")
+    if not run_udev_data.exists():
+        return
+    chroot_udev = Path("/run/udev")
+    if not chroot_udev.exists():
+        try:
+            chroot_udev.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            return
+    try:
+        run("mount", "--bind", "/run/udev", "/run/udev", check=False, capture=True)
+        console.print("[green]Bind-mounted /run/udev for bootctl sd-device PARTUUID resolution[/green]")
+    except Exception:
+        pass
+
 def install_systemd_boot_uefi(primary_opts: str, fallback_opts: str):
     console.print(Panel(f"[bold cyan]UEFI Mode - systemd-boot 261 - Type #1 BLS - No ucode lines[/bold cyan]", box=box.ROUNDED))
     ensure_esp()
+    ensure_udev_bind_mount_in_chroot()
 
     win_path = ESP_MNT / "EFI" / "Microsoft" / "Boot" / "bootmgfw.efi"
     if win_path.exists():
