@@ -93,6 +93,8 @@ SYSTEM_SERVICES: list[ServiceConfig] = [
     ServiceConfig("$HOME/user_scripts/performance/cpu/service/dusky_cpu.service", "enable"),
     # Disable NumLock on TTYs on Boot (Default: Disable)
     ServiceConfig("$HOME/user_scripts/hypr/input/service/numlock_disable.service", "disable"),
+    # Clean up modules from old kernels on boot (Default: Enable)
+    ServiceConfig("/usr/lib/systemd/system/linux-modules-cleanup.service", "enable"),
 ]
 
 SYSTEMD_SYSTEM_DIR = Path("/etc/systemd/system")

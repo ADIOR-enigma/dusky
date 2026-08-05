@@ -142,6 +142,10 @@ CORE_SYSTEM_DEFS = {
         "Firewall (UFW)",
         "Uncomplicated Firewall. A user-friendly front-end for iptables to manage network access rules.",
     ),
+    "linux-modules-cleanup.service": (
+        "Old Kernel Modules Cleanup",
+        "Oneshot boot service provided by kernel-modules-hook. Automatically cleans up orphaned kernel module directories in /usr/lib/modules after a kernel update.",
+    ),
 }
 
 import concurrent.futures
