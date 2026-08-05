@@ -91,7 +91,7 @@ CORE_USER_DEFS = {
         "Background daemon that pre-loads Python modules, watches configuration files, and keeps schema AST states warm in memory for instant TUI launches.",
     ),
     "dusky_notif_time.service": (
-        "Notification Timestamp Tracking Daemon",
+        "Notification Timestamp Daemon",
         "Background daemon that tracks exact arrival timestamps for Mako desktop notifications and caches them for QuickPanel and Rofi displays.",
     ),
 }
