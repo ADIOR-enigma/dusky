@@ -300,6 +300,26 @@ if (( IN_CHROOT == 0 )); then
         esac
     done
 
+    # If --profile was not explicitly passed, inspect saved profile from Phase 1
+    has_profile=0
+    for p_arg in "${phase2_args[@]}"; do
+        if [[ "$p_arg" == --profile* ]]; then
+            has_profile=1
+            break
+        fi
+    done
+    if (( has_profile == 0 )); then
+        saved_prof=""
+        if [[ -f "/tmp/dusky_selected_profile.txt" ]]; then
+            saved_prof="$(cat /tmp/dusky_selected_profile.txt 2>/dev/null || true)"
+        elif [[ -f "${CHROOT_MNT}/etc/dusky_selected_profile.txt" ]]; then
+            saved_prof="$(cat "${CHROOT_MNT}/etc/dusky_selected_profile.txt" 2>/dev/null || true)"
+        fi
+        if [[ -n "$saved_prof" ]]; then
+            phase2_args+=(--profile "$saved_prof")
+        fi
+    fi
+
     set +e
     arch-chroot "$CHROOT_MNT" /bin/bash "${TMP_DIR}/${SCRIPT_NAME}" "${phase2_args[@]}"
     chroot_exit=$?

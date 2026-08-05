@@ -1983,6 +1983,26 @@ def main():
 
     repo_valid, repo_reason = verify_offline_repo_fast()
 
+    if not selected_profile and not args.profile:
+        for profile_check in [
+            Path("/etc/dusky_selected_profile.txt"),
+            Path("/root/dusky_selected_profile.txt"),
+            Path("/tmp/dusky_selected_profile.txt"),
+            Path("/mnt/etc/dusky_selected_profile.txt"),
+        ]:
+            if profile_check.is_file():
+                try:
+                    saved_name = profile_check.read_text().strip()
+                    if saved_name:
+                        for p in profiles:
+                            if p.filepath and (p.filepath.name == saved_name or p.name.lower() == saved_name.lower()):
+                                selected_profile = p
+                                break
+                except Exception:
+                    pass
+            if selected_profile:
+                break
+
     if not selected_profile:
         if args.auto or not sys.stdin.isatty():
             if repo_valid:
@@ -2064,6 +2084,17 @@ def main():
     if not selected_profile:
         sys.stderr.write(f"Error: No valid installer profile found in '{PROFILES_DIR}'. Installation aborted.\n")
         sys.exit(1)
+
+    if selected_profile and selected_profile.filepath:
+        try:
+            p_name = selected_profile.filepath.name
+            Path("/tmp/dusky_selected_profile.txt").write_text(p_name)
+            if Path("/mnt/etc").is_dir():
+                (Path("/mnt/etc") / "dusky_selected_profile.txt").write_text(p_name)
+            if Path("/mnt/root").is_dir():
+                (Path("/mnt/root") / "dusky_selected_profile.txt").write_text(p_name)
+        except Exception:
+            pass
 
     profile_name = selected_profile.name
     policy = selected_profile.policy
