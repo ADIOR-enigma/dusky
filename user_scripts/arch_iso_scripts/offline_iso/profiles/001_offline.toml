@@ -10,7 +10,7 @@ scripts = [
     "U | 020_environment_prep.sh --auto",
     "U | interactive | 030_partitioning.py --no-encrypt",
     "U | 040_disk_mount.py --auto",
-    "U | 045_repo_bind_mount.sh",
+    "U | 045_repo_bind_mount.py",
     # "U | 050_mirrorlist.sh",
     "U | 051_pacman_repo_switch.sh --offline",
     "U | 060_console_fix.sh",
