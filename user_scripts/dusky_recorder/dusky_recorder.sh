@@ -82,7 +82,8 @@ run_menu() {
 update_config() {
     local key="$1"
     local value="$2"
-    if grep -q "^${key}=" "$CFG"; then
+    mkdir -p "$(dirname "$CFG")"
+    if grep -q "^${key}=" "$CFG" 2>/dev/null; then
         sed -i "s~^${key}=.*~${key}=${value}~" "$CFG"
     else
         echo "${key}=${value}" >> "$CFG"
@@ -110,6 +111,10 @@ manage_indicator() {
     
     if [[ "$action" == "start" ]]; then
         [[ "$show_indicator" != "yes" ]] && return 0
+        # Prevent duplicate indicator loops by stopping any active indicator process first
+        if [[ -f "$INDICATOR_PID" ]]; then
+            manage_indicator "stop"
+        fi
         (
             local notif_id
             # 1. Capture master ID ONCE. 
@@ -119,6 +124,12 @@ manage_indicator() {
             
             local visible=true
             while true; do
+                # Auto-terminate indicator loop if backend recorder process dies unexpectedly
+                if ! pidof gpu-screen-recorder >/dev/null 2>&1; then
+                    notify-send -a "dusky-recorder" -t 1 -h string:x-canonical-private-synchronous:recorder " " "" >/dev/null 2>&1 || true
+                    rm -f "$INDICATOR_PID" "$INDICATOR_TMP" 2>/dev/null || true
+                    break
+                fi
                 sleep 1
                 if $visible; then
                     # 2. Update state purely via the sync hint. NO explicit -r ID.
@@ -159,15 +170,15 @@ manage_indicator() {
 # --- RECORDING LOGIC ---
 stop_recording() {
     local pids
-    if pids=$(pidof gpu-screen-recorder || true); then
-        if [[ -n "$pids" ]]; then
-            for pid in $pids; do
-                kill -SIGINT "$pid"
-            done
-            notify-send -a "dusky-recorder-status" -u normal -i media-playback-stop 'Dusky Recorder' '  Recording stopped'
-            manage_indicator "stop"
-        fi
+    pids=$(pidof gpu-screen-recorder || true)
+    if [[ -n "$pids" ]]; then
+        for pid in $pids; do
+            kill -SIGINT "$pid" 2>/dev/null || true
+        done
+        notify-send -a "dusky-recorder-status" -h string:x-canonical-private-synchronous:dusky-recorder-status -u normal -i media-playback-stop 'Dusky Recorder' '  Recording stopped'
     fi
+    # Always stop indicator, even if gpu-screen-recorder was already dead
+    manage_indicator "stop"
 }
 
 save_replay() {
@@ -177,7 +188,7 @@ save_replay() {
             for pid in $pids; do
                 kill -SIGUSR1 "$pid"
             done
-            notify-send -a "dusky-recorder-status" -u normal -i media-record 'Dusky Replay' '  Replay buffer saved'
+            notify-send -a "dusky-recorder-status" -h string:x-canonical-private-synchronous:dusky-recorder-status -u normal -i media-record 'Dusky Replay' '  Replay buffer saved'
         fi
     fi
 }
@@ -189,7 +200,7 @@ start_recording() {
     if [[ "$target_mode" == "region" ]]; then
         sleep 0.5 
         if ! region_coords=$(slurp -f "%wx%h+%x+%y" 2>/dev/null); then
-            notify-send -a "dusky-recorder-status" -u critical 'Dusky Recorder Error' 'Region selection cancelled'
+            notify-send -a "dusky-recorder-status" -h string:x-canonical-private-synchronous:dusky-recorder-status -u critical 'Dusky Recorder Error' 'Region selection cancelled'
             exit 1
         fi
         [[ -z "$region_coords" ]] && exit 1
@@ -247,13 +258,13 @@ start_recording() {
 
     sleep 0.5
     if ! kill -0 "$new_pid" 2>/dev/null; then
-        notify-send -a "dusky-recorder-status" -u critical 'Dusky Recorder Error' "Failed to start. Check /tmp/gsr.log"
+        notify-send -a "dusky-recorder-status" -h string:x-canonical-private-synchronous:dusky-recorder-status -u critical 'Dusky Recorder Error' "Failed to start. Check /tmp/gsr.log"
         exit 1
     else
         if [[ -n "$replay_buffer" && "$replay_buffer" -gt 0 ]]; then
-            notify-send -a "dusky-recorder-status" -u normal -i media-record 'Dusky Recorder' '  Replay daemon started'
+            notify-send -a "dusky-recorder-status" -h string:x-canonical-private-synchronous:dusky-recorder-status -u normal -i media-record 'Dusky Recorder' '  Replay daemon started'
         else
-            notify-send -a "dusky-recorder-status" -u normal -i media-record 'Dusky Recorder' '  Recording started'
+            notify-send -a "dusky-recorder-status" -h string:x-canonical-private-synchronous:dusky-recorder-status -u normal -i media-record 'Dusky Recorder' '  Recording started'
         fi
         manage_indicator "start"
     fi
