@@ -510,7 +510,6 @@ def assemble_fhs(mapped_root,efi_part):
     for mp in ["home",".snapshots","var/log","var/cache","var/tmp","var/lib/machines","var/lib/portables","var/lib/libvirt","var/lib/mysql","var/lib/postgres","swap","boot"]:
         Path(f"/mnt/{mp}").mkdir(parents=True,exist_ok=True)
         
-    swap_opts = BTRFS_OPTS.replace("compress=zstd:3", "compress=no")
     mounts=[
         (f"{BTRFS_OPTS},subvol=@home","/mnt/home"),
         (f"{BTRFS_OPTS},subvol=@snapshots","/mnt/.snapshots"),
@@ -522,7 +521,7 @@ def assemble_fhs(mapped_root,efi_part):
         (f"{BTRFS_OPTS},subvol=@var_lib_libvirt","/mnt/var/lib/libvirt"),
         (f"{BTRFS_OPTS},subvol=@var_lib_mysql","/mnt/var/lib/mysql"),
         (f"{BTRFS_OPTS},subvol=@var_lib_postgres","/mnt/var/lib/postgres"),
-        (f"{swap_opts},subvol=@swap","/mnt/swap"),
+        (f"{BTRFS_OPTS},subvol=@swap","/mnt/swap"),
     ]
     for opts,tgt in mounts:
         run("mount","-o",opts,str(mapped_root),tgt,capture=True)
@@ -593,9 +592,11 @@ def sync_secondary_efi_bootloaders(primary_esp_mnt: str = "/mnt/boot"):
                                 if vendor_dir.is_dir():
                                     v_name = vendor_dir.name
                                     dst_vendor = target_efi_dir / v_name
-                                    if not dst_vendor.exists():
-                                        console.print(f"[cyan]Syncing secondary EFI vendor directory '{v_name}' from {p_res} -> {dst_vendor}[/cyan]")
-                                        shutil.copytree(vendor_dir, dst_vendor, dirs_exist_ok=True)
+                                    console.print(f"[cyan]Syncing secondary EFI vendor directory '{v_name}' from {p_res} -> {dst_vendor}[/cyan]")
+                                    try:
+                                        shutil.copytree(vendor_dir, dst_vendor, dirs_exist_ok=True, copy_function=shutil.copy)
+                                    except Exception as e:
+                                        console.print(f"[yellow]Warning syncing {v_name}: {e}[/yellow]")
                     run("umount", tmp_dir, check=False, capture=True)
                 finally:
                     shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -632,11 +633,12 @@ def initialize_swapfile():
         except:
             pass
         try:
-            SWAPFILE_PATH.unlink()
+            SWAPFILE_PATH.unlink(missing_ok=True)
             run("sync", check=False, capture=True)
             run("udevadm", "settle", "--timeout=5", check=False, capture=True)
-        except Exception:
-            pass
+        except Exception as e:
+            console.print(f"[red]Failed to remove stale swapfile {SWAPFILE_PATH}: {e}[/red]")
+            sys.exit(1)
     run("btrfs","filesystem","mkswapfile","--size","4G","--uuid","clear",str(SWAPFILE_PATH),capture=True)
     run("swapon",str(SWAPFILE_PATH),capture=True)
 
