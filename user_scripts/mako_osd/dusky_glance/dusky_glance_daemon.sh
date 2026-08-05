@@ -65,7 +65,7 @@ trap 'exit 0' INT TERM
 send_osd() {
     local text="$1"
     local body="<span font='monospace 20' weight='bold'>${text}</span>"
-    notify-send -a "$CURRENT_APP" -h string:x-canonical-private-synchronous:"$SYNC_ID" -t 2000 " " "$body"
+    notify-send -a "$CURRENT_APP" -h string:x-canonical-private-synchronous:"$SYNC_ID" -t 2000 " " "$body" 2>/dev/null || true
 }
 
 format_time() {
@@ -167,7 +167,7 @@ case "$MODE" in
             [[ "$diff_lbl" == "same" ]] && diff_lbl="same time"
             
             body="<span font='monospace 11' weight='bold'>${time_str}</span>\n<span font='monospace 9'>${diff_lbl}</span>"
-            notify-send -a "$CURRENT_APP" -h string:x-canonical-private-synchronous:"$SYNC_ID" -t 2000 " " "$body"
+            notify-send -a "$CURRENT_APP" -h string:x-canonical-private-synchronous:"$SYNC_ID" -t 2000 " " "$body" 2>/dev/null || true
             sleep 1
         done
         ;;
@@ -190,7 +190,7 @@ case "$MODE" in
             left=$((TARGET_SEC - SECONDS))
             if (( left <= 0 )); then
                 # Leaving 'dusky-glance-alert' intact as requested via config overrides
-                notify-send -u critical -a "dusky-glance-alert" -h string:x-canonical-private-synchronous:dusky-timer-alert "󰔛  Time's Up!"
+                notify-send -u critical -a "dusky-glance-alert" -h string:x-canonical-private-synchronous:dusky-timer-alert "󰔛  Time's Up!" 2>/dev/null || true
                 play_sound "/usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga"
                 
                 for _ in {1..5}; do
@@ -225,7 +225,7 @@ case "$MODE" in
             
             if (( left <= 0 )); then
                 if [[ "$PHASE" == "WORK" ]] && (( BREAK_SEC > 0 )); then
-                    notify-send -u critical -a "dusky-glance-alert" -h string:x-canonical-private-synchronous:dusky-timer-alert "󰦖  Break Time!"
+                    notify-send -u critical -a "dusky-glance-alert" -h string:x-canonical-private-synchronous:dusky-timer-alert "󰦖  Break Time!" 2>/dev/null || true
                     play_sound "/usr/share/sounds/gnome/default/alarms/glass-bell.oga"
                     
                     PHASE="BREAK"
@@ -235,7 +235,7 @@ case "$MODE" in
                     msg="Session Finished"
                     (( BREAK_SEC > 0 )) && msg="Back to Work!"
                     
-                    notify-send -u critical -a "dusky-glance-alert" -h string:x-canonical-private-synchronous:dusky-timer-alert "󰔚  $msg"
+                    notify-send -u critical -a "dusky-glance-alert" -h string:x-canonical-private-synchronous:dusky-timer-alert "󰔚  $msg" 2>/dev/null || true
                     play_sound "/usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga"
                     
                     PHASE="WORK"
@@ -1300,7 +1300,7 @@ case "$MODE" in
             
             hud_body="  ${cpu_usage}% • ${cpu_watts} • ${cpu_temp}\n󰢮  ${gpu_usage} • ${gpu_watts} • ${gpu_temp}\n󰘚  ${ram_str} | VRAM ${gpu_vram}"
             body="<span font='monospace 9' weight='bold'>${hud_body}</span>"
-            notify-send -a "$CURRENT_APP" -h string:x-canonical-private-synchronous:"$SYNC_ID" -t 2000 " " "$body"
+            notify-send -a "$CURRENT_APP" -h string:x-canonical-private-synchronous:"$SYNC_ID" -t 2000 " " "$body" 2>/dev/null || true
             
             sleep 1
         done
