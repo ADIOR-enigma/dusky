@@ -572,112 +572,48 @@ def safe_deactivate_swaps_for_device(target_dev):
     for p in wanted:
         run("swapoff",p, check=False, capture=True)
 
-def teardown_target_storage(target_dev: str, max_retries: int = 3) -> None:
-    """
-    Robust inverted storage teardown: VFS -> Swap -> DM -> Block Cache.
-    Flushes all page cache buffers and ensures exclusive block device access before wipefs/sfdisk.
-    """
-    resolved_disk = str(Path(target_dev).resolve())
-    console.print(f"[yellow]>> Initiating robust storage teardown for {resolved_disk}...[/yellow]")
-
-    for attempt in range(1, max_retries + 1):
-        # 1. Global Sync
-        run("sync", check=False, capture=True)
-
-        # 2. Aggressive Swap Deactivation
-        run("swapoff", "-a", check=False, capture=True)
+def teardown_device(target_dev):
+    console.print(f"[yellow]>> Tearing down {target_dev}...[/yellow]")
+    safe_deactivate_swaps_for_device(target_dev)
+    for mp in findmnt_targets("/mnt"):
         try:
-            safe_deactivate_swaps_for_device(resolved_disk)
-        except Exception:
+            run("umount","-R",mp, check=False, capture=True)
+        except:
             pass
-
-        # 3. Recursive Mount Detachment (Standard, Lazy, and Process Mount Namespace Cleanup)
-        try:
-            mounts = findmnt_targets("/mnt")
-            for mp in mounts:
-                if run("umount", "-R", mp, check=False, capture=True).returncode != 0:
-                    run("umount", "-R", "-f", "-l", mp, check=False, capture=True)
-
-            r = run("findmnt", "-rn", "-o", "TARGET,SOURCE", check=False, capture=True)
-            for line in r.stdout.splitlines():
-                parts = line.split()
-                if len(parts) >= 2:
-                    tgt, src = parts[0], parts[1].split("[", 1)[0]
-                    if Path(src).exists() and device_is_on_disk(src, resolved_disk):
-                        if run("umount", "-R", tgt, check=False, capture=True).returncode != 0:
-                            run("umount", "-R", "-f", "-l", tgt, check=False, capture=True)
-
-            # Precision systemd 261 mount namespace purging
-            for proc_dir in Path("/proc").glob("[0-9]*"):
-                try:
-                    mi = proc_dir / "mountinfo"
-                    if mi.is_file():
-                        text = mi.read_text(errors="ignore")
-                        if "/mnt" in text or resolved_disk in text:
-                            for line in text.splitlines():
-                                if "/mnt" in line or resolved_disk in line:
-                                    parts = line.split()
-                                    if len(parts) >= 5:
-                                        target_mp = parts[4]
-                                        run("nsenter", f"--mount=/proc/{proc_dir.name}/ns/mnt", "umount", "-R", "-f", "-l", target_mp, check=False, capture=True)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-        # 4. Device Mapper / LUKS Closure
-        try:
-            r = run("lsblk", "-pnro", "NAME,TYPE", check=False, capture=True)
-            for line in r.stdout.splitlines():
-                p = line.split()
-                if len(p) >= 2:
-                    name, typ = p[0], p[1]
-                    if typ in ("crypt", "mpath", "lvm") and device_is_on_disk(name, resolved_disk):
-                        dm_name = Path(name).name
-                        if name.startswith("/dev/mapper/"):
-                            dm_name = name.split("/")[-1]
-                        if run("cryptsetup", "close", dm_name, check=False, capture=True).returncode != 0:
-                            run("dmsetup", "remove", "--force", "--retry", dm_name, check=False, capture=True)
-
-            if Path(f"/dev/mapper/{TARGET_CRYPT_NAME}").exists():
-                if run("cryptsetup", "close", TARGET_CRYPT_NAME, check=False, capture=True).returncode != 0:
-                    run("dmsetup", "remove", "--force", "--retry", TARGET_CRYPT_NAME, check=False, capture=True)
-        except Exception:
-            pass
-
-        # 5. Flush Dirty Page Buffers
-        run("blockdev", "--flushbufs", resolved_disk, check=False, capture=True)
-
-        # 6. Settle udev events
-        run("udevadm", "settle", "--timeout=5", check=False, capture=True)
-
-        # 7. VALIDATION PHASE: Ensure NO active VFS mounts AND NO kernel holders exist
-        busy_found = False
-
-        r = run("findmnt", "-rn", "-o", "SOURCE", check=False, capture=True)
+    try:
+        r = run("findmnt","-rn","-o","TARGET,SOURCE", check=False, capture=True)
         for line in r.stdout.splitlines():
-            src = line.split("[", 1)[0].strip()
-            if device_is_on_disk(src, resolved_disk):
-                busy_found = True
-                break
-
-        if not busy_found:
-            dev_name = Path(resolved_disk).name
-            for block_path in Path("/sys/class/block").glob(f"{dev_name}*"):
-                holders_path = block_path / "holders"
-                if holders_path.is_dir() and any(holders_path.iterdir()):
-                    busy_found = True
-                    break
-
-        if not busy_found:
-            console.print(f"[green]>> Teardown clean on attempt {attempt}. Block device and partitions are free.[/green]")
-            return
-
-        time.sleep(1)
-
-    console.print(f"[yellow]>> Teardown completed after {max_retries} attempts. Proceeding to wipe.[/yellow]")
-
-teardown_device = teardown_target_storage
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            tgt,src = parts[0],parts[1].split("[",1)[0]
+            try:
+                if Path(src).exists() and device_is_on_disk(src,target_dev):
+                    run("umount","-R",tgt, check=False, capture=True)
+            except:
+                pass
+    except:
+        pass
+    try:
+        r = run("lsblk","-pnro","NAME,TYPE", check=False, capture=True)
+        for line in r.stdout.splitlines():
+            p = line.split()
+            if len(p) < 2:
+                continue
+            name,typ = p[0],p[1]
+            if typ == "crypt" and device_is_on_disk(name,target_dev):
+                dm = Path(name).name
+                if name.startswith("/dev/mapper/"):
+                    dm = name.split("/")[-1]
+                else:
+                    try:
+                        dm = Path(f"/sys/class/block/{Path(name).name}/dm/name").read_text().strip()
+                    except:
+                        pass
+                run("cryptsetup","close",dm, check=False, capture=True)
+    except:
+        pass
+    run("udevadm","settle","--timeout=10", check=False, capture=True)
 
 def ensure_mapper_free(target_dev=None):
     mp = Path(f"/dev/mapper/{TARGET_CRYPT_NAME}")
@@ -715,13 +651,10 @@ def write_gpt_sfdisk(disk, boot_mode, encrypt, efi_size="1.3G"):
         sfdisk_input += f'size=+, type={root_type}, name="{DUSKY_ROOT_PARTNAME}"\n'
     console.print(f"[cyan]Writing GPT to {disk} (wipe) EFI={efi_size}[/cyan]")
     
-    # Complete pre-flight teardown
-    teardown_target_storage(disk)
-
     # Freeze udev execution queue during wipefs/sfdisk to prevent udev locks
     run("udevadm", "control", "--stop-exec-queue", check=False, capture=True)
     try:
-        run("wipefs", "--all", "--force", disk, check=False, capture=True)
+        run("wipefs", "--all", "--force", "--lock=yes", disk, check=False, capture=True)
         try:
             run("sfdisk", "--force", "--wipe", "always", "--wipe-partitions", "always", "--label", "gpt", "--lock=yes", disk, input_text=sfdisk_input, capture=True)
         except subprocess.CalledProcessError:
@@ -734,20 +667,19 @@ def write_gpt_sfdisk(disk, boot_mode, encrypt, efi_size="1.3G"):
             pass
     finally:
         run("udevadm", "control", "--start-exec-queue", check=False, capture=True)
-
     try:
-        run("udevadm", "trigger", "--settle", "-w", "--timeout=10", disk, check=False, capture=True)
+        run("udevadm","trigger","--settle","-w","--timeout=10",disk, check=False, capture=True)
     except:
-        run("udevadm", "settle", "--timeout=10", check=False, capture=True)
+        run("udevadm","settle","--timeout=10", check=False, capture=True)
     try:
-        run("udevadm", "wait", "--timeout=10", "--settle", f"{get_partition_path(disk,1)}", f"{get_partition_path(disk,2)}", check=False, capture=True)
+        run("udevadm","wait","--timeout=10","--settle",f"{get_partition_path(disk,1)}",f"{get_partition_path(disk,2)}", check=False, capture=True)
     except:
         pass
-    efi_part = get_partition_path(disk, 1) if boot_mode == "UEFI" else None
-    root_part = get_partition_path(disk, 2)
-    if not wait_for_dev(root_part, 10):
+    efi_part = get_partition_path(disk,1) if boot_mode=="UEFI" else None
+    root_part = get_partition_path(disk,2)
+    if not wait_for_dev(root_part,10):
         raise RuntimeError(f"{root_part} missing")
-    if efi_part and not wait_for_dev(efi_part, 10):
+    if efi_part and not wait_for_dev(efi_part,10):
         raise RuntimeError(f"{efi_part} missing")
     return root_part, efi_part
 
@@ -901,7 +833,15 @@ def format_root_and_efi(root_part, efi_part, format_efi, do_encrypt, boot_mode, 
     if run("cryptsetup","isLuks",root_part, check=False, capture=True).returncode == 0:
         console.print(f"[yellow]Existing LUKS on {root_part}, erasing header[/yellow]")
         run("cryptsetup","--batch-mode","erase",root_part, check=False, capture=True)
-    run("wipefs", "--all", "--force", "--lock=yes", root_part, check=True, capture=True)
+    for attempt in range(1, 4):
+        try:
+            run("wipefs", "--all", "--force", "--lock=yes", root_part, capture=True)
+            break
+        except subprocess.CalledProcessError:
+            if attempt == 3:
+                run("wipefs", "--all", "--force", root_part, check=False, capture=True)
+            time.sleep(1)
+
     run("udevadm", "settle", "--timeout=5", check=False, capture=True)
     btrfs_target = root_part
     
@@ -931,34 +871,25 @@ def format_root_and_efi(root_part, efi_part, format_efi, do_encrypt, boot_mode, 
                     luks_ba[i]=0
         btrfs_target = f"/dev/mapper/{TARGET_CRYPT_NAME}"
         
-    run("udevadm", "settle", "--timeout=10", check=False, capture=True)
-    
-    for attempt in range(1, 4):
-        try:
-            if BTRFS_CSUM == "blake2":
-                run("mkfs.btrfs", "-f", "--csum", "blake2", "-O", "no-holes", "-L", DUSKY_ROOT_LABEL, btrfs_target, capture=True)
-            else:
-                run("mkfs.btrfs", "-f", "-L", DUSKY_ROOT_LABEL, btrfs_target, capture=True)
-            break
-        except subprocess.CalledProcessError:
-            if attempt == 3:
-                raise
-            time.sleep(1)
-
+    if BTRFS_CSUM == "blake2":
+        run("mkfs.btrfs","-f","--csum","blake2","-O","no-holes","-L",DUSKY_ROOT_LABEL,btrfs_target, capture=True)
+    else:
+        run("mkfs.btrfs","-f","-L",DUSKY_ROOT_LABEL,btrfs_target, capture=True)
+        
     if boot_mode == "UEFI" and efi_part:
         if format_efi:
             if has_win and efi_part == win_esp:
                 console.print("[yellow]Preserving Windows ESP[/yellow]")
             else:
-                run("wipefs", "--all", "--force", "--lock=yes", efi_part, check=False, capture=True)
                 for attempt in range(1, 4):
                     try:
-                        run("mkfs.fat", "-F", "32", "-n", DUSKY_EFI_LABEL, efi_part, capture=True)
+                        run("wipefs", "--all", "--force", "--lock=yes", efi_part, capture=True)
                         break
                     except subprocess.CalledProcessError:
                         if attempt == 3:
-                            raise
+                            run("wipefs", "--all", "--force", efi_part, check=False, capture=True)
                         time.sleep(1)
+                run("mkfs.fat","-F","32","-n",DUSKY_EFI_LABEL,efi_part, capture=True)
         else:
             if not has_win:
                 try:
