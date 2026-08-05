@@ -399,20 +399,30 @@ def is_mounted(dev):
     except:
         return None
 
+def flatten_lsblk(data):
+    nodes = []
+    def _walk(item_list):
+        for item in item_list:
+            nodes.append(item)
+            if item.get("children"):
+                _walk(item.get("children"))
+    if isinstance(data, dict):
+        _walk(data.get("blockdevices", []))
+    elif isinstance(data, list):
+        _walk(data)
+    return nodes
+
 def auto_detect_efi_partition(root_disk,root_part):
     try:
-        r=run("lsblk","--json","--paths","-o","NAME,TYPE,PARTTYPE,FSTYPE,PARTLABEL,LABEL",str(root_disk),check=False,capture=True)
+        r=run("lsblk","--json","--paths","--tree","-o","NAME,PATH,TYPE,PARTTYPE,FSTYPE,PARTLABEL,LABEL",str(root_disk),check=False,capture=True)
         data=json.loads(r.stdout)
-        bdevs=data.get("blockdevices",[])
-        if not bdevs:
-            return None
-        children=bdevs[0].get("children",[]) if bdevs[0].get("type")=="disk" else bdevs
+        nodes=flatten_lsblk(data)
         guid=[]
         dusky=[]
         labelm=[]
         vfat=[]
         non_root=[]
-        for ch in children:
+        for ch in nodes:
             ptype=(ch.get("parttype") or "").lower()
             fstype=(ch.get("fstype") or "").lower()
             partlabel=ch.get("partlabel") or ""
@@ -420,7 +430,10 @@ def auto_detect_efi_partition(root_disk,root_part):
             name=ch.get("path") or ch.get("name")
             if not name:
                 continue
-            pp=Path(name).resolve()
+            try:
+                pp=Path(name).resolve()
+            except:
+                pp=Path(name)
             if pp==root_part.resolve():
                 continue
             if ch.get("type")!="part":
@@ -547,7 +560,7 @@ def sync_secondary_efi_bootloaders(primary_esp_mnt: str = "/mnt/boot"):
     if BOOT_MODE != "UEFI":
         return
     console.print("[yellow]>> Scanning for secondary EFI bootloaders to synchronize...[/yellow]")
-    r = run("lsblk", "--json", "--paths", "-o", "PATH,TYPE,FSTYPE,PARTTYPE,LABEL", check=False, capture=True)
+    r = run("lsblk", "--json", "--paths", "--tree", "-o", "PATH,TYPE,FSTYPE,PARTTYPE,LABEL", check=False, capture=True)
     if r.returncode != 0 or not r.stdout:
         return
     try:
@@ -567,39 +580,38 @@ def sync_secondary_efi_bootloaders(primary_esp_mnt: str = "/mnt/boot"):
     target_efi_dir = Path(primary_esp_mnt) / "EFI"
     target_efi_dir.mkdir(parents=True, exist_ok=True)
 
-    for dev in data.get("blockdevices", []):
-        for child in dev.get("children", []) or []:
-            path = child.get("path") or child.get("name")
-            if not path:
-                continue
-            try:
-                p_res = str(Path(path).resolve())
-            except Exception:
-                p_res = path
-            if primary_esp_path and p_res == primary_esp_path:
-                continue
+    for child in flatten_lsblk(data):
+        path = child.get("path") or child.get("name")
+        if not path:
+            continue
+        try:
+            p_res = str(Path(path).resolve())
+        except Exception:
+            p_res = path
+        if primary_esp_path and p_res == primary_esp_path:
+            continue
 
-            ptype = (child.get("parttype") or "").lower()
-            fstype = (child.get("fstype") or "").lower()
-            if ptype == esp_guid or fstype in ("vfat", "fat32"):
-                tmp_dir = tempfile.mkdtemp(prefix="dusky_sec_esp_")
-                try:
-                    m_res = run("mount", "-t", "vfat", "-o", "ro,noexec,nosuid,nodev", p_res, tmp_dir, check=False, capture=True)
-                    if m_res.returncode == 0:
-                        sec_efi = Path(tmp_dir) / "EFI"
-                        if sec_efi.is_dir():
-                            for vendor_dir in sec_efi.iterdir():
-                                if vendor_dir.is_dir():
-                                    v_name = vendor_dir.name
-                                    dst_vendor = target_efi_dir / v_name
-                                    console.print(f"[cyan]Syncing secondary EFI vendor directory '{v_name}' from {p_res} -> {dst_vendor}[/cyan]")
-                                    try:
-                                        shutil.copytree(vendor_dir, dst_vendor, dirs_exist_ok=True, copy_function=shutil.copy)
-                                    except Exception as e:
-                                        console.print(f"[yellow]Warning syncing {v_name}: {e}[/yellow]")
-                    run("umount", tmp_dir, check=False, capture=True)
-                finally:
-                    shutil.rmtree(tmp_dir, ignore_errors=True)
+        ptype = (child.get("parttype") or "").lower()
+        fstype = (child.get("fstype") or "").lower()
+        if ptype == esp_guid or fstype in ("vfat", "fat32"):
+            tmp_dir = tempfile.mkdtemp(prefix="dusky_sec_esp_")
+            try:
+                m_res = run("mount", "-t", "vfat", "-o", "ro,noexec,nosuid,nodev", p_res, tmp_dir, check=False, capture=True)
+                if m_res.returncode == 0:
+                    sec_efi = Path(tmp_dir) / "EFI"
+                    if sec_efi.is_dir():
+                        for vendor_dir in sec_efi.iterdir():
+                            if vendor_dir.is_dir():
+                                v_name = vendor_dir.name
+                                dst_vendor = target_efi_dir / v_name
+                                console.print(f"[cyan]Syncing secondary EFI vendor directory '{v_name}' from {p_res} -> {dst_vendor}[/cyan]")
+                                try:
+                                    shutil.copytree(vendor_dir, dst_vendor, dirs_exist_ok=True, copy_function=shutil.copy)
+                                except Exception as e:
+                                    console.print(f"[yellow]Warning syncing {v_name}: {e}[/yellow]")
+                run("umount", tmp_dir, check=False, capture=True)
+            finally:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
 
 def initialize_swapfile():
     console.print("[yellow]>> Ensuring 4GB swapfile...[/yellow]")

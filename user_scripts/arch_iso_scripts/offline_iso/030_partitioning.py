@@ -94,9 +94,14 @@ def run(*cmd, check=True, capture=True, input_text=None, timeout=300):
         elif isinstance(input_text, str):
             return subprocess.run(argv, check=check, text=True, capture_output=capture, input=input_text, timeout=timeout)
         return subprocess.run(argv, check=check, text=True, capture_output=capture, timeout=timeout)
-    except subprocess.CalledProcessError:
+    except subprocess.CalledProcessError as e:
         if check:
             console.print(f"[red]Failed {shlex.join([str(x) for x in argv])}[/red]")
+            err = getattr(e, 'stderr', None)
+            if err:
+                if isinstance(err, bytes): err = err.decode('utf-8', 'replace')
+                err = err.strip()
+                if err: console.print(f"[red]Details: {err}[/red]")
         raise
 
 def print_banner(boot_mode: str):
@@ -807,15 +812,27 @@ def show_partitions_table(disk):
     panel = Panel.fit(r.stdout, title=f"Partitions on {disk}", box=box.ROUNDED, border_style="yellow")
     console.print(Align.center(panel))
 
+def flatten_lsblk(data):
+    nodes = []
+    def _walk(item_list):
+        for item in item_list:
+            nodes.append(item)
+            if item.get("children"):
+                _walk(item.get("children"))
+    if isinstance(data, dict):
+        _walk(data.get("blockdevices", []))
+    elif isinstance(data, list):
+        _walk(data)
+    return nodes
+
 def get_partitions_list(disk):
     try:
-        r = run("lsblk","--json","--paths","-o","PATH,TYPE,SIZE,FSTYPE,PARTLABEL",disk, check=False, capture=True)
+        r = run("lsblk","--json","--paths","--tree","-o","PATH,TYPE,SIZE,FSTYPE,PARTLABEL",disk, check=False, capture=True)
         data = json.loads(r.stdout)
         parts=[]
-        for dev in data.get("blockdevices",[]):
-            for child in dev.get("children",[]) or []:
-                if child.get("type")=="part":
-                    parts.append(child)
+        for dev in flatten_lsblk(data):
+            if dev.get("type")=="part":
+                parts.append(dev)
         return parts
     except:
         return []
