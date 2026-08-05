@@ -83,8 +83,10 @@ update_config() {
     local key="$1"
     local value="$2"
     mkdir -p "$(dirname "$CFG")"
+    local safe_value
+    safe_value=$(printf '%s\n' "$value" | sed -e 's/[\/&~]/\\&/g')
     if grep -q "^${key}=" "$CFG" 2>/dev/null; then
-        sed -i "s~^${key}=.*~${key}=${value}~" "$CFG"
+        sed -i "s~^${key}=.*~${key}=${safe_value}~" "$CFG"
     else
         echo "${key}=${value}" >> "$CFG"
     fi
@@ -119,7 +121,7 @@ manage_indicator() {
             local notif_id
             # 1. Capture master ID ONCE. 
             # FIX: Used -t 0 to ensure infinite timeout, preventing ID drift.
-            notif_id=$(notify-send -a "dusky-recorder" -t 0 -h string:x-canonical-private-synchronous:recorder -p "" "")
+            notif_id=$(notify-send -a "dusky-recorder" -t 0 -h string:x-canonical-private-synchronous:recorder -p "" "" 2>/dev/null || true)
             echo "$notif_id" > "$INDICATOR_TMP"
             
             local visible=true
@@ -133,10 +135,10 @@ manage_indicator() {
                 sleep 1
                 if $visible; then
                     # 2. Update state purely via the sync hint. NO explicit -r ID.
-                    notify-send -a "dusky-recorder" -t 0 -h string:x-canonical-private-synchronous:recorder " " ""
+                    notify-send -a "dusky-recorder" -t 0 -h string:x-canonical-private-synchronous:recorder " " "" 2>/dev/null || true
                     visible=false
                 else
-                    notify-send -a "dusky-recorder" -t 0 -h string:x-canonical-private-synchronous:recorder "" ""
+                    notify-send -a "dusky-recorder" -t 0 -h string:x-canonical-private-synchronous:recorder "" "" 2>/dev/null || true
                     visible=true
                 fi
             done
@@ -146,11 +148,11 @@ manage_indicator() {
     elif [[ "$action" == "stop" ]]; then
         if [[ -f "$INDICATOR_PID" ]]; then
             local d_pid
-            d_pid=$(cat "$INDICATOR_PID")
-            # Kill the subshell
-            kill "$d_pid" 2>/dev/null || true
-            # FIX: Kill any lingering child sleep or notify-send processes immediately
-            pkill -P "$d_pid" 2>/dev/null || true
+            d_pid=$(cat "$INDICATOR_PID" 2>/dev/null || echo "")
+            if [[ -n "$d_pid" ]]; then
+                kill "$d_pid" 2>/dev/null || true
+                pkill -P "$d_pid" 2>/dev/null || true
+            fi
             rm -f "$INDICATOR_PID"
         fi
         
@@ -160,8 +162,10 @@ manage_indicator() {
         
         if [[ -f "$INDICATOR_TMP" ]]; then
             local notif_id
-            notif_id=$(cat "$INDICATOR_TMP")
-            makoctl dismiss -n "$notif_id" 2>/dev/null || true
+            notif_id=$(cat "$INDICATOR_TMP" 2>/dev/null || echo "")
+            if [[ -n "$notif_id" ]]; then
+                makoctl dismiss -n "$notif_id" 2>/dev/null || true
+            fi
             rm -f "$INDICATOR_TMP"
         fi
     fi
