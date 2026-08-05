@@ -14,7 +14,6 @@ set -Eeuo pipefail
 # --- CONFIGURATION ---
 readonly CFG="$HOME/.config/dusky_recorder/config.conf"
 readonly ROFI_THEME_STR='window { width: 450px; } listview { lines: 8; }'
-readonly INDICATOR_TMP="/tmp/dusky_recorder_notif_id"
 readonly INDICATOR_PID="/tmp/dusky_recorder_daemon.pid"
 
 # Ensure config exists and load it
@@ -141,7 +140,7 @@ manage_indicator() {
                     visible=true
                 fi
             done
-        ) & 
+        ) >/dev/null 2>&1 & 
         echo $! > "$INDICATOR_PID"
         
     elif [[ "$action" == "stop" ]]; then
@@ -158,6 +157,7 @@ manage_indicator() {
         # Overwrite the synchronous indicator group with a 1ms blank frame to force Mako to drop it
         notify-send -a "dusky-recorder" -t 1 -h string:x-canonical-private-synchronous:recorder " " "" >/dev/null 2>&1 || true
     fi
+    return 0
 }
 
 # --- RECORDING LOGIC ---
@@ -168,10 +168,35 @@ stop_recording() {
         for pid in $pids; do
             kill -SIGINT "$pid" 2>/dev/null || true
         done
-        notify-send -a "dusky-recorder-status" -h string:x-canonical-private-synchronous:dusky-recorder-status -u normal -i media-playback-stop 'Dusky Recorder' '  Recording stopped'
+        
+        # Wait up to 3.0 seconds for graceful exit and file index/header flush
+        local count=0
+        while pidof gpu-screen-recorder >/dev/null 2>&1 && [[ $count -lt 30 ]]; do
+            sleep 0.1
+            ((count++))
+        done || true
+        
+        # Escalation if process is still stuck
+        local remaining_pids
+        remaining_pids=$(pidof gpu-screen-recorder || true)
+        if [[ -n "$remaining_pids" ]]; then
+            for pid in $remaining_pids; do
+                kill -SIGTERM "$pid" 2>/dev/null || true
+            done
+            sleep 0.3
+            remaining_pids=$(pidof gpu-screen-recorder || true)
+            if [[ -n "$remaining_pids" ]]; then
+                for pid in $remaining_pids; do
+                    kill -9 "$pid" 2>/dev/null || true
+                done
+            fi
+        fi
+        
+        notify-send -a "dusky-recorder-status" -h string:x-canonical-private-synchronous:dusky-recorder-status -u normal -i media-playback-stop 'Dusky Recorder' '  Recording stopped' || true
     fi
     # Always stop indicator, even if gpu-screen-recorder was already dead
     manage_indicator "stop"
+    return 0
 }
 
 save_replay() {
@@ -179,7 +204,7 @@ save_replay() {
     if pids=$(pidof gpu-screen-recorder || true); then
         if [[ -n "$pids" ]]; then
             for pid in $pids; do
-                kill -SIGUSR1 "$pid"
+                kill -SIGUSR1 "$pid" 2>/dev/null || true
             done
             notify-send -a "dusky-recorder-status" -h string:x-canonical-private-synchronous:dusky-recorder-status -u normal -i media-record 'Dusky Replay' '  Replay buffer saved'
         fi
@@ -246,12 +271,16 @@ start_recording() {
     fi
     args+=(-o "$OUT")
 
-    "${args[@]}" > /tmp/gsr.log 2>&1 &
+    (
+        trap - SIGINT SIGTERM
+        exec "${args[@]}" > /tmp/gsr.log 2>&1
+    ) >/dev/null 2>&1 &
     local new_pid=$!
 
     sleep 0.5
     if ! kill -0 "$new_pid" 2>/dev/null; then
         notify-send -a "dusky-recorder-status" -h string:x-canonical-private-synchronous:dusky-recorder-status -u critical 'Dusky Recorder Error' "Failed to start. Check /tmp/gsr.log"
+        manage_indicator "stop"
         exit 1
     else
         if [[ -n "$replay_buffer" && "$replay_buffer" -gt 0 ]]; then
@@ -550,4 +579,20 @@ main() {
     esac
 }
 
-main
+if [[ "${1:-}" == "--stop" || "${1:-}" == "stop" ]]; then
+    stop_recording
+elif [[ "${1:-}" == "--start-screen" || "${1:-}" == "start_screen" ]]; then
+    start_recording "screen"
+elif [[ "${1:-}" == "--start-region" || "${1:-}" == "start_region" ]]; then
+    start_recording "region"
+elif [[ "${1:-}" == "--save-replay" || "${1:-}" == "save_replay" ]]; then
+    save_replay
+elif [[ "${1:-}" == "--toggle" || "${1:-}" == "toggle" ]]; then
+    if pidof gpu-screen-recorder >/dev/null 2>&1; then
+        stop_recording
+    else
+        start_recording "screen"
+    fi
+elif [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi
