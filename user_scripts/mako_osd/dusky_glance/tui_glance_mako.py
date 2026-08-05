@@ -132,11 +132,11 @@ def build_standard_glance(suffix, label_name, group_name="Modules"):
     
     # Surgical variants directly compiled from the active Mako specification sheet
     width_map = {
-        "": 170, "clock": 170, "clock-short": 170, "stopwatch": 170, "timer": 170, "pomodoro": 170,
+        "": 170, "clock": 170, "clock-short": 120, "stopwatch": 170, "timer": 170, "pomodoro": 170,
         "cpu": 100, "cpu-power": 130, "ram": 120, "ram-temp": 160, "zram": 210, "temp": 110,
         "battery": 180, "battery-percent": 100, "battery-watts": 120, "battery-time": 130,
         "gpu-power": 130, "gpu-usage": 100, "gpu-mem": 160,
-        "disk": 240, "disk-read": 190, "disk-write": 190, "disk-temp": 100,
+        "disk": 260, "disk-read": 190, "disk-write": 190, "disk-temp": 100,
         "network": 190, "uptime": 170, "workspace": 140, "hud": 180, "world-clock": 140
     }
     
@@ -185,7 +185,7 @@ def build_standard_glance(suffix, label_name, group_name="Modules"):
             key="layer",
             scope=scope,
             type_="cycle",
-            default="overlay" if suffix in ("battery", "hud") else "top",
+            default="overlay" if suffix == "hud" else "top",
             options=["background", "bottom", "top", "overlay"],
             parent_ref=uid,
             extended_help="**Window Layering**\n\nArranges the widget at the specified layer relative to normal windows. Using `overlay` will cause notifications to be displayed above fullscreen windows."
@@ -229,7 +229,7 @@ def build_standard_glance(suffix, label_name, group_name="Modules"):
             key="margin",
             scope=scope,
             type_="string",
-            default="10,0,0,10" if suffix == "hud" else "0,8,0,0",
+            default="10,0,0,10" if suffix == "hud" else "3,8,3,0",
             parent_ref=uid,
             extended_help="**Spatiotemporal Margin Offset**\n\nCSS-style margins (Top, Right, Bottom, Left) that push the dashboard away from the edges of the Wayland output screen."
         ),
