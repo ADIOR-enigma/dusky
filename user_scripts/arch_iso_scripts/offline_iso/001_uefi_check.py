@@ -157,6 +157,20 @@ def build_report() -> tuple[str, str, str, str, int | None]:
 def main() -> int:
     mode, kernel, systemd, width, _fw_size = build_report()
 
+    try:
+        import json
+        state_file = Path("/tmp/dusky_state.json")
+        state_data = {}
+        if state_file.exists():
+            try:
+                state_data = json.loads(state_file.read_text())
+            except Exception:
+                pass
+        state_data["boot_mode"] = mode
+        state_file.write_text(json.dumps(state_data, indent=2))
+    except Exception:
+        pass
+
     if console is None:
         # Plain-text fallback: same information, zero dependencies.
         print("DUSKY BOOT ENVIRONMENT PROBE")

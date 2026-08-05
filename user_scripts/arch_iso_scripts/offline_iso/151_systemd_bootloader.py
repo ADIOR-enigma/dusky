@@ -280,6 +280,40 @@ def install_systemd_boot_uefi(primary_opts: str, fallback_opts: str):
             if run("bootctl", "is-installed", f"--esp-path={ESP_MNT}", check=False).returncode != 0:
                 console.print("[red]bootctl installation failed[/red]"); sys.exit(1)
 
+    # Post-bootctl NVRAM sanity check & fix:
+    # If bootctl created an NVRAM entry with zeroed GPT GUID (common inside chroot without udev data),
+    # clean it up and register with efibootmgr using the actual partition device path.
+    try:
+        r_efiv = run("efibootmgr", "-v", check=False)
+        if r_efiv.returncode == 0 and r_efiv.stdout:
+            zero_entries = []
+            for line in r_efiv.stdout.splitlines():
+                if "00000000-0000-0000-0000-000000000000" in line:
+                    m = re.match(r"^Boot([0-9A-Fa-f]{4})", line)
+                    if m:
+                        zero_entries.append(m.group(1))
+            for bnum in zero_entries:
+                console.print(f"[yellow]Removing zeroed GUID NVRAM entry Boot{bnum}...[/yellow]")
+                run("efibootmgr", "-b", bnum, "-B", check=False)
+
+            has_valid_entry = False
+            r_efiv2 = run("efibootmgr", "-v", check=False)
+            for line in r_efiv2.stdout.splitlines():
+                if "Linux Boot Manager" in line and "00000000-0000" not in line and "HD(" in line:
+                    has_valid_entry = True
+                    break
+
+            if not has_valid_entry:
+                console.print("[cyan]Registering valid NVRAM entry via efibootmgr...[/cyan]")
+                esp_dev = run("findmnt", "-n", "-e", "-o", "SOURCE", str(ESP_MNT), check=False).stdout.strip()
+                if esp_dev:
+                    parent_disk = get_parent_disk(Path(esp_dev))
+                    m_part = re.search(r"(\d+)$", esp_dev)
+                    part_num = m_part.group(1) if m_part else "1"
+                    run("efibootmgr", "-c", "-d", str(parent_disk), "-p", part_num, "-L", "Linux Boot Manager", "-l", r"\EFI\systemd\systemd-bootx64.efi", check=False)
+    except Exception as e:
+        console.print(f"[yellow]NVRAM sanity check warning: {e}[/yellow]")
+
     console.print("[green]systemd-boot deployed, random-seed auto-handled since systemd 257+[/green]")
 
     LOADER_CONF.parent.mkdir(parents=True, exist_ok=True)
