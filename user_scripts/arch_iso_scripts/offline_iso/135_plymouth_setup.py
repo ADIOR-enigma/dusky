@@ -10,7 +10,7 @@ Fixes:
     HOOKS=(base systemd plymouth autodetect microcode modconf kms keyboard sd-vconsole sd-encrypt block filesystems fsck)
   - Robust parser: anchored ^HOOKS, last-wins, comment-aware, shlex exact token (fixes commented HOOKS, inline #, .backup false positive)
 
-Pipeline: Runs AFTER 120_mkinitcpio_optimizer (creates drop-in) and BEFORE 158_mkinitcpio_restore_and_generate
+Pipeline: Runs AFTER 120_mkinitcpio_optimizer (creates drop-in) and BEFORE 150_mkinitcpio_restore_and_generate
 """
 from __future__ import annotations
 import os, sys, re, shlex, base64, shutil, subprocess
@@ -329,7 +329,7 @@ def main():
     ensure_plymouth()
     deploy_theme()
     patch_mkinitcpio()
-    console.print(Panel("[bold green]Plymouth deployment successful.\n- Hook: plymouth only (sd-plymouth removed Jan 2024)\n- Order: base systemd plymouth keyboard autodetect microcode modconf kms sd-vconsole sd-encrypt block filesystems\n- Fix: FILES=(/etc/vconsole.conf) exact token (PR #6183)\n- Parser: anchored ^HOOKS, last-wins, comment-aware, shlex, idempotent, fixes # HOOKS= poisoning and inline # brick\n- Deferred: initramfs generation to 158[/bold green]", box=box.ROUNDED))
+    console.print(Panel("[bold green]Plymouth deployment successful.\n- Hook: plymouth only (sd-plymouth removed Jan 2024)\n- Order: base systemd plymouth keyboard autodetect microcode modconf kms sd-vconsole sd-encrypt block filesystems\n- Fix: FILES=(/etc/vconsole.conf) exact token (PR #6183)\n- Parser: anchored ^HOOKS, last-wins, comment-aware, shlex, idempotent, fixes # HOOKS= poisoning and inline # brick\n- Deferred: initramfs generation to 150[/bold green]", box=box.ROUNDED))
 
 if __name__ == "__main__":
     main()

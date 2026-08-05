@@ -82,7 +82,34 @@ def run(*cmd, check=True, capture=True, input_text=None, timeout=300):
         raise
 
 def detect_boot_mode():
-    return "UEFI" if Path("/sys/firmware/efi/efivars").is_dir() else "BIOS"
+    try:
+        state = json.loads(STATE_JSON.read_text())
+        bm = str(state.get("boot_mode", "")).upper()
+        if bm in ("UEFI", "BIOS"):
+            return bm
+    except Exception:
+        pass
+    if Path("/sys/firmware/efi").is_dir():
+        return "UEFI"
+    try:
+        if Path("/sys/firmware/efi/fw_platform_size").read_text().strip():
+            return "UEFI"
+    except Exception:
+        pass
+    try:
+        for line in Path("/proc/mounts").read_text().splitlines():
+            fields = line.split()
+            if len(fields) >= 3 and (fields[0] == "efivarfs" or fields[2] == "efivarfs"):
+                return "UEFI"
+    except Exception:
+        pass
+    try:
+        r = run("dmesg", check=False, capture=True)
+        if re.search(r"efi:.*v[0-9]", r.stdout or "", re.IGNORECASE):
+            return "UEFI"
+    except Exception:
+        pass
+    return "BIOS"
 
 BOOT_MODE = detect_boot_mode()
 
@@ -484,6 +511,13 @@ def assemble_fhs(mapped_root,efi_part):
     if BOOT_MODE=="UEFI" and efi_part:
         console.print(f"[yellow]>> Mounting EFI {efi_part} to /mnt/boot (hardened)...[/yellow]")
         run("mount","-t","vfat","-o","fmask=0177,dmask=0077,noexec,nosuid,nodev",str(efi_part),"/mnt/boot",capture=True)
+
+    try:
+        chroot_etc = Path("/mnt/etc")
+        chroot_etc.mkdir(parents=True, exist_ok=True)
+        (chroot_etc / "dusky_state.json").write_text(STATE_JSON.read_text())
+    except Exception:
+        pass
 
 def initialize_swapfile():
     console.print("[yellow]>> Ensuring 4GB swapfile...[/yellow]")

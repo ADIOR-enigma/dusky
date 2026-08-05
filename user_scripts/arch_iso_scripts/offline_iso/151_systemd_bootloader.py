@@ -17,10 +17,10 @@ No backwards compat - pure 2026 methodology
 9. ESP: must be FAT32 vfat, is-mountpoint check mandatory, ESP at /boot is correct for Type #1 pipeline.
 10. LUKS cmdline: sd-encrypt uses rd.luks.name=UUID=name rd.luks.options=discard root=UUID=, encrypt uses cryptdevice=UUID:name:allow-discards root=/dev/mapper/name
 
-Pipeline: 070 masks hooks -> 120 optimizer -> 151 THIS (stages vmlinuz) -> 158 mkinitcpio -P (embeds microcode)
+Pipeline: 070 masks hooks -> 120 optimizer -> 150 mkinitcpio -P (embeds microcode) -> 151 THIS (bootloader; grub-mkconfig sees final initramfs)
 """
 from __future__ import annotations
-import os, sys, re, shlex, shutil, signal, subprocess
+import os, sys, re, json, shlex, shutil, signal, subprocess
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -59,12 +59,39 @@ def run(*cmd, check=True, capture=True, input_text=None, timeout=300):
         raise
 
 def detect_boot_mode() -> str:
-    return "UEFI" if Path("/sys/firmware/efi/efivars").is_dir() else "BIOS"
+    for sp in (Path("/etc/dusky_state.json"), Path("/mnt/etc/dusky_state.json")):
+        try:
+            bm = str(json.loads(sp.read_text()).get("boot_mode", "")).upper()
+            if bm in ("UEFI", "BIOS"):
+                return bm
+        except Exception:
+            pass
+    if Path("/sys/firmware/efi").is_dir():
+        return "UEFI"
+    try:
+        if Path("/sys/firmware/efi/fw_platform_size").read_text().strip():
+            return "UEFI"
+    except Exception:
+        pass
+    try:
+        for line in Path("/proc/mounts").read_text().splitlines():
+            fields = line.split()
+            if len(fields) >= 3 and (fields[0] == "efivarfs" or fields[2] == "efivarfs"):
+                return "UEFI"
+    except Exception:
+        pass
+    try:
+        r = run("dmesg", check=False, capture=True)
+        if re.search(r"efi:.*v[0-9]", r.stdout or "", re.IGNORECASE):
+            return "UEFI"
+    except Exception:
+        pass
+    return "BIOS"
 
 def is_mountpoint(p: Path) -> bool:
     try:
-        return p.is_mount() if hasattr(p, "is_mount") else run("mountpoint", "-q", str(p), check=False).returncode == 0
-    except:
+        return p.is_mount()
+    except Exception:
         return False
 
 def get_parent_disk(part_path: Path) -> Path:
@@ -89,10 +116,7 @@ def get_parent_disk(part_path: Path) -> Path:
     s = str(part_path)
     m = re.match(r"^(.*?)(?:p\d+|\d+)$", s)
     if m and Path(m.group(1)).exists():
-        if s[-1].isdigit() and not s[-2].isdigit() and "nvme" not in s and "mmcblk" not in s:
-            return Path(s[:-1])
-        elif "p" in s:
-            return Path(m.group(1))
+        return Path(m.group(1))
     return Path(s)
 
 def parse_mkinicpio_hooks() -> str:

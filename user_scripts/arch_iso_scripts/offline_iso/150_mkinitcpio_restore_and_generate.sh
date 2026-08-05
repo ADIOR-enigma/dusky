@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Script: 158_mkinitcpio_restore_and_generate.sh
+# Script: 150_mkinitcpio_restore_and_generate.sh
 # Context: Finalization (Chroot)
 # Description: Restores ALPM hooks, builds missing presets, and generates initramfs.
 # Standard: Arch Linux (Platinum Edition)
@@ -38,7 +38,7 @@ for kdir in /usr/lib/modules/*; do
             printf " -> Generating preset for: %s\n" "$pkgbase"
             cat > "$preset_file" <<EOF
 # mkinitcpio preset file for the '${pkgbase}' package
-# Generated dynamically by Arch Orchestrator (Script 158)
+# Generated dynamically by Arch Orchestrator (Script 150)
 
 ALL_kver="/boot/vmlinuz-${pkgbase}"
 
@@ -51,6 +51,16 @@ EOF
             # Platinum Polish: Enforce strict file permissions on the generated preset
             chmod 0644 "$preset_file"
         fi
+    fi
+done
+
+printf "%s%s[INFO]%s Staging kernels from /usr/lib/modules to /boot...\n" "${C_BOLD}" "${C_CYAN}" "${C_RESET}"
+
+# The masked ALPM hook (070) never staged vmlinuz; stage it now so preset ALL_kver resolves.
+for kdir in /usr/lib/modules/*; do
+    if [[ -f "$kdir/vmlinuz" ]] && [[ -f "$kdir/pkgbase" ]]; then
+        pkgbase="$(<"$kdir/pkgbase")"
+        install -m0644 "$kdir/vmlinuz" "/boot/vmlinuz-${pkgbase}"
     fi
 done
 

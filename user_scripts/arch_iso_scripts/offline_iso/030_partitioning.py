@@ -264,7 +264,27 @@ def get_partition_path(disk, num):
     return f"{disk}{num}"
 
 def detect_boot_mode() -> Literal["UEFI","BIOS"]:
-    return "UEFI" if Path("/sys/firmware/efi/efivars").is_dir() else "BIOS"
+    if Path("/sys/firmware/efi").is_dir():
+        return "UEFI"
+    try:
+        if Path("/sys/firmware/efi/fw_platform_size").read_text().strip():
+            return "UEFI"
+    except Exception:
+        pass
+    try:
+        for line in Path("/proc/mounts").read_text().splitlines():
+            fields = line.split()
+            if len(fields) >= 3 and (fields[0] == "efivarfs" or fields[2] == "efivarfs"):
+                return "UEFI"
+    except Exception:
+        pass
+    try:
+        r = run("dmesg", check=False, capture=True)
+        if re.search(r"efi:.*v[0-9]", r.stdout or "", re.IGNORECASE):
+            return "UEFI"
+    except Exception:
+        pass
+    return "BIOS"
 
 def parse_credentials(path="./.arch_credentials"):
     out = {}
