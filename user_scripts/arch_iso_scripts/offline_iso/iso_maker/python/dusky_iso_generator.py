@@ -531,6 +531,17 @@ def human_bytes(n: int) -> str:
     return f"{f:.2f} TiB"
 
 
+def format_duration(seconds: float) -> str:
+    sec = max(0, int(seconds))
+    if sec < 60:
+        return f"{sec}s"
+    mins, sec = divmod(sec, 60)
+    if mins < 60:
+        return f"{mins}m {sec}s"
+    hours, mins = divmod(mins, 60)
+    return f"{hours}h {mins}m {sec}s"
+
+
 def secure_mkdtemp(prefix: str, base: Optional[Path] = None) -> Path:
     parent = str(base) if base is not None else None
     p = Path(tempfile.mkdtemp(prefix=prefix, dir=parent))
@@ -2713,6 +2724,7 @@ def main() -> None:
     ensure_sudo_cached()
 
     try:
+        start_time = time.monotonic()
         # ----- Official -----
         if action in {"official", "both", "full", "official_iso"}:
             info("=== OFFICIAL REPO BUILD ===")
@@ -2930,17 +2942,19 @@ def main() -> None:
                 configure_iso_pacman_conf(cfg)
                 iso_path = build_iso_image(cfg)
                 sha_path = iso_path.with_name(f"{iso_path.stem}_iso.sha256")
-                sha_preview = "?"
+                sha_full = "?"
                 if sha_path.is_file():
                     parts = sha_path.read_text(encoding="utf-8").split()
                     if parts:
-                        sha_preview = parts[0][:16] + "..."
+                        sha_full = parts[0]
+                elapsed_str = format_duration(time.monotonic() - start_time)
                 console.print(
                     Panel(
                         f"[bold green]SUCCESS[/]\n"
                         f"ISO: {iso_path}\n"
                         f"Size: {human_bytes(iso_path.stat().st_size)}\n"
-                        f"SHA256: {sha_preview}",
+                        f"SHA256: {sha_full}\n"
+                        f"Time: {elapsed_str}",
                         style="green",
                         box=box.DOUBLE,
                     )
@@ -2955,35 +2969,40 @@ def main() -> None:
                     _umount_tree(workspace)
                     shutil.rmtree(workspace, ignore_errors=True)
 
-        # Action-specific success notification
+        # Action-specific success notification & summary
+        elapsed_str = format_duration(time.monotonic() - start_time)
         if "iso_path" in locals():
             send_notification(
                 "Dusky Factory",
-                f"ISO build complete: {iso_path.name}\nSize: {human_bytes(iso_path.stat().st_size)}",
+                f"ISO build complete in {elapsed_str}: {iso_path.name}\nSize: {human_bytes(iso_path.stat().st_size)}\nSHA256: {sha_full}",
                 icon="dialog-information",
             )
         elif action == "official":
+            ok(f"Official Pacman repo download complete! (took {elapsed_str})")
             send_notification(
                 "Dusky Factory",
-                f"Official Pacman repo download complete!\nLocation: {official_repo}",
+                f"Official Pacman repo download complete in {elapsed_str}!\nLocation: {official_repo}",
                 icon="dialog-information",
             )
         elif action == "aur":
+            ok(f"AUR repo build complete! (took {elapsed_str})")
             send_notification(
                 "Dusky Factory",
-                f"AUR repo build complete!\nLocation: {aur_repo}",
+                f"AUR repo build complete in {elapsed_str}!\nLocation: {aur_repo}",
                 icon="dialog-information",
             )
         elif action == "both":
+            ok(f"Official & AUR repos build complete! (took {elapsed_str})")
             send_notification(
                 "Dusky Factory",
-                "Official & AUR repos build complete!",
+                f"Official & AUR repos build complete in {elapsed_str}!",
                 icon="dialog-information",
             )
         else:
+            ok(f"Operation '{action}' completed! (took {elapsed_str})")
             send_notification(
                 "Dusky Factory",
-                f"Operation '{action}' completed successfully!",
+                f"Operation '{action}' completed in {elapsed_str}!",
                 icon="dialog-information",
             )
 
