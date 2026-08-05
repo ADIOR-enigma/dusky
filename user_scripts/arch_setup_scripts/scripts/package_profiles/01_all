@@ -107,7 +107,6 @@ zram-generator
 udisks2
 udiskie
 dosfstools
-ntfs-3g
 xdg-user-dirs
 usbutils
 gnome-disk-utility

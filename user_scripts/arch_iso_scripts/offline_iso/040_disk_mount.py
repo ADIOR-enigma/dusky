@@ -511,6 +511,7 @@ def assemble_fhs(mapped_root,efi_part):
     if BOOT_MODE=="UEFI" and efi_part:
         console.print(f"[yellow]>> Mounting EFI {efi_part} to /mnt/boot (hardened)...[/yellow]")
         run("mount","-t","vfat","-o","fmask=0177,dmask=0077,noexec,nosuid,nodev",str(efi_part),"/mnt/boot",capture=True)
+        sync_secondary_efi_bootloaders("/mnt/boot")
 
     try:
         chroot_etc = Path("/mnt/etc")
@@ -518,6 +519,62 @@ def assemble_fhs(mapped_root,efi_part):
         (chroot_etc / "dusky_state.json").write_text(STATE_JSON.read_text())
     except Exception:
         pass
+
+def sync_secondary_efi_bootloaders(primary_esp_mnt: str = "/mnt/boot"):
+    if BOOT_MODE != "UEFI":
+        return
+    console.print("[yellow]>> Scanning for secondary EFI bootloaders to synchronize...[/yellow]")
+    r = run("lsblk", "--json", "--paths", "-o", "PATH,TYPE,FSTYPE,PARTTYPE,LABEL", check=False, capture=True)
+    if r.returncode != 0 or not r.stdout:
+        return
+    try:
+        data = json.loads(r.stdout)
+    except Exception:
+        return
+
+    esp_guid = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
+    primary_esp_path = ""
+    try:
+        r_mnt = run("findmnt", "-n", "-e", "-o", "SOURCE", primary_esp_mnt, check=False, capture=True)
+        if r_mnt.stdout:
+            primary_esp_path = str(Path(r_mnt.stdout.strip()).resolve())
+    except Exception:
+        pass
+
+    target_efi_dir = Path(primary_esp_mnt) / "EFI"
+    target_efi_dir.mkdir(parents=True, exist_ok=True)
+
+    for dev in data.get("blockdevices", []):
+        for child in dev.get("children", []) or []:
+            path = child.get("path") or child.get("name")
+            if not path:
+                continue
+            try:
+                p_res = str(Path(path).resolve())
+            except Exception:
+                p_res = path
+            if primary_esp_path and p_res == primary_esp_path:
+                continue
+
+            ptype = (child.get("parttype") or "").lower()
+            fstype = (child.get("fstype") or "").lower()
+            if ptype == esp_guid or fstype in ("vfat", "fat32"):
+                tmp_dir = tempfile.mkdtemp(prefix="dusky_sec_esp_")
+                try:
+                    m_res = run("mount", "-t", "vfat", "-o", "ro,noexec,nosuid,nodev", p_res, tmp_dir, check=False, capture=True)
+                    if m_res.returncode == 0:
+                        sec_efi = Path(tmp_dir) / "EFI"
+                        if sec_efi.is_dir():
+                            for vendor_dir in sec_efi.iterdir():
+                                if vendor_dir.is_dir():
+                                    v_name = vendor_dir.name
+                                    dst_vendor = target_efi_dir / v_name
+                                    if not dst_vendor.exists():
+                                        console.print(f"[cyan]Syncing secondary EFI vendor directory '{v_name}' from {p_res} -> {dst_vendor}[/cyan]")
+                                        shutil.copytree(vendor_dir, dst_vendor, dirs_exist_ok=True)
+                    run("umount", tmp_dir, check=False, capture=True)
+                finally:
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
 
 def initialize_swapfile():
     console.print("[yellow]>> Ensuring 4GB swapfile...[/yellow]")

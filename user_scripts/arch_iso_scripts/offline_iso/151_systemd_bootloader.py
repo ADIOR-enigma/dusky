@@ -255,6 +255,26 @@ def build_cmdlines(topo: Dict, luks: Dict, hooks_str: str) -> Tuple[str, str, st
 
     return (primary.strip(), fallback.strip(), base_core)
 
+def generate_secondary_linux_bls_entries(esp_mnt: Path):
+    entries_dir = esp_mnt / "loader" / "entries"
+    entries_dir.mkdir(parents=True, exist_ok=True)
+
+    vendor_configs = [
+        ("ubuntu", "Ubuntu Linux (GRUB)", "shimx64.efi"),
+        ("fedora", "Fedora Linux (GRUB)", "shimx64.efi"),
+        ("debian", "Debian GNU/Linux", "grubx64.efi"),
+        ("pop", "Pop!_OS (GRUB)", "grubx64.efi"),
+        ("opensuse", "openSUSE Linux", "grub.efi"),
+    ]
+
+    for vendor, title, efi_bin in vendor_configs:
+        v_path = esp_mnt / "EFI" / vendor / efi_bin
+        if v_path.is_file():
+            conf_path = entries_dir / f"{vendor}-chainload.conf"
+            content = f"title   {title}\nefi     /EFI/{vendor}/{efi_bin}\n"
+            conf_path.write_text(content)
+            console.print(f"[green]Generated secondary Linux BLS entry: {conf_path}[/green]")
+
 def install_systemd_boot_uefi(primary_opts: str, fallback_opts: str):
     console.print(Panel(f"[bold cyan]UEFI Mode - systemd-boot 261 - Type #1 BLS - No ucode lines[/bold cyan]", box=box.ROUNDED))
     ensure_esp()
@@ -325,8 +345,19 @@ def install_systemd_boot_uefi(primary_opts: str, fallback_opts: str):
     console.print("[green]systemd-boot deployed, random-seed auto-handled since systemd 257+[/green]")
 
     LOADER_CONF.parent.mkdir(parents=True, exist_ok=True)
-    LOADER_CONF.write_text("default  @saved\ntimeout  2\nconsole-mode max\neditor   no\n")
-    console.print(f"[green]Wrote {LOADER_CONF} (default @saved = EFI var saved on every boot)[/green]")
+    loader_conf_str = (
+        "default  @saved\n"
+        "timeout  2\n"
+        "console-mode max\n"
+        "editor   no\n"
+        "auto-entries 1\n"
+        "auto-firmware 1\n"
+        "reboot-for-bitlocker yes\n"
+    )
+    LOADER_CONF.write_text(loader_conf_str)
+    console.print(f"[green]Wrote {LOADER_CONF} (default @saved = EFI var saved on every boot, BitLocker reboot enabled)[/green]")
+
+    generate_secondary_linux_bls_entries(ESP_MNT)
 
     kernels = get_kernels()
     if not kernels:
@@ -377,8 +408,8 @@ def install_grub_bios_fallback(topo: Dict, luks: Dict, primary_opts: str, fallba
     except:
         console.print("[dim]sgdisk not found, skipping BIOS boot partition check[/dim]")
 
-    console.print("[yellow]Ensuring GRUB...[/yellow]")
-    run("pacman", "-S", "--needed", "--noconfirm", "grub", check=False)
+    console.print("[yellow]Ensuring GRUB & os-prober for BIOS mode...[/yellow]")
+    run("pacman", "-S", "--needed", "--noconfirm", "grub", "os-prober", check=False)
 
     if luks["found"]:
         console.print("[yellow]Checking LUKS2 PBKDF for GRUB (only PBKDF2 supported, not argon2id)...[/yellow]")
@@ -404,7 +435,7 @@ GRUB_DISTRIBUTOR="Arch"
 GRUB_CMDLINE_LINUX_DEFAULT="{primary_opts}"
 GRUB_CMDLINE_LINUX=""
 GRUB_ENABLE_CRYPTODISK=y
-GRUB_PRELOAD_MODULES="part_gpt part_msdos btrfs lvm cryptodisk luks2"
+GRUB_PRELOAD_MODULES="part_gpt part_msdos btrfs lvm cryptodisk luks2 ntfs fat ext2"
 GRUB_DISABLE_OS_PROBER=false
 GRUB_TIMEOUT_STYLE=menu
 """
@@ -417,8 +448,13 @@ GRUB_TIMEOUT_STYLE=menu
         console.print(f"[red]grub-install failed: {r.stdout} {r.stderr}, trying --force[/red]")
         run("grub-install", "--target=i386-pc", "--boot-directory=/boot", "--recheck", "--force", str(disk), check=False)
 
-    console.print("[yellow]Generating /boot/grub/grub.cfg...[/yellow]")
-    run("grub-mkconfig", "-o", "/boot/grub/grub.cfg", check=False)
+    console.print("[yellow]Synchronizing udev before os-prober...[/yellow]")
+    run("udevadm", "settle", check=False)
+
+    console.print("[yellow]Generating /boot/grub/grub.cfg (os-prober active)...[/yellow]")
+    r_mk = run("grub-mkconfig", "-o", "/boot/grub/grub.cfg", check=False)
+    if "Found Windows" in (r_mk.stdout or "") or "Found Linux" in (r_mk.stdout or ""):
+        console.print("[bold green]os-prober successfully detected secondary operating system(s)![/bold green]")
     console.print(Panel(f"[bold green]GRUB BIOS Complete\nDisk: {disk}\nConfig: /boot/grub/grub.cfg[/bold green]", box=box.ROUNDED))
 
 def main():

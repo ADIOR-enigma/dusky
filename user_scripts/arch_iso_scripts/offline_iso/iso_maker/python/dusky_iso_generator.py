@@ -192,7 +192,7 @@ ALL_GROUPS: Dict[str, List[str]] = {
     ],
     "filesystem": [
         "btrfs-progs", "compsize", "zram-generator", "udisks2", "udiskie", "dosfstools",
-        "ntfs-3g", "xdg-user-dirs", "usbutils", "gnome-disk-utility", "unzip", "zip", "unrar",
+        "xdg-user-dirs", "usbutils", "gnome-disk-utility", "unzip", "zip", "unrar",
         "7zip", "cpio", "file-roller", "rsync", "nfs-utils", "nilfs-utils", "smartmontools",
         "dmraid", "hdparm", "hwdetect", "lsscsi", "sg3_utils", "cpupower", "dust", "dkms",
         "thunar", "thunar-archive-plugin", "thunar-volman", "thunar-media-tags-plugin",

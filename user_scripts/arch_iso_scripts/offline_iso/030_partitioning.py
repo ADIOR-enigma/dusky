@@ -504,6 +504,39 @@ def detect_windows_esp(disk):
                     pass
     return False, None
 
+def check_filesystem_health(dev_path: str, fstype: str) -> Tuple[bool, str]:
+    if fstype in ("ntfs", "ntfs-3g"):
+        r = run("ntfsfix", "-n", dev_path, check=False, capture=True)
+        if r.returncode != 0 or "Volume is dirty" in (r.stdout or ""):
+            return False, f"NTFS volume {dev_path} is dirty or Windows Fast Startup is active. Boot into Windows and shut down cleanly."
+        return True, "NTFS clean"
+    elif fstype in ("ext4", "ext3", "ext2"):
+        r = run("e2fsck", "-f", "-n", dev_path, check=False, capture=True)
+        if r.returncode >= 4:
+            return False, f"ext4 filesystem errors detected on {dev_path}."
+        return True, "ext4 clean"
+    elif fstype == "btrfs":
+        r = run("btrfs", "check", "--readonly", dev_path, check=False, capture=True)
+        if r.returncode != 0:
+            return False, f"Btrfs integrity check failed on {dev_path}."
+        return True, "Btrfs clean"
+    return True, "OK"
+
+def shrink_partition_ntfs(dev_path: str, target_size_bytes: int) -> bool:
+    ok, msg = check_filesystem_health(dev_path, "ntfs")
+    if not ok:
+        console.print(f"[red]{msg}[/red]")
+        return False
+    r = run("ntfsresize", "--info", "--force", dev_path, check=False, capture=True)
+    if r.returncode != 0:
+        return False
+    r = run("ntfsresize", "--no-action", "--size", str(target_size_bytes), dev_path, check=False, capture=True)
+    if r.returncode != 0:
+        return False
+    console.print(f"[cyan]Shrinking NTFS {dev_path} to {target_size_bytes // (1024**2)} MiB...[/cyan]")
+    run("ntfsresize", "--force", "--size", str(target_size_bytes), dev_path, capture=True)
+    return True
+
 def safe_deactivate_swaps_for_device(target_dev):
     wanted = {"/mnt/swap/swapfile","/swap/swapfile"}
     candidates = set()
