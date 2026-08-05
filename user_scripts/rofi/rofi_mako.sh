@@ -31,11 +31,19 @@ print("[]")
 
 [[ -z "$IGNORED_JSON" ]] && IGNORED_JSON="[]"
 
+TIMES_FILE="${XDG_RUNTIME_DIR:-/tmp}/dusky_notif_times.json"
+TIMES_RAW=$(cat "$TIMES_FILE" 2>/dev/null || echo "{}")
+[[ -z "$TIMES_RAW" ]] && TIMES_RAW="{}"
+
+NOW_TIME=$(date +"%I:%M %p" | sed 's/^0//')
+
 # 1. Parse JSON: Tag sources, sanitize Pango, and format for Rofi
 MENU_PAYLOAD=$(jq -r -n \
   --argjson active "$ACTIVE" \
   --argjson history "$HISTORY" \
   --argjson ignored "$IGNORED_JSON" \
+  --argjson times "$TIMES_RAW" \
+  --arg now_t "$NOW_TIME" \
   --arg bl "$BLACKLIST_RAW" '
   
   # SAFELY define all the apps and modules we want to ignore
@@ -66,7 +74,11 @@ MENU_PAYLOAD=$(jq -r -n \
       else 
         "[\(.app_name | escape_pango)] " 
       end;
-      
+
+  def clean_time($t_dict; $fallback):
+      (($t_dict[.id | tostring]) // $fallback) as $t |
+      " <span alpha=\"50%\" size=\"smaller\">• \($t)</span>";
+
   def clean_body:
       if .body == null or .body == "" then
         "\n<span alpha=\"50%\" size=\"smaller\"><i>No additional details</i></span>"
@@ -81,7 +93,6 @@ MENU_PAYLOAD=$(jq -r -n \
   | ($active | map(. + {__source: "active"})) as $a
   | ($history | map(. + {__source: "history"})) as $h
 
-  # Combine, deduplicate (active wins), sort chronologically
   | ($a + $h) 
   | unique_by(.id) 
   | sort_by(.id) 
@@ -96,7 +107,7 @@ MENU_PAYLOAD=$(jq -r -n \
   | select((.id | tostring) as $id_str | $blacklisted_ids | index($id_str) | not)
   
   # Output Format: ID [TAB] APP [TAB] SOURCE [TAB] UI_STRING [RECORD_SEPARATOR]
-  | "\(.id)\t\(.desktop_entry // .app_name // "" | gsub("\t";" "))\t\(.__source)\t<b>\(clean_app)\(.summary | gsub("<[^>]+>"; "") | escape_pango)</b>\(clean_body)\u001e"
+  | "\(.id)\t\(.desktop_entry // .app_name // "" | gsub("\t";" "))\t\(.__source)\t<b>\(clean_app)\(.summary | gsub("<[^>]+>"; "") | escape_pango)</b>\(clean_time($times; $now_t))\(clean_body)\u001e"
 ')
 
 if [[ -z "$MENU_PAYLOAD" ]]; then
