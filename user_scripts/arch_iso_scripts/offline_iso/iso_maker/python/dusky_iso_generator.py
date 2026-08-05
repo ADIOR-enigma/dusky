@@ -408,6 +408,11 @@ def _signal_exit(signum: int, _frame: object) -> None:
         sys.stderr.flush()
     except OSError:
         pass
+    send_notification(
+        "Dusky Factory",
+        f"Process interrupted (signal {signum})",
+        icon="dialog-warning",
+    )
     _run_cleanups()
     os._exit(128 + signum)
 
@@ -462,8 +467,55 @@ def err(msg: str) -> None:
     console.print(f"[bold red][XX][/] {msg}")
 
 
+def send_notification(title: str, msg: str, icon: str = "dialog-information") -> None:
+    notify_bin = shutil.which("notify-send")
+    if not notify_bin:
+        return
+
+    real_user, _ = get_real_user()
+    if os.geteuid() == 0 and real_user and real_user != "root":
+        try:
+            pw = pwd.getpwnam(real_user)
+            env = os.environ.copy()
+            bus_path = f"/run/user/{pw.pw_uid}/bus"
+            if os.path.exists(bus_path):
+                env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus_path}"
+            cmd = [
+                "runuser",
+                "-u",
+                real_user,
+                "--",
+                notify_bin,
+                title,
+                msg,
+                "-i",
+                icon,
+                "-a",
+                "Dusky Factory",
+            ]
+            subprocess.run(
+                cmd,
+                env=env,
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return
+        except Exception:
+            pass
+
+    cmd = [notify_bin, title, msg, "-i", icon, "-a", "Dusky Factory"]
+    subprocess.run(
+        cmd,
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
 def die(msg: str) -> None:
     err(msg)
+    send_notification("Dusky Factory", f"Failed: {msg}", icon="dialog-error")
     _run_cleanups()
     raise SystemExit(1)
 
@@ -2531,7 +2583,7 @@ def prompt_action() -> str:
     console.print(
         Align.center(
             Panel(
-                "Dusky Factory — What to do?",
+                "Dusky Factory",
                 style="cyan",
                 box=box.ROUNDED,
                 expand=False,
@@ -2595,26 +2647,6 @@ def main() -> None:
         except (ValueError, OSError):
             pass
 
-    pq = subprocess.run(
-        ["pacman", "-Q", "pacman", "archiso"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    pq_line = " · ".join(
-        ln.strip() for ln in (pq.stdout or "").splitlines() if ln.strip()
-    ) or "pacman/archiso unknown"
-    console.print(
-        Align.center(
-            Panel(
-                f"Dusky Factory v{VERSION}\n"
-                f"Python {sys.version.split()[0]} · {pq_line}",
-                style="bold cyan",
-                box=box.DOUBLE,
-                expand=False,
-            )
-        )
-    )
     check_is_arch()
     assert_x86_64()
     acquire_factory_lock()
@@ -2680,247 +2712,287 @@ def main() -> None:
 
     ensure_sudo_cached()
 
-    # ----- Official -----
-    if action in {"official", "both", "full", "official_iso"}:
-        info("=== OFFICIAL REPO BUILD ===")
-        for t in ("pacman", "repo-add", "bsdtar", "zstd", "xz"):
-            if not check_tool(t):
-                die(f"Missing tool: {t}")
-        master = build_master_list(
-            external_pkg_list if external_pkg_list.exists() else None
-        )
-        isolated = IsolatedDB()
-        try:
-            isolated.generate_conf()
-            ensure_archlinux_keyring(isolated)
-            if not isolated.sync():
-                die("Sync failed — check network/keyring")
-            official_names, maybe_aur = resolve_official_names(isolated, master)
-            if maybe_aur:
-                warn(
-                    f"{len(maybe_aur)} master names not in official sync "
-                    f"(fix or add to AUR_SEED): {', '.join(maybe_aur[:40])}"
-                    + ("…" if len(maybe_aur) > 40 else "")
-                )
-            if not official_names:
-                die("No official packages resolved from master list")
-            download_packages(isolated, official_names, official_repo)
-            # download_packages already pruned against fresh whitelist
-            if check_tool("paccache"):
-                run_cmd(
-                    ["paccache", "-r", "-k", "1", "-c", str(official_repo)],
-                    sudo=True,
-                    check=False,
-                )
-            generate_repo_db(official_repo)
-            restore_ownership(official_repo)
-            # Stash for AUR phase when action includes AUR
-            os.environ["DUSKY_UNRESOLVED_OFFICIAL"] = " ".join(maybe_aur)
-        finally:
-            isolated.cleanup()
-
-    # ----- AUR -----
-    if action in {"aur", "both", "full"}:
-        info("=== AUR REPO BUILD ===")
-        if os.geteuid() == 0:
-            warn("Running as root — makepkg/git via runuser as " + real_user)
-        for t in ("git", "makepkg", "bsdtar", "gcc", "make"):
-            if not check_tool(t):
-                die(f"Missing tool: {t} (install base-devel)")
-
-        isolated_aur = IsolatedDB()
-        try:
-            isolated_aur.generate_conf()
-            if not isolated_aur.sync():
-                die("AUR isolated sync failed")
-            aur_repo.mkdir(parents=True, exist_ok=True)
-            ensure_disk_space(aur_repo, 2 * 1024**3, "AUR builds")
-
-            uid, gid = validate_sudo_ids()
-            if os.geteuid() == 0 and uid is not None and gid is not None:
-                subprocess.run(
-                    [
-                        "chown",
-                        "-R",
-                        "-h",
-                        "--no-dereference",
-                        f"{uid}:{gid}",
-                        str(aur_repo),
-                    ],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    shell=False,
-                    check=False,
-                )
-
-            clone_base = secure_mkdtemp("aur-factory-")
-            if os.geteuid() == 0 and uid is not None and gid is not None:
-                subprocess.run(
-                    [
-                        "chown",
-                        "-R",
-                        "-h",
-                        "--no-dereference",
-                        f"{uid}:{gid}",
-                        str(clone_base),
-                    ],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    shell=False,
-                    check=False,
-                )
-
-            makepkg_conf_path = clone_base / "dusky-makepkg.conf"
-            write_factory_makepkg_conf(makepkg_conf_path)
-            if os.geteuid() == 0 and uid is not None:
-                try:
-                    os.chown(makepkg_conf_path, uid, gid if gid is not None else -1)
-                except OSError:
-                    pass
-
-            extra_unresolved = [
-                p
-                for p in os.environ.get("DUSKY_UNRESOLVED_OFFICIAL", "").split()
-                if PKGNAME_RE.fullmatch(p)
-            ]
-            aur_queue: List[str] = list(dict.fromkeys([*AUR_SEED, *extra_unresolved]))
-            aur_known: set[str] = set(aur_queue)
-            built = skipped = 0
-            failed: List[str] = []
-            deferred_rounds: Dict[str, int] = {}
-            i = 0
-            max_defer = 50
-
-            prepare_alpm_cache_dir(aur_repo)
-
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("{task.description}"),
-                BarColumn(),
-                TaskProgressColumn(),
-                console=console,
-            ) as prog:
-                task_id = prog.add_task("AUR builds", total=max(len(aur_queue), 1))
-                while i < len(aur_queue):
-                    pkg = aur_queue[i]
-                    prog.update(
-                        task_id,
-                        description=f"Building {pkg} ({i + 1}/{len(aur_queue)})",
-                        total=len(aur_queue),
-                    )
-                    try:
-                        ok_flag, was_skip, deferred = build_aur_package(
-                            pkg,
-                            aur_repo,
-                            official_repo if official_repo.exists() else None,
-                            isolated_aur,
-                            clone_base,
-                            real_user,
-                            aur_queue,
-                            aur_known,
-                            makepkg_conf_path,
-                        )
-                        if deferred:
-                            n = deferred_rounds.get(pkg, 0) + 1
-                            deferred_rounds[pkg] = n
-                            if n > max_defer:
-                                err(f"Defer limit exceeded for {pkg}")
-                                failed.append(pkg)
-                            else:
-                                aur_queue.append(pkg)
-                        elif ok_flag:
-                            if was_skip:
-                                skipped += 1
-                            else:
-                                built += 1
-                        else:
-                            failed.append(pkg)
-                    except Exception as exc:  # noqa: BLE001 — per-pkg isolation
-                        err(f"Exception {pkg}: {exc}")
-                        failed.append(pkg)
-                    i += 1
-                    prog.update(task_id, completed=i, total=len(aur_queue))
-
-            shutil.rmtree(clone_base, ignore_errors=True)
-            aur_prune_and_db(aur_repo, isolated_aur, aur_queue)
-
-            table = Table(title="AUR Summary", box=box.ROUNDED)
-            table.add_column("Metric", style="cyan")
-            table.add_column("Value", style="green")
-            table.add_row("Built", str(built))
-            table.add_row("Skipped", str(skipped))
-            table.add_row("Failed", str(len(failed)))
-            table.add_row("Queue final", str(len(aur_queue)))
-            console.print(table)
-            if failed:
-                console.print(f"[red]Failed: {', '.join(failed)}[/]")
-                hard = sorted(set(failed) & set(REQUIRED_AUR))
-                if hard:
-                    die(f"Required AUR package(s) failed: {', '.join(hard)}")
-        finally:
-            isolated_aur.cleanup()
-
-    # ----- ISO -----
-    if action in {"iso", "full", "official_iso"}:
-        info("=== ISO BUILD ===")
-        if os.geteuid() != 0:
-            die("ISO build requires root")
-        for t in ("mkarchiso", "git", "rsync"):
-            if not check_tool(t):
-                die(f"Missing tool: {t}")
-        if workspace_base is None:
-            die("Internal error: workspace_base unset")
-        if not official_repo.is_dir():
-            die(f"Official repo missing at {official_repo} — build it first")
-
-        workspace = workspace_base / "dusky_iso"
-        final_dest = (
-            ZRAM_CANDIDATE
-            if ZRAM_CANDIDATE.exists() and is_mountpoint(ZRAM_CANDIDATE)
-            else (real_home / "dusky_isos")
-        )
-        cfg = ISOConfig(
-            workspace=workspace,
-            profile_dir=workspace / "profile",
-            work_dir=workspace / "work",
-            out_dir=workspace / "out",
-            source_dir=source_dir,
-            official_repo=official_repo,
-            aur_repo=aur_repo if aur_repo.is_dir() else None,
-            final_dest=final_dest,
-        )
-        try:
-            setup_clean_room(cfg)
-            stage_payloads(cfg)
-            configure_live_hooks(cfg)
-            inject_dotfiles(cfg)
-            configure_iso_pacman_conf(cfg)
-            iso_path = build_iso_image(cfg)
-            sha_path = iso_path.with_name(f"{iso_path.stem}_iso.sha256")
-            sha_preview = "?"
-            if sha_path.is_file():
-                parts = sha_path.read_text(encoding="utf-8").split()
-                if parts:
-                    sha_preview = parts[0][:16] + "..."
-            console.print(
-                Panel(
-                    f"[bold green]SUCCESS[/]\n"
-                    f"ISO: {iso_path}\n"
-                    f"Size: {human_bytes(iso_path.stat().st_size)}\n"
-                    f"SHA256: {sha_preview}",
-                    style="green",
-                    box=box.DOUBLE,
-                )
+    try:
+        # ----- Official -----
+        if action in {"official", "both", "full", "official_iso"}:
+            info("=== OFFICIAL REPO BUILD ===")
+            for t in ("pacman", "repo-add", "bsdtar", "zstd", "xz"):
+                if not check_tool(t):
+                    die(f"Missing tool: {t}")
+            master = build_master_list(
+                external_pkg_list if external_pkg_list.exists() else None
             )
-        finally:
-            if workspace.exists() and (
-                str(workspace).startswith("/tmp/")
-                or str(workspace).startswith(str(ZRAM_CANDIDATE))
-                or workspace.name == "dusky_iso"
-                or workspace.name.startswith("dusky_iso")
-            ):
-                _umount_tree(workspace)
-                shutil.rmtree(workspace, ignore_errors=True)
+            isolated = IsolatedDB()
+            try:
+                isolated.generate_conf()
+                ensure_archlinux_keyring(isolated)
+                if not isolated.sync():
+                    die("Sync failed — check network/keyring")
+                official_names, maybe_aur = resolve_official_names(isolated, master)
+                if maybe_aur:
+                    warn(
+                        f"{len(maybe_aur)} master names not in official sync "
+                        f"(fix or add to AUR_SEED): {', '.join(maybe_aur[:40])}"
+                        + ("…" if len(maybe_aur) > 40 else "")
+                    )
+                if not official_names:
+                    die("No official packages resolved from master list")
+                download_packages(isolated, official_names, official_repo)
+                # download_packages already pruned against fresh whitelist
+                if check_tool("paccache"):
+                    run_cmd(
+                        ["paccache", "-r", "-k", "1", "-c", str(official_repo)],
+                        sudo=True,
+                        check=False,
+                    )
+                generate_repo_db(official_repo)
+                restore_ownership(official_repo)
+                # Stash for AUR phase when action includes AUR
+                os.environ["DUSKY_UNRESOLVED_OFFICIAL"] = " ".join(maybe_aur)
+            finally:
+                isolated.cleanup()
+
+        # ----- AUR -----
+        if action in {"aur", "both", "full"}:
+            info("=== AUR REPO BUILD ===")
+            if os.geteuid() == 0:
+                warn("Running as root — makepkg/git via runuser as " + real_user)
+            for t in ("git", "makepkg", "bsdtar", "gcc", "make"):
+                if not check_tool(t):
+                    die(f"Missing tool: {t} (install base-devel)")
+
+            isolated_aur = IsolatedDB()
+            try:
+                isolated_aur.generate_conf()
+                if not isolated_aur.sync():
+                    die("AUR isolated sync failed")
+                aur_repo.mkdir(parents=True, exist_ok=True)
+                ensure_disk_space(aur_repo, 2 * 1024**3, "AUR builds")
+
+                uid, gid = validate_sudo_ids()
+                if os.geteuid() == 0 and uid is not None and gid is not None:
+                    subprocess.run(
+                        [
+                            "chown",
+                            "-R",
+                            "-h",
+                            "--no-dereference",
+                            f"{uid}:{gid}",
+                            str(aur_repo),
+                        ],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        shell=False,
+                        check=False,
+                    )
+
+                clone_base = secure_mkdtemp("aur-factory-")
+                if os.geteuid() == 0 and uid is not None and gid is not None:
+                    subprocess.run(
+                        [
+                            "chown",
+                            "-R",
+                            "-h",
+                            "--no-dereference",
+                            f"{uid}:{gid}",
+                            str(clone_base),
+                        ],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        shell=False,
+                        check=False,
+                    )
+
+                makepkg_conf_path = clone_base / "dusky-makepkg.conf"
+                write_factory_makepkg_conf(makepkg_conf_path)
+                if os.geteuid() == 0 and uid is not None:
+                    try:
+                        os.chown(makepkg_conf_path, uid, gid if gid is not None else -1)
+                    except OSError:
+                        pass
+
+                extra_unresolved = [
+                    p
+                    for p in os.environ.get("DUSKY_UNRESOLVED_OFFICIAL", "").split()
+                    if PKGNAME_RE.fullmatch(p)
+                ]
+                aur_queue: List[str] = list(dict.fromkeys([*AUR_SEED, *extra_unresolved]))
+                aur_known: set[str] = set(aur_queue)
+                built = skipped = 0
+                failed: List[str] = []
+                deferred_rounds: Dict[str, int] = {}
+                i = 0
+                max_defer = 50
+
+                prepare_alpm_cache_dir(aur_repo)
+
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn("{task.description}"),
+                    BarColumn(),
+                    TaskProgressColumn(),
+                    console=console,
+                ) as prog:
+                    task_id = prog.add_task("AUR builds", total=max(len(aur_queue), 1))
+                    while i < len(aur_queue):
+                        pkg = aur_queue[i]
+                        prog.update(
+                            task_id,
+                            description=f"Building {pkg} ({i + 1}/{len(aur_queue)})",
+                            total=len(aur_queue),
+                        )
+                        try:
+                            ok_flag, was_skip, deferred = build_aur_package(
+                                pkg,
+                                aur_repo,
+                                official_repo if official_repo.exists() else None,
+                                isolated_aur,
+                                clone_base,
+                                real_user,
+                                aur_queue,
+                                aur_known,
+                                makepkg_conf_path,
+                            )
+                            if deferred:
+                                n = deferred_rounds.get(pkg, 0) + 1
+                                deferred_rounds[pkg] = n
+                                if n > max_defer:
+                                    err(f"Defer limit exceeded for {pkg}")
+                                    failed.append(pkg)
+                                else:
+                                    aur_queue.append(pkg)
+                            elif ok_flag:
+                                if was_skip:
+                                    skipped += 1
+                                else:
+                                    built += 1
+                            else:
+                                failed.append(pkg)
+                        except Exception as exc:  # noqa: BLE001 — per-pkg isolation
+                            err(f"Exception {pkg}: {exc}")
+                            failed.append(pkg)
+                        i += 1
+                        prog.update(task_id, completed=i, total=len(aur_queue))
+
+                shutil.rmtree(clone_base, ignore_errors=True)
+                aur_prune_and_db(aur_repo, isolated_aur, aur_queue)
+
+                table = Table(title="AUR Summary", box=box.ROUNDED)
+                table.add_column("Metric", style="cyan")
+                table.add_column("Value", style="green")
+                table.add_row("Built", str(built))
+                table.add_row("Skipped", str(skipped))
+                table.add_row("Failed", str(len(failed)))
+                table.add_row("Queue final", str(len(aur_queue)))
+                console.print(table)
+                if failed:
+                    console.print(f"[red]Failed: {', '.join(failed)}[/]")
+                    hard = sorted(set(failed) & set(REQUIRED_AUR))
+                    if hard:
+                        die(f"Required AUR package(s) failed: {', '.join(hard)}")
+            finally:
+                isolated_aur.cleanup()
+
+        # ----- ISO -----
+        if action in {"iso", "full", "official_iso"}:
+            info("=== ISO BUILD ===")
+            if os.geteuid() != 0:
+                die("ISO build requires root")
+            for t in ("mkarchiso", "git", "rsync"):
+                if not check_tool(t):
+                    die(f"Missing tool: {t}")
+            if workspace_base is None:
+                die("Internal error: workspace_base unset")
+            if not official_repo.is_dir():
+                die(f"Official repo missing at {official_repo} — build it first")
+
+            workspace = workspace_base / "dusky_iso"
+            final_dest = (
+                ZRAM_CANDIDATE
+                if ZRAM_CANDIDATE.exists() and is_mountpoint(ZRAM_CANDIDATE)
+                else (real_home / "dusky_isos")
+            )
+            cfg = ISOConfig(
+                workspace=workspace,
+                profile_dir=workspace / "profile",
+                work_dir=workspace / "work",
+                out_dir=workspace / "out",
+                source_dir=source_dir,
+                official_repo=official_repo,
+                aur_repo=aur_repo if aur_repo.is_dir() else None,
+                final_dest=final_dest,
+            )
+            try:
+                setup_clean_room(cfg)
+                stage_payloads(cfg)
+                configure_live_hooks(cfg)
+                inject_dotfiles(cfg)
+                configure_iso_pacman_conf(cfg)
+                iso_path = build_iso_image(cfg)
+                sha_path = iso_path.with_name(f"{iso_path.stem}_iso.sha256")
+                sha_preview = "?"
+                if sha_path.is_file():
+                    parts = sha_path.read_text(encoding="utf-8").split()
+                    if parts:
+                        sha_preview = parts[0][:16] + "..."
+                console.print(
+                    Panel(
+                        f"[bold green]SUCCESS[/]\n"
+                        f"ISO: {iso_path}\n"
+                        f"Size: {human_bytes(iso_path.stat().st_size)}\n"
+                        f"SHA256: {sha_preview}",
+                        style="green",
+                        box=box.DOUBLE,
+                    )
+                )
+            finally:
+                if workspace.exists() and (
+                    str(workspace).startswith("/tmp/")
+                    or str(workspace).startswith(str(ZRAM_CANDIDATE))
+                    or workspace.name == "dusky_iso"
+                    or workspace.name.startswith("dusky_iso")
+                ):
+                    _umount_tree(workspace)
+                    shutil.rmtree(workspace, ignore_errors=True)
+
+        # Action-specific success notification
+        if "iso_path" in locals():
+            send_notification(
+                "Dusky Factory",
+                f"ISO build complete: {iso_path.name}\nSize: {human_bytes(iso_path.stat().st_size)}",
+                icon="dialog-information",
+            )
+        elif action == "official":
+            send_notification(
+                "Dusky Factory",
+                f"Official Pacman repo download complete!\nLocation: {official_repo}",
+                icon="dialog-information",
+            )
+        elif action == "aur":
+            send_notification(
+                "Dusky Factory",
+                f"AUR repo build complete!\nLocation: {aur_repo}",
+                icon="dialog-information",
+            )
+        elif action == "both":
+            send_notification(
+                "Dusky Factory",
+                "Official & AUR repos build complete!",
+                icon="dialog-information",
+            )
+        else:
+            send_notification(
+                "Dusky Factory",
+                f"Operation '{action}' completed successfully!",
+                icon="dialog-information",
+            )
+
+    except KeyboardInterrupt:
+        die("Cancelled by user (Ctrl+C)")
+    except SystemExit:
+        raise
+    except Exception as exc:
+        die(f"Unhandled exception: {exc}")
 
 
 if __name__ == "__main__":
