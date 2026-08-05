@@ -15,7 +15,7 @@ dirs = [
 
 [phase1]
 scripts = [
-    "U | 001_uefi_check.sh",
+    "U | 001_uefi_check.py",
     "U | 002_storage_mode_check.py --auto",
     "U | interactive | 003_network_connect.sh",
     "U | interactive | 010_set_variables.sh --no_encrypt",
