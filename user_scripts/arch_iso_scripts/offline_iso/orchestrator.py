@@ -2006,7 +2006,8 @@ def main():
             console = Console()
 
             console.print("\n")
-            console.print(Panel("[bold cyan]Dusky Arch Installer Profile Selection[/bold cyan]", box=box.ROUNDED))
+            console.print(Panel(Text("Dusky Installation Method", justify="center", style="bold cyan"), box=box.ROUNDED, expand=False, padding=(0, 4)))
+            console.print("\n")
 
             profile_choices = []
             for i, p in enumerate(profiles, start=1):
