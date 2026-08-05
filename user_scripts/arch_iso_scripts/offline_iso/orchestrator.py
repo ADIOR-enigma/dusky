@@ -2028,20 +2028,38 @@ def main():
                 console.print(f"  [bold yellow]{i}.[/bold yellow] [bold white]{p_name}[/bold white] — [dim]{p_desc}[/dim] {status_str}")
                 profile_choices.append((p, available))
 
+            console.print("  [bold yellow]q.[/bold yellow] [bold white]Quit[/bold white] — [dim]Cancel installation and return to live shell[/dim]")
+
             if not repo_valid:
                 console.print(Panel(f"[bold red]OFFLINE REPO CORRUPTION DETECTED:[/bold red]\n{repo_reason}\n"
                                     "[yellow]Offline installation disabled. Please select Online Profile or re-copy ISO cleanly.[/yellow]", box=box.ROUNDED))
 
             default_idx = "2" if (not repo_valid and len(profiles) >= 2) else "1"
+            valid_choices = [str(i) for i in range(1, len(profiles) + 1)] + ["q", "Q", "quit"]
             while True:
-                choice = Prompt.ask("\nSelect Profile Number", choices=[str(i) for i in range(1, len(profiles) + 1)], default=default_idx)
-                idx = int(choice) - 1
-                p, avail = profile_choices[idx]
-                if not avail:
-                    console.print(f"[red]Profile '{p.name}' is unavailable because the offline repository is corrupted. Please choose another option.[/red]")
+                try:
+                    choice = Prompt.ask("\nSelect Profile Number", choices=valid_choices, default=default_idx)
+                    if choice.lower() in ("q", "quit"):
+                        console.print("\n[yellow]Installation cancelled by user. Returning to live shell.[/yellow]")
+                        sys.exit(0)
+
+                    idx = int(choice) - 1
+                    p, avail = profile_choices[idx]
+                    if not avail:
+                        console.print(f"[red]Profile '{p.name}' is unavailable because the offline repository is corrupted. Please choose another option.[/red]")
+                        continue
+                    selected_profile = p
+                    break
+                except KeyboardInterrupt:
+                    console.print("\n[bold yellow]Installation cancelled (Ctrl+C). Returning to live shell.[/bold yellow]")
+                    sys.exit(0)
+                except EOFError:
+                    console.print(f"\n[yellow]EOF detected. Selected default option ({default_idx}).[/yellow]")
+                    idx = int(default_idx) - 1
+                    selected_profile = profile_choices[idx][0]
+                    break
+                except Exception:
                     continue
-                selected_profile = p
-                break
 
     if not selected_profile:
         sys.stderr.write(f"Error: No valid installer profile found in '{PROFILES_DIR}'. Installation aborted.\n")
