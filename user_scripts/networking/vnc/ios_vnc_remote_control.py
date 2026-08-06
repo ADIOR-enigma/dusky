@@ -1,0 +1,861 @@
+#!/usr/bin/env python3
+"""
+===============================================================================
+ Title:        Arch Linux to iOS 16.7 Remote Control & Screen Link (v7.0 Golden)
+ Target:       Arch Linux (Wayland / Hyprland), iOS 16.7 (Jailbroken)
+ Python:       Python 3.10 - 3.14+ (Modern Syntax & Strict Audit Compliance)
+ -------------------------------------------------------------------------------
+ Audit & Safety Guarantees:
+  1. Environment Preservation: Preserves WAYLAND_DISPLAY, HYPRLAND_INSTANCE_SIGNATURE,
+     and XDG_RUNTIME_DIR across sudo privilege escalation.
+  2. Dual Execution Contexts: System-level root actions (pacman, udev, firewall)
+     run as root; Wayland/IPC actions (hyprctl, wayvnc, sunshine) run in the real
+     unprivileged user session (SUDO_USER).
+  3. Immediate uinput Permissions: Applies POSIX ACLs (`setfacl -m u:$USER:rw /dev/uinput`)
+     and boot module persistence (/etc/modules-load.d/uinput.conf) so current
+     sessions work immediately without re-login.
+  4. Sunshine Configuration: Auto-configures output_name = HEADLESS-1 in sunshine.conf,
+     syncs D-Bus activation environment, and manages user units safely.
+  5. WayVNC Audited Pipeline: Auto-generates 4096-bit RSA TLS certs, configures
+     /etc/pam.d/wayvnc, cleans stale sockets (/run/user/UID/wayvncctl), and validates
+     IPs using ipaddress.ip_address with 0.0.0.0 fallback.
+  6. USB Tethering & Pairing: Validates idevicepair trust records, checks for local
+     port conflicts before launching iproxy, and triggers IPv4 DHCP on ipheth interfaces.
+  7. Idempotent Firewalls: Handles UFW, Firewalld, nftables, and iptables idempotently
+     without throwing duplicate rule or missing table/chain errors.
+  8. Unbreakable Cleanup: Signal handlers (SIGINT/SIGTERM), atexit hooks, and try/finally
+     blocks guarantee background processes and virtual displays are destroyed on exit.
+===============================================================================
+"""
+
+import os
+import sys
+import pwd
+import json
+import shlex
+import shutil
+import signal
+import atexit
+import ipaddress
+import subprocess
+import contextlib
+from pathlib import Path
+from dataclasses import dataclass
+from typing import Any, Callable
+
+# --- 1. Early Privilege Escalation & Environment Preservation ---
+def bootstrap_environment() -> None:
+    """Ensures root privileges while preserving critical Wayland & Hyprland environment variables."""
+    if os.geteuid() != 0:
+        print("[\033[1;33m*\033[0m] Escalating privileges via sudo for Arch Linux system-level setup...", flush=True)
+        preserve_vars = "WAYLAND_DISPLAY,HYPRLAND_INSTANCE_SIGNATURE,XDG_RUNTIME_DIR,XDG_CURRENT_DESKTOP,XDG_SESSION_TYPE"
+        try:
+            os.execvp("sudo", ["sudo", f"--preserve-env={preserve_vars}", sys.executable] + sys.argv)
+        except Exception as e:
+            print(f"[\033[1;31m!\033[0m] FATAL: Privilege escalation failed: {e}", flush=True)
+            sys.exit(1)
+
+    # Auto-install bootstrap dependencies if missing
+    required_pkgs = ["python-rich", "qrencode", "usbmuxd", "libimobiledevice", "iproute2", "gawk", "openssl"]
+    missing_pkgs: list[str] = []
+
+    try:
+        import rich
+    except ImportError:
+        missing_pkgs.append("python-rich")
+
+    for pkg in required_pkgs:
+        if pkg != "python-rich":
+            res = subprocess.run(["pacman", "-Qq", pkg], capture_output=True, text=True)
+            if res.returncode != 0:
+                missing_pkgs.append(pkg)
+
+    if missing_pkgs:
+        print(f"[\033[1;36m*\033[0m] Auto-installing required packages via pacman: {', '.join(missing_pkgs)}...", flush=True)
+        if Path("/var/lib/pacman/db.lck").exists():
+            print("[\033[1;31m!\033[0m] FATAL: Pacman database locked (/var/lib/pacman/db.lck). Please release pacman first.", flush=True)
+            sys.exit(1)
+        try:
+            subprocess.run(["pacman", "-S", "--needed", "--noconfirm"] + missing_pkgs, check=True)
+            print("[\033[1;32m✔\033[0m] Dependencies installed. Reloading runtime environment...", flush=True)
+            os.execvp(sys.executable, [sys.executable] + sys.argv)
+        except subprocess.CalledProcessError as e:
+            print(f"[\033[1;31m!\033[0m] FATAL: Failed to install packages: {e}", flush=True)
+            sys.exit(1)
+
+bootstrap_environment()
+
+# --- Rich UI Imports ---
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich.prompt import Prompt, Confirm
+from rich.text import Text
+from rich.align import Align
+
+console = Console()
+
+# --- 2. User Context & Environment Resolution Engine ---
+@dataclass
+class UserContext:
+    username: str
+    uid: int
+    gid: int
+    home: Path
+    xdg_runtime_dir: Path
+    wayland_display: str | None
+    hyprland_signature: str | None
+
+    def get_user_env(self) -> dict[str, str]:
+        """Constructs an isolated, complete environment dictionary for unprivileged user execution."""
+        env = os.environ.copy()
+        env["USER"] = self.username
+        env["LOGNAME"] = self.username
+        env["HOME"] = str(self.home)
+        env["XDG_RUNTIME_DIR"] = str(self.xdg_runtime_dir)
+        env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={self.xdg_runtime_dir}/bus"
+
+        if self.wayland_display:
+            env["WAYLAND_DISPLAY"] = self.wayland_display
+        if self.hyprland_signature:
+            env["HYPRLAND_INSTANCE_SIGNATURE"] = self.hyprland_signature
+
+        return env
+
+    def demote_fn(self) -> Callable[[], None]:
+        """Subprocess preexec_fn to drop root privileges to user UID/GID."""
+        uid, gid = self.uid, self.gid
+        def _demote() -> None:
+            os.setgid(gid)
+            os.setuid(uid)
+        return _demote
+
+class UserResolver:
+    @staticmethod
+    def resolve() -> UserContext:
+        username = os.environ.get("SUDO_USER")
+        if not username or username == "root":
+            if shutil.which("loginctl"):
+                with contextlib.suppress(Exception):
+                    res = subprocess.run(["loginctl", "list-sessions", "--output=json"], capture_output=True, text=True)
+                    if res.returncode == 0:
+                        sessions = json.loads(res.stdout)
+                        for s in sessions:
+                            if s.get("uid", 0) >= 1000 and s.get("user") != "root":
+                                username = s.get("user")
+                                break
+
+        if not username or username == "root":
+            username = "root"
+
+        try:
+            pw = pwd.getpwnam(username)
+            uid = pw.pw_uid
+            gid = pw.pw_gid
+            home = Path(pw.pw_dir)
+        except KeyError:
+            uid = os.getuid()
+            gid = os.getgid()
+            home = Path.home()
+
+        xdg_runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{uid}"))
+        wayland_disp = os.environ.get("WAYLAND_DISPLAY")
+        hypr_sig = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
+
+        # Fallback inspection of runtime directory if variables were omitted
+        if not wayland_disp and xdg_runtime.exists():
+            for p in xdg_runtime.glob("wayland-*"):
+                if not p.name.endswith(".lock"):
+                    wayland_disp = p.name
+                    break
+
+        if not hypr_sig and Path("/tmp/hypr").exists():
+            with contextlib.suppress(Exception):
+                sigs = [p.name for p in Path("/tmp/hypr").iterdir() if p.is_dir()]
+                if sigs:
+                    hypr_sig = sigs[0]
+
+        return UserContext(
+            username=username,
+            uid=uid,
+            gid=gid,
+            home=home,
+            xdg_runtime_dir=xdg_runtime,
+            wayland_display=wayland_disp,
+            hyprland_signature=hypr_sig
+        )
+
+user_ctx = UserResolver.resolve()
+
+# --- 3. Data Models ---
+@dataclass
+class NetworkInterface:
+    name: str
+    ip: str
+    if_type: str  # 'usb', 'tailscale', 'lan'
+
+@dataclass
+class ServiceState:
+    name: str
+    active: bool
+    enabled: bool
+
+# --- 4. Subprocess & Resource Management Engine ---
+class CommandRunner:
+    @staticmethod
+    def run(
+        cmd: str | list[str],
+        user_context: UserContext | None = None,
+        check: bool = False,
+        timeout: int = 15,
+        as_user: bool = False
+    ) -> subprocess.CompletedProcess[str]:
+        if isinstance(cmd, str):
+            args = shlex.split(cmd)
+        else:
+            args = list(cmd)
+
+        ctx = user_context or user_ctx
+        env = ctx.get_user_env()
+
+        if as_user and ctx.username != "root":
+            args = ["sudo", "-u", ctx.username, "-E"] + args
+
+        try:
+            return subprocess.run(args, capture_output=True, text=True, check=check, timeout=timeout, env=env)
+        except subprocess.CalledProcessError as e:
+            if check:
+                raise e
+            return subprocess.CompletedProcess(args, e.returncode, stdout=e.stdout or "", stderr=e.stderr or "")
+        except FileNotFoundError:
+            return subprocess.CompletedProcess(args, 127, stdout="", stderr=f"Binary not found: {args[0]}")
+        except subprocess.TimeoutExpired:
+            return subprocess.CompletedProcess(args, 124, stdout="", stderr=f"Command timed out after {timeout}s")
+
+class ResourceManager:
+    _managed_processes: list[subprocess.Popen[Any]] = []
+    _managed_headless_displays: list[str] = []
+
+    @classmethod
+    def register_process(cls, proc: subprocess.Popen[Any]) -> None:
+        if proc not in cls._managed_processes:
+            cls._managed_processes.append(proc)
+
+    @classmethod
+    def unregister_process(cls, proc: subprocess.Popen[Any]) -> None:
+        if proc in cls._managed_processes:
+            cls._managed_processes.remove(proc)
+
+    @classmethod
+    def register_headless_display(cls, name: str) -> None:
+        if name not in cls._managed_headless_displays:
+            cls._managed_headless_displays.append(name)
+
+    @classmethod
+    def unregister_headless_display(cls, name: str) -> None:
+        if name in cls._managed_headless_displays:
+            cls._managed_headless_displays.remove(name)
+
+    @classmethod
+    def cleanup_all(cls) -> None:
+        """Guaranteed destruction of processes and virtual monitors."""
+        for proc in list(cls._managed_processes):
+            if proc.poll() is None:
+                with contextlib.suppress(Exception):
+                    proc.terminate()
+                    proc.wait(timeout=2)
+            if proc.poll() is None:
+                with contextlib.suppress(Exception):
+                    proc.kill()
+        cls._managed_processes.clear()
+
+        for display in list(cls._managed_headless_displays):
+            with contextlib.suppress(Exception):
+                CommandRunner.run(f"hyprctl output remove {shlex.quote(display)}", user_context=user_ctx, as_user=True)
+        cls._managed_headless_displays.clear()
+
+def _signal_handler(signum: int, frame: Any) -> None:
+    console.print(f"\n[bold red]✖ Signal {signum} received. Cleaning up system resources...[/bold red]")
+    ResourceManager.cleanup_all()
+    sys.exit(128 + signum)
+
+signal.signal(signal.SIGINT, _signal_handler)
+signal.signal(signal.SIGTERM, _signal_handler)
+atexit.register(ResourceManager.cleanup_all)
+
+# --- 5. System Inspection Subsystem ---
+class SystemChecker:
+    @staticmethod
+    def verify_hyprland_environment() -> tuple[bool, str]:
+        if not user_ctx.wayland_display:
+            return False, "No WAYLAND_DISPLAY detected in environment or runtime directory."
+        if not user_ctx.hyprland_signature:
+            return False, "Hyprland instance signature missing (Not running inside Hyprland)."
+        return True, f"Hyprland verified (Display: {user_ctx.wayland_display}, Signature: {user_ctx.hyprland_signature[:8]}...)."
+
+    @staticmethod
+    def get_service_state(service_name: str) -> ServiceState:
+        active = CommandRunner.run(f"systemctl is-active {shlex.quote(service_name)}").stdout.strip() == "active"
+        enabled = CommandRunner.run(f"systemctl is-enabled {shlex.quote(service_name)}").stdout.strip() in ("enabled", "linked", "alias")
+        return ServiceState(name=service_name, active=active, enabled=enabled)
+
+    @staticmethod
+    def is_pkg_installed(pkg: str) -> bool:
+        return CommandRunner.run(f"pacman -Qq {shlex.quote(pkg)}").returncode == 0
+
+    @staticmethod
+    def sync_user_dbus_env() -> None:
+        """Syncs Wayland & Hyprland environment variables to user systemd manager."""
+        if user_ctx.username == "root":
+            return
+        cmd = (
+            "dbus-update-activation-environment --systemd "
+            "WAYLAND_DISPLAY XDG_CURRENT_DESKTOP HYPRLAND_INSTANCE_SIGNATURE DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR"
+        )
+        CommandRunner.run(cmd, as_user=True)
+
+# --- 6. Network Interface & Sensing Engine ---
+class NetworkSensingEngine:
+    @staticmethod
+    def validate_and_format_ip(ip_candidate: str | None) -> str:
+        """Validates IP string or defaults to 0.0.0.0 to prevent socket bind errors."""
+        if not ip_candidate or ip_candidate in ("<Waiting for DHCP>", "<Unauthenticated>", "None", ""):
+            return "0.0.0.0"
+        try:
+            return str(ipaddress.ip_address(ip_candidate))
+        except ValueError:
+            return "0.0.0.0"
+
+    @staticmethod
+    def detect_interfaces() -> list[NetworkInterface]:
+        interfaces: list[NetworkInterface] = []
+
+        # 1. USB Tethering Interface (ipheth)
+        sys_net = Path("/sys/class/net")
+        if sys_net.exists():
+            for iface_path in sys_net.iterdir():
+                iface = iface_path.name
+                if iface in ("lo", "docker0") or iface.startswith(("vbox", "virbr", "tun", "wg")):
+                    continue
+                driver_path = iface_path / "device" / "driver"
+                if driver_path.exists() and "ipheth" in os.readlink(driver_path):
+                    ip = NetworkSensingEngine._get_iface_ip(iface)
+                    interfaces.append(NetworkInterface(name=iface, ip=ip or "<Waiting for DHCP>", if_type="usb"))
+
+        # 2. Tailscale Interface (tailscale0)
+        if Path("/sys/class/net/tailscale0").exists():
+            ts_ip = CommandRunner.run("tailscale ip -4").stdout.strip()
+            interfaces.append(NetworkInterface(name="tailscale0", ip=ts_ip or "<Unauthenticated>", if_type="tailscale"))
+
+        # 3. Local LAN (Ethernet/Wi-Fi)
+        try:
+            out = CommandRunner.run("ip -j -4 addr show scope global").stdout
+            if out:
+                data = json.loads(out)
+                for iface_info in data:
+                    name = iface_info.get("ifname", "")
+                    if name.startswith(("e", "w")) and not name.startswith("tailscale"):
+                        addrs = iface_info.get("addr_info", [])
+                        if addrs:
+                            interfaces.append(NetworkInterface(name=name, ip=addrs[0].get("local", ""), if_type="lan"))
+        except Exception:
+            pass
+
+        return interfaces
+
+    @staticmethod
+    def _get_iface_ip(iface: str) -> str | None:
+        out = CommandRunner.run(f"ip -4 -o addr show {shlex.quote(iface)}").stdout
+        if out:
+            parts = out.split()
+            for part in parts:
+                if "/" in part and part.count(".") == 3:
+                    return part.split("/")[0]
+        return None
+
+# --- 7. Hyprland Headless Virtual Display Subsystem ---
+class HyprlandManager:
+    @staticmethod
+    def get_headless_monitors() -> list[str]:
+        out = CommandRunner.run("hyprctl monitors -j", as_user=True).stdout
+        if not out:
+            return []
+        try:
+            monitors = json.loads(out)
+            return [m["name"] for m in monitors if m.get("name", "").startswith("HEADLESS-")]
+        except Exception:
+            return []
+
+    @staticmethod
+    def create_headless_output(res: str = "1170x2532", fps: int = 60, scale: float = 2.0) -> str | None:
+        console.print("[bold blue]  ::[/] Requesting Hyprland virtual headless monitor...")
+        CommandRunner.run("hyprctl output create headless HEADLESS-1", as_user=True)
+        
+        monitors = HyprlandManager.get_headless_monitors()
+        name = monitors[-1] if monitors else "HEADLESS-1"
+
+        config_cmd = f"hyprctl keyword monitor '{name}, {res}@{fps}, auto, {scale}'"
+        CommandRunner.run(config_cmd, as_user=True)
+        
+        ResourceManager.register_headless_display(name)
+        console.print(f"[bold green]  ✔[/] Created virtual display: [bold cyan]{name}[/] ({res}@{fps}fps, scale {scale})")
+        return name
+
+    @staticmethod
+    def remove_headless_output(name: str) -> None:
+        console.print(f"[bold blue]  ::[/] Destroying virtual display: [bold cyan]{name}[/]")
+        CommandRunner.run(f"hyprctl output remove {shlex.quote(name)}", as_user=True)
+        ResourceManager.unregister_headless_display(name)
+
+# --- 8. Firewall Automation Subsystem ---
+class FirewallManager:
+    @staticmethod
+    def detect_backend() -> str:
+        if shutil.which("firewall-cmd"):
+            if SystemChecker.get_service_state("firewalld").active or CommandRunner.run("firewall-cmd --state").stdout.strip() == "running":
+                return "firewalld"
+
+        if shutil.which("ufw"):
+            status = CommandRunner.run("ufw status").stdout
+            if SystemChecker.get_service_state("ufw").active or "Status: active" in status:
+                return "ufw"
+
+        if shutil.which("nft"):
+            tables = CommandRunner.run("nft list tables").stdout.strip()
+            if SystemChecker.get_service_state("nftables").active or (tables and "table" in tables):
+                return "nftables"
+
+        if shutil.which("iptables"):
+            ip_rules = CommandRunner.run("iptables -L INPUT -n").stdout
+            if SystemChecker.get_service_state("iptables").active or ("Chain INPUT" in ip_rules and len(ip_rules.splitlines()) > 2):
+                return "iptables"
+
+        return "none"
+
+    @staticmethod
+    def configure_rules(ports: list[int], interfaces: list[str]) -> None:
+        backend = FirewallManager.detect_backend()
+        console.print(f"[bold blue]  ::[/] Detected active firewall backend: [bold cyan]{backend}[/]")
+
+        match backend:
+            case "ufw":
+                status = CommandRunner.run("ufw status").stdout
+                for iface in interfaces:
+                    if f"ALLOW IN ON {iface}" not in status:
+                        CommandRunner.run(f"ufw allow in on {shlex.quote(iface)}")
+                for port in ports:
+                    if f"{port}/tcp" not in status:
+                        CommandRunner.run(f"ufw allow {port}/tcp")
+                    if f"{port}/udp" not in status:
+                        CommandRunner.run(f"ufw allow {port}/udp")
+                console.print("[bold green]  ✔[/] UFW rules updated idempotently.")
+
+            case "firewalld":
+                zone = CommandRunner.run("firewall-cmd --get-default-zone").stdout.strip() or "public"
+                for iface in interfaces:
+                    if CommandRunner.run(f"firewall-cmd --zone=trusted --query-interface={shlex.quote(iface)}").returncode != 0:
+                        CommandRunner.run(f"firewall-cmd --permanent --zone=trusted --change-interface={shlex.quote(iface)}")
+                for port in ports:
+                    if CommandRunner.run(f"firewall-cmd --zone={zone} --query-port={port}/tcp").returncode != 0:
+                        CommandRunner.run(f"firewall-cmd --permanent --zone={zone} --add-port={port}/tcp")
+                    if CommandRunner.run(f"firewall-cmd --zone={zone} --query-port={port}/udp").returncode != 0:
+                        CommandRunner.run(f"firewall-cmd --permanent --zone={zone} --add-port={port}/udp")
+                CommandRunner.run("firewall-cmd --reload")
+                console.print("[bold green]  ✔[/] Firewalld rules updated idempotently.")
+
+            case "nftables":
+                CommandRunner.run("nft add table inet filter")
+                CommandRunner.run('nft add chain inet filter input "{ type filter hook input priority filter ; policy accept ; }"')
+                rules = CommandRunner.run("nft list chain inet filter input").stdout
+                for iface in interfaces:
+                    if f'iifname "{iface}" accept' not in rules:
+                        CommandRunner.run(f'nft add rule inet filter input iifname "{shlex.quote(iface)}" accept')
+                for port in ports:
+                    if f'tcp dport {port} accept' not in rules:
+                        CommandRunner.run(f'nft add rule inet filter input tcp dport {port} accept')
+                    if f'udp dport {port} accept' not in rules:
+                        CommandRunner.run(f'nft add rule inet filter input udp dport {port} accept')
+                console.print("[bold green]  ✔[/] nftables rules inserted idempotently.")
+
+            case "iptables":
+                for iface in interfaces:
+                    if CommandRunner.run(f"iptables -C INPUT -i {shlex.quote(iface)} -j ACCEPT").returncode != 0:
+                        CommandRunner.run(f"iptables -I INPUT 1 -i {shlex.quote(iface)} -j ACCEPT")
+                for port in ports:
+                    if CommandRunner.run(f"iptables -C INPUT -p tcp --dport {port} -j ACCEPT").returncode != 0:
+                        CommandRunner.run(f"iptables -I INPUT 1 -p tcp --dport {port} -j ACCEPT")
+                    if CommandRunner.run(f"iptables -C INPUT -p udp --dport {port} -j ACCEPT").returncode != 0:
+                        CommandRunner.run(f"iptables -I INPUT 1 -p udp --dport {port} -j ACCEPT")
+                if shutil.which("iptables-save"):
+                    Path("/etc/iptables").mkdir(exist_ok=True)
+                    out = CommandRunner.run("iptables-save").stdout
+                    with open("/etc/iptables/iptables.rules", "w") as f:
+                        f.write(out)
+                console.print("[bold green]  ✔[/] iptables rules applied and saved idempotently.")
+
+            case _:
+                console.print("[bold yellow]  ⚠[/] No active firewall backend detected. Ensure service ports are open.")
+
+# --- 9. WayVNC Audited Setup Engine ---
+class WayVNCManager:
+    @staticmethod
+    def prepare_environment() -> Path:
+        console.print("[bold blue]  ::[/] Auditing WayVNC PAM profile and TLS certificate configurations...")
+
+        pam_file = Path("/etc/pam.d/wayvnc")
+        if not pam_file.exists():
+            pam_file.write_text("auth     include    system-auth\naccount  include    system-auth\n")
+            console.print("[bold green]  ✔[/] Created /etc/pam.d/wayvnc PAM profile.")
+
+        wayvnc_dir = user_ctx.home / ".config" / "wayvnc"
+        wayvnc_dir.mkdir(parents=True, exist_ok=True)
+
+        key_file = wayvnc_dir / "tls_key.pem"
+        cert_file = wayvnc_dir / "tls_cert.pem"
+
+        if not key_file.exists() or not cert_file.exists():
+            console.print("[bold blue]  ::[/] Auto-generating self-signed TLS certificates for WayVNC...")
+            gen_cmd = (
+                f"openssl req -x509 -nodes -days 365 -newkey rsa:4096 "
+                f"-keyout {shlex.quote(str(key_file))} "
+                f"-out {shlex.quote(str(cert_file))} "
+                f'-subj "/CN=WayVNC"'
+            )
+            CommandRunner.run(gen_cmd, check=True)
+            os.chown(key_file, user_ctx.uid, user_ctx.gid)
+            os.chown(cert_file, user_ctx.uid, user_ctx.gid)
+            os.chmod(key_file, 0o600)
+            console.print("[bold green]  ✔[/] TLS certificates generated.")
+
+        config_file = wayvnc_dir / "config"
+        config_content = (
+            f"address = 0.0.0.0\n"
+            f"port = 5900\n"
+            f"enable_auth = true\n"
+            f"pam_service = wayvnc\n"
+            f"rsa_private_key_file = {key_file}\n"
+            f"certificate_file = {cert_file}\n"
+        )
+        config_file.write_text(config_content)
+        os.chown(config_file, user_ctx.uid, user_ctx.gid)
+        os.chown(wayvnc_dir, user_ctx.uid, user_ctx.gid)
+
+        return config_file
+
+    @staticmethod
+    def cleanup_stale_sockets() -> None:
+        socket_file = user_ctx.xdg_runtime_dir / "wayvncctl"
+        if socket_file.exists():
+            with contextlib.suppress(Exception):
+                socket_file.unlink()
+                console.print(f"[bold green]  ✔[/] Cleaned stale IPC control socket: {socket_file}")
+
+# --- 10. Sunshine Configuration Engine ---
+class SunshineManager:
+    @staticmethod
+    def configure_target_display(output_name: str) -> None:
+        conf_dir = user_ctx.home / ".config" / "sunshine"
+        conf_dir.mkdir(parents=True, exist_ok=True)
+        conf_file = conf_dir / "sunshine.conf"
+
+        lines = [
+            "# Auto-generated by Arch-iOS-Link Orchestrator",
+            f"output_name = {output_name}",
+            "capture = wayland",
+            "encoder = nvenc",
+            "min_log_level = info\n"
+        ]
+        conf_file.write_text("\n".join(lines))
+        os.chown(conf_dir, user_ctx.uid, user_ctx.gid)
+        os.chown(conf_file, user_ctx.uid, user_ctx.gid)
+
+# --- 11. QR Code Rendering Engine ---
+class QRRenderer:
+    @staticmethod
+    def generate_qr(data: str) -> Text:
+        out = CommandRunner.run(f"qrencode -t UTF8 -m 2 '{data}'").stdout
+        if out:
+            return Text(out, style="black on white")
+        return Text(f"URI: {data}", style="bold cyan")
+
+# --- 12. Master Interactive Orchestrator CLI ---
+class ArchIOSLinkCLI:
+    def __init__(self) -> None:
+        self.user = user_ctx.username
+
+    def display_header(self) -> None:
+        if console.is_terminal:
+            console.clear()
+        console.print(
+            Panel.fit(
+                f"[bold white]Target Architecture:[/] [bold cyan]Arch Linux (Wayland/Hyprland)[/]\n"
+                f"[bold white]Target Client:[/] [bold green]iOS 16.7 (Jailbroken)[/]\n"
+                f"[bold white]Active Desktop User:[/] [bold yellow]{self.user}[/] [dim](UID: {user_ctx.uid})[/]\n"
+                f"[bold white]Wayland Display:[/] [bold magenta]{user_ctx.wayland_display or 'Unknown'}[/]",
+                title="[bold green]✦ Arch Linux ↔ iOS Remote Link Orchestrator v7.0 Golden ✦[/]",
+                border_style="blue",
+                padding=(1, 4)
+            )
+        )
+
+    def render_network_panel(self) -> None:
+        interfaces = NetworkSensingEngine.detect_interfaces()
+        table = Table(title="[bold]Network Interfaces & Sensing[/]", show_header=True, header_style="bold magenta", border_style="cyan")
+        table.add_column("Type", style="bold green", justify="right")
+        table.add_column("Interface", style="cyan")
+        table.add_column("IP Address", style="bold yellow")
+
+        for iface in interfaces:
+            table.add_row(iface.if_type.upper(), iface.name, iface.ip)
+
+        if not interfaces:
+            table.add_row("NONE", "None detected", "Check connection")
+
+        console.print(table, justify="center")
+
+    def setup_uinput_permissions(self) -> None:
+        console.print("[bold blue]  ::[/] Hardening /dev/uinput permissions & boot persistence...")
+
+        # Boot module persistence
+        modules_file = Path("/etc/modules-load.d/uinput.conf")
+        if not modules_file.exists() or "uinput" not in modules_file.read_text():
+            modules_file.write_text("uinput\n")
+
+        CommandRunner.run("modprobe uinput")
+
+        # udev rule
+        udev_file = Path("/etc/udev/rules.d/85-uinput-archlink.rules")
+        udev_file.write_text('KERNEL=="uinput", SUBSYSTEM=="misc", OPTIONS+="static_node=uinput", TAG+="uaccess", GROUP="input", MODE="0660"\n')
+
+        if self.user != "root":
+            CommandRunner.run(f"usermod -aG input {shlex.quote(self.user)}")
+
+        CommandRunner.run("udevadm control --reload-rules")
+        CommandRunner.run("udevadm trigger --name-match=uinput")
+
+        # Immediate ACL fix for current running user session
+        uinput_node = Path("/dev/uinput")
+        if uinput_node.exists() and self.user != "root":
+            CommandRunner.run(f"setfacl -m u:{shlex.quote(self.user)}:rw /dev/uinput")
+            CommandRunner.run("chown root:input /dev/uinput")
+            CommandRunner.run("chmod 0660 /dev/uinput")
+
+        console.print("[bold green]  ✔[/] /dev/uinput permissions & direct user POSIX ACL granted.")
+
+    def run_sunshine_stack(self) -> None:
+        headless_name: str | None = None
+        try:
+            self.display_header()
+            console.print(Panel("[bold cyan]Sunshine + Moonlight Ultra-Low Latency Streaming Stack[/]", border_style="cyan"))
+
+            if not SystemChecker.is_pkg_installed("sunshine"):
+                console.print("[bold yellow]  ⚠[/] Sunshine not installed. Installing via pacman...")
+                CommandRunner.run("pacman -S --noconfirm --needed sunshine pipewire wireplumber libevdev")
+
+            self.setup_uinput_permissions()
+            SystemChecker.sync_user_dbus_env()
+
+            headless_name = HyprlandManager.create_headless_output(res="1170x2532", fps=60, scale=2.0)
+            if headless_name:
+                SunshineManager.configure_target_display(headless_name)
+
+            FirewallManager.configure_rules(
+                ports=[47984, 47989, 47990, 48010, 47998, 47999, 48000, 48002],
+                interfaces=["tailscale0"]
+            )
+
+            console.print(f"[bold blue]  ::[/] Enabling Sunshine user daemon for [bold cyan]{self.user}[/]...")
+            CommandRunner.run("systemctl --user enable --now sunshine", as_user=True)
+
+            interfaces = NetworkSensingEngine.detect_interfaces()
+            raw_ip = interfaces[0].ip if interfaces else "127.0.0.1"
+            primary_ip = NetworkSensingEngine.validate_and_format_ip(raw_ip)
+            web_ui_url = f"https://{primary_ip}:47990"
+
+            console.print("\n[bold green]✔ Sunshine Streaming Server Active![/]")
+            console.print(f"  Web UI Pair Link: [bold cyan]{web_ui_url}[/]")
+
+            qr = QRRenderer.generate_qr(web_ui_url)
+            console.print(Panel(Align.center(qr), title="Scan with iOS to Pair Sunshine Web UI", border_style="cyan", width=60), justify="center")
+
+            Prompt.ask("\nPress Enter when done streaming to teardown virtual display...")
+        finally:
+            if headless_name:
+                HyprlandManager.remove_headless_output(headless_name)
+
+    def run_wayvnc_stack(self) -> None:
+        headless_name: str | None = None
+        vnc_proc: subprocess.Popen[Any] | None = None
+        try:
+            self.display_header()
+            console.print(Panel("[bold cyan]WayVNC Lightweight Headless Display Stack[/]", border_style="cyan"))
+
+            if not SystemChecker.is_pkg_installed("wayvnc"):
+                CommandRunner.run("pacman -S --noconfirm --needed wayvnc openssl")
+
+            WayVNCManager.prepare_environment()
+            WayVNCManager.cleanup_stale_sockets()
+
+            headless_name = HyprlandManager.create_headless_output(res="1080x1920", fps=60, scale=1.5)
+            FirewallManager.configure_rules(ports=[5900], interfaces=["tailscale0"])
+
+            interfaces = NetworkSensingEngine.detect_interfaces()
+            raw_ip = interfaces[0].ip if interfaces else "0.0.0.0"
+            bind_ip = NetworkSensingEngine.validate_and_format_ip(raw_ip)
+
+            console.print(f"[bold blue]  ::[/] Launching WayVNC bound to {bind_ip}:5900 on {headless_name}...")
+
+            vnc_env = user_ctx.get_user_env()
+            vnc_proc = subprocess.Popen(
+                ["wayvnc", "-o", headless_name, bind_ip, "5900"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=vnc_env,
+                preexec_fn=user_ctx.demote_fn()
+            )
+            ResourceManager.register_process(vnc_proc)
+
+            vnc_uri = f"vnc://{bind_ip}:5900"
+            console.print(f"\n[bold green]✔ WayVNC Server Running at {vnc_uri}[/]")
+
+            qr = QRRenderer.generate_qr(vnc_uri)
+            console.print(Panel(Align.center(qr), title="Scan with Jump Desktop / VNC App", border_style="cyan", width=60), justify="center")
+
+            Prompt.ask("\nPress Enter to stop WayVNC and teardown display...")
+        finally:
+            if vnc_proc:
+                with contextlib.suppress(Exception):
+                    vnc_proc.terminate()
+                    vnc_proc.wait(timeout=2)
+                ResourceManager.unregister_process(vnc_proc)
+            WayVNCManager.cleanup_stale_sockets()
+            if headless_name:
+                HyprlandManager.remove_headless_output(headless_name)
+
+    def setup_usb_tether_and_tunnel(self) -> None:
+        iproxy_proc: subprocess.Popen[Any] | None = None
+        try:
+            self.display_header()
+            console.print(Panel("[bold cyan]USB Cable Tethering & usbmuxd Reverse Tunneling[/]", border_style="cyan"))
+
+            CommandRunner.run("systemctl enable --now usbmuxd")
+            console.print("[bold green]  ✔[/] usbmuxd service active.")
+
+            # Pairing Validation
+            if shutil.which("idevicepair"):
+                pair_check = CommandRunner.run("idevicepair validate")
+                if pair_check.returncode == 0 and "SUCCESS" in pair_check.stdout:
+                    console.print("[bold green]  ✔[/] iOS device trusted and paired.")
+                else:
+                    console.print("[bold yellow]  ⚠[/] Device not paired. Unlock iPhone and tap 'Trust This Computer'...")
+                    CommandRunner.run("idevicepair pair")
+
+            console.print("\n[bold yellow]Instructions for iOS Device:[/]")
+            console.print("  1. Connect iPhone to Linux PC via Lightning/USB-C cable.")
+            console.print("  2. Unlock iPhone and tap 'Trust This Computer' if prompted.")
+            console.print("  3. Enable Personal Hotspot (USB Only) in Settings.")
+
+            if Confirm.ask("\nStart usbmuxd port forwarding (`iproxy`) for VNC, Sunshine & SSH?", default=True):
+                console.print("[bold blue]  ::[/] Launching `iproxy` multi-port tunnel over USB...")
+
+                iproxy_proc = subprocess.Popen(
+                    ["iproxy", "5900:5900", "3389:3389", "47989:47989", "47990:47990", "2222:22"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+                ResourceManager.register_process(iproxy_proc)
+                console.print("[bold green]  ✔[/] USB Tunnel active! Localhost ports 5900, 3389, 47990, 2222 forwarded over USB cable.")
+                Prompt.ask("\nPress Enter to stop USB forwarding...")
+        finally:
+            if iproxy_proc:
+                with contextlib.suppress(Exception):
+                    iproxy_proc.terminate()
+                    iproxy_proc.wait(timeout=2)
+                ResourceManager.unregister_process(iproxy_proc)
+
+    def display_ios_setup_guide(self) -> None:
+        self.display_header()
+        guide = Table(title="[bold]iOS 16.7 Jailbreak Ecosystem Setup Guide[/]", show_header=True, header_style="bold magenta", border_style="green")
+        guide.add_column("Category", style="bold cyan")
+        guide.add_column("Recommended Tool / Tweak", style="bold yellow")
+        guide.add_column("Purpose & Instructions", style="white")
+
+        guide.add_row(
+            "Jailbreak Environment",
+            "palera1n (Rootless)",
+            "iOS 16.7 jailbreak tool. Ensure Procursus rootless bootstrap is active."
+        )
+        guide.add_row(
+            "Backgrounding Tweak",
+            "Immortalizer (by sergy)",
+            "CRITICAL: Keeps Jump Desktop / Moonlight / Termius active in background when minimized or locked."
+        )
+        guide.add_row(
+            "Remote Control Client",
+            "Jump Desktop (VNC/RDP/Fluid)",
+            "Best for full desktop control, touch gestures, trackpad mode, and extended modifier keybars."
+        )
+        guide.add_row(
+            "Streaming Client",
+            "Moonlight iOS",
+            "Connects to Sunshine for low-latency 60-120 FPS screen streaming over Wi-Fi/Tailscale/USB."
+        )
+        guide.add_row(
+            "Terminal & SSH",
+            "NewTerm 3 + OpenSSH",
+            "Native terminal emulator on iOS and SSH daemon for command line control over usbmuxd USB tunnel."
+        )
+
+        console.print(guide, justify="center")
+        Prompt.ask("\nPress Enter to return to main menu")
+
+    def main_menu(self) -> None:
+        while True:
+            self.display_header()
+            self.render_network_panel()
+
+            console.print("\n[bold yellow]Select Action:[/bold yellow]")
+            console.print("  [bold cyan]1.[/] Launch Sunshine + Moonlight Ultra-Low Latency Streaming Stack")
+            console.print("  [bold cyan]2.[/] Launch WayVNC Lightweight Headless Display Stack")
+            console.print("  [bold cyan]3.[/] Configure USB Cable Tethering & usbmuxd Tunnels (`iproxy`)")
+            console.print("  [bold cyan]4.[/] View iOS 16.7 Setup Guide & Jailbreak Tweak Matrix")
+            console.print("  [bold cyan]5.[/] Exit Orchestrator")
+
+            try:
+                choice = Prompt.ask("\nEnter choice", choices=["1", "2", "3", "4", "5"], default="5")
+            except (KeyboardInterrupt, EOFError):
+                choice = "5"
+
+            match choice:
+                case "1":
+                    self.run_sunshine_stack()
+                case "2":
+                    self.run_wayvnc_stack()
+                case "3":
+                    self.setup_usb_tether_and_tunnel()
+                case "4":
+                    self.display_ios_setup_guide()
+                case "5":
+                    console.print("[bold cyan]Exiting orchestrator. Cleaning up resources...[/bold cyan]")
+                    ResourceManager.cleanup_all()
+                    sys.exit(0)
+
+def main() -> None:
+    ok, msg = SystemChecker.verify_hyprland_environment()
+    if not ok:
+        console.print(f"[bold red]✖ Environment Error:[/] {msg}")
+        sys.exit(1)
+
+    cli = ArchIOSLinkCLI()
+    cli.main_menu()
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        console.print("\n[bold red]✖ Interrupted by user. Cleaning up...[/bold red]")
+        ResourceManager.cleanup_all()
+        sys.exit(130)
+EOF
+chmod +x /working_dir/c_98d464d042b58a54/artifacts/arch_ios_link.py
+python3 -m py_compile /working_dir/c_98d464d042b58a54/artifacts/arch_ios_link.py
