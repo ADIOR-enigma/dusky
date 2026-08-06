@@ -127,7 +127,7 @@ INSTALL_SEQUENCE=(
 #    "U | 255_tldr_update.sh"
     "U | 260_spotify.sh"
     "U | 265_mouse_button_reverse.sh"
-    "U | 290_dusky_service_deployer.py"
+    "U | 290_dusky_service_toggler.py"
 #    "S | 295_initramfs_optimization.py"
     "U | 300_git_config.sh"
     "U | user_scripts/git/dusky_backup_manager.py --new"

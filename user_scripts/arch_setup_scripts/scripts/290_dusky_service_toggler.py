@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-#d: Deploy dusky systemd services
+#d: Toggle dusky systemd services
 
 import argparse
 import asyncio
@@ -595,7 +595,7 @@ def render_header(ctx: UserContext) -> None:
     if not console:
         return
     header_text = Text()
-    header_text.append("⚡ DUSKY SERVICE DEPLOYER (290_dusky_service_deployer.py) ⚡\n", style="bold cyan")
+    header_text.append("⚡ DUSKY SERVICE TOGGLER (290_dusky_service_toggler.py) ⚡\n", style="bold cyan")
     header_text.append("Context: Hyprland / UWSM | Kernel: ", style="dim white")
     header_text.append(f"{os.uname().release} | User: ", style="bold yellow")
     header_text.append(ctx.username, style="bold green")
@@ -727,7 +727,7 @@ def render_results(results: list[ProcessingResult]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Dusky Service Deployer - Arch Linux Systemd & AUR Service Deployer",
+        description="Dusky Service Toggler - Arch Linux Systemd & AUR Service Toggler",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
