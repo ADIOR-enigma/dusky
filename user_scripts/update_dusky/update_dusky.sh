@@ -204,7 +204,7 @@ declare -ra UPDATE_SEQUENCE=(
 
 
 #================= CUSTOM=====================
-    "S | 060_package_installation.py -p updater_packages"
+    "S | 060_package_installation.py -p updater_packages --no-upgrade"
     "U | paru_packages.sh"
 #================= Scripts =====================
 
