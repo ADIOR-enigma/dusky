@@ -54,8 +54,8 @@ window#waybar > box {
 #custom-launcher {
     background: linear-gradient(135deg, @primary, @primary_fixed_dim);
     color: @on_primary;
-    padding: 0px 10px;
-    margin: 5px 3px;
+    padding: 0px 10px 0px 8px;
+    margin: 4px 8px 4px 4px;
     border-radius: 12px;
     font-size: 14px;
     font-weight: 300;
@@ -345,8 +345,8 @@ window#waybar #workspaces button.active {
 #custom-power {
     background: linear-gradient(135deg, @primary, @primary_fixed_dim);
     color: @on_primary;
-    padding: 0px 10px;
-    margin: 5px 3px;
+    padding: 0px 10px 0px 8px;
+    margin: 4px 4px 4px 4px;
     border-radius: 12px;
     font-size: 14px;
     font-weight: 300;
