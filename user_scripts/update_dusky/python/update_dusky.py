@@ -4649,22 +4649,19 @@ class DuskyApp(App):
     def _suspend_ui(self):
         suspend = getattr(self, "suspend", None)
         if callable(suspend):
-            with suppress(Exception):
-                with suspend():
-                    yield
-                return
-
-        driver = getattr(self, "driver", None)
-        if driver is not None and hasattr(driver, "stop_application_mode"):
-            with suppress(Exception):
-                driver.stop_application_mode()
-
-        try:
-            yield
-        finally:
-            if driver is not None and hasattr(driver, "start_application_mode"):
+            with suspend():
+                yield
+        else:
+            driver = getattr(self, "driver", None)
+            if driver is not None and hasattr(driver, "stop_application_mode"):
                 with suppress(Exception):
-                    driver.start_application_mode()
+                    driver.stop_application_mode()
+            try:
+                yield
+            finally:
+                if driver is not None and hasattr(driver, "start_application_mode"):
+                    with suppress(Exception):
+                        driver.start_application_mode()
 
     async def _execute_task(self, index: int) -> str:
         task = self.tasks[index]
@@ -4734,18 +4731,15 @@ class DuskyApp(App):
                 self.log_task(f"[dim]Interactive flag detected. Console control delegated to user.[/]", index)
 
                 with self._suspend_ui():
-                    r, g, b = get_rgb_color(THEME['accent'])
-                    sys.stdout.write(f"\n\033[1;38;2;{r};{g};{b}m=== DUSKY INTERACTIVE ABSTRACTION: {task.name} ===\033[0m\n\n")
-                    sys.stdout.flush()
-
                     try:
-                        proc = await asyncio.create_subprocess_exec(*exec_cmd, cwd=str(WORK_TREE))
-                        rc = await wait_for_process(proc)
+                        res = subprocess.run(exec_cmd, cwd=str(WORK_TREE))
+                        rc = res.returncode
                     except KeyboardInterrupt:
                         rc = 130
-
-                    sys.stdout.write(f"\n\033[1;38;2;{r};{g};{b}m=== ABSTRACTION TERMINATED (Code: {rc}) ===\033[0m\n")
-                    sys.stdout.flush()
+                
+                start_time = time.time()
+                while time.time() - start_time < 0.2:
+                    await asyncio.sleep(0.01)
 
                 self.log_task(f"\n[bold {THEME['success']}]PTY control returned. Exit Code: {rc}[/]", index)
 

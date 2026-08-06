@@ -2045,6 +2045,9 @@ class EliteInstallerApp(App):
                 self.sudo_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await self.sudo_task
+            with suppress(Exception):
+                if sys.stdin.isatty():
+                    os.system("stty sane 2>/dev/null")
 
     def _on_completion_reply(self, quit_now: bool | None) -> None:
         if quit_now:
