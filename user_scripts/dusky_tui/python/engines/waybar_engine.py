@@ -7,14 +7,23 @@ import asyncio
 import subprocess
 import fcntl
 import signal
+import shutil
 from pathlib import Path
 from typing import Any
 
 from python.frontend.core_types import BaseEngine
 
+def _is_pid_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
 def _get_active_waybar_pids() -> list[int]:
     pids = []
     my_pid = os.getpid()
+    my_uid = os.getuid()
     try:
         for pid_str in os.listdir("/proc"):
             if not pid_str.isdigit():
@@ -23,6 +32,8 @@ def _get_active_waybar_pids() -> list[int]:
             if pid == my_pid:
                 continue
             try:
+                if os.stat(f"/proc/{pid}").st_uid != my_uid:
+                    continue
                 with open(f"/proc/{pid}/stat", "r", encoding="utf-8") as f:
                     stat_line = f.read()
                 state = stat_line.rpartition(")")[2].strip().split()[0]
@@ -190,16 +201,21 @@ class WaybarEngine(BaseEngine):
         lock_file = runtime_dir / "dusky_waybar_restart.lock"
         
         fd = open(lock_file, "w")
-        
+        locked = False
         try:
             # Non-blocking lock attempt with ultra-fast retry
             for _ in range(5):
                 try:
                     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    locked = True
                     break
                 except BlockingIOError:
                     await asyncio.sleep(0.01)
                     
+            if not locked:
+                fd.close()
+                return
+
             # Check if another process (e.g. rapid --next presses) superseded our target symlink
             if self.config_path.is_symlink():
                 try:
@@ -219,17 +235,25 @@ class WaybarEngine(BaseEngine):
                     pass
             
             if pids:
-                await asyncio.sleep(0.01)  # 10ms grace period
+                # High-frequency polling (up to 150ms) for graceful SIGTERM termination
+                for _ in range(15):
+                    await asyncio.sleep(0.01)
+                    pids = [p for p in pids if _is_pid_running(p)]
+                    if not pids:
+                        break
+                
+                # SIGKILL fallback for any remaining hung processes
                 for pid in pids:
                     try:
                         os.kill(pid, signal.SIGKILL)
                     except OSError:
                         pass
                 
-            # 2. Launch Waybar immediately
+            # 2. Launch Waybar via dusky-run (if available) or fallback to waybar
+            cmd = ["dusky-run", "waybar"] if shutil.which("dusky-run") else ["waybar"]
             try:
                 subprocess.Popen(
-                    ["waybar"],
+                    cmd,
                     start_new_session=set_sid,       
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
@@ -245,9 +269,12 @@ class WaybarEngine(BaseEngine):
                 pass
 
         finally:
-            # Release lock
+            if locked:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                except OSError:
+                    pass
             try:
-                fcntl.flock(fd, fcntl.LOCK_UN)
                 fd.close()
             except OSError:
                 pass
@@ -362,6 +389,18 @@ class WaybarEngine(BaseEngine):
 
         selected_dir = self.theme_dirs[target_idx]
         selected_name = self.theme_names[target_idx]
+        selected_number = target_idx + 1
+
+        self.cache.update({
+            "active_theme_index": target_idx,
+            "active_theme_name": selected_name,
+            "active_theme_number": selected_number,
+            "waybar": selected_number,
+            "DEFAULT/active_theme_index": target_idx,
+            "DEFAULT/active_theme_name": selected_name,
+            "DEFAULT/active_theme_number": selected_number,
+            "DEFAULT/waybar": selected_number,
+        })
 
         if requires_restart:
             # Atomic State Save to prevent corruption
