@@ -6047,10 +6047,14 @@ class DuskyOrchestratorApp(App):
                 sys.stdout.flush()
 
                 try:
-                    res = await asyncio.to_thread(subprocess.run, cmd, env=env)
+                    res = subprocess.run(cmd, env=env)
                     code = res.returncode
                     if code == -signal.SIGINT or code == 130:
                         return False, 130, "interactive session interrupted by user"
+                    
+                    # Short delay to allow UI to catch up after resuming
+                    await asyncio.sleep(0.2)
+                    
                     return code == 0, code, "interactive session"
                 except KeyboardInterrupt:
                     return False, 130, "interactive session interrupted by user"
