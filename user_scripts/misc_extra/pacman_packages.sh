@@ -19,9 +19,7 @@ declare -ar pkgs_misc=(
     "python-evdev"
     "python-pyudev"
     "python-textual"
-
     "papirus-icon-theme"
-
     "ufw"
 )
 
