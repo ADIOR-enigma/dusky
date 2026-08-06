@@ -283,6 +283,8 @@ class RuntimeContext:
     aur_helper: str | None = None
     aur_user: str | None = None
     no_upgrade: bool = False
+    auto_exit: bool = False
+
 
 def _is_eligible_aur_user(pw: pwd.struct_passwd) -> bool:
     if pw.pw_uid < 1000 or pw.pw_name in ("nobody", "root"):
@@ -308,7 +310,7 @@ def get_env_label(is_root: bool, aur_user: str | None = None) -> str:
         return "HOST ROOT"
     return "USER DESKTOP"
 
-def verify_runtime_environment(has_aur_targets: bool, no_upgrade: bool = False) -> RuntimeContext:
+def verify_runtime_environment(has_aur_targets: bool, no_upgrade: bool = False, auto_exit: bool = False) -> RuntimeContext:
     """Detects execution environment and validates toolchains."""
     is_arch = Path("/etc/arch-release").exists()
     if not is_arch:
@@ -355,7 +357,7 @@ def verify_runtime_environment(has_aur_targets: bool, no_upgrade: bool = False) 
                         aur_user = p.pw_name
                         break
 
-    return RuntimeContext(is_root=is_root, aur_helper=aur_helper, aur_user=aur_user, no_upgrade=no_upgrade)
+    return RuntimeContext(is_root=is_root, aur_helper=aur_helper, aur_user=aur_user, no_upgrade=no_upgrade, auto_exit=auto_exit)
 
 # ==============================================================================
 # THEME & PALETTE ENGINE (MATCHING ORCHESTRATOR EXACTLY)
@@ -1488,6 +1490,7 @@ class EliteInstallerApp(App):
         self._prompt_counts: dict[str, int] = {}
         self._prompt_last: dict[str, float] = {}
         self._prompt_buffer: str = ""
+        self._installation_completed: bool = False
 
     def compose(self) -> ComposeResult:
         env_mode = get_env_label(self.ctx.is_root, self.ctx.aur_user)
@@ -1640,6 +1643,9 @@ class EliteInstallerApp(App):
         self._is_dragging_pane = False
 
     def action_request_quit(self) -> None:
+        if self._installation_completed:
+            self.exit(0)
+            return
         with suppress(Exception):
             if isinstance(self.screen, ConfirmQuitScreen):
                 return
@@ -1989,6 +1995,7 @@ class EliteInstallerApp(App):
             failed_cnt = sum(1 for p in all_items if p.status == PackageStatus.FAILED)
 
             self.speed_label.update("Bandwidth: Idle | ETA: 00:00")
+            self._installation_completed = True
 
             if failed_cnt > 0 or skipped_cnt > 0:
                 self.status_label.update(
@@ -2001,31 +2008,37 @@ class EliteInstallerApp(App):
                     is_err=True,
                 )
                 AudioNotifier.play("alert")
-                self.push_screen(
-                    CompletionDialog(
-                        title="◈ INSTALLATION COMPLETED WITH WARNINGS",
-                        message=f"Processed {self.manifest.total_requested} target(s):\n"
-                                f"  • {installed_cnt} Installed\n"
-                                f"  • {skipped_cnt} Skipped\n"
-                                f"  • {failed_cnt} Failed",
-                        level="warning" if failed_cnt == 0 else "error",
-                    ),
-                    self._on_completion_reply,
-                )
+                if self.ctx.auto_exit:
+                    self.exit(0 if failed_cnt == 0 else 1)
+                else:
+                    self.push_screen(
+                        CompletionDialog(
+                            title="◈ INSTALLATION COMPLETED WITH WARNINGS",
+                            message=f"Processed {self.manifest.total_requested} target(s):\n"
+                                    f"  • {installed_cnt} Installed\n"
+                                    f"  • {skipped_cnt} Skipped\n"
+                                    f"  • {failed_cnt} Failed",
+                            level="warning" if failed_cnt == 0 else "error",
+                        ),
+                        self._on_completion_reply,
+                    )
             else:
                 self.status_label.update("◈ All installation pipelines completed successfully!")
                 with suppress(Exception):
                     self.query_one("#footer_status", Label).update("ALPM Engine: Complete")
                 self.log_system("Installation sequence finished. All targets resolved.")
                 AudioNotifier.play("complete")
-                self.push_screen(
-                    CompletionDialog(
-                        title="◈ INSTALLATION SEQUENCE COMPLETE",
-                        message=f"Successfully installed all {self.manifest.total_requested} package target(s).",
-                        level="success",
-                    ),
-                    self._on_completion_reply,
-                )
+                if self.ctx.auto_exit:
+                    self.exit(0)
+                else:
+                    self.push_screen(
+                        CompletionDialog(
+                            title="◈ INSTALLATION SEQUENCE COMPLETE",
+                            message=f"Successfully installed all {self.manifest.total_requested} package target(s).",
+                            level="success",
+                        ),
+                        self._on_completion_reply,
+                    )
 
         finally:
             if self.sudo_task:
@@ -2399,6 +2412,12 @@ def parse_command_line() -> argparse.Namespace:
         action="store_true",
         help="Skip full system upgrade (-Syu) step.",
     )
+    parser.add_argument(
+        "--auto-exit", "--subscript", "--no-completion-dialog",
+        action="store_true",
+        dest="auto_exit",
+        help="Automatically exit upon completion without showing the completion dialog (for running as subscript).",
+    )
     return parser.parse_args()
 
 async def main_async(manifest: InstallationManifest, ctx: RuntimeContext) -> None:
@@ -2423,7 +2442,7 @@ def main() -> None:
 
     try:
         has_aur_targets = len(manifest.aur_packages) > 0
-        ctx = verify_runtime_environment(has_aur_targets, no_upgrade=args.no_upgrade)
+        ctx = verify_runtime_environment(has_aur_targets, no_upgrade=args.no_upgrade, auto_exit=args.auto_exit)
     except PreflightError as err:
         Console(stderr=True).print(f"[bold red]{err}[/bold red]")
         sys.exit(1)

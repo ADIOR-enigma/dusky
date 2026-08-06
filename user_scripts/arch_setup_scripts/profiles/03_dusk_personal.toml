@@ -56,7 +56,7 @@ scripts = [
     "S | 050_pacman_config.sh",
     "S | 051_pacman_hooks.sh --auto",
     "S | 055_pacman_reflector.sh",
-    "S | 060_package_installation.py",
+    "S | 060_package_installation.py --auto-exit",
     "S | 068_ufw_firewall.sh",
     "S | 070_openssh_setup.sh",
     "U | 075_changing_shell_zsh.sh",
