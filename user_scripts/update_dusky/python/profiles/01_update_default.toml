@@ -70,7 +70,7 @@ tasks = [
     "U | 005_hypr_custom_config_setup.py --force --autostart",
     "U | 010_package_removal.sh --auto",
     # ================= CUSTOM =====================
-    "S | pacman_packages.sh",
+    "U | 060_package_installation.py -p updater_packages",
     "U | paru_packages.sh",
     # ================= Scripts =====================
     "U | 015_set_thunar_terminal.py -t foot",

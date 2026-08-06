@@ -204,7 +204,7 @@ declare -ra UPDATE_SEQUENCE=(
 
 
 #================= CUSTOM=====================
-    "S | pacman_packages.sh"
+    "U | 060_package_installation.py -p updater_packages"
     "U | paru_packages.sh"
 #================= Scripts =====================
 
