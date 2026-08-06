@@ -54,24 +54,26 @@ PROFILES_DIR: Path = Path(
 ).resolve()
 
 
-def load_global_config() -> dict:
+def global_config_path() -> Path | None:
     custom_path = os.environ.get("DUSKY_UPDATER_SETTINGS")
     if custom_path:
         p = Path(custom_path).expanduser()
         if p.is_file():
-            try:
-                with open(p, "rb") as f:
-                    return tomllib.load(f)
-            except Exception as e:
-                sys.stderr.write(f"[WARN] Failed to parse custom config ({p}): {e}\n")
-
+            return p
     config_path = PROFILES_DIR / "settings" / "update_dusky.toml"
     if config_path.is_file():
+        return config_path
+    return None
+
+
+def load_global_config() -> dict:
+    p = global_config_path()
+    if p and p.is_file():
         try:
-            with open(config_path, "rb") as f:
+            with open(p, "rb") as f:
                 return tomllib.load(f)
         except Exception as e:
-            sys.stderr.write(f"[WARN] Failed to parse global config ({config_path}): {e}\n")
+            sys.stderr.write(f"[WARN] Failed to parse config ({p}): {e}\n")
     return {}
 
 
@@ -4816,6 +4818,13 @@ class DuskyApp(App):
 
     async def execute_pipeline(self) -> None:
         self._self_hash_before = file_checksum(SCRIPT_PATH)
+        self._profile_hash_before = (
+            file_checksum(self.profile.filepath)
+            if getattr(self, "profile", None) and getattr(self.profile, "filepath", None)
+            else ""
+        )
+        cfg_p = global_config_path()
+        self._config_hash_before = file_checksum(cfg_p) if cfg_p else ""
 
         if not OPT_SKIP_SYNC:
             if OPT_DRY_RUN:
@@ -5175,16 +5184,38 @@ class DuskyApp(App):
             return False
         before = getattr(self, "_self_hash_before", "")
         after = file_checksum(SCRIPT_PATH)
-        if not before or not after or after == before:
+
+        prof_before = getattr(self, "_profile_hash_before", "")
+        prof_filepath = getattr(self.profile, "filepath", None) if getattr(self, "profile", None) else None
+        prof_after = file_checksum(prof_filepath) if prof_filepath else ""
+
+        cfg_before = getattr(self, "_config_hash_before", "")
+        cfg_p = global_config_path()
+        cfg_after = file_checksum(cfg_p) if cfg_p else ""
+
+        script_changed = bool(before and after and after != before)
+        profile_changed = bool(prof_before and prof_after and prof_after != prof_before)
+        config_changed = bool(cfg_before and cfg_after and cfg_after != cfg_before)
+
+        if not script_changed and not profile_changed and not config_changed:
             remove_last_git_diff()
             return False
         try:
             sys.stdout.flush()
         except Exception:
             pass
-        sys.stderr.write(
-            "\033[1;33m[updater]\033[0m Script updated during sync — restarting with the new version.\n"
-        )
+        if script_changed:
+            sys.stderr.write(
+                "\033[1;33m[updater]\033[0m Script updated during sync — restarting with the new version.\n"
+            )
+        elif profile_changed:
+            sys.stderr.write(
+                "\033[1;33m[updater]\033[0m Profile updated during sync — restarting to apply new tasks.\n"
+            )
+        else:
+            sys.stderr.write(
+                "\033[1;33m[updater]\033[0m Settings updated during sync — restarting to apply new configuration.\n"
+            )
         try:
             sys.stderr.flush()
         except Exception:
