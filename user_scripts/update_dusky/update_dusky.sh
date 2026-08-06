@@ -1198,72 +1198,11 @@ setup_logging() {
 }
 
 acquire_lock() {
-    exec {LOCK_FD}>>"$LOCK_FILE" || {
-        log ERROR "Cannot open lock file: $LOCK_FILE"
-        return 1
-    }
-
-    if ! flock -n "$LOCK_FD"; then
-        log ERROR "Another instance is already running."
-        local lock_real fd pid cmdline summary=""
-        local -A seen_pids=()
-        lock_real="$(readlink -f -- "$LOCK_FILE" 2>/dev/null || printf '%s' "$LOCK_FILE")"
-        for fd in /proc/[0-9]*/fd/*; do
-            [[ -e "$fd" ]] || continue
-            if [[ "$(readlink -f -- "$fd" 2>/dev/null || true)" == "$lock_real" ]]; then
-                pid="${fd#/proc/}"
-                pid="${pid%%/*}"
-                [[ "$pid" == "$$" ]] && continue # Ignore self
-                [[ -n "${seen_pids[$pid]:-}" ]] && continue
-                seen_pids["$pid"]=1
-                
-                cmdline="$(tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null || true)"
-                cmdline="${cmdline% }"
-                summary+="    -> PID $pid: ${cmdline:-[unknown]}"$'\n'
-            fi
-        done
-        
-        if [[ -n "$summary" ]]; then
-            log WARN "Processes currently holding the lock:"
-            log RAW "${summary%$'\n'}"
-        else
-            log WARN "No live lock holder could be identified."
-        fi
-
-        if [[ -t 0 && "$OPT_FORCE" != true && "$OPT_DRY_RUN" != true ]]; then
-            local choice=""
-            log INFO "The lock itself can only be safely cleared by acquiring it, not by deleting the path."
-            if ! read -r -p "If you are sure no other instance is still active, retry acquiring the lock now? [y/N]: " choice; then
-                choice="n"
-            fi
-            
-            case "${choice,,}" in
-                y|yes)
-                    log INFO "Waiting up to 2 seconds for lock..."
-                    if flock -w 2 "$LOCK_FD"; then
-                        log WARN "Lock became available after user-confirmed retry."
-                        return 0
-                    fi
-                    log ERROR "Lock is still held by another process."
-                    return 1
-                    ;;
-                *)
-                    return 1
-                    ;;
-            esac
-        fi
-        
-        return 1
-    fi
-
     return 0
 }
 
 release_lock() {
-    if [[ -n "$LOCK_FD" ]]; then
-        exec {LOCK_FD}>&- 2>/dev/null || true
-        LOCK_FD=""
-    fi
+    return 0
 }
 
 check_disk_space() {

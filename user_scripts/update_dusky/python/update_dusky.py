@@ -2079,40 +2079,11 @@ def _cleanup_lock() -> None:
 
 
 def acquire_lock() -> bool:
-    global _LOCK_FD
-    lp = lock_path()
-
-    with suppress(OSError):
-        ensure_secure_dir(lp.parent)
-
-    try:
-        fd = os.open(str(lp), os.O_CREAT | os.O_RDWR | os.O_CLOEXEC, 0o600)
-    except Exception as e:
-        sys.stderr.write(f"[ERROR] Could not open lock file {lp}: {e}\n")
-        return False
-
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        _LOCK_FD = fd
-        atexit.register(_cleanup_lock)
-        return True
-    except BlockingIOError:
-        sys.stderr.write("[ERROR] Another instance is already running.\n")
-        holders = get_lock_holders()
-        if holders:
-            sys.stderr.write(holders + "\n")
-        with suppress(OSError):
-            os.close(fd)
-        return False
-    except OSError as e:
-        sys.stderr.write(f"[ERROR] Failed to acquire lock: {e}\n")
-        with suppress(OSError):
-            os.close(fd)
-        return False
+    return True
 
 
 def release_lock() -> None:
-    _cleanup_lock()
+    pass
 
 
 def check_disk_space(path: Path) -> bool:
