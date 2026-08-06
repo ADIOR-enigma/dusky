@@ -1349,8 +1349,15 @@ run_logged_command() {
     local rc=0
     local timestamp="" arg=""
 
-    if [[ -z "$LOG_FILE" || ! -w "$LOG_FILE" ]]; then
-        # Subshell severs the lock before running unlogged commands
+    local is_interactive=false
+    for arg in "${cmd[@]}"; do
+        if [[ -f "$arg" ]] && grep -q -i -E '^\s*#\s*dusky_interactive\s*=\s*(true|1)\b' "$arg" 2>/dev/null; then
+            is_interactive=true
+            break
+        fi
+    done
+
+    if [[ "$is_interactive" == true || -z "$LOG_FILE" || ! -w "$LOG_FILE" ]]; then
         (
             [[ -n "${LOCK_FD:-}" ]] && exec {LOCK_FD}>&- 2>/dev/null || true
             "${cmd[@]}"
