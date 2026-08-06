@@ -1867,7 +1867,9 @@ Tree:focus > .tree--cursor {{
 
 TaskSearchScreen, ConflictModalScreen, ManualModalScreen, SudoPasswordScreen, ConfirmQuitScreen, HelpScreen, LogSearchScreen, FailureSummaryScreen, CompletionDialog {{
     align: center middle;
-    background: rgba(0,0,0,0.72);
+    background: rgba(0,0,0,0.88);
+    width: 100%;
+    height: 100%;
 }}
 
 #search_dialog, #log_search_dialog {{
@@ -1900,13 +1902,18 @@ TaskSearchScreen, ConflictModalScreen, ManualModalScreen, SudoPasswordScreen, Co
     padding: 1 2;
 }}
 
-#confirm_dialog {{
-    width: 56;
+#confirm_dialog {
+    width: 60;
     height: auto;
     background: {p['bg']};
     border: solid {p['error']};
-    padding: 1 2;
-}}
+    padding: 1 3;
+}
+
+#confirm_title, #confirm_text, #button_bar {
+    background: transparent;
+    width: 100%;
+}
 
 #modal_dialog {{
     border: heavy {p['error']};
@@ -4573,8 +4580,8 @@ class ConfirmQuitScreen(ModalScreen[str]):
             yield Static(f"{S('failed')}  ABORT ORCHESTRATOR?", id="confirm_title")
             yield Static("Are you sure you want to terminate the active sequence?", id="confirm_text")
             with Horizontal(id="button_bar"):
-                yield Button("Cancel [N/C]", variant="primary", id="btn_cancel")
-                yield Button("Abort [Y/A]", variant="error", id="btn_abort")
+                yield Button(Text("Cancel [N]"), variant="primary", id="btn_cancel", flat=True)
+                yield Button(Text("Abort [Y]"), variant="error", id="btn_abort", flat=True)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss("abort" if event.button.id == "btn_abort" else "cancel")
