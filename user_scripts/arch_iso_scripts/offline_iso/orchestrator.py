@@ -1239,7 +1239,7 @@ class FailureModalScreen(ModalScreen):
 
     def compose(self) -> ComposeResult:
         with Container(id="modal_dialog"):
-            yield Label(f"⚠ TASK FAILED: {self.task_name}", id="modal_title")
+            yield Label(f"{S('failed')} TASK FAILED: {self.task_name}", id="modal_title")
             yield Static(self.error_msg, id="error_details")
             with Horizontal(id="button_bar"):
                 yield Button("Retry [R]", variant="primary", id="btn_retry")
@@ -1389,7 +1389,9 @@ class DuskyOrchestratorApp(App):
 
     FailureModalScreen, ManualModalScreen {
         align: center middle;
-        background: rgba(0,0,0,0.85);
+        background: rgba(0,0,0,0.88);
+        width: 100%;
+        height: 100%;
     }
     #modal_dialog {
         width: 75;

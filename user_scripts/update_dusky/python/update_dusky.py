@@ -2302,7 +2302,9 @@ ProgressBar > .progress--bar {{ color: {THEME['accent']}; }}
 ProgressBar > .progress--remaining {{ background: {THEME['muted']}33; }}
 CompletionDialog, TaskSearchScreen, LogSearchScreen, ConfirmQuitScreen, HelpScreen {{
     align: center middle;
-    background: rgba(0, 0, 0, 0.75);
+    background: rgba(0, 0, 0, 0.88);
+    width: 100%;
+    height: 100%;
 }}
 #completion-dialog {{
     width: 60; height: auto; max-height: 60%;
@@ -4053,8 +4055,8 @@ class ConfirmQuitScreen(ModalScreen[str]):
             yield Static(f"{S('failed')}  ABORT DUSKY UPDATER?", id="confirm_title")
             yield Static("Are you sure you want to terminate the active update process?", id="confirm_text")
             with Horizontal(classes="modal-btn-container"):
-                yield Label(" Cancel [N/C] ", classes="modal-cancel-btn", id="btn_cancel")
-                yield Label(" Abort [Y/A] ", classes="modal-close-btn", id="btn_abort")
+                yield Label(" Cancel [N] ", classes="modal-cancel-btn", id="btn_cancel")
+                yield Label(" Abort [Y] ", classes="modal-close-btn", id="btn_abort")
 
     @on(events.Click, "#btn_abort")
     def on_abort_click(self) -> None:
