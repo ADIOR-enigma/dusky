@@ -1731,9 +1731,11 @@ class DuskyOrchestratorApp(App):
 
                     try:
                         with self._suspend_ui():
-                            rc = (await asyncio.to_thread(subprocess.run, cmd)).returncode
+                            rc = subprocess.run(cmd).returncode
                     except KeyboardInterrupt:
                         rc = 130
+                        
+                    await asyncio.sleep(0.2)
 
                     dur = time.time() - start_t
                     self.log_system(f"TUI Resumed. Script exited with code: {rc}")
