@@ -2262,6 +2262,36 @@ class EliteInstallerApp(App):
                 with suppress(Exception):
                     await proc.wait()
 
+    async def _wait_for_process(self, proc: asyncio.subprocess.Process) -> int:
+        while True:
+            if proc.returncode is not None:
+                return proc.returncode
+
+            with suppress(asyncio.TimeoutError, TimeoutError):
+                await asyncio.wait_for(proc.wait(), timeout=0.15)
+                if proc.returncode is not None:
+                    return proc.returncode
+
+            if proc.pid is not None:
+                try:
+                    pid, status = os.waitpid(proc.pid, os.WNOHANG)
+                    if pid == proc.pid:
+                        if os.WIFEXITED(status):
+                            rc = os.WEXITSTATUS(status)
+                        elif os.WIFSIGNALED(status):
+                            rc = -os.WTERMSIG(status)
+                        else:
+                            rc = 0
+                        if hasattr(proc, "_transport") and proc._transport:
+                            proc._transport._returncode = rc  # type: ignore
+                        return rc
+                except (ChildProcessError, OSError):
+                    if proc.returncode is not None:
+                        return proc.returncode
+                    return 0
+
+            await asyncio.sleep(0.05)
+
     async def execute_pty_command(self, cmd: list[str]) -> bool:
         """Spawns subprocess inside PTY with async read loop and auto-prompting."""
         try:
@@ -2351,7 +2381,7 @@ class EliteInstallerApp(App):
             read_task = asyncio.create_task(read_loop())
 
             try:
-                rc = await proc.wait()
+                rc = await self._wait_for_process(proc)
                 try:
                     await asyncio.wait_for(asyncio.shield(read_task), timeout=2.0)
                 except (TimeoutError, asyncio.TimeoutError):

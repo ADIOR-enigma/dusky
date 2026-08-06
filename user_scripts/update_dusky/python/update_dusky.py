@@ -2086,6 +2086,52 @@ def release_lock() -> None:
     pass
 
 
+async def wait_for_process(proc: asyncio.subprocess.Process, timeout: float | None = None) -> int:
+    """Waits for a subprocess to exit cleanly without hanging on SIGCHLD delivery."""
+    start_t = time.monotonic()
+
+    with suppress(Exception):
+        if signal.getsignal(signal.SIGCHLD) == signal.SIG_IGN:
+            signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+
+    while True:
+        if proc.returncode is not None:
+            return proc.returncode
+
+        with suppress(asyncio.TimeoutError, TimeoutError):
+            await asyncio.wait_for(proc.wait(), timeout=0.15)
+            if proc.returncode is not None:
+                return proc.returncode
+
+        if proc.pid is not None:
+            try:
+                pid, status = os.waitpid(proc.pid, os.WNOHANG)
+                if pid == proc.pid:
+                    if os.WIFEXITED(status):
+                        rc = os.WEXITSTATUS(status)
+                    elif os.WIFSIGNALED(status):
+                        rc = -os.WTERMSIG(status)
+                    else:
+                        rc = 0
+                    if hasattr(proc, "_transport") and proc._transport:
+                        with suppress(Exception):
+                            if hasattr(proc._transport, "_process_exited"):
+                                proc._transport._process_exited(rc)
+                            else:
+                                proc._transport._returncode = rc  # type: ignore
+                    return rc
+            except (ChildProcessError, OSError):
+                if proc.returncode is not None:
+                    return proc.returncode
+                return 0
+
+        if timeout is not None and timeout > 0:
+            if (time.monotonic() - start_t) >= timeout:
+                raise TimeoutError()
+
+        await asyncio.sleep(0.05)
+
+
 def check_disk_space(path: Path) -> bool:
     try:
         usage = shutil.disk_usage(path)
@@ -4565,21 +4611,20 @@ class DuskyApp(App):
             read_task = asyncio.create_task(read_loop())
 
             try:
-                async with asyncio.timeout(timeout if timeout > 0 else None):
-                    code = await proc.wait()
-                    try:
-                        async with asyncio.timeout(2.0):
-                            await asyncio.shield(read_task)
-                    except TimeoutError:
-                        read_task.cancel()
-                    return code == 0, code
+                code = await wait_for_process(proc, timeout=timeout if timeout > 0 else None)
+                try:
+                    async with asyncio.timeout(2.0):
+                        await asyncio.shield(read_task)
+                except (TimeoutError, asyncio.TimeoutError):
+                    read_task.cancel()
+                return code == 0, code
 
-            except TimeoutError:
+            except (TimeoutError, asyncio.TimeoutError):
                 with suppress(ProcessLookupError, PermissionError, OSError):
                     os.killpg(proc.pid, signal.SIGKILL)
                 read_task.cancel()
                 with suppress(Exception):
-                    await proc.wait()
+                    await wait_for_process(proc, timeout=2.0)
                 return False, 124
 
         finally:
@@ -4695,8 +4740,7 @@ class DuskyApp(App):
 
                     try:
                         proc = await asyncio.create_subprocess_exec(*exec_cmd, cwd=str(WORK_TREE))
-                        await proc.wait()
-                        rc = proc.returncode
+                        rc = await wait_for_process(proc)
                     except KeyboardInterrupt:
                         rc = 130
 
