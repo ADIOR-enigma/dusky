@@ -2,17 +2,14 @@
 	"position": "top",
 	"modules-left": [
 		"group/user",
-		"custom/right_div#4",
+		"custom/right_div#1",
 		"hyprland/workspaces",
 		"custom/notifications",
 		"custom/right_div#1"
 	],
 	"modules-center": [
 		"custom/left_div#2",
-		"group/updates-drawer",
-		"bluetooth",
-		"network",
-    "group/net-speed-drawer",
+		"custom/weather",
 		"custom/left_div#3",
 		"memory",
 		"custom/left_div#4",
@@ -26,17 +23,18 @@
 		"custom/right_div#3",
 		"clock#date",
 		"custom/right_div#4",
-		"custom/weather",
+		"bluetooth",
+		"network",
+		"group/net-speed-drawer",
+		"group/updates-drawer",
 		"custom/right_div#5"
 	],
 	"modules-right": [
 		"custom/left_div#2",
-		// "group/mpris-drawer",
-		"custom/left_div#3",
 		"group/pulseaudio",
+		"custom/left_div#3",
 		"custom/left_div#4",
 		"group/backlight-drawer",
-		"custom/left_inv#1",
 		"group/power-drawer"
 	],
 
@@ -81,8 +79,8 @@
 			"active": "",
 			"default": ""
 		},
-		"on-scroll-up": "hyprctl dispatch 'hl.dsp.focus({ workspace = \"+1\" })'",
-		"on-scroll-down": "hyprctl dispatch 'hl.dsp.focus({ workspace = \"-1\" })'",
+		"on-scroll-up": "hyprctl dispatch 'hl.dsp.focus({ workspace = \"e-1\" })'",
+		"on-scroll-down": "hyprctl dispatch 'hl.dsp.focus({ workspace = \"e+1\" })'",
 		"cursor": true
 	},
 
@@ -136,7 +134,7 @@
 		"format": "󰘚 {percentage}%",
 		"format-warning": "󰀧 {percentage}%",
 		"format-critical": "󰀧 {percentage}%",
-    "on-click": "dusky-run kitty --class io_monitor.sh -e \"$HOME/user_scripts/drives/io_monitor.sh\"",
+    "on-click": "dusky-run kitty --class dusky_disk_monitor_io -e python \"$HOME/user_scripts/drives/dusky_disk_monitor_io.py\"",
 		"states": {
 			"warning": 75,
 			"critical": 90
@@ -157,7 +155,7 @@
 	},
 
 	"custom/distro": {
-		"format": "󰣇",
+		"format": "󰌽",
 		"on-click": "gdbus call --session --dest com.github.dusky.controlcenter --object-path /com/github/dusky/controlcenter --method org.freedesktop.Application.Activate '{}'",
 		"on-click-right": "gdbus call --session --dest org.dusky.quickpanal --object-path /org/dusky/quickpanal --method org.freedesktop.Application.Activate '{}'",
 		"tooltip-format": "Control Center"
@@ -170,20 +168,24 @@
 
 	"clock#date": {
 		"format": "󰸗 {:%m-%d}",
-		"tooltip-format": "{calendar}",
+		"tooltip-format": "<tt>{calendar}</tt>",
 		"calendar": {
-			"mode": "month",
-			"mode-mon-col": 6,
+			"mode": "year",
+			"mode-mon-col": 3,
+			"weeks-pos": "right",
+			"on-scroll": 1,
 			"format": {
-				"months": "<span alpha='100%'><b>{}</b></span>",
-				"days": "<span alpha='90%' font='monospace'>{}</span>",
-				"weekdays": "<span alpha='80%'><i>{}</i></span>",
-				"weeks": "<span alpha='90%' font='monospace'> {} </span>",
-				"today": "<span alpha='100%'><b><u>{}</u></b></span>"
+				"months": "<span color='#ffb786'><b>{}</b></span>",
+				"days": "<span color='#e2e2e2'>{}</span>",
+				"weeks": "<span color='#c9ca93'>W{}</span>",
+				"weekdays": "<span color='#ffb786'><b>{}</b></span>",
+				"today": "<span color='#131313' background='#ffb786'><b>{}</b></span>"
 			}
 		},
 		"actions": {
-			"on-click": "mode"
+			"on-click-right": "mode",
+			"on-scroll-up": "shift_up",
+			"on-scroll-down": "shift_down"
 		}
 	},
 

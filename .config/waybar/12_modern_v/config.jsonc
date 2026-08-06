@@ -3,7 +3,7 @@
     "layer": "top",
     "position": "right",
     "spacing": 0,
-    "width": 30,
+    "width": 31,
     "margin-top": 5,
     "margin-bottom": 5,
     "margin-left": 4,
@@ -38,7 +38,7 @@
         "drawer": {
             "transition-duration": 400,
             "children-class": "clock-drawer",
-            "transition-left-to-right": false
+            "transition-left-to-right": true
         },
         "modules": [
             "clock",
@@ -79,7 +79,9 @@
         "format": "{name}",
         "on-click": "activate",
         "sort-by": "number",
-        "persistent-workspaces": {}
+        "persistent-workspaces": {},
+        "on-scroll-up": "hyprctl dispatch 'hl.dsp.focus({ workspace = \"e-1\" })'",
+        "on-scroll-down": "hyprctl dispatch 'hl.dsp.focus({ workspace = \"e+1\" })'"
     },
 
     "group/stats": {
@@ -92,7 +94,7 @@
         "format": "\n{usage}",
         "interval": 2,
         "on-click": "dusky-run kitty --class htop -e htop",
-        "tooltip-format": "CPU: {usage}%",
+        "tooltip": false,
         "states": {
             "critical": 80
         }
@@ -103,7 +105,7 @@
         "format": "\n{percentage}",
         "interval": 2,
         "on-click": "dusky-run kitty --class io_monitor.sh -e $HOME/user_scripts/drives/io_monitor.sh",
-        "tooltip-format": "Used: {used}GiB",
+        "tooltip": false,
         "states": {
             "critical": 80
         }
@@ -115,18 +117,18 @@
         "format": "\n{temperatureC}",
         "critical-threshold": 80,
         "format-critical": "🔥\n{temperatureC}",
-        "tooltip-format": "Temp: {temperatureC}°C"
+        "tooltip": false
     },
 
     "clock": {
         "justify": "center",
         "format": "{:%I\n%M}",
-        "tooltip-format": "<big>{:%A, %d %B}</big>\n<tt><small>{calendar}</small></tt>",
+        "tooltip-format": "<tt>{calendar}</tt>",
         "interval": 60,
         "on-click": "dusky-run gnome-clocks",
         "on-click-middle": "dusky-run kitty --class peaclock -e peaclock",
         "calendar": {
-            "mode": "year",
+            "mode": "month",
             "mode-mon-col": 3,
             "weeks-pos": "right",
             "on-scroll": 1,
@@ -174,12 +176,16 @@
 
     "pulseaudio": {
         "justify": "center",
+        "align": 0.5,
         "format": "{icon}\n{volume}",
-        "format-muted": "󰖁\nMute",
+        "format-muted": "󰖁",
         "on-click": "dusky-run pavucontrol",
         "on-click-right": "dusky-run \"$HOME/user_scripts/dusky_system/quickpanal/dusky_quickpanal.py\"",
-        "format-icons": ["", "", ""],
-        "tooltip-format": "Volume: {volume}%"
+        "on-click-middle": "pactl set-sink-mute @DEFAULT_SINK@ toggle",
+        "on-scroll-up": "pactl set-sink-volume @DEFAULT_SINK@ +5%",
+        "on-scroll-down": "pactl set-sink-volume @DEFAULT_SINK@ -5%",
+        "format-icons": ["󰖁", "", ""],
+        "tooltip-format": "Volume: {volume}%\nLMB: pavucontrol\nRMB: Quick Panel\nMMB: Mute"
     },
 
     "backlight": {

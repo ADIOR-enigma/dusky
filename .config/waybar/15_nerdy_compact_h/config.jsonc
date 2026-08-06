@@ -64,7 +64,7 @@
     // LEFT MODULES
     // ===================================================================
     "custom/launcher": {
-        "format": "󰣇",
+        "format": "󰌽",
         "tooltip-format": "App Launcher\n\nLMB: Control Center\nMMB: Quick Panel\nRMB: Application Launcher",
         "on-click-right": "dusky-run rofi -show drun",
         "on-click-middle": "gdbus call --session --dest org.dusky.quickpanal --object-path /org/dusky/quickpanal --method org.freedesktop.Application.Activate '{}'",
@@ -143,7 +143,7 @@
     "clock": {
         "format": "{:%I:%M %p}",
         "format-alt": " {:%A, %d %B %Y  •  %I:%M:%S %p}",
-        "tooltip-format": "<big>{:%A, %d %B %Y}</big>\n<tt><small>{calendar}</small></tt>",
+        "tooltip-format": "<tt>{calendar}</tt>",
         "interval": 1,
         "calendar": {
             "mode": "year",

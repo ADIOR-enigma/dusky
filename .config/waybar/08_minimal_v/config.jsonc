@@ -89,7 +89,9 @@
         "format": "",
         "on-click": "activate",
         "sort-by": "number",
-        "persistent-workspaces": {}
+        "persistent-workspaces": {},
+        "on-scroll-up": "hyprctl dispatch 'hl.dsp.focus({ workspace = \"e-1\" })'",
+        "on-scroll-down": "hyprctl dispatch 'hl.dsp.focus({ workspace = \"e+1\" })'"
     },
 
     "cpu": {
@@ -126,9 +128,27 @@
     "clock": {
         "justify": "center",
         "format": "{:%I\n%M}",
-        "tooltip-format": "{:%A, %d %B %Y}",
+        "tooltip-format": "<tt>{calendar}</tt>",
         "on-click": "dusky-run gnome-clocks",
-        "interval": 60
+        "interval": 60,
+        "calendar": {
+            "mode": "year",
+            "mode-mon-col": 3,
+            "weeks-pos": "right",
+            "on-scroll": 1,
+            "format": {
+                "months": "<span color='#ffb786'><b>{}</b></span>",
+                "days": "<span color='#e2e2e2'>{}</span>",
+                "weeks": "<span color='#c9ca93'>W{}</span>",
+                "weekdays": "<span color='#ffb786'><b>{}</b></span>",
+                "today": "<span color='#131313' background='#ffb786'><b>{}</b></span>"
+            }
+        },
+        "actions": {
+            "on-click-right": "mode",
+            "on-scroll-up": "shift_up",
+            "on-scroll-down": "shift_down"
+        }
     },
 
     "custom/notification": {

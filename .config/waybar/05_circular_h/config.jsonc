@@ -2,6 +2,7 @@
     "reload_style_on_change": true,
     "layer": "top",
     "position": "top",
+    "height": 36,
     "margin-top": 3,
     "margin-left": 10,
     "margin-right": 10,
@@ -41,7 +42,7 @@
         ]
     },
     "custom/arch": {
-        "format": "󰣇",
+        "format": "󰌽",
         "tooltip-format": "Control Center",
         "on-click": "dusky-run python3 ~/user_scripts/dusky_system/control_center/dusky_control_center.py",
         "on-click-right": "gdbus call --session --dest org.dusky.quickpanal --object-path /org/dusky/quickpanal --method org.freedesktop.Application.Activate '{}'"
@@ -106,11 +107,19 @@
 
     // === MODULES: LEFT ===
     "hyprland/workspaces": {
-        "format": "",
+        "format": "{icon}",
+        "format-icons": {
+            "active": "󰮯",
+            "visible": "",
+            "default": "•",
+            "persistent": "•"
+        },
         "on-click": "activate",
         "persistent-workspaces": {
             "*": 5
-        }
+        },
+        "on-scroll-up": "hyprctl dispatch 'hl.dsp.focus({ workspace = \"e-1\" })'",
+        "on-scroll-down": "hyprctl dispatch 'hl.dsp.focus({ workspace = \"e+1\" })'"
     },
 
     // === MODULES: CENTER ===
@@ -127,11 +136,11 @@
     "clock": {
         "format": "{:%I:%M %p}",
         "format-alt": "󰃭 {:%A, %B %d}",
-        "tooltip-format": "<tt><span size='12pt' font='JetBrainsMono Nerd Font'>{calendar}</span></tt>",
+        "tooltip-format": "<tt>{calendar}</tt>",
         "on-click": "dusky-run gnome-clocks",
         "on-click-middle": "dusky-run kitty --class clock -e peaclock",
         "calendar": {
-            "mode": "month",
+            "mode": "year",
             "mode-mon-col": 3,
             "weeks-pos": "right",
             "on-scroll": 1,

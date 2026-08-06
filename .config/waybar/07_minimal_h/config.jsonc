@@ -4,7 +4,7 @@
     "layer": "top",
     "position": "top",
     "spacing": 0,
-    "height": 30,
+    "height": 32,
     "margin-top": 5,
     "margin-bottom": 5,
     "margin-left": 4,
@@ -26,7 +26,7 @@
     "modules-right": [ 
         "group/audio-drawer",
         "group/battery-drawer",
-        "group/power-drawer"
+        "custom/power"
     ],
 
     // ===================================================================
@@ -96,16 +96,18 @@
         "format": "",
         "on-click": "activate",
         "sort-by": "number",
-        "persistent-workspaces": {}
+        "persistent-workspaces": {},
+        "on-scroll-up": "hyprctl dispatch 'hl.dsp.focus({ workspace = \"e-1\" })'",
+        "on-scroll-down": "hyprctl dispatch 'hl.dsp.focus({ workspace = \"e+1\" })'"
     },
 
     "clock": {
         "format": "{:%I:%M}",
-        "tooltip-format": "<tt><span size='12pt' font='JetBrainsMono Nerd Font'>{calendar}</span></tt>",
+        "tooltip-format": "<tt>{calendar}</tt>",
         "on-click": "dusky-run gnome-clocks",
         "interval": 60,
         "calendar": {
-            "mode": "month",
+            "mode": "year",
             "mode-mon-col": 3,
             "weeks-pos": "right",
             "on-scroll": 1,
@@ -116,6 +118,11 @@
                 "weekdays": "<span color='#ffb786'><b>{}</b></span>",
                 "today": "<span color='#131313' background='#ffb786'><b>{}</b></span>"
             }
+        },
+        "actions": {
+            "on-click-right": "mode",
+            "on-scroll-up": "shift_up",
+            "on-scroll-down": "shift_down"
         }
     },
 
@@ -217,7 +224,7 @@
     },
 
     "custom/power": {
-        "format": "",
+        "format": "󰐥",
         "tooltip-format": "Power Menu\nRight-click: Control Center",
         "on-click": "dusky-run ~/user_scripts/wlogout/wlogout_scale.sh",
         "on-click-right": "dusky-run python3 ~/user_scripts/dusky_system/control_center/dusky_control_center.py"

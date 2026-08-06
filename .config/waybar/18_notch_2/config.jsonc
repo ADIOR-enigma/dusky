@@ -50,9 +50,9 @@
         "clock": {
             "format": "{:%I:%M %p}",
             "format-alt": "{:%a, %b %d}",
-            "tooltip-format": "<tt><span size='12pt' font='JetBrainsMono Nerd Font'>{calendar}</span></tt>",
+            "tooltip-format": "<tt>{calendar}</tt>",
             "calendar": {
-                "mode": "month",
+                "mode": "year",
                 "mode-mon-col": 3,
                 "weeks-pos": "right",
                 "on-scroll": 1,
@@ -63,6 +63,11 @@
                     "weekdays": "<span color='#ffb786'><b>{}</b></span>",
                     "today": "<span color='#131313' background='#ffb786'><b>{}</b></span>"
                 }
+            },
+            "actions": {
+                "on-click-right": "mode",
+                "on-scroll-up": "shift_up",
+                "on-scroll-down": "shift_down"
             }
         },
 
@@ -78,8 +83,8 @@
                 "*": 5
             },
             "on-click": "activate",
-            "on-scroll-down": "hyprctl dispatch 'hl.dsp.focus({ workspace = \"e+1\" })'",
-            "on-scroll-up": "hyprctl dispatch 'hl.dsp.focus({ workspace = \"e-1\" })'"
+            "on-scroll-up": "hyprctl dispatch 'hl.dsp.focus({ workspace = \"e-1\" })'",
+            "on-scroll-down": "hyprctl dispatch 'hl.dsp.focus({ workspace = \"e+1\" })'"
         },
 
         "group/battery-drawer": {
@@ -228,7 +233,7 @@
         },
 
         "custom/arch": {
-            "format": "",
+            "format": "󰌽",
             "on-click": "gdbus call --session --dest com.github.dusky.controlcenter --object-path /com/github/dusky/controlcenter --method org.freedesktop.Application.Activate '{}'",
             "tooltip": false
         },

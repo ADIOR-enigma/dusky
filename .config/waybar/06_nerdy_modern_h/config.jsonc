@@ -2,7 +2,7 @@
     "layer": "top",
     "position": "top",
     "spacing": 4,
-    "height": 32,
+    "height": 36,
     "margin-top": 5,
     "margin-bottom": 0,
     "margin-left": 8,
@@ -134,7 +134,7 @@
     // LEFT MODULES
     // ===================================================================
     "custom/launcher": {
-        "format": "󰣇",
+        "format": "󰌽",
         "tooltip-format": "App Launcher\n\nLMB: Control Center\nMMB: Quick Panel\nRMB: Application Launcher",
         "on-click-right": "dusky-run rofi -show drun",
         "on-click-middle": "gdbus call --session --dest org.dusky.quickpanal --object-path /org/dusky/quickpanal --method org.freedesktop.Application.Activate '{}'",
@@ -194,7 +194,7 @@
     "clock": {
         "format": "{:%I:%M %p}",
         "format-alt": " {:%A, %d %B %Y  •  %I:%M:%S %p}",
-        "tooltip-format": "<big>{:%A, %d %B %Y}</big>\n<tt><small>{calendar}</small></tt>",
+        "tooltip-format": "<tt>{calendar}</tt>",
         "interval": 1,
         "calendar": {
             "mode": "year",
@@ -202,11 +202,11 @@
             "weeks-pos": "right",
             "on-scroll": 1,
             "format": {
-                "months": "<span color='#ffead3'><b>{}</b></span>",
-                "days": "<span color='#ecc6d9'><b>{}</b></span>",
-                "weeks": "<span color='#99ffdd'><b>W{}</b></span>",
-                "weekdays": "<span color='#ffcc66'><b>{}</b></span>",
-                "today": "<span color='#ff6699'><b><u>{}</u></b></span>"
+                "months": "<span color='#ffb786'><b>{}</b></span>",
+                "days": "<span color='#e2e2e2'>{}</span>",
+                "weeks": "<span color='#c9ca93'>W{}</span>",
+                "weekdays": "<span color='#ffb786'><b>{}</b></span>",
+                "today": "<span color='#131313' background='#ffb786'><b>{}</b></span>"
             }
         },
         "actions": {

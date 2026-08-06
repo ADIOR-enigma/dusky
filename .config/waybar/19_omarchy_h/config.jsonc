@@ -40,10 +40,12 @@
       "3": [],
       "4": [],
       "5": []
-    }
+    },
+    "on-scroll-up": "hyprctl dispatch 'hl.dsp.focus({ workspace = \"e-1\" })'",
+    "on-scroll-down": "hyprctl dispatch 'hl.dsp.focus({ workspace = \"e+1\" })'"
   },
   "custom/omarchy": {
-    "format": "󰣇",
+    "format": "󰌽",
     "on-click": "rofi -show drun -run-command 'dusky-run {cmd}'",
     "on-click-right": "dusky-run kitty",
     "tooltip-format": "Apps Menu"
@@ -52,14 +54,50 @@
   "clock#horizontal": {
     "format": "{:L%A %H:%M}",
     "format-alt": "{:L%d %B W%V %Y}",
-    "tooltip": false,
-    "on-click-right": "dusky-run gnome-clocks"
+    "tooltip": true,
+    "tooltip-format": "<tt>{calendar}</tt>",
+    "calendar": {
+      "mode": "year",
+      "mode-mon-col": 3,
+      "weeks-pos": "right",
+      "on-scroll": 1,
+      "format": {
+        "months": "<span color='#ffb786'><b>{}</b></span>",
+        "days": "<span color='#e2e2e2'>{}</span>",
+        "weeks": "<span color='#c9ca93'>W{}</span>",
+        "weekdays": "<span color='#ffb786'><b>{}</b></span>",
+        "today": "<span color='#131313' background='#ffb786'><b>{}</b></span>"
+      }
+    },
+    "actions": {
+      "on-click-right": "mode",
+      "on-scroll-up": "shift_up",
+      "on-scroll-down": "shift_down"
+    }
   },
   "clock#vertical": {
     "format": "{:%H\n  —\n%M}",
     "format-alt": "{:L%d %B W%V %Y}",
-    "tooltip": false,
-    "on-click-right": "dusky-run gnome-clocks"
+    "tooltip": true,
+    "tooltip-format": "<tt>{calendar}</tt>",
+    "calendar": {
+      "mode": "year",
+      "mode-mon-col": 3,
+      "weeks-pos": "right",
+      "on-scroll": 1,
+      "format": {
+        "months": "<span color='#ffb786'><b>{}</b></span>",
+        "days": "<span color='#e2e2e2'>{}</span>",
+        "weeks": "<span color='#c9ca93'>W{}</span>",
+        "weekdays": "<span color='#ffb786'><b>{}</b></span>",
+        "today": "<span color='#131313' background='#ffb786'><b>{}</b></span>"
+      }
+    },
+    "actions": {
+      "on-click-right": "mode",
+      "on-scroll-up": "shift_up",
+      "on-scroll-down": "shift_down"
+    }
   },
   "custom/weather": {
     "format": "{}",
