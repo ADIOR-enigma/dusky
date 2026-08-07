@@ -3516,8 +3516,10 @@ class GitEngine:
         change_old_mode: dict = {}
         change_old_oid: dict = {}
         meta: dict = {
+            "status": "unknown",
             "branch": self.profile.branch,
             "commits": "",
+            "commit_list": [],
             "files_changed": 0,
             "diff": "",
             "before_head": "",
@@ -3554,6 +3556,8 @@ class GitEngine:
                     self._tlog(f"[bold {THEME['error']}]Checkout failed: {escape(err)}[/]", idx, True)
                     raise RuntimeError("Work-tree checkout failed.")
 
+                meta.update(status="cloned")
+                self.app.git_summary = meta
                 self._tlog(f"[bold {THEME['success']}]Repository cloned and checked out successfully.[/]", idx, True)
                 self.app.update_task_state(idx, "success")  # type: ignore
                 for i in range(1, 5):
@@ -3617,12 +3621,16 @@ class GitEngine:
                 await self._unstage_managed_paths()
                 change_paths, change_status, change_old_mode, change_old_oid = await self._capture_tracked_changes()
                 if not change_paths:
+                    meta.update(status="up_to_date", before_head=local_head, after_head=remote_head)
+                    self.app.git_summary = meta
                     self._tlog(f"[bold {THEME['success']}]Repository synchronization perfect. Origin matched.[/]", idx, True)
                     await self._ensure_repo_defaults()
                     self.app.update_task_state(idx, "success")  # type: ignore
                     for i in range(2, 5):
                         self.app.update_task_state(i, "skipped")  # type: ignore
                     return True
+                meta.update(status="up_to_date_with_mods", before_head=local_head, after_head=remote_head, local_mods=len(change_paths))
+                self.app.git_summary = meta
                 self._tlog(f"[bold {THEME['accent']}]Origin matched, but work-tree has {len(change_paths)} tracked change(s). Processing...[/]", idx, True)
 
             rc, commit_count_raw, _ = await self._run_raw('rev-list', '--count', f'{local_head}..{remote_head}')
@@ -3635,10 +3643,12 @@ class GitEngine:
                 f"    Files changed:   {len(changed_files)}",
                 idx
             )
+            commit_list = []
             rc_log, log_out, _ = await self._run_raw('log', '--oneline', '--no-decorate', '-10', f'{local_head}..{remote_head}')
             if rc_log == 0 and log_out:
+                commit_list = [line.strip() for line in log_out.split('\n') if line.strip()]
                 self._tlog("    Recent commits:", idx)
-                for line in log_out.split('\n')[:10]:
+                for line in commit_list[:10]:
                     self._tlog(f"      {escape(line)}", idx)
 
             rc, diff_out, _ = await self._run_raw('diff', '--no-color', '--no-ext-diff', f'{local_head}..{remote_head}')
@@ -3648,8 +3658,17 @@ class GitEngine:
                 self.app.git_diff_text = diff_out  # type: ignore
                 meta.update(
                     commits=commit_count,
+                    commit_list=commit_list,
                     files_changed=len(changed_files),
                     diff=diff_out,
+                    before_head=local_head,
+                    after_head=remote_head,
+                )
+            else:
+                meta.update(
+                    commits=commit_count,
+                    commit_list=commit_list,
+                    files_changed=len(changed_files),
                     before_head=local_head,
                     after_head=remote_head,
                 )
@@ -3725,11 +3744,13 @@ class GitEngine:
 
                 await self._ensure_repo_defaults()
                 meta.update(
+                    status="unrelated_reset",
                     unrelated_histories=True,
                     after_head=remote_head,
                     local_mods_restored=restore_ok,
                 )
-                if meta.get("diff"):
+                self.app.git_summary = meta
+                if meta.get("diff") or meta.get("commits"):
                     persist_last_git_diff(meta)
                 self.app.update_task_state(idx, "success")  # type: ignore
                 return True
@@ -3804,10 +3825,12 @@ class GitEngine:
 
             await self._ensure_repo_defaults()
             meta.update(
+                status="updated",
                 after_head=remote_head,
                 local_mods_restored=restore_ok,
             )
-            if meta.get("diff"):
+            self.app.git_summary = meta
+            if meta.get("diff") or meta.get("commits"):
                 persist_last_git_diff(meta)
             self.app.update_task_state(idx, "success")  # type: ignore
             return True
@@ -3830,6 +3853,11 @@ class GitEngine:
 class MainLogItem(ListItem):
     def compose(self) -> ComposeResult:
         yield Label(f" [bold {THEME['accent']}]CORE[/] Dusky Execution Engine", classes="list-item-label")
+
+
+class ReportLogItem(ListItem):
+    def compose(self) -> ComposeResult:
+        yield Label(f" [bold {THEME['success']}]📊 REPORT[/] Final Run Overview", classes="list-item-label")
 
 
 class TaskItem(ListItem):
@@ -4259,6 +4287,27 @@ class DuskyApp(App):
         self.filter_mode: str = "all"
         self._log_lines: dict[int | str, deque[str]] = {}
         self._is_dragging_pane: bool = False
+        self.run_start_mono: float = time.monotonic()
+        self.phase_durations: dict[str, float] = {
+            "phase1_git": 0.0,
+            "phase1_5_resolve": 0.0,
+            "phase2_exec": 0.0,
+        }
+        self.git_summary: dict[str, Any] = {
+            "branch": self.profile.branch,
+            "before_head": "",
+            "after_head": "",
+            "commits": "0",
+            "commit_list": [],
+            "files_changed": 0,
+            "collisions": 0,
+            "collision_backup": "",
+            "local_mods": 0,
+            "local_mods_backup": "",
+            "local_mods_restored": None,
+            "unrelated_histories": False,
+            "status": "skipped" if OPT_SKIP_SYNC else "unknown",
+        }
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="top_header"):
@@ -4272,6 +4321,7 @@ class DuskyApp(App):
                 max_lines = GLOBAL_CONFIG.get("ui", {}).get("max_log_lines", 6000)
                 with ContentSwitcher(initial="log-main", id="log_switcher"):
                     yield RichLog(id="log-main", markup=True, wrap=True, auto_scroll=True, max_lines=max_lines)
+                    yield RichLog(id="log-report", markup=True, wrap=True, auto_scroll=False, max_lines=max_lines)
                     for i in range(len(self.tasks)):
                         yield RichLog(id=f"log-task-{i}", markup=True, wrap=True, auto_scroll=True, max_lines=max_lines)
 
@@ -4294,6 +4344,7 @@ class DuskyApp(App):
         list_view.append(MainLogItem())
         for i, task in enumerate(self.tasks):
             list_view.append(TaskItem(task, i))
+        list_view.append(ReportLogItem())
 
         self.log_main(f"[bold {THEME['accent']}]======================================================[/]")
         self.log_main(f"[bold {THEME['fg']}] DUSKY UPDATER — {datetime.now().strftime('%H:%M:%S')}[/]")
@@ -4348,6 +4399,7 @@ class DuskyApp(App):
         remove_last_git_diff()
         if not isinstance(payload, dict):
             return
+        self.git_summary.update(payload)
         diff = payload.get("diff") or ""
         commits = payload.get("commits", "?")
         files_changed = payload.get("files_changed", "?")
@@ -4445,6 +4497,8 @@ class DuskyApp(App):
         switcher = self.query_one("#log_switcher", ContentSwitcher)
         if isinstance(item, MainLogItem):
             switcher.current = "log-main"
+        elif isinstance(item, ReportLogItem):
+            switcher.current = "log-report"
         elif isinstance(item, TaskItem):
             switcher.current = f"log-task-{item.task_index}"
 
@@ -4822,7 +4876,162 @@ class DuskyApp(App):
         finally:
             await asyncio.sleep(0.01)
 
+    def _render_final_overview_block(
+        self,
+        verdict: str,
+        success_count: int,
+        fail_count: int,
+        skipped_count: int,
+        missing_count: int,
+        total_duration: float,
+    ) -> str:
+        sep = S("sep")
+        logo = S("logo")
+
+        if self.abort_flag:
+            v_color = THEME['error']
+            v_title = "SYSTEM PIPELINE ABORTED"
+        elif OPT_DRY_RUN:
+            v_color = THEME['success']
+            v_title = "DRY-RUN COMPLETED (NO CHANGES MADE)"
+        elif missing_count > 0 or fail_count > 0:
+            v_color = THEME['warning']
+            v_title = "COMPLETED WITH WARNINGS / SKIPPED SCRIPTS"
+        else:
+            v_color = THEME['success']
+            v_title = "ARCHITECTURE DEPLOYMENT COMPLETED"
+
+        p1_t = self.phase_durations.get("phase1_git", 0.0)
+        p15_t = self.phase_durations.get("phase1_5_resolve", 0.0)
+        p2_t = self.phase_durations.get("phase2_exec", 0.0)
+
+        g = getattr(self, "git_summary", {})
+        git_st = g.get("status", "skipped" if OPT_SKIP_SYNC else "unknown")
+        branch = escape(str(g.get("branch") or self.profile.branch))
+        before_sha = str(g.get("before_head") or "")[:8]
+        after_sha = str(g.get("after_head") or "")[:8]
+        commits_behind = str(g.get("commits") or "0")
+        commit_list = g.get("commit_list") or []
+        files_c = g.get("files_changed") or 0
+        col_c = g.get("collisions") or 0
+        col_dir = g.get("collision_backup") or ""
+        mod_c = g.get("local_mods") or 0
+        mod_restored = g.get("local_mods_restored")
+
+        if OPT_SKIP_SYNC or git_st == "skipped":
+            git_headline = "Bypassed (--skip-sync)"
+        elif git_st == "up_to_date":
+            git_headline = f"Up to date at commit [dim]{after_sha or before_sha or 'HEAD'}[/dim]"
+        elif git_st == "up_to_date_with_mods":
+            git_headline = f"Up to date ({mod_c} local modification(s) preserved)"
+        elif git_st == "updated":
+            sha_str = f" ({before_sha} ➔ {after_sha})" if (before_sha and after_sha) else ""
+            git_headline = f"Pulled {commits_behind} commit(s), {files_c} file(s) changed{sha_str}"
+        elif git_st == "unrelated_reset":
+            git_headline = f"Full ancestry recovery reset to [dim]{after_sha}[/dim]"
+        elif git_st == "cloned":
+            git_headline = "Bare repo cloned and checked out"
+        else:
+            git_headline = f"Status: {git_st}"
+
+        matrix = {m: {"success": 0, "failed": 0, "skipped": 0, "missing": 0} for m in ("GIT", "USER", "SUDO")}
+        for task in self.tasks:
+            mode_key = "GIT" if task.mode == 'GIT' else ("SUDO" if task.mode == 'S' else "USER")
+            if task.path_state == "missing":
+                matrix[mode_key]["missing"] += 1
+            elif task.status == "success":
+                matrix[mode_key]["success"] += 1
+            elif task.status == "failed":
+                matrix[mode_key]["failed"] += 1
+            elif task.status == "skipped":
+                matrix[mode_key]["skipped"] += 1
+            else:
+                matrix[mode_key]["skipped"] += 1
+
+        tot_all = len(self.tasks)
+        tot_succ = sum(matrix[m]["success"] for m in matrix)
+        tot_fail = sum(matrix[m]["failed"] for m in matrix)
+        tot_skip = sum(matrix[m]["skipped"] for m in matrix)
+        tot_miss = sum(matrix[m]["missing"] for m in matrix)
+
+        lines = [
+            f"════════════════════════════════════════════════════════════════════════════════",
+            f" [bold {v_color}]{logo} FINAL RUN OVERVIEW[/] {sep} [bold {THEME['fg']}]{escape(self.profile.name)}[/] {sep} Verdict: [bold {v_color}]{v_title}[/]",
+            f"════════════════════════════════════════════════════════════════════════════════",
+            f"",
+            f" [bold {THEME['accent']}]⏱ TIMING & PERFORMANCE[/]",
+            f"   Total Pipeline Duration : [bold {THEME['fg']}]{total_duration:.2f}s[/]",
+            f"   • Phase 1 (Git Architecture Reconciliation) : {p1_t:.2f}s",
+            f"   • Phase 1.5 (Post-Sync Script Resolution)  : {p15_t:.2f}s",
+            f"   • Phase 2 (Configuration Pipeline)        : {p2_t:.2f}s",
+            f"",
+            f" [bold {THEME['accent']}]🌿 GIT SYNCHRONIZATION STORY[/]",
+            f"   Branch           : [bold {THEME['fg']}]{branch}[/]",
+            f"   Summary          : {git_headline}",
+        ]
+
+        if commit_list:
+            lines.append("   Recent Commits   :")
+            for item in commit_list[:6]:
+                lines.append(f"     - {escape(item)}")
+
+        if col_c > 0:
+            lines.append(f"   Work-tree Backup : [bold {THEME['warning']}]{col_c} collision(s) moved aside[/] ({escape(col_dir)})")
+        if mod_c > 0:
+            st_text = "restored" if mod_restored else ("merge required" if mod_restored is False else "backed up")
+            lines.append(f"   Local Tracked    : {mod_c} file(s) ({st_text})")
+
+        lines.extend([
+            f"",
+            f" [bold {THEME['accent']}]📋 SCRIPT EXECUTION MATRIX[/]",
+            f"   ┌──────────┬──────────┬──────────┬──────────┬──────────┬──────────┐",
+            f"   │ MODE     │ SUCCESS  │ FAILED   │ SKIPPED  │ MISSING  │ TOTAL    │",
+            f"   ├──────────┼──────────┼──────────┼──────────┼──────────┼──────────┤",
+        ])
+
+        for mode_name in ("GIT", "USER", "SUDO"):
+            r = matrix[mode_name]
+            tot_row = sum(r.values())
+            lines.append(
+                f"   │ {mode_name:<8s} │    [bold {THEME['success']}]{r['success']:2d}[/]    │    [bold {THEME['error']}]{r['failed']:2d}[/]    │    [dim {THEME['warning']}]{r['skipped']:2d}[/]    │    [dim]{r['missing']:2d}[/]    │    {tot_row:2d}    │"
+            )
+
+        lines.extend([
+            f"   ├──────────┼──────────┼──────────┼──────────┼──────────┼──────────┤",
+            f"   │ TOTAL    │    [bold {THEME['success']}]{tot_succ:2d}[/]    │    [bold {THEME['error']}]{tot_fail:2d}[/]    │    [dim {THEME['warning']}]{tot_skip:2d}[/]    │    [dim]{tot_miss:2d}[/]    │    {tot_all:2d}    │",
+            f"   └──────────┴──────────┴──────────┴──────────┴──────────┴──────────┘",
+            f"",
+        ])
+
+        skipped_tasks = [t for t in self.tasks[5:] if t.status == "skipped"]
+        failed_tasks = [t for t in self.tasks if t.status == "failed"]
+
+        if failed_tasks:
+            lines.append(f" [bold {THEME['error']}]✗ FAILED TASKS ({len(failed_tasks)}):[/]")
+            for t in failed_tasks:
+                lines.append(f"   • [{t.mode}] {escape(t.name)}")
+
+        if skipped_tasks:
+            lines.append(f" [bold {THEME['warning']}]- SKIPPED TASKS ({len(skipped_tasks)}):[/]")
+            for t in skipped_tasks[:10]:
+                reason = "condition false" if t.condition else ("once marker valid" if t.once else ("missing" if t.path_state == "missing" else "ignored failure"))
+                lines.append(f"   • [{t.mode}] {escape(t.name)} [dim]({reason})[/dim]")
+            if len(skipped_tasks) > 10:
+                lines.append(f"   • ... and {len(skipped_tasks) - 10} more skipped tasks.")
+
+        lines.extend([
+            f"",
+            f" [bold {THEME['accent']}]🛡️ PREFLIGHT & SYSTEM HIGHLIGHTS[/]",
+            f"   • Sudo Mode    : {SudoEngine.mode_name()}",
+            f"   • User / Home  : {target_user_pw().pw_name} ({user_home()})",
+            f"   • Log File     : {LOG_FILE if LOG_FILE else 'Disabled'}",
+            f"════════════════════════════════════════════════════════════════════════════════",
+        ])
+
+        return "\n".join(lines)
+
     async def execute_pipeline(self) -> None:
+        p1_start = time.monotonic()
         self._self_hash_before = file_checksum(SCRIPT_PATH)
         self._profile_hash_before = (
             file_checksum(self.profile.filepath)
@@ -4843,25 +5052,56 @@ class DuskyApp(App):
                 git_engine = GitEngine(self, self.profile)
                 if not await git_engine.execute_phase():
                     self.abort_flag = True
+                    self.phase_durations["phase1_git"] = time.monotonic() - p1_start
                     self.log_main(f"\n[bold {THEME['error']} blink]SYSTEM HALTED. GIT INTEGRITY VIOLATION.[/]")
                     for index in range(5, len(self.tasks)):
                         self.update_task_state(index, "skipped")
+                    report_block = self._render_final_overview_block(
+                        verdict="SYSTEM HALTED",
+                        success_count=0,
+                        fail_count=1,
+                        skipped_count=len(self.tasks) - 5,
+                        missing_count=0,
+                        total_duration=time.monotonic() - self.run_start_mono,
+                    )
+                    with suppress(Exception):
+                        rw = self.query_one("#log-report", RichLog)
+                        rw.clear()
+                        rw.write(report_block)
+                        self.query_one("#task_list", ListView).index = len(self.tasks) + 1
+                        self.query_one("#log_switcher", ContentSwitcher).current = "log-report"
                     self._show_completion_dialog(
                         "UPDATE HALTED",
                         "Git integrity check failed. The update was stopped to protect your system.\n\nChoose how to continue:",
                         "danger",
                     )
                     return
+            self.phase_durations["phase1_git"] = time.monotonic() - p1_start
         else:
             self.log_main(f"\n[bold {THEME['accent']}]═══ Phase 1: Git Architecture Reconciliation (SKIPPED) ═══[/]\n")
             for index in range(5):
                 self.update_task_state(index, "skipped")
             if OPT_POST_SELF_UPDATE:
                 self._restore_last_git_diff()
+            self.phase_durations["phase1_git"] = 0.0
 
         if OPT_SYNC_ONLY:
             msg = "SYNC SIMULATED." if OPT_DRY_RUN else "SYNC COMPLETE."
             self.log_main(f"\n[bold {THEME['success']}]{msg} (--sync-only specified)[/]")
+            report_block = self._render_final_overview_block(
+                verdict="SYNC COMPLETE" if not OPT_DRY_RUN else "SYNC SIMULATED",
+                success_count=5,
+                fail_count=0,
+                skipped_count=len(self.tasks) - 5,
+                missing_count=0,
+                total_duration=time.monotonic() - self.run_start_mono,
+            )
+            with suppress(Exception):
+                rw = self.query_one("#log-report", RichLog)
+                rw.clear()
+                rw.write(report_block)
+                self.query_one("#task_list", ListView).index = len(self.tasks) + 1
+                self.query_one("#log_switcher", ContentSwitcher).current = "log-report"
             self._show_completion_dialog(
                 "SYNC COMPLETE" if not OPT_DRY_RUN else "SYNC SIMULATED",
                 "Dotfile synchronization finished.\n\nChoose how to continue:",
@@ -4872,17 +5112,35 @@ class DuskyApp(App):
         if self._maybe_reexec_after_sync():
             return
 
+        p15_start = time.monotonic()
         self.log_main(f"\n[bold {THEME['accent']}]═══ Phase 1.5: Post-Sync Script Resolution ═══[/]\n")
         if not resolve_and_validate_manifest(self.profile, self.tasks, interactive=False):
             self.abort_flag = True
+            self.phase_durations["phase1_5_resolve"] = time.monotonic() - p15_start
             self.log_main(f"[bold {THEME['error']}][FATAL][/] Post-sync script resolution failed. Cannot proceed.")
+            report_block = self._render_final_overview_block(
+                verdict="RESOLUTION FAILED",
+                success_count=0,
+                fail_count=1,
+                skipped_count=len(self.tasks) - 5,
+                missing_count=len(self.missing_scripts),
+                total_duration=time.monotonic() - self.run_start_mono,
+            )
+            with suppress(Exception):
+                rw = self.query_one("#log-report", RichLog)
+                rw.clear()
+                rw.write(report_block)
+                self.query_one("#task_list", ListView).index = len(self.tasks) + 1
+                self.query_one("#log_switcher", ContentSwitcher).current = "log-report"
             self._show_completion_dialog(
                 "UPDATE HALTED",
                 "Post-sync script resolution failed. The update was stopped to protect your system.\n\nChoose how to continue:",
                 "danger",
             )
             return
+        self.phase_durations["phase1_5_resolve"] = time.monotonic() - p15_start
 
+        p2_start = time.monotonic()
         self.log_main(f"\n[bold {THEME['accent']}]═══ Phase 2: Configuration Pipeline Execution ═══[/]\n")
 
         success_count, fail_count = 0, 0
@@ -4938,41 +5196,54 @@ class DuskyApp(App):
                     self.run_logger.close_task(task, index, "skipped", 0, 0.0)
                 self.log_main(f"[dim]Condition '{task.condition}' never satisfied; skipping: {escape(task.name)}[/dim]")
 
+        self.phase_durations["phase2_exec"] = time.monotonic() - p2_start
+        total_duration = time.monotonic() - self.run_start_mono
+        skipped_count = sum(1 for t in self.tasks[5:] if t.status == "skipped")
+        missing_count = len(self.missing_scripts)
+
         if self.run_logger:
             self.run_logger.write_report(
                 self.profile,
                 self.tasks,
                 {t.state_key: t.status for t in self.tasks},
-                {"success": success_count, "failed": fail_count, "missing": len(self.missing_scripts)},
+                {"success": success_count, "failed": fail_count, "missing": missing_count, "skipped": skipped_count},
             )
 
-        self.log_main(f"\n[bold {THEME['accent']}]═══════ Pipeline Summary ═══════[/]")
-        deploy_label = "Simulated Deployments" if OPT_DRY_RUN else "Successful Deployments"
-        self.log_main(f"  {deploy_label:<23}: [bold {THEME['success']}]{success_count}[/]")
-        self.log_main(f"  Failed Operations      : [bold {THEME['error']}]{fail_count}[/]")
-        if self.missing_scripts:
-            self.log_main(f"  Missing Scripts       : [bold {THEME['warning']}]{len(self.missing_scripts)}[/] [dim]({escape(', '.join(self.missing_scripts))})[/]")
+        # Generate & Write Final Report Block
+        report_block = self._render_final_overview_block(
+            verdict="ABORTED" if self.abort_flag else ("DRY-RUN" if OPT_DRY_RUN else "COMPLETED"),
+            success_count=success_count,
+            fail_count=fail_count,
+            skipped_count=skipped_count,
+            missing_count=missing_count,
+            total_duration=total_duration,
+        )
 
-        duplicate_notes = [t.conflict_note for t in self.tasks if t.conflict_note]
-        if duplicate_notes:
-            self.log_main(f"\n  [bold {THEME['fg']}]Preflight Optimizations:[/bold]")
-            for note in duplicate_notes:
-                self.log_main(f"  [dim]- {escape(note)}[/dim]")
+        with suppress(Exception):
+            rw = self.query_one("#log-report", RichLog)
+            rw.clear()
+            rw.write(report_block)
+
+        self._log_lines["report"] = deque([strip_ansi(report_block)], maxlen=6000)
+        self.log_main(f"\n{report_block}\n")
+
+        # Auto-switch sidebar highlight to Report item in the background
+        report_idx = len(self.tasks) + 1
+        with suppress(Exception):
+            list_view = self.query_one("#task_list", ListView)
+            list_view.index = report_idx
+            self.query_one("#log_switcher", ContentSwitcher).current = "log-report"
 
         if self.abort_flag:
-            self.log_main(f"\n[bold {THEME['error']} blink]SYSTEM PIPELINE ABORTED.[/]")
             desktop_notify("Dusky Update", f"{fail_count} required script(s) failed", urgency="critical")
             AudioNotifier.play("alert")
         elif OPT_DRY_RUN:
-            self.log_main(f"\n[bold {THEME['success']}]DRY-RUN COMPLETED. NO CHANGES WERE MADE.[/]")
             desktop_notify("Dusky Update", "Dry-run completed successfully", urgency="normal")
             AudioNotifier.play("info")
         elif self.missing_scripts:
-            self.log_main(f"\n[bold {THEME['warning']}]ARCHITECTURE DEPLOYMENT COMPLETED WITH {len(self.missing_scripts)} MISSING SCRIPT(S).[/]")
-            desktop_notify("Dusky Update", f"{len(self.missing_scripts)} script(s) missing and skipped", urgency="normal")
+            desktop_notify("Dusky Update", f"{missing_count} script(s) missing and skipped", urgency="normal")
             AudioNotifier.play("info")
         else:
-            self.log_main(f"\n[bold {THEME['success']}]ARCHITECTURE DEPLOYMENT COMPLETED.[/]")
             desktop_notify("Dusky updated", "", urgency="normal")
             AudioNotifier.play("complete")
 
@@ -4983,7 +5254,7 @@ class DuskyApp(App):
             f"Failed: {fail_count}",
         ]
         if self.missing_scripts:
-            summary_lines.append(f"Missing: {len(self.missing_scripts)}")
+            summary_lines.append(f"Missing: {missing_count}")
 
         if self.abort_flag:
             dialog_title, dialog_level = "UPDATE ABORTED", "danger"
@@ -5023,10 +5294,14 @@ class DuskyApp(App):
         key: int | str = "main"
         title = "Main Core Log"
 
-        if current_idx is not None and current_idx > 0 and (current_idx - 1) < len(self.tasks):
-            task_idx = current_idx - 1
-            key = task_idx
-            title = self.tasks[task_idx].name
+        if current_idx is not None and current_idx > 0:
+            if current_idx == len(self.tasks) + 1:
+                key = "report"
+                title = "Final Run Overview Report"
+            elif (current_idx - 1) < len(self.tasks):
+                task_idx = current_idx - 1
+                key = task_idx
+                title = self.tasks[task_idx].name
 
         lines = list(self._log_lines.get(key, deque()))
         self.push_screen(LogSearchScreen(title, lines))
@@ -5243,6 +5518,12 @@ class DuskyApp(App):
     def _on_completion_reply(self, quit_now: bool | None) -> None:
         if quit_now:
             self.exit()
+        else:
+            report_idx = len(self.tasks) + 1
+            with suppress(Exception):
+                list_view = self.query_one("#task_list", ListView)
+                list_view.index = report_idx
+                self.query_one("#log_switcher", ContentSwitcher).current = "log-report"
 
 
 if __name__ == "__main__":
