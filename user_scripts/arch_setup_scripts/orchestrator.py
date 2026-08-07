@@ -48,6 +48,7 @@ from typing import Any, Literal
 
 try:
     from rich.console import Console
+    from rich.markup import escape
     from rich.text import Text
     from textual import work, on, events
     from textual.app import App, ComposeResult
@@ -4182,15 +4183,6 @@ def _task_label(task: OrchestratorTask) -> Text:
     txt.append_text(_status_badge(task.status))
     txt.append("  ")
 
-    if task.mode == "S":
-        txt.append("SUDO", style=f"bold {PALETTE['error']}")
-    elif task.mode == "GIT":
-        txt.append("GIT", style=f"bold {PALETTE['accent']}")
-    else:
-        txt.append("USER", style=f"bold {PALETTE['success']}")
-
-    txt.append("  ")
-
     match task.status:
         case TaskStatus.COMPLETED:
             script_style = f"bold {PALETTE['success']}"
@@ -4221,6 +4213,15 @@ def _task_label(task: OrchestratorTask) -> Text:
             m = int(secs) // 60
             s = int(secs) % 60
             txt.append(f" ({m}m{s:02d}s)", style=f"dim {PALETTE['warning']}")
+
+    txt.append("  ")
+    if task.mode == "S":
+        txt.append("SUDO", style=f"bold {PALETTE['error']}")
+    elif task.mode == "GIT":
+        txt.append("GIT", style=f"bold {PALETTE['accent']}")
+    else:
+        txt.append("USER", style=f"bold {PALETTE['success']}")
+
     return txt
 
 
@@ -4308,15 +4309,17 @@ class TaskSearchScreen(ModalScreen[str | None]):
             txt = Text()
             txt.append(f"{item.index:03d} ")
             txt.append_text(_status_badge(item.status))
-            if item.mode == "S":
-                txt.append(" SUDO ", style=f"bold {PALETTE['error']}")
-            elif item.mode == "GIT":
-                txt.append(" GIT ", style=f"bold {PALETTE['accent']}")
-            else:
-                txt.append(" USER ", style=f"bold {PALETTE['success']}")
+            txt.append(" ")
             txt.append(item.script_name, style="bold white")
             if item.args:
                 txt.append(" " + shlex.join(item.args), style="dim")
+            txt.append("  ")
+            if item.mode == "S":
+                txt.append("SUDO", style=f"bold {PALETTE['error']}")
+            elif item.mode == "GIT":
+                txt.append("GIT", style=f"bold {PALETTE['accent']}")
+            else:
+                txt.append("USER", style=f"bold {PALETTE['success']}")
             options.append(Option(txt, id=item.state_key))
             self.results.append(item.state_key)
 
@@ -5175,6 +5178,119 @@ class DuskyOrchestratorApp(App):
     def _on_completion_reply(self, quit_now: bool | None) -> None:
         if quit_now:
             self.exit()
+
+    def _render_final_overview_block(self) -> None:
+        total_duration = time.monotonic() - (self.start_time or time.monotonic())
+        failed_tasks = [t for t in self.tasks if self.statuses.get(t.state_key) == "failed"]
+        skipped_tasks = [t for t in self.tasks if self.statuses.get(t.state_key) in ("skipped", "skipped_condition")]
+
+        if self.dry_run:
+            v_title, v_color = "DRY-RUN", PALETTE["warning"]
+        elif failed_tasks:
+            v_title, v_color = "WARNINGS" if any(t.ignore_fail for t in failed_tasks) else "ABORTED", PALETTE["error"]
+        else:
+            v_title, v_color = "SUCCESS", PALETTE["success"]
+
+        timed_tasks = sorted([t for t in self.tasks if t.duration > 0], key=lambda x: x.duration, reverse=True)
+        if timed_tasks:
+            top = timed_tasks[:3]
+            slowest_str = ", ".join(f"{t.script_name} ({t.duration:.1f}s)" for t in top)
+        else:
+            slowest_str = "None recorded"
+
+        modes = sorted(list({t.mode for t in self.tasks})) or ["USER", "SUDO"]
+        matrix = {m: {"completed": 0, "failed": 0, "skipped": 0, "total": 0} for m in modes}
+        for task in self.tasks:
+            m = task.mode
+            if m not in matrix:
+                matrix[m] = {"completed": 0, "failed": 0, "skipped": 0, "total": 0}
+            st = self.statuses.get(task.state_key, "pending")
+            matrix[m]["total"] += 1
+            if st in ("completed", "completed_once"):
+                matrix[m]["completed"] += 1
+            elif st == "failed":
+                matrix[m]["failed"] += 1
+            else:
+                matrix[m]["skipped"] += 1
+
+        tot_all = len(self.tasks)
+        tot_succ = sum(matrix[m]["completed"] for m in matrix)
+        tot_fail = sum(matrix[m]["failed"] for m in matrix)
+        tot_skip = sum(matrix[m]["skipped"] for m in matrix)
+
+        sep = ASCII_SYMBOLS.get('sep', '|') if ASCII_MODE else UNICODE_SYMBOLS.get('sep', '│')
+
+        lines = [
+            f"════════════════════════════════════════════════════════════════════════════════",
+            f" ◆ FINAL OVERVIEW {sep} [bold {PALETTE['fg']}]{escape(self.profile.name if self.profile else 'Master Profile')}[/] {sep} Verdict: [bold {v_color}]{v_title}[/]",
+            f"════════════════════════════════════════════════════════════════════════════════",
+            f"",
+            f" {S('timing')} TIMING & PERFORMANCE",
+            f"   Total Pipeline Duration : [bold {PALETTE['fg']}]{total_duration:.2f}s[/]",
+            f"   • Top Bottlenecks               : {slowest_str}",
+            f"",
+            f" {S('matrix')} SCRIPT EXECUTION MATRIX",
+            f"   ┌──────────┬──────────┬──────────┬──────────┬──────────┐",
+            f"   │ MODE     │ SUCCESS  │ FAILED   │ SKIPPED  │ TOTAL    │",
+            f"   ├──────────┼──────────┼──────────┼──────────┼──────────┤",
+        ]
+
+        for mode_name in sorted(matrix.keys()):
+            r = matrix[mode_name]
+            lines.append(
+                f"   │ {mode_name:<8s} │    [bold {PALETTE['success']}]{r['completed']:2d}[/]    │    [bold {PALETTE['error']}]{r['failed']:2d}[/]    │    [dim {PALETTE['warning']}]{r['skipped']:2d}[/]    │    {r['total']:2d}    │"
+            )
+
+        lines.extend([
+            f"   ├──────────┼──────────┼──────────┼──────────┼──────────┤",
+            f"   │ TOTAL    │    [bold {PALETTE['success']}]{tot_succ:2d}[/]    │    [bold {PALETTE['error']}]{tot_fail:2d}[/]    │    [dim {PALETTE['warning']}]{tot_skip:2d}[/]    │    {tot_all:2d}    │",
+            f"   └──────────┴──────────┴──────────┴──────────┴──────────┘",
+            f"",
+        ])
+
+        if failed_tasks:
+            hard_failed = [t for t in failed_tasks if not t.ignore_fail]
+            soft_failed = [t for t in failed_tasks if t.ignore_fail]
+
+            if hard_failed:
+                lines.append(f" [bold {PALETTE['error']}]✗ HARD FAILED TASKS ({len(hard_failed)}):[/]")
+                for t in hard_failed:
+                    lines.append(f"   • [{t.mode}] {escape(t.script_name)} [bold {PALETTE['error']}](Required - Aborted)[/]")
+
+            if soft_failed:
+                lines.append(f" [bold {PALETTE['warning']}]⚠ SOFT FAILED TASKS ({len(soft_failed)}):[/]")
+                for t in soft_failed:
+                    lines.append(f"   • [{t.mode}] {escape(t.script_name)} [dim {PALETTE['warning']}](Ignored / Allowed to Fail)[/dim]")
+
+            failed_dirs = sorted(list({str(t.path.parent) for t in failed_tasks if getattr(t, "path", None)}))
+            if failed_dirs:
+                lines.append(f"   [dim]Debug locations:[/dim]")
+                for d in failed_dirs:
+                    lines.append(f"     └─ [dim]{escape(d)}[/dim]")
+        else:
+            lines.append(f" [dim]✗ FAILED TASKS     : None[/dim]")
+
+        if skipped_tasks:
+            lines.append(f" [bold {PALETTE['warning']}]- SKIPPED TASKS ({len(skipped_tasks)}):[/]")
+            for t in skipped_tasks[:12]:
+                reason = "condition false" if t.condition else ("once marker valid" if t.once else "ignored failure")
+                lines.append(f"   • [{t.mode}] {escape(t.script_name)} [dim]({reason})[/dim]")
+            if len(skipped_tasks) > 12:
+                lines.append(f"   • ... and {len(skipped_tasks) - 12} more skipped task(s).")
+        else:
+            lines.append(f" [dim]- SKIPPED TASKS    : None[/dim]")
+
+        lines.extend([
+            f"",
+            f" {S('preflight')} SYSTEM & PREFLIGHT",
+            f"   • Sudo Mode    : {SudoEngine.mode_name()}",
+            f"   • User / Home  : {target_user_pw().pw_name} ({user_home()})",
+            f"   • Log File     : {self.logger.root or logs_dir()}",
+            f"════════════════════════════════════════════════════════════════════════════════\n",
+        ])
+
+        for line in lines:
+            self._queue_ui(Text.from_markup(line))
 
     def action_help(self) -> None:
         if isinstance(self.screen, HelpScreen):
@@ -6475,6 +6591,7 @@ class DuskyOrchestratorApp(App):
                 self.log_system("Execution sequence finished.")
                 counters = self._compute_counters()
                 self.logger.write_report(self.profile, self.tasks, self.statuses, counters)
+                self._render_final_overview_block()
 
                 failed_tasks = [
                     t for t in self.tasks if self.statuses.get(t.state_key) == "failed"
