@@ -1903,18 +1903,18 @@ TaskSearchScreen, ConflictModalScreen, ManualModalScreen, SudoPasswordScreen, Co
     padding: 1 2;
 }}
 
-#confirm_dialog {
+#confirm_dialog {{
     width: 60;
     height: auto;
     background: {p['bg']};
     border: solid {p['error']};
     padding: 1 3;
-}
+}}
 
-#confirm_title, #confirm_text, #button_bar {
+#confirm_title, #confirm_text, #button_bar {{
     background: transparent;
     width: 100%;
-}
+}}
 
 #modal_dialog {{
     border: heavy {p['error']};
