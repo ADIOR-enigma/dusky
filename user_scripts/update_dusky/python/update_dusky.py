@@ -3940,7 +3940,7 @@ class TaskItem(ListItem):
         color = color_map.get(self.status, "white")
 
         with suppress(Exception):
-            self.query_one(Label).update(f" {icon}  {badge}  [{color}]{cmd_str}[/]{suffix}")
+            self.query_one(Label).update(f" {icon}  [{color}]{cmd_str}[/]{suffix}  {badge}")
 
 
 class TaskSearchScreen(ModalScreen[int | None]):
