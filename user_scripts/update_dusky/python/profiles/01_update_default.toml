@@ -70,7 +70,6 @@ tasks = [
     "U | once | 005_hypr_custom_config_setup.py --force --autostart",
     "U | once | 010_package_removal.sh --auto",
     # ================= CUSTOM =====================
-    "S | once | 060_package_installation.py -p updater_packages --no-upgrade --auto-exit",
     # "U | once | paru_packages.sh",
     # ================= Scripts =====================
     "U | once | 015_set_thunar_terminal.py -t foot",
@@ -81,7 +80,7 @@ tasks = [
     # "S | 050_pacman_config.sh --auto"
     "S | once | 051_pacman_hooks.sh --auto",
     "S | once | 055_pacman_reflector.sh",
-    # "S | 060_package_installation.py"
+    "S | 060_package_installation.py -p updater_packages --no-upgrade --auto-exit",
     # "S | 070_openssh_setup.sh"
     # "U | 075_changing_shell_zsh.sh"
     # "S | 080_aur_paru_fallback_yay.sh"
