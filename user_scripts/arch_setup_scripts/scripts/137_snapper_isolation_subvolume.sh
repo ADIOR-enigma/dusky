@@ -822,12 +822,22 @@ preflight_checks() {
     require_cmd stat
     require_cmd mktemp
     require_cmd mountpoint
-    require_cmd btrfs
     require_cmd blkid
     require_cmd cut
     require_cmd mount
     require_cmd umount
     require_cmd systemctl
+
+    local root_fs home_fs
+    root_fs="$(stat -f -c %T / 2>/dev/null || true)"
+    home_fs="$(stat -f -c %T /home 2>/dev/null || true)"
+
+    if [[ "$root_fs" != "btrfs" || "$home_fs" != "btrfs" ]]; then
+        warn "Filesystem is not supported (Root: ${root_fs:-unknown}, /home: ${home_fs:-unknown}). Snapper isolation subvolume requires Btrfs. Skipping."
+        exit 0
+    fi
+
+    require_cmd btrfs
 
     if ! [[ "$SNAPSHOT_TIME" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]]; then
         fatal "SNAPSHOT_TIME must be in 24-hour HH:MM format."
@@ -836,9 +846,6 @@ preflight_checks() {
     if ! [[ "$SNAPSHOT_RETENTION_LIMIT" =~ ^[0-9]+$ ]] || (( SNAPSHOT_RETENTION_LIMIT < 1 )); then
         fatal "SNAPSHOT_RETENTION_LIMIT must be a positive integer."
     fi
-
-    [[ "$(stat -f -c %T /)" == "btrfs" ]] || fatal "Root is not Btrfs."
-    [[ "$(stat -f -c %T /home)" == "btrfs" ]] || fatal "/home is not Btrfs."
 
     info "Requesting administrative privileges..."
     sudo -n true 2>/dev/null || sudo true || fatal "Cannot obtain sudo privileges."
