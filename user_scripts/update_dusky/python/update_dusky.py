@@ -2554,7 +2554,11 @@ def is_script_interactive(script_path: Path) -> bool:
     return False
 
 
-def resolve_and_validate_manifest(profile: ProfileConfig, tasks: list[DuskyTask]) -> bool:
+def resolve_and_validate_manifest(
+    profile: ProfileConfig,
+    tasks: list[DuskyTask],
+    interactive: bool = True,
+) -> bool:
     log("INFO", "Performing pre-flight validation and conflict resolution...")
 
     needs_python = False
@@ -2562,6 +2566,8 @@ def resolve_and_validate_manifest(profile: ProfileConfig, tasks: list[DuskyTask]
     for index, task in enumerate(tasks):
         if task.mode == 'GIT':
             continue
+
+        task.conflict_note = ""
 
         script = task.name
         matches = []
@@ -2617,22 +2623,22 @@ def resolve_and_validate_manifest(profile: ProfileConfig, tasks: list[DuskyTask]
                     for j, m in enumerate(matches):
                         log("WARN", f"  {j+1}) {m} (Checksum: {hashes[m]})")
 
-                    if OPT_DRY_RUN or OPT_FORCE or not sys.stdin.isatty():
-                        log("WARN", "Non-interactive/force mode: automatically picking the first match.")
-                    else:
-                        sys.stdout.write(f"\n{CLR_YLW}[CONFLICT DETECTED]{CLR_RST} Which version of {script} should be executed?\n")
-                        choice = ""
-                        while True:
-                            try:
-                                choice = input(f"Enter 1-{len(matches)}: ").strip()
-                            except (KeyboardInterrupt, EOFError):
-                                log("ERROR", "Input interrupted. Aborting.")
-                                sys.exit(1)
-                            if choice.isdigit() and 1 <= int(choice) <= len(matches):
-                                script_path = matches[int(choice) - 1]
-                                log("OK", f"Selected: {script_path}")
-                                break
-                            print(f"Invalid choice. Please enter a number between 1 and {len(matches)}.")
+                if OPT_DRY_RUN or OPT_FORCE or not interactive or not sys.stdin.isatty():
+                    log("WARN", "Non-interactive/force mode: automatically picking the first match.")
+                else:
+                    sys.stdout.write(f"\n{CLR_YLW}[CONFLICT DETECTED]{CLR_RST} Which version of {script} should be executed?\n")
+                    choice = ""
+                    while True:
+                        try:
+                            choice = input(f"Enter 1-{len(matches)}: ").strip()
+                        except (KeyboardInterrupt, EOFError):
+                            log("ERROR", "Input interrupted. Aborting.")
+                            sys.exit(1)
+                        if choice.isdigit() and 1 <= int(choice) <= len(matches):
+                            script_path = matches[int(choice) - 1]
+                            log("OK", f"Selected: {script_path}")
+                            break
+                        print(f"Invalid choice. Please enter a number between 1 and {len(matches)}.")
 
         task.resolved_path = script_path
         task.path_state = "ok"
@@ -2670,7 +2676,7 @@ def resolve_and_validate_manifest(profile: ProfileConfig, tasks: list[DuskyTask]
         resolved_interpreter = []
 
         if (has_py_ext and has_bash_shebang) or (has_sh_ext and has_py_shebang):
-            if OPT_DRY_RUN or OPT_FORCE or not sys.stdin.isatty():
+            if OPT_DRY_RUN or OPT_FORCE or not interactive or not sys.stdin.isatty():
                 log("WARN", f"Interpreter conflict for '{script}': File extension and Shebang disagree. Auto-picking Shebang.")
                 resolved_interpreter = extracted_interpreter
                 if has_py_shebang:
@@ -4864,6 +4870,17 @@ class DuskyApp(App):
             return
 
         if self._maybe_reexec_after_sync():
+            return
+
+        self.log_main(f"\n[bold {THEME['accent']}]═══ Phase 1.5: Post-Sync Script Resolution ═══[/]\n")
+        if not resolve_and_validate_manifest(self.profile, self.tasks, interactive=False):
+            self.abort_flag = True
+            self.log_main(f"[bold {THEME['error']}][FATAL][/] Post-sync script resolution failed. Cannot proceed.")
+            self._show_completion_dialog(
+                "UPDATE HALTED",
+                "Post-sync script resolution failed. The update was stopped to protect your system.\n\nChoose how to continue:",
+                "danger",
+            )
             return
 
         self.log_main(f"\n[bold {THEME['accent']}]═══ Phase 2: Configuration Pipeline Execution ═══[/]\n")
