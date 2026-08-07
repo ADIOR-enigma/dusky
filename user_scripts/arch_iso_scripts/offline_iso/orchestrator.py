@@ -41,6 +41,7 @@ from contextlib import suppress, contextmanager, nullcontext
 
 try:
     from rich.console import Console
+    from rich.markup import escape
     from rich.text import Text
     from rich import box
 
@@ -1455,6 +1456,7 @@ class DuskyOrchestratorApp(App):
         force: bool,
         task_timeout: float = 0.0,
         once_store: Optional[OnceStore] = None,
+        dry_run: bool = False,
     ):
         super().__init__()
         self.tasks = tasks
@@ -1466,6 +1468,8 @@ class DuskyOrchestratorApp(App):
         self.force_flag = force
         self.task_timeout = max(task_timeout or 0.0, 0.0)
         self.once_store = once_store or OnceStore()
+        self.dry_run = dry_run
+        self.start_time = time.monotonic()
 
         self.current_idx = 0
         self.completed_keys = set()
@@ -1522,6 +1526,118 @@ class DuskyOrchestratorApp(App):
 
         self.run_worker(self.run_execution_loop())
 
+    def _render_final_overview_block(self) -> None:
+        total_duration = time.monotonic() - (getattr(self, "start_time", None) or time.monotonic())
+        failed_tasks = [t for t in self.tasks if self.task_statuses.get(t.state_key) == "FAILED"]
+        skipped_tasks = [t for t in self.tasks if self.task_statuses.get(t.state_key) == "SKIPPED"]
+
+        if getattr(self, "dry_run", False):
+            v_title, v_color = "DRY-RUN", "#d29922"
+        elif failed_tasks:
+            v_title, v_color = "WARNINGS" if any(t.ignore_fail for t in failed_tasks) else "ABORTED", "#f85149"
+        else:
+            v_title, v_color = "SUCCESS", "#3fb950"
+
+        timed_tasks = sorted([t for t in self.tasks if getattr(t, "duration", 0) > 0], key=lambda x: x.duration, reverse=True)
+        if timed_tasks:
+            top = timed_tasks[:3]
+            slowest_str = ", ".join(f"{t.script_name} ({t.duration:.1f}s)" for t in top)
+        else:
+            slowest_str = "None recorded"
+
+        modes = sorted(list({t.mode for t in self.tasks})) or ["USER", "SUDO"]
+        matrix = {m: {"completed": 0, "failed": 0, "skipped": 0, "total": 0} for m in modes}
+        for task in self.tasks:
+            m = task.mode
+            if m not in matrix:
+                matrix[m] = {"completed": 0, "failed": 0, "skipped": 0, "total": 0}
+            st = self.task_statuses.get(task.state_key, "PENDING")
+            matrix[m]["total"] += 1
+            if st == "COMPLETED":
+                matrix[m]["completed"] += 1
+            elif st == "FAILED":
+                matrix[m]["failed"] += 1
+            else:
+                matrix[m]["skipped"] += 1
+
+        tot_all = len(self.tasks)
+        tot_succ = sum(matrix[m]["completed"] for m in matrix)
+        tot_fail = sum(matrix[m]["failed"] for m in matrix)
+        tot_skip = sum(matrix[m]["skipped"] for m in matrix)
+
+        sep = ASCII_SYMBOLS.get('sep', '|') if ASCII_MODE else UNICODE_SYMBOLS.get('sep', '│')
+
+        lines = [
+            f"════════════════════════════════════════════════════════════════════════════════",
+            f" ◆ FINAL OVERVIEW {sep} [bold #58a6ff]{escape(self.phase_title)}[/] {sep} Verdict: [bold {v_color}]{v_title}[/]",
+            f"════════════════════════════════════════════════════════════════════════════════",
+            f"",
+            f" {S('timing')} TIMING & PERFORMANCE",
+            f"   Total Pipeline Duration : [bold #58a6ff]{total_duration:.2f}s[/]",
+            f"   • Top Bottlenecks               : {slowest_str}",
+            f"",
+            f" {S('matrix')} SCRIPT EXECUTION MATRIX",
+            f"   ┌──────────┬──────────┬──────────┬──────────┬──────────┐",
+            f"   │ MODE     │ SUCCESS  │ FAILED   │ SKIPPED  │ TOTAL    │",
+            f"   ├──────────┼──────────┼──────────┼──────────┼──────────┤",
+        ]
+
+        for mode_name in sorted(matrix.keys()):
+            r = matrix[mode_name]
+            lines.append(
+                f"   │ {mode_name:<8s} │    [bold #3fb950]{r['completed']:2d}[/]    │    [bold #f85149]{r['failed']:2d}[/]    │    [dim #d29922]{r['skipped']:2d}[/]    │    {r['total']:2d}    │"
+            )
+
+        lines.extend([
+            f"   ├──────────┼──────────┼──────────┼──────────┼──────────┤",
+            f"   │ TOTAL    │    [bold #3fb950]{tot_succ:2d}[/]    │    [bold #f85149]{tot_fail:2d}[/]    │    [dim #d29922]{tot_skip:2d}[/]    │    {tot_all:2d}    │",
+            f"   └──────────┴──────────┴──────────┴──────────┴──────────┘",
+            f"",
+        ])
+
+        if failed_tasks:
+            hard_failed = [t for t in failed_tasks if not t.ignore_fail]
+            soft_failed = [t for t in failed_tasks if t.ignore_fail]
+
+            if hard_failed:
+                lines.append(f" [bold #f85149]✗ HARD FAILED TASKS ({len(hard_failed)}):[/]")
+                for t in hard_failed:
+                    lines.append(f"   • [{t.mode}] {escape(t.script_name)} [bold #f85149](Required - Aborted)[/]")
+
+            if soft_failed:
+                lines.append(f" [bold #d29922]⚠ SOFT FAILED TASKS ({len(soft_failed)}):[/]")
+                for t in soft_failed:
+                    lines.append(f"   • [{t.mode}] {escape(t.script_name)} [dim #d29922](Ignored / Allowed to Fail)[/dim]")
+
+            failed_dirs = sorted(list({str(t.resolved_path.parent) for t in failed_tasks if getattr(t, "resolved_path", None)}))
+            if failed_dirs:
+                lines.append(f"   [dim]Debug locations:[/dim]")
+                for d in failed_dirs:
+                    lines.append(f"     └─ [dim]{escape(d)}[/dim]")
+        else:
+            lines.append(f" [dim]✗ FAILED TASKS     : None[/dim]")
+
+        if skipped_tasks:
+            lines.append(f" [bold #d29922]- SKIPPED TASKS ({len(skipped_tasks)}):[/]")
+            for t in skipped_tasks[:12]:
+                reason = "condition false" if t.condition else ("once marker valid" if t.once else "ignored failure")
+                lines.append(f"   • [{t.mode}] {escape(t.script_name)} [dim]({reason})[/dim]")
+            if len(skipped_tasks) > 12:
+                lines.append(f"   • ... and {len(skipped_tasks) - 12} more skipped task(s).")
+        else:
+            lines.append(f" [dim]- SKIPPED TASKS    : None[/dim]")
+
+        lines.extend([
+            f"",
+            f" {S('preflight')} SYSTEM & PREFLIGHT",
+            f"   • User / Home  : {os.environ.get('USER', 'root')} ({Path.home()})",
+            f"   • Log File     : {self.logger.root or 'Logs'}",
+            f"════════════════════════════════════════════════════════════════════════════════\n",
+        ])
+
+        for line in lines:
+            self.log_widget.write(Text.from_markup(line))
+
     def render_task_list(self):
         self.left_pane.remove_children()
         for i, t in enumerate(self.tasks):
@@ -1559,8 +1675,8 @@ class DuskyOrchestratorApp(App):
             name_text = f"[{name_style}]{t.script_name}[/]"
             row = Horizontal(
                 Static(icon, classes="task_icon"),
-                Static(mode_str, classes=mode_cls),
                 Static(name_text, classes="task_name"),
+                Static(mode_str, classes=mode_cls),
                 classes="task_row",
                 id=f"row_{i}",
             )
@@ -1672,6 +1788,7 @@ class DuskyOrchestratorApp(App):
         self.log_system("All tasks in this phase completed successfully!")
         self.update_telemetry("Finished Phase")
         self.logger.write_report(self.profile_name, self.tasks, self.task_statuses, self.counters)
+        self._render_final_overview_block()
         NotificationManager.play_sound("complete")
         NotificationManager.send_desktop("Phase Completed", f"Successfully completed {self.phase_title}")
         await asyncio.sleep(1.5)
