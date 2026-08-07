@@ -3712,7 +3712,8 @@ class GitEngine:
                 self.app.update_task_state(idx, "running")  # type: ignore
                 self._tlog(f"[bold {THEME['accent']}]>>> PROCESS INITIATED:[/] Atomic Snapshot (CoW)\n", idx)
 
-                if not await self._backup_full_tracked_tree(idx):
+                full_snapshot_dir = await self._backup_full_tracked_tree(idx)
+                if not full_snapshot_dir:
                     raise RuntimeError("Full tracked-tree backup failed.")
 
                 await self._unstage_managed_paths()
@@ -3724,6 +3725,7 @@ class GitEngine:
                 else:
                     self._tlog(f"[bold {THEME['success']}]No local tracked modifications found. Snapshot skipped.[/]", idx)
                 meta.update(
+                    full_tracked_backup=str(full_snapshot_dir),
                     local_mods=len(change_paths),
                     local_mods_backup=str(your_changes_backup) if your_changes_backup else "",
                 )
@@ -5042,7 +5044,7 @@ class DuskyApp(App):
                 for t in soft_failed:
                     lines.append(f"   • [{t.mode}] {escape(t.name)} [dim {THEME['warning']}](Ignored / Allowed to Fail)[/dim]")
 
-            failed_dirs = sorted(list({str(t.path.parent) for t in failed_tasks if getattr(t, "path", None)}))
+            failed_dirs = sorted(list({str(t.resolved_path.parent) for t in failed_tasks if getattr(t, "resolved_path", None)}))
             if failed_dirs:
                 lines.append(f"   [dim]Debug locations:[/dim]")
                 for d in failed_dirs:
