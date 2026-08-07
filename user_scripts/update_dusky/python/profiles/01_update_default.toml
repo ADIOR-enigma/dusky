@@ -3,8 +3,8 @@
 # Path: profiles/01_update_default.toml
 # ==============================================================================
 [profile]
-name = "Default Arch/Hyprland Update Profile"
-description = "Standard system update sequence and dotfile synchronization for Dusky Arch Linux."
+name = "subscripts"
+description = "dusky update scripts"
 version = "9.5.0"
 
 [git]

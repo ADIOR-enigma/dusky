@@ -3665,6 +3665,7 @@ class GitEngine:
                 self.app.log_task(Syntax(diff_out, "diff", theme="monokai", background_color="default", word_wrap=True), idx)  # type: ignore
                 self.app.git_diff_text = diff_out  # type: ignore
                 meta.update(
+                    status="updated",
                     commits=commit_count,
                     commit_list=commit_list,
                     files_changed=len(changed_files),
@@ -3674,6 +3675,7 @@ class GitEngine:
                 )
             else:
                 meta.update(
+                    status="updated",
                     commits=commit_count,
                     commit_list=commit_list,
                     files_changed=len(changed_files),
@@ -4410,6 +4412,8 @@ class DuskyApp(App):
         if not isinstance(payload, dict):
             return
         self.git_summary.update(payload)
+        for i in range(5):
+            self.update_task_state(i, "success")
         diff = payload.get("diff") or ""
         commits = payload.get("commits", "?")
         files_changed = payload.get("files_changed", "?")
@@ -4935,21 +4939,25 @@ class DuskyApp(App):
         mod_backup = g.get("local_mods_backup") or ""
         full_backup = g.get("full_tracked_backup") or ""
 
-        if OPT_SKIP_SYNC or git_st == "skipped":
-            git_headline = "Disabled (--skip-sync flag passed)"
-        elif git_st == "up_to_date":
-            git_headline = f"Up to date at commit [dim]{after_sha or before_sha or 'HEAD'}[/dim]"
-        elif git_st == "up_to_date_with_mods":
-            git_headline = f"Up to date ({mod_c} local modification(s) preserved)"
+        if OPT_DRY_RUN:
+            git_headline = "Bypassed (Dry-run mode)"
+        elif OPT_SKIP_SYNC and not OPT_POST_SELF_UPDATE:
+            git_headline = "Bypassed via --skip-sync flag"
         elif git_st == "updated":
             sha_str = f" ({before_sha} ➔ {after_sha})" if (before_sha and after_sha) else ""
-            git_headline = f"Pulled {commits_behind} commit(s), {files_c} file(s) changed{sha_str}"
+            extra = " [dim](Self-updated)[/dim]" if OPT_POST_SELF_UPDATE else ""
+            git_headline = f"Pulled {commits_behind} commit(s), {files_c} file(s) changed{sha_str}{extra}"
+        elif git_st == "up_to_date":
+            extra = " [dim](Self-updated)[/dim]" if OPT_POST_SELF_UPDATE else ""
+            git_headline = f"Up to date at commit [dim]{after_sha or before_sha or 'HEAD'}[/dim]{extra}"
+        elif git_st == "up_to_date_with_mods":
+            git_headline = f"Up to date ({mod_c} local modification(s) preserved)"
         elif git_st == "unrelated_reset":
             git_headline = f"Full ancestry recovery reset to [dim]{after_sha}[/dim]"
         elif git_st == "cloned":
             git_headline = "Bare repo cloned and checked out"
         else:
-            git_headline = f"Status: {git_st}"
+            git_headline = f"Up to date at commit [dim]{after_sha or before_sha or 'HEAD'}[/dim]"
 
         modes_in_profile = sorted(list({t.mode for t in profile_tasks})) or ["USER", "SUDO"]
         matrix = {m: {"success": 0, "failed": 0, "skipped": 0, "missing": 0} for m in modes_in_profile}
@@ -5128,11 +5136,13 @@ class DuskyApp(App):
                     return
             self.phase_durations["phase1_git"] = time.monotonic() - p1_start
         else:
-            self.log_main(f"\n[bold {THEME['accent']}]═══ Phase 1: Git Architecture Reconciliation (SKIPPED) ═══[/]\n")
-            for index in range(5):
-                self.update_task_state(index, "skipped")
             if OPT_POST_SELF_UPDATE:
+                self.log_main(f"\n[bold {THEME['accent']}]═══ Phase 1: Git Architecture Reconciliation (Self-Updated) ═══[/]\n")
                 self._restore_last_git_diff()
+            else:
+                self.log_main(f"\n[bold {THEME['accent']}]═══ Phase 1: Git Architecture Reconciliation (SKIPPED) ═══[/]\n")
+                for index in range(5):
+                    self.update_task_state(index, "skipped")
             self.phase_durations["phase1_git"] = 0.0
 
         if OPT_SYNC_ONLY:
