@@ -3836,8 +3836,12 @@ class GitEngine:
                     self._tlog(f"[bold {THEME['warning']}]Some files could not be restored. Backup preserved at: {your_changes_backup}[/]", idx, True)
 
             await self._ensure_repo_defaults()
+            final_st = meta.get("status")
+            if final_st not in ("up_to_date_with_mods", "unrelated_reset"):
+                final_st = "updated" if (local_head and remote_head and local_head != remote_head) else "up_to_date_with_mods"
+
             meta.update(
-                status="updated",
+                status=final_st,
                 after_head=remote_head,
                 local_mods_restored=restore_ok,
             )
