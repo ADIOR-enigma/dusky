@@ -152,7 +152,6 @@ tasks = [
     # "U | once | 470_vesktop_matugen.sh"
     "S | once | 473_add_user_to_group.sh --auto",
     # "U | 475_reverting_sleep_timeout.sh"
-    # "U | once | 480_dusky_commands.py"
     "S | once | 485_sudoers_nopassword.sh",
     # ================= CUSTOM =====================
     "U | once | copy_service_files.sh --default",
@@ -164,7 +163,10 @@ tasks = [
     "U | ignore-fail | hypr_anim.sh --current",
     "U | ignore-fail | theme_ctl.sh refresh",
     "U | ignore-fail | update_counter.sh",
-    "U | once | 480_dusky_commands.py -a",
     # "U | once | system_update.sh --pacman"
     "S | once | fix_wayland_session.py",
+    # ==============================================
+
+
+    "U | once | 480_dusky_commands.py -a",
 ]
