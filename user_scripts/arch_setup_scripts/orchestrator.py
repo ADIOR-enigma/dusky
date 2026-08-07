@@ -4860,6 +4860,7 @@ class DuskyOrchestratorApp(App):
         stop_on_fail: bool,
         force: bool,
         task_timeout: float,
+        dry_run: bool = False,
     ):
         super().__init__()
 
@@ -4870,6 +4871,7 @@ class DuskyOrchestratorApp(App):
         self.stop_on_fail = stop_on_fail
         self.force_flag = force
         self.task_timeout = task_timeout
+        self.dry_run = dry_run
 
         self.active_child_pid: int | None = None
         self.active_child_group: bool = False
@@ -7041,6 +7043,7 @@ def main() -> None:
             stop_on_fail=stop_on_fail,
             force=force,
             task_timeout=task_timeout,
+            dry_run=args.dry_run,
         )
 
         app.run()
