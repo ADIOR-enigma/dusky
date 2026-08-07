@@ -193,10 +193,13 @@ class CompactSliderRow(Gtk.Box):
         if token == self._refresh_token: self._refresh_future = None
         if token != self._refresh_token or user_revision != self._user_revision: return GLib.SOURCE_REMOVE
         if value is None:
+            self.set_no_show_all(True)
             self.set_visible(False)
+            self.hide()
             self._pending_local_value = None
             return GLib.SOURCE_REMOVE
 
+        self.set_no_show_all(False)
         self.set_visible(True)
         self.show_all()
         clamped = snap_to_step(value, self.adjustment.get_lower(), self.adjustment.get_upper(), self.adjustment.get_step_increment())

@@ -382,7 +382,9 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
             if HAS_SUNSET:
                 row = CompactSliderRow("󰡬", "sunset", 1000.0, 6000.0, 50.0, lambda: get_hyprsunset_state(getattr(self.app, "_sunset_controller", None)), sunset_submit, self.pool, post_submit_refresh_grace_seconds=BRIGHTNESS_POST_SUBMIT_REFRESH_GRACE_SECONDS)
                 if not is_hyprsunset_service_enabled():
+                    row.set_no_show_all(True)
                     row.set_visible(False)
+                    row.hide()
                 self._slider_rows.append(row)
                 self.sliders_box.pack_start(row, False, False, 0)
             if self._slider_rows: main_box.pack_start(self.sliders_box, False, False, 0)
