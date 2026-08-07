@@ -213,8 +213,16 @@ def askpass_dir() -> Path:
 
 
 def S(key: str) -> str:
-    ASCII_SYMBOLS = {"logo": "DUSKY", "completed": "OK", "running": "RUN", "failed": "ERR", "skipped": "SKIP", "pending": "...", "sep": "|"}
-    UNICODE_SYMBOLS = {"logo": "◈", "completed": "✓", "running": "◉", "failed": "✗", "skipped": "-", "pending": "○", "sep": "│"}
+    ASCII_SYMBOLS = {
+        "logo": "DUSKY", "completed": "OK", "running": "RUN", "failed": "ERR",
+        "skipped": "SKIP", "pending": "...", "sep": "|", "report": "REP",
+        "timing": "TIME", "git": "GIT", "matrix": "MAT", "preflight": "SYS"
+    }
+    UNICODE_SYMBOLS = {
+        "logo": "◈", "completed": "✓", "running": "◉", "failed": "✗",
+        "skipped": "-", "pending": "○", "sep": "│", "report": "◆",
+        "timing": "⚡", "git": "⎇", "matrix": "⬢", "preflight": "⚙"
+    }
     return ASCII_SYMBOLS.get(key, key) if ASCII_MODE else UNICODE_SYMBOLS.get(key, key)
 
 
@@ -3857,7 +3865,7 @@ class MainLogItem(ListItem):
 
 class ReportLogItem(ListItem):
     def compose(self) -> ComposeResult:
-        yield Label(f" [bold {THEME['success']}]📊 REPORT[/] Final Run Overview", classes="list-item-label")
+        yield Label(f" [bold {THEME['success']}]◆ REPORT[/] Final Run Overview", classes="list-item-label")
 
 
 class TaskItem(ListItem):
@@ -4886,24 +4894,29 @@ class DuskyApp(App):
         total_duration: float,
     ) -> str:
         sep = S("sep")
-        logo = S("logo")
 
         if self.abort_flag:
             v_color = THEME['error']
-            v_title = "SYSTEM PIPELINE ABORTED"
+            v_title = "ABORTED"
         elif OPT_DRY_RUN:
             v_color = THEME['success']
-            v_title = "DRY-RUN COMPLETED (NO CHANGES MADE)"
+            v_title = "DRY-RUN"
         elif missing_count > 0 or fail_count > 0:
             v_color = THEME['warning']
-            v_title = "COMPLETED WITH WARNINGS / SKIPPED SCRIPTS"
+            v_title = "WARNINGS"
         else:
             v_color = THEME['success']
-            v_title = "ARCHITECTURE DEPLOYMENT COMPLETED"
+            v_title = "SUCCESS"
 
         p1_t = self.phase_durations.get("phase1_git", 0.0)
         p15_t = self.phase_durations.get("phase1_5_resolve", 0.0)
         p2_t = self.phase_durations.get("phase2_exec", 0.0)
+
+        profile_tasks = self.tasks[5:]
+        exec_tasks = [t for t in profile_tasks if t.status == "success" and getattr(t, "duration", 0) > 0]
+        exec_tasks.sort(key=lambda t: t.duration, reverse=True)
+        top_slowest = [f"{t.name} ({t.duration:.1f}s)" for t in exec_tasks[:3]]
+        slowest_str = ", ".join(top_slowest) if top_slowest else "None"
 
         g = getattr(self, "git_summary", {})
         git_st = g.get("status", "skipped" if OPT_SKIP_SYNC else "unknown")
@@ -4917,9 +4930,11 @@ class DuskyApp(App):
         col_dir = g.get("collision_backup") or ""
         mod_c = g.get("local_mods") or 0
         mod_restored = g.get("local_mods_restored")
+        mod_backup = g.get("local_mods_backup") or ""
+        full_backup = g.get("full_tracked_backup") or ""
 
         if OPT_SKIP_SYNC or git_st == "skipped":
-            git_headline = "Bypassed (--skip-sync)"
+            git_headline = "Disabled (--skip-sync flag passed)"
         elif git_st == "up_to_date":
             git_headline = f"Up to date at commit [dim]{after_sha or before_sha or 'HEAD'}[/dim]"
         elif git_st == "up_to_date_with_mods":
@@ -4934,21 +4949,24 @@ class DuskyApp(App):
         else:
             git_headline = f"Status: {git_st}"
 
-        matrix = {m: {"success": 0, "failed": 0, "skipped": 0, "missing": 0} for m in ("GIT", "USER", "SUDO")}
-        for task in self.tasks:
-            mode_key = "GIT" if task.mode == 'GIT' else ("SUDO" if task.mode == 'S' else "USER")
+        modes_in_profile = sorted(list({t.mode for t in profile_tasks})) or ["USER", "SUDO"]
+        matrix = {m: {"success": 0, "failed": 0, "skipped": 0, "missing": 0} for m in modes_in_profile}
+        for task in profile_tasks:
+            m = task.mode
+            if m not in matrix:
+                matrix[m] = {"success": 0, "failed": 0, "skipped": 0, "missing": 0}
             if task.path_state == "missing":
-                matrix[mode_key]["missing"] += 1
+                matrix[m]["missing"] += 1
             elif task.status == "success":
-                matrix[mode_key]["success"] += 1
+                matrix[m]["success"] += 1
             elif task.status == "failed":
-                matrix[mode_key]["failed"] += 1
+                matrix[m]["failed"] += 1
             elif task.status == "skipped":
-                matrix[mode_key]["skipped"] += 1
+                matrix[m]["skipped"] += 1
             else:
-                matrix[mode_key]["skipped"] += 1
+                matrix[m]["skipped"] += 1
 
-        tot_all = len(self.tasks)
+        tot_all = len(profile_tasks)
         tot_succ = sum(matrix[m]["success"] for m in matrix)
         tot_fail = sum(matrix[m]["failed"] for m in matrix)
         tot_skip = sum(matrix[m]["skipped"] for m in matrix)
@@ -4956,18 +4974,19 @@ class DuskyApp(App):
 
         lines = [
             f"════════════════════════════════════════════════════════════════════════════════",
-            f" [bold {v_color}]{logo} FINAL RUN OVERVIEW[/] {sep} [bold {THEME['fg']}]{escape(self.profile.name)}[/] {sep} Verdict: [bold {v_color}]{v_title}[/]",
+            f" ◆ FINAL OVERVIEW {sep} [bold {THEME['fg']}]{escape(self.profile.name)}[/] {sep} Verdict: [bold {v_color}]{v_title}[/]",
             f"════════════════════════════════════════════════════════════════════════════════",
             f"",
-            f" [bold {THEME['accent']}]⏱ TIMING & PERFORMANCE[/]",
+            f" {S('timing')} TIMING & PERFORMANCE",
             f"   Total Pipeline Duration : [bold {THEME['fg']}]{total_duration:.2f}s[/]",
-            f"   • Phase 1 (Git Architecture Reconciliation) : {p1_t:.2f}s",
-            f"   • Phase 1.5 (Post-Sync Script Resolution)  : {p15_t:.2f}s",
-            f"   • Phase 2 (Configuration Pipeline)        : {p2_t:.2f}s",
+            f"   • Phase 1 (Git Reconciliation) : {p1_t:.2f}s",
+            f"   • Phase 1.5 (Post-Sync Resolve) : {p15_t:.2f}s",
+            f"   • Phase 2 (Script Execution)    : {p2_t:.2f}s",
+            f"   • Top Bottlenecks               : {slowest_str}",
             f"",
-            f" [bold {THEME['accent']}]🌿 GIT SYNCHRONIZATION STORY[/]",
+            f" {S('git')} GIT SYNCHRONIZATION",
             f"   Branch           : [bold {THEME['fg']}]{branch}[/]",
-            f"   Summary          : {git_headline}",
+            f"   Sync Status      : {git_headline}",
         ]
 
         if commit_list:
@@ -4979,17 +4998,20 @@ class DuskyApp(App):
             lines.append(f"   Work-tree Backup : [bold {THEME['warning']}]{col_c} collision(s) moved aside[/] ({escape(col_dir)})")
         if mod_c > 0:
             st_text = "restored" if mod_restored else ("merge required" if mod_restored is False else "backed up")
-            lines.append(f"   Local Tracked    : {mod_c} file(s) ({st_text})")
+            loc_extra = f" ({escape(mod_backup)})" if mod_backup else ""
+            lines.append(f"   Local Tracked    : {mod_c} file(s) ({st_text}){loc_extra}")
+        if full_backup:
+            lines.append(f"   Full Tree Backup : {escape(full_backup)}")
 
         lines.extend([
             f"",
-            f" [bold {THEME['accent']}]📋 SCRIPT EXECUTION MATRIX[/]",
+            f" {S('matrix')} SCRIPT EXECUTION MATRIX",
             f"   ┌──────────┬──────────┬──────────┬──────────┬──────────┬──────────┐",
             f"   │ MODE     │ SUCCESS  │ FAILED   │ SKIPPED  │ MISSING  │ TOTAL    │",
             f"   ├──────────┼──────────┼──────────┼──────────┼──────────┼──────────┤",
         ])
 
-        for mode_name in ("GIT", "USER", "SUDO"):
+        for mode_name in sorted(matrix.keys()):
             r = matrix[mode_name]
             tot_row = sum(r.values())
             lines.append(
@@ -5003,25 +5025,51 @@ class DuskyApp(App):
             f"",
         ])
 
-        skipped_tasks = [t for t in self.tasks[5:] if t.status == "skipped"]
-        failed_tasks = [t for t in self.tasks if t.status == "failed"]
+        failed_tasks = [t for t in profile_tasks if t.status == "failed"]
+        skipped_tasks = [t for t in profile_tasks if t.status == "skipped"]
 
         if failed_tasks:
-            lines.append(f" [bold {THEME['error']}]✗ FAILED TASKS ({len(failed_tasks)}):[/]")
-            for t in failed_tasks:
-                lines.append(f"   • [{t.mode}] {escape(t.name)}")
+            hard_failed = [t for t in failed_tasks if not t.ignore_fail]
+            soft_failed = [t for t in failed_tasks if t.ignore_fail]
+
+            if hard_failed:
+                lines.append(f" [bold {THEME['error']}]✗ HARD FAILED SCRIPTS ({len(hard_failed)}):[/]")
+                for t in hard_failed:
+                    lines.append(f"   • [{t.mode}] {escape(t.name)} [bold {THEME['error']}](Required - Pipeline Aborted)[/]")
+
+            if soft_failed:
+                lines.append(f" [bold {THEME['warning']}]⚠ SOFT FAILED SCRIPTS ({len(soft_failed)}):[/]")
+                for t in soft_failed:
+                    lines.append(f"   • [{t.mode}] {escape(t.name)} [dim {THEME['warning']}](Ignored / Allowed to Fail)[/dim]")
+
+            failed_dirs = sorted(list({str(t.path.parent) for t in failed_tasks if getattr(t, "path", None)}))
+            if failed_dirs:
+                lines.append(f"   [dim]Debug locations:[/dim]")
+                for d in failed_dirs:
+                    lines.append(f"     └─ [dim]{escape(d)}[/dim]")
+        else:
+            lines.append(f" [dim]✗ FAILED SCRIPTS   : None[/dim]")
 
         if skipped_tasks:
-            lines.append(f" [bold {THEME['warning']}]- SKIPPED TASKS ({len(skipped_tasks)}):[/]")
-            for t in skipped_tasks[:10]:
-                reason = "condition false" if t.condition else ("once marker valid" if t.once else ("missing" if t.path_state == "missing" else "ignored failure"))
+            lines.append(f" [bold {THEME['warning']}]- SKIPPED SCRIPTS ({len(skipped_tasks)}):[/]")
+            for t in skipped_tasks[:12]:
+                reason = "condition false" if t.condition else ("once marker valid" if t.once else ("missing script" if t.path_state == "missing" else "ignored failure"))
                 lines.append(f"   • [{t.mode}] {escape(t.name)} [dim]({reason})[/dim]")
-            if len(skipped_tasks) > 10:
-                lines.append(f"   • ... and {len(skipped_tasks) - 10} more skipped tasks.")
+            if len(skipped_tasks) > 12:
+                lines.append(f"   • ... and {len(skipped_tasks) - 12} more skipped script(s).")
+        else:
+            lines.append(f" [dim]- SKIPPED SCRIPTS  : None[/dim]")
+
+        if self.missing_scripts:
+            lines.append(f" [bold {THEME['warning']}]? MISSING SCRIPTS ({len(self.missing_scripts)}):[/]")
+            for s in self.missing_scripts:
+                lines.append(f"   • {escape(s)}")
+        else:
+            lines.append(f" [dim]? MISSING SCRIPTS  : None[/dim]")
 
         lines.extend([
             f"",
-            f" [bold {THEME['accent']}]🛡️ PREFLIGHT & SYSTEM HIGHLIGHTS[/]",
+            f" {S('preflight')} SYSTEM & PREFLIGHT",
             f"   • Sudo Mode    : {SudoEngine.mode_name()}",
             f"   • User / Home  : {target_user_pw().pw_name} ({user_home()})",
             f"   • Log File     : {LOG_FILE if LOG_FILE else 'Disabled'}",
