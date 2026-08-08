@@ -44,8 +44,8 @@ REQUIRE_ROOT = False
 # 2b. TAB NOTICES (banners shown above each tab)
 # -------------------------------------------------------------------------
 TAB_NOTICES = {
-    0: {"level": "info", "message": "New font files dropped into the archive dir appear here after a TUI restart. Applying any change auto-refreshes the font cache; no manual rebuild needed."},
-    2: {"level": "info", "message": "Applies auto-refresh the font cache. Use 'Force Verbose Cache Rebuild' only if you placed font files manually outside the TUI."},
+    0: {"level": "info", "message": "New font files dropped into the archive dir appear here after a TUI restart. Applying any change auto-refreshes the font cache AND syncs GTK/Qt/dconf; no manual step needed."},
+    2: {"level": "info", "message": "Applies auto-refresh the font cache and sync GTK + Qt (qt5ct/qt6ct) fonts. The manual actions below are only for re-running after manual edits or outside-TUI changes."},
 }
 
 # =============================================================================
@@ -118,64 +118,88 @@ FONT_ARCHIVE_DIR = "~/user_scripts/fonts/archive"
 _ARCHIVE_EXTENSIONS = (".ttf", ".otf", ".ttc", ".otc", ".woff", ".woff2")
 
 
-def _scan_dir_families(directory: str) -> list[str]:
-    """Scan a raw font directory with fc-scan (independent of fontconfig
-    config state) and return deduplicated family names."""
-    root = Path(directory).expanduser()
-    if not root.is_dir():
-        return []
-    files = sorted(f for f in root.rglob("*") if f.suffix.lower() in _ARCHIVE_EXTENSIONS)
-    if not files:
-        return []
+def _scan_families() -> dict[str, str]:
+    """Discover installed families and their fontconfig spacing metadata.
+
+    Returns {family: spacing} where spacing is the fontconfig spacing
+    property ("100"=monospace, "90"=dual-width, "" otherwise, ASCII to keep
+    fc-scan/fc-list calls uniform). Queries fc-list for installed fonts and
+    fc-scan for raw files under the archive dir (fc-list only sees dirs the
+    config already knows about).
+    """
+    meta: dict[str, str] = {}
+
+    def ingest(stdout: str) -> None:
+        for line in stdout.splitlines():
+            family, _, spacing = line.strip().partition("\t")
+            if family:
+                meta[family] = spacing.strip()
+
     try:
         proc = subprocess.run(
-            ["fc-scan", "--format=%{family[0]}\n", *[str(f) for f in files]],
-            capture_output=True, text=True, timeout=30,
+            ["fc-list", "--format=%{family[0]}\t%{spacing}\n", ":"],
+            capture_output=True, text=True, timeout=20,
         )
-        lines = {ln.strip() for ln in proc.stdout.splitlines() if ln.strip()}
-        return sorted(lines)
+        ingest(proc.stdout)
     except Exception:
-        return []
+        pass
+
+    root = Path(FONT_ARCHIVE_DIR).expanduser()
+    if root.is_dir():
+        files = sorted(
+            f for f in root.rglob("*") if f.suffix.lower() in _ARCHIVE_EXTENSIONS)
+        if files:
+            try:
+                proc = subprocess.run(
+                    ["fc-scan", "--format=%{family[0]}\t%{spacing}\n", *[str(f) for f in files]],
+                    capture_output=True, text=True, timeout=30,
+                )
+                ingest(proc.stdout)
+            except Exception:
+                pass
+
+    return meta
+
+
+def _classify_families(meta: dict[str, str]) -> dict[str, list[str]]:
+    """Classify families into picker buckets using metadata we can trust.
+
+    Order matters:
+      * emoji/symbol-ish names come first: icon fonts must never leak into
+        mono even when their spacing says monospace (e.g. "Symbols Nerd
+        Font Mono").
+      * monospace is decided by the fontconfig spacing property, the same
+        signal fontconfig itself uses for the monospace generic family;
+        name guessing would mislabel proportional "Propo" variants as mono.
+      * serif has no authoritative metadata exposed by this fontconfig
+        (no PANOSE, no class property), so only families that state their
+        genre in the name are classified as serif; ambiguous names
+        (OpenDyslexic, Baskerville, ...) land in sans rather than guess.
+      * everything else defaults to sans.
+    """
+    buckets: dict[str, list[str]] = {"sans": [], "serif": [], "mono": [], "emoji": []}
+    for fam in sorted(meta):
+        low = fam.lower()
+        if any(e in low for e in ("emoji", "symbols", "awesome", "icon")):
+            buckets["emoji"].append(fam)
+        elif meta[fam] in ("100", "90"):
+            buckets["mono"].append(fam)
+        elif any(s in low for s in ("serif", "times", "georgia")):
+            buckets["serif"].append(fam)
+        else:
+            buckets["sans"].append(fam)
+    return buckets
 
 
 def _scan_installed_families() -> dict[str, list[str]]:
-    """Discover installed families on the live system via fc-list.
+    """Discover installed families on the live system and bucket them.
 
-    Returns {bucket: [family,...]} classified by family-name heuristics:
-    mono-ish names -> mono, serif-ish names -> serif, emoji/icon/symbol
-    names -> emoji, everything else -> sans. Falls back to the curated
-    pools if fc-list isn't available or yields nothing.
+    Returns {bucket: [family,...]}; falls back to the curated pools if
+    fc-list/fc-scan are unavailable or yield nothing.
     """
-    buckets: dict[str, list[str]] = {"sans": [], "serif": [], "mono": [], "emoji": []}
-    try:
-        proc = subprocess.run(
-            ["fc-list", "--format=%{family[0]}\n", ":"],
-            capture_output=True, text=True, timeout=20,
-        )
-        families = sorted({ln.strip() for ln in proc.stdout.splitlines() if ln.strip()})
-    except Exception:
-        families = []
-
-    archive = _scan_dir_families(FONT_ARCHIVE_DIR)
-    families = sorted(set(families) | set(archive))
-
-    if families:
-        mono = ("mono", "code", "terminal")
-        serif = ("serif", "times", "georgia")
-        emoji = ("emoji", "symbols", "awesome")
-        for fam in families:
-            low = fam.lower()
-            if any(m in low for m in mono):
-                buckets["mono"].append(fam)
-            elif any(s in low for s in serif):
-                buckets["serif"].append(fam)
-            elif any(e in low for e in emoji):
-                buckets["emoji"].append(fam)
-            else:
-                buckets["sans"].append(fam)
-    else:
+    buckets = _classify_families(_scan_families())
+    if not any(buckets.values()):
         buckets = {k: list(v) for k, v in _CURATED_FALLBACK.items()}
-
     return buckets
 
 
@@ -383,6 +407,16 @@ SCHEMA = {
             options=["trigger"],
             popup_message="Synced Xft rendering properties to ~/.config/dusky/xresources and merged with xrdb.",
             extended_help="Legacy X11 syncing: writes Xft rendering properties into a dedicated ~/.config/dusky/xresources file and merges it with xrdb. Does not truncate any existing ~/.Xresources."
+        ),
+        ConfigItem(
+            label="Sync GTK & Qt Fonts (settings.ini + qt5ct/qt6ct)",
+            key="trigger_sync_gtk",
+            scope="DEFAULT",
+            type_="action",
+            default="python3 ~/user_scripts/dusky_tui/python/engines/fontconfig.py",
+            options=["trigger"],
+            popup_message="Synced GTK font-name and Qt general/fixed to the configured families.",
+            extended_help="Writes gtk-font-name (family + current size) into ~/.config/gtk-3.0/settings.ini and gtk-4.0/settings.ini, mirrors org.gnome.desktop.interface font-name/document-font-name via gsettings, and rewrites the [Fonts] general/fixed entries in qt5ct.conf and qt6ct.conf (sans-serif -> general, monospace -> fixed), preserving existing sizes/weights. This runs automatically on every apply; use the action to re-sync after manual edits."
         )
     ],
     

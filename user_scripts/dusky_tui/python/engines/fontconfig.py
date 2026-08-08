@@ -6,6 +6,13 @@ import subprocess
 import shutil
 import os
 import re
+import sys
+
+# Make standalone execution (python3 python/engines/fontconfig.py) resolve
+# the dusky_tui package layout regardless of CWD or username.
+_DUSKY_TUI_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(_DUSKY_TUI_ROOT) not in sys.path:
+    sys.path.insert(0, str(_DUSKY_TUI_ROOT))
 
 from python.frontend.core_types import BaseEngine
 
@@ -42,6 +49,8 @@ class FontconfigEngine(BaseEngine):
         self.config_path = Path(config_path).expanduser().resolve()
         self.cache: dict[str, Any] = {}
         self._pattern_rewrites: list[str] = []
+        self._sync_pending = 0
+        self._sync_worker_running = False
 
     @property
     def target_path(self) -> str:
@@ -298,9 +307,10 @@ class FontconfigEngine(BaseEngine):
             self.cache = state
 
             if legacy_absorbed:
-                self._archive_legacy()
+                self._drop_legacy()
 
             self._refresh_cache_async()
+            self._sync_gtk_async()
 
             return True, f"Successfully applied {len(changes)} font settings.", ""
         except Exception as e:
@@ -367,13 +377,15 @@ class FontconfigEngine(BaseEngine):
             kid = ET.SubElement(edit, "string")
             kid.text = str(val)
 
-    def _archive_legacy(self) -> None:
+    def _drop_legacy(self) -> None:
+        """Remove the legacy ~/.config/fontconfig/fonts.conf so its raw
+        qual="any" + binding="strong" rewrites cannot fight the canonical
+        config. No backup is kept (the canonical conf has all the state)."""
         legacy = Path("~/.config/fontconfig/fonts.conf").expanduser()
         if not legacy.exists() or legacy == self.config_path:
             return
-        backup = legacy.with_name("fonts.conf.dusky-archived")
         try:
-            legacy.replace(backup)
+            legacy.unlink()
         except OSError:
             pass
 
@@ -390,5 +402,330 @@ class FontconfigEngine(BaseEngine):
         except Exception:
             pass
 
+    def sync_system_fonts(self, quiet: bool = False) -> bool:
+        """Mirror the configured generic families to the toolkit layers that
+        pin their own fonts (GTK settings.ini + dconf, Qt qt5ct/qt6ct) so a
+        change is truly system-wide.
+
+        fontconfig only governs generic requests; GTK apps read
+        gtk-font-name and Qt apps read [Fonts] general/fixed, both of which
+        are per-toolkit and separate from fontconfig.
+
+        Reads families straight from self.cache (fresh after write_batch),
+        reusing existing sizes when present.
+        """
+        family = ""
+        mono = ""
+        for key in ("sans-serif", "monospace"):
+            val = self.cache.get(key)
+            if not (isinstance(val, str) and val.strip()):
+                state = self.load_state()
+                val = state.get(key)
+            if isinstance(val, str):
+                value = val.strip()
+                if key == "sans-serif":
+                    family = value
+                else:
+                    mono = value
+
+        if not family:
+            if not quiet:
+                print("[FontconfigEngine] No sans-serif family configured; toolkit sync skipped.")
+            return False
+
+        # --- GTK ---------------------------------------------------------
+        gtk_ok = self._sync_gtk_toolkits(family, mono, quiet)
+
+        # --- Qt (qt5ct / qt6ct) ------------------------------------------
+        qt_ok = True
+        for conf_path, version in (("~/.config/qt5ct/qt5ct.conf", "qt5"),
+                                   ("~/.config/qt6ct/qt6ct.conf", "qt6")):
+            try:
+                qt_ok = self._patch_qt_conf(Path(conf_path).expanduser(),
+                                            version, family, mono, quiet) and qt_ok
+            except OSError as e:
+                qt_ok = False
+                if not quiet:
+                    print(f"[-] {conf_path}: {e}")
+
+        if not quiet and qt_ok:
+            print("[i] Qt (qt5ct/qt6ct) fonts synced.")
+
+        return gtk_ok or qt_ok
+
+    # ------------------------------------------------------------------
+    # GTK
+    # ------------------------------------------------------------------
+    def _sync_gtk_toolkits(self, family: str, mono: str, quiet: bool) -> bool:
+        size = FontconfigEngine._existing_gtk_size("gtk-font-name=")
+        entries = {f"gtk-font-name": f"{family} {size}"}
+        if mono:
+            mono_size = FontconfigEngine._existing_gtk_size("gtk-monospace-font-name=")
+            if mono_size == str(FontconfigEngine._DEFAULT_GTK_SIZE):
+                gs = shutil.which("gsettings")
+                mono_size = self._gsettings_font_size(gs or "", "monospace-font-name")
+            entries["gtk-monospace-font-name"] = f"{mono} {mono_size}"
+        ok = True
+        for path in FontconfigEngine._gtk_ini_paths():
+            try:
+                self._patch_gtk_ini(path, entries)
+                if not quiet:
+                    for k, v in entries.items():
+                        print(f"[+] {path}: {k}={v}")
+            except OSError as e:
+                ok = False
+                if not quiet:
+                    print(f"[-] {path}: {e}")
+
+        gs = shutil.which("gsettings")
+        if gs:
+            for key, fsize in (
+                    ("font-name", size),
+                    ("document-font-name", self._gsettings_font_size(gs, "document-font-name")),
+                    ("monospace-font-name", self._gsettings_font_size(gs, "monospace-font-name"))):
+                try:
+                    fam = family if key != "monospace-font-name" else mono
+                    if not fam:
+                        continue
+                    subprocess.run(
+                        [gs, "set", "org.gnome.desktop.interface", key, f"{fam} {fsize}"],
+                        check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    )
+                    if not quiet:
+                        print(f"[+] gsettings {key}: {fam} {fsize}")
+                except Exception:
+                    pass
+        elif not quiet:
+            print("[i] gsettings not available; GTK settings.ini only.")
+        return ok
+
+    # ------------------------------------------------------------------
+    # Qt (qt5ct / qt6ct)
+    # ------------------------------------------------------------------
+    _QT_FONT_TEMPLATES = {
+        "qt5": "family,size,-1,5,50,0,0,0,0,0",
+        "qt6": "family,size,-1,5,400,0,0,0,0,0,0,0,0,0,0,1",
+    }
+    _QT_DEFAULT_SIZE = 12
+
+    @staticmethod
+    def _qt_swap_family(serialized: str, family: str) -> str:
+        """Replace only the family field of a QFont serialization, keeping
+        size / weight / flags intact."""
+        parts = serialized.split(",", 1)
+        parts[0] = family
+        return ",".join(parts)
+
+    @staticmethod
+    def _qt_make_serial(version: str, family: str, size: str) -> str:
+        template = FontconfigEngine._QT_FONT_TEMPLATES[version]
+        return template.replace("family", family).replace("size", size)
+
+    @staticmethod
+    def _qt_size_from(serialized: str) -> str:
+        if serialized:
+            parts = serialized.split(",")
+            if len(parts) > 1 and parts[1].strip().isdigit():
+                return parts[1]
+        return str(FontconfigEngine._QT_DEFAULT_SIZE)
+
+    @staticmethod
+    def _qt_slots(path: Path) -> dict[str, str]:
+        """Extract existing [Fonts] general/fixed serializations."""
+        if not path.is_file():
+            return {}
+        slots: dict[str, str] = {}
+        in_fonts = False
+        for line in path.read_text().splitlines():
+            stripped = line.strip()
+            if stripped.startswith("["):
+                in_fonts = stripped == "[Fonts]"
+                continue
+            if in_fonts and "=" in line:
+                key, _, val = line.partition("=")
+                key = key.strip()
+                if key in ("general", "fixed"):
+                    slots[key] = val.strip().strip('"')
+        return slots
+
+    @staticmethod
+    def _qt_write(path: Path, slots: dict[str, str]) -> None:
+        """Rewrite a qt5ct/qt6ct.conf with updated [Fonts] general/fixed,
+        preserving all other sections byte-for-byte (atomic tmp+rename so
+        concurrent readers never see a half-written file)."""
+        content = path.read_text() if path.is_file() else ""
+        lines = content.splitlines()
+        out: list[str] = []
+        in_fonts = False
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("["):
+                if in_fonts:
+                    out.append("")  # blank line after Fonts block
+                    in_fonts = False
+                if stripped == "[Fonts]":
+                    in_fonts = True
+                    out.append("[Fonts]")
+                    out.append(f'general="{slots["general"]}"')
+                    out.append(f'fixed="{slots["fixed"]}"')
+                    continue
+                out.append(line)
+                continue
+            if in_fonts:
+                continue  # drop original Fonts lines
+            out.append(line)
+        if not any(ln.strip() == "[Fonts]" for ln in out):
+            if out:
+                out.append("")
+            out.append("[Fonts]")
+            out.append(f'general="{slots["general"]}"')
+            out.append(f'fixed="{slots["fixed"]}"')
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write("\n".join(out).rstrip("\n") + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        tmp.replace(path)
+
+    def _patch_qt_conf(self, conf: Path, version: str, sans: str, mono: str, quiet: bool) -> bool:
+        """Update [Fonts] general/fixed in a qt5ct/qt6ct.conf file.
+
+        general -> sans-serif family, fixed -> monospace family. Existing
+        QFont serializations keep their size/weight/flags (only the family
+        is swapped); new entries use a sensible default size."""
+        try:
+            slots = self._qt_slots(conf)
+            general = slots.get("general", "")
+            size = self._qt_size_from(general)
+            slots["general"] = self._qt_swap_family(general, sans) if general else self._qt_make_serial(version, sans, size)
+            fixed = slots.get("fixed", "")
+            slots["fixed"] = self._qt_swap_family(fixed, mono) if fixed else self._qt_make_serial(version, mono, size)
+            self._qt_write(conf, slots)
+            if not quiet:
+                print(f"[+] {conf}: general={slots['general']}")
+            return True
+        except OSError as e:
+            if not quiet:
+                print(f"[-] {conf}: {e}")
+            return False
+
+    _DEFAULT_GTK_SIZE = 11
+
+    @classmethod
+    def _gtk_ini_paths(cls) -> tuple[Path, Path]:
+        """Resolve GTK settings.ini paths at call time so a later HOME switch
+        (sudo/runuser/tests with a fake HOME) is honored."""
+        return (
+            Path("~/.config/gtk-3.0/settings.ini").expanduser(),
+            Path("~/.config/gtk-4.0/settings.ini").expanduser(),
+        )
+
+    @classmethod
+    def _existing_gtk_size(cls, keyline: str = "gtk-font-name=") -> str:
+        """Reuse the size from any existing gtk-font-name / gtk-monospace-font-name."""
+        for ini in FontconfigEngine._gtk_ini_paths():
+            if not ini.is_file():
+                continue
+            try:
+                for line in ini.read_text().splitlines():
+                    if line.startswith(keyline):
+                        parts = line.split("=", 1)[1].rsplit(" ", 1)
+                        if len(parts) == 2 and parts[1].isdigit():
+                            return parts[1]
+            except OSError:
+                continue
+        return str(cls._DEFAULT_GTK_SIZE)
+
+    @classmethod
+    def _patch_gtk_ini(cls, path: Path, entries: dict[str, str]) -> None:
+        content = path.read_text() if path.is_file() else ""
+        out: list[str] = []
+        replaced: set[str] = set()
+        in_settings = False
+        for line in content.splitlines():
+            stripped = line.strip()
+            if stripped == "[Settings]":
+                in_settings = True
+                out.append(line)
+                continue
+            if stripped.startswith("[") and in_settings:
+                in_settings = False
+            if in_settings:
+                matched = next((k for k in entries if line.startswith(k + "=")), None)
+                if matched:
+                    out.append(f"{matched}={entries[matched]}")
+                    replaced.add(matched)
+                    continue
+            out.append(line)
+        missing = [k for k in entries if k not in replaced]
+        if missing:
+            if "[Settings]" in out:
+                idx = out.index("[Settings]") + 1
+                for k in missing:
+                    out.insert(idx, f"{k}={entries[k]}")
+            else:
+                if out and not out[-1].strip():
+                    out.pop()
+                out.append("[Settings]")
+                out.extend(f"{k}={entries[k]}" for k in entries)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write("\n".join(out) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        tmp.replace(path)
+
+    @staticmethod
+    def _gsettings_font_size(gs: str, key: str) -> str:
+        try:
+            out = subprocess.run(
+                [gs, "get", "org.gnome.desktop.interface", key],
+                capture_output=True, text=True, timeout=5,
+            )
+            val = out.stdout.strip().strip("'")
+            parts = val.rsplit(" ", 1)
+            if len(parts) == 2 and parts[1].isdigit():
+                return parts[1]
+        except Exception:
+            pass
+        return str(FontconfigEngine._DEFAULT_GTK_SIZE)
+
+    def _sync_gtk_async(self) -> None:
+        """Schedule the GTK/Qt/dconf sync on a single draining worker.
+
+        The worker re-reads self.cache (the live, latest state) on every
+        drained request, so a burst of rapid write_batch calls can never
+        leave a stale family as the final written value (a naive
+        thread-per-call would race on ordering)."""
+        try:
+            import threading
+
+            self._sync_pending += 1
+            if self._sync_worker_running:
+                return
+            self._sync_worker_running = True
+
+            def worker() -> None:
+                try:
+                    while self._sync_pending > 0:
+                        self._sync_pending -= 1
+                        self.sync_system_fonts(quiet=True)
+                finally:
+                    self._sync_worker_running = False
+
+            threading.Thread(target=worker, daemon=True).start()
+        except Exception:
+            pass
+
     def write_value(self, target_key: str, target_scope: str, new_value: str, item_type: str = "string") -> tuple[bool, str, str]:
         return self.write_batch([(target_key, target_scope, new_value, item_type)])
+
+
+if __name__ == "__main__":
+    # CLI entry: re-run the GTK/Qt/dconf sync from the config file
+    # (used by the TUI's "Sync GTK & Qt Fonts" action).
+    engine = FontconfigEngine()
+    success = engine.sync_system_fonts(quiet=False)
+    raise SystemExit(0 if success else 1)

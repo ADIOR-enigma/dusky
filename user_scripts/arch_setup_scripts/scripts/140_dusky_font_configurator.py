@@ -112,29 +112,24 @@ def build_config(target: str) -> tuple[bool, str]:
             if missing:
                 blocks = "".join(_metric_rewrite_block(n, target) for n in missing)
                 conf.write_text(text.replace("</fontconfig>", blocks + "</fontconfig>"))
-            _archive_legacy_conf()
+            _drop_legacy_conf()
             engine._refresh_cache_async()
         return (ok, msg) if ok else (False, err or msg)
     except Exception as exc:
         return False, str(exc)
 
 
-def _archive_legacy_conf() -> None:
+def _drop_legacy_conf() -> None:
     """The engine absorbs the legacy ~/.config/fontconfig/fonts.conf into its
     own emit state, so the legacy file must not keep applying raw
     qual="any" + binding="strong" rewrites alongside the canonical config
     (that is how 'Times New Roman' rewrites kept hijacking generic serif
-    requests). Archive it once, timestamped, like the TUI harness does."""
+    requests). Delete it outright; no backup is kept."""
     legacy = Path.home() / ".config" / "fontconfig" / "fonts.conf"
     if not legacy.is_file():
         return
-    import datetime
-    ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    archived = legacy.with_name(f"fonts.conf.dusky-archived-{ts}")
-    if archived.exists():
-        return
-    legacy.rename(archived)
-    print(f"  [i] Archived legacy config: {archived.name}")
+    legacy.unlink()
+    print("  [i] Removed legacy fonts.conf (superseded by generated config)")
 
 
 def resolve_match(family: str) -> str:
