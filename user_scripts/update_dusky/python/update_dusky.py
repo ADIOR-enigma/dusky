@@ -1779,6 +1779,166 @@ def parse_args():
 # ==============================================================================
 #  PROFILE LOADING ENGINE
 # ==============================================================================
+def repair_missing_commas(text: str) -> tuple[str, int]:
+    """Insert missing commas inside array / inline-table literals.
+
+    A single omitted comma inside any [] or {} literal makes the WHOLE profile
+    unparseable, bricking the updater on the broken file (users can no longer
+    update until the file is hand-repaired). This tokenizer-based repairer
+    inserts a comma wherever one value token is directly followed by another
+    value token without a separator, so a forgotten comma can never again take
+    the updater offline.
+
+    Safety contract -- the repairer never changes the meaning of a file that
+    parses afterwards, and leaves valid files byte-for-byte untouched:
+
+      * Only invoked on a strict tomllib failure, and only applied when the
+        repaired text re-parses cleanly with tomllib as the judge.
+      * Strings, arrays and tables are unambiguous: a value token directly
+        followed by another value token can only mean a missing comma.
+      * Bare words are ambiguous (e.g. ``[1979-05-27 07:32:00]`` is a single
+        space-separated datetime, not two values). Commas are inserted between
+        words ONLY when the following word is unambiguously a number or a
+        boolean (``true``/``false``/``inf``/``nan``), never when it could be a
+        datetime fragment.
+      * Table keys are recognized via ``=`` and never get commas.
+
+    Returns ``(repaired_text, number_of_fixes)``.
+    """
+    _NUM_BOOL_RE = re.compile(
+        r"[+-]?(?:\d[\d_]*(?:\.\d[\d_]*)?(?:[eE][+-]?\d+)?"
+        r"|0[xX][0-9a-fA-F_]+|0[oO][0-7_]+|0[bB][01_]+)"
+    )
+    _BOOL_WORDS = {"true", "false", "inf", "+inf", "-inf", "nan", "+nan", "-nan"}
+    _WORD_CHARS = "_.+-:"
+
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    depth = 0
+    pending_value = False
+    pending_is_word = False
+    value_end = -1
+    fixes = 0
+
+    def is_num_or_bool(word: str) -> bool:
+        return word in _BOOL_WORDS or _NUM_BOOL_RE.fullmatch(word) is not None
+
+    while i < n:
+        c = text[i]
+
+        if c == '#':
+            j = text.find('\n', i)
+            if j == -1:
+                j = n
+            out.append(text[i:j])
+            i = j
+            continue
+
+        if depth and pending_value and (c in '"\'[{+-' or c.isalnum()) and not (c == '-' and i + 1 >= n):
+            k = i
+            while k < n and (text[k].isalnum() or text[k] in _WORD_CHARS):
+                k += 1
+            word_end = k
+            while k < n and text[k] in ' \t':
+                k += 1
+            is_key = k < n and text[k] == '='
+            insert = True
+            if c.isalnum() and pending_is_word and not is_key and not is_num_or_bool(text[i:word_end]):
+                insert = False
+            if insert:
+                out.insert(value_end, ',')
+                pending_value = False
+                pending_is_word = False
+                fixes += 1
+
+        if c in '"\'':
+            quote = c
+            str_start = i
+            if text.startswith(quote * 3, i):
+                i += 3
+                while i < n and not text.startswith(quote * 3, i):
+                    if text[i] == '\\':
+                        i += 1
+                    i += 1
+                i = min(i + 3, n)
+            else:
+                i += 1
+                while i < n and text[i] != quote:
+                    if text[i] == '\\':
+                        i += 1
+                    i += 1
+                i += 1
+            out.append(text[str_start:i])
+            if depth:
+                pending_value = True
+                pending_is_word = False
+                value_end = len(out)
+            continue
+
+        if c == '=':
+            pending_value = False
+            pending_is_word = False
+            out.append(c)
+            i += 1
+            continue
+
+        if c in '[{':
+            depth += 1
+            pending_value = False
+            pending_is_word = False
+            out.append(c)
+            i += 1
+            continue
+
+        if c in ']}':
+            depth = max(0, depth - 1)
+            out.append(c)
+            i += 1
+            if depth:
+                pending_value = True
+                pending_is_word = False
+                value_end = len(out)
+            else:
+                pending_value = False
+                pending_is_word = False
+            continue
+
+        if c == ',':
+            pending_value = False
+            pending_is_word = False
+            out.append(c)
+            i += 1
+            continue
+
+        if c in ' \t\r\n':
+            out.append(c)
+            i += 1
+            continue
+
+        word_start_idx = i
+        while i < n and (text[i].isalnum() or text[i] in _WORD_CHARS):
+            i += 1
+        if i > word_start_idx:
+            out.append(text[word_start_idx:i])
+            k = i
+            while k < n and text[k] in ' \t':
+                k += 1
+            if depth and text[k] != '=':
+                pending_value = True
+                pending_is_word = True
+                value_end = len(out)
+            else:
+                pending_value = False
+                pending_is_word = False
+            continue
+
+        out.append(c)
+        i += 1
+
+    return ''.join(out), fixes
+
+
 @dataclass
 class ProfileConfig:
     name: str
@@ -1815,8 +1975,33 @@ def load_profile(name_or_path: str) -> ProfileConfig:
             sys.exit(1)
 
     try:
-        with open(p, "rb") as f:
-            data = tomllib.load(f)
+        text = p.read_text(encoding="utf-8")
+        try:
+            data = tomllib.loads(text)
+        except tomllib.TOMLDecodeError as raw_err:
+            repaired, fixes = repair_missing_commas(text)
+            if fixes == 0:
+                sys.stderr.write(f"[FATAL] Failed to load profile '{p}': {raw_err}\n")
+                sys.exit(1)
+            try:
+                data = tomllib.loads(repaired)
+            except tomllib.TOMLDecodeError:
+                sys.stderr.write(f"[FATAL] Failed to load profile '{p}': {raw_err}\n")
+                sys.exit(1)
+            try:
+                backup = p.with_name(p.name + ".bak")
+                p.write_text(repaired, encoding="utf-8")
+                backup.write_text(text, encoding="utf-8")
+                sys.stderr.write(
+                    f"[WARN] Inserted {fixes} missing comma(s) in '{p}' -- "
+                    f"auto-repaired, original saved to '{backup}'. "
+                    f"Fix them properly in git!\n"
+                )
+            except OSError as write_err:
+                sys.stderr.write(
+                    f"[WARN] Inserted {fixes} missing comma(s) in '{p}' (in-memory "
+                    f"repair only, could not save: {write_err}). Fix them in git!\n"
+                )
 
         prof_meta = data.get("profile", {})
         git_cfg = data.get("git", {})
@@ -2819,6 +3004,79 @@ def _sync_copy_file(src_p: Path, dest_p: Path) -> bool:
         return False
 
 
+# ==============================================================================
+#  SELF-HEALING GATES (never let a broken script silence the updater)
+# ==============================================================================
+def _validate_script_syntax(path: Path) -> tuple[bool, str]:
+    """Quick syntax gate for managed Python (.py) and shell (.sh) files."""
+    if not path.exists():
+        return False, "file missing"
+    suffix = path.suffix.lower()
+    if suffix == ".py":
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "py_compile", str(path)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=180,
+                check=True,
+            )
+            return True, ""
+        except (subprocess.SubprocessError, OSError) as e:
+            return False, f"python syntax failed: {e}"
+    if suffix == ".sh":
+        try:
+            subprocess.run(
+                ["bash", "-n", str(path)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=180,
+                check=True,
+            )
+            return True, ""
+        except (subprocess.SubprocessError, OSError) as e:
+            return False, f"bash syntax failed: {e}"
+    return True, ""
+
+
+def last_good_dir() -> Path:
+    d = backups_dir() / "last_good"
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return d
+
+
+def store_last_good_self() -> None:
+    """Keep a pristine copy of the updater every time a sync run completes."""
+    try:
+        candidate = last_good_dir()
+        self_copy = Path(__file__)
+        if not _validate_script_syntax(self_copy)[0]:
+            return
+        _sync_copy_file(self_copy, candidate / "update_dusky.py")
+        _sync_copy_file(self_copy, candidate / "update_dusky.py.latest")
+    except Exception:
+        log("WARN", "Could not store last-good updater copy.")
+
+
+def restore_last_good_self() -> str:
+    """Repair the running updater if it was corrupted by a bad sync.
+
+    Returns a human-readable summary of what was (or wasn't) done."""
+    self_copy = Path(__file__)
+    ok, why = _validate_script_syntax(self_copy)
+    if ok:
+        return ""
+    saved = last_good_dir() / "update_dusky.py"
+    if saved.exists() and _validate_script_syntax(saved)[0]:
+        _sync_copy_file(saved, self_copy)
+        return f"Healed: restored {self_copy.name} from last-good copy."
+    return (f"Cannot self-heal: {self_copy.name} is invalid ({why}) and no "
+            f"last-good copy exists at {saved}.")
+
+
 class GitEngine:
     def __init__(self, app: App, profile: ProfileConfig):
         self.app = app
@@ -2876,6 +3134,42 @@ class GitEngine:
         self.app.log_task(msg, idx)  # type: ignore
         if also_main:
             self.log(msg)
+
+    async def _gate_incoming_scripts(self, changed_paths: list[str], idx: int) -> None:
+        """Self-healing gate: validate every .py / .sh the sync just landed.
+
+        A broken script that reaches the worktree would fail on the next user
+        run with no explanation and no recovery path. Instead we restore the
+        file from the previous local HEAD whenever the incoming version is
+        syntactically invalid, so the machine always keeps a runnable copy.
+        """
+        for rel in sorted(set(changed_paths)):
+            if not rel.endswith((".py", ".sh")):
+                continue
+            target = Path(WORK_TREE) / rel
+            ok, why = _validate_script_syntax(target)
+            if ok:
+                continue
+            rc_old, old_body, _ = await self._run_raw("show", f"HEAD:{rel}", timeout_sec=30)
+            if rc_old == 0 and old_body:
+                try:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(old_body + "\n", encoding="utf-8")
+                    self._tlog(
+                        f"\n[bold {THEME['warning']}]Invalid incoming update blocked:[/] {rel}\n"
+                        f"    Restored your last working version from HEAD.\n    Reason: {why}",
+                        idx,
+                        True,
+                    )
+                    continue
+                except OSError as e:
+                    self._tlog(f"[bold {THEME['error']}]Restore failed for {rel}: {e}[/]", idx, True)
+            self._tlog(
+                f"\n[bold {THEME['error']}]WARNING:[/] broken incoming script {rel} (no valid previous HEAD)\n"
+                f"    Reason: {why} — left in place, review it manually.",
+                idx,
+                True,
+            )
 
     async def _unstage_managed_paths(self) -> None:
         """
@@ -3542,6 +3836,12 @@ class GitEngine:
         restore_ok: bool | None = None
 
         try:
+            # Self-heal gate: if a previous sync corrupted the updater itself,
+            # repair from the last-good copy before doing anything else.
+            self_heal_note = restore_last_good_self()
+            if self_heal_note:
+                self.log(f"[bold {THEME['warning']}][SELF-HEAL][/] {self_heal_note}")
+
             # Task 0: Bare Repo Validation
             idx = 0
             self.app.update_task_state(idx, "running")  # type: ignore
@@ -3746,6 +4046,8 @@ class GitEngine:
 
                 self._tlog(f"[bold {THEME['success']}]Bare Repository reset applied and synchronized.[/]", idx, True)
 
+                await self._gate_incoming_scripts(change_paths, idx)
+
                 if your_changes_backup and change_paths:
                     self._tlog(f"[bold {THEME['accent']}]Restoring your tracked modifications...[/]", idx)
                     restore_ok = await self._restore_user_modifications(
@@ -3815,7 +4117,7 @@ class GitEngine:
 
             self.app.update_task_state(idx, "success")  # type: ignore
 
-            # Task 4: Apply Reset
+# Task 4: Apply Reset
             idx = 4
             self.app.update_task_state(idx, "running")  # type: ignore
             self._tlog(f"[bold {THEME['accent']}]>>> PROCESS INITIATED:[/] Apply Bare Updates (Reset)\n", idx)
@@ -3826,6 +4128,8 @@ class GitEngine:
                 raise RuntimeError(f"Reset failed (rc={rc_reset}).")
 
             self._tlog(f"[bold {THEME['success']}]Bare Repository reset applied and synchronized.[/]", idx, True)
+
+            await self._gate_incoming_scripts(changed_files, idx)
 
             if your_changes_backup and change_paths:
                 self._tlog(f"[bold {THEME['accent']}]Restoring your tracked modifications...[/]", idx)
