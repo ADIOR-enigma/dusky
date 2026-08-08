@@ -957,7 +957,10 @@ probe_gpu() {
     local hashcat_info=""
     hashcat_info=$(hashcat -I 2>/dev/null) || true
 
-    if printf '%s' "$hashcat_info" | grep -qi "cuda"; then
+    if printf '%s' "$hashcat_info" | grep -qi 'Falling back to OpenCL runtime'; then
+        CUDA_AVAILABLE=0
+        log_gpu "CUDA backend  : ${YELLOW}UNUSABLE (SDK/RTC missing) — falling back to OpenCL${NC}"
+    elif printf '%s' "$hashcat_info" | grep -qE "CUDA Info|CUDA Platform"; then
         CUDA_AVAILABLE=1
         log_gpu "CUDA backend  : ${GREEN}CONFIRMED${NC}"
     elif printf '%s' "$hashcat_info" | grep -qi "opencl"; then
