@@ -475,24 +475,38 @@ class FontconfigEngine(BaseEngine):
     # ------------------------------------------------------------------
     def _sync_gtk_toolkits(self, family: str, mono: str, quiet: bool) -> bool:
         size = FontconfigEngine._existing_gtk_size("gtk-font-name=")
-        entries = {f"gtk-font-name": f"{family} {size}"}
+        gtk3_entries = {"gtk-font-name": f"{family} {size}"}
+        gtk4_entries = {"gtk-font-name": f"{family} {size}"}
         if mono:
             mono_size = FontconfigEngine._existing_gtk_size("gtk-monospace-font-name=")
             if mono_size == str(FontconfigEngine._DEFAULT_GTK_SIZE):
                 gs = shutil.which("gsettings")
                 mono_size = self._gsettings_font_size(gs or "", "monospace-font-name")
-            entries["gtk-monospace-font-name"] = f"{mono} {mono_size}"
+            gtk3_entries["gtk-monospace-font-name"] = f"{mono} {mono_size}"
         ok = True
-        for path in FontconfigEngine._gtk_ini_paths():
-            try:
-                self._patch_gtk_ini(path, entries)
-                if not quiet:
-                    for k, v in entries.items():
-                        print(f"[+] {path}: {k}={v}")
-            except OSError as e:
-                ok = False
-                if not quiet:
-                    print(f"[-] {path}: {e}")
+        conf_dir = self._config_dir()
+        gtk3_path = conf_dir / "gtk-3.0" / "settings.ini"
+        gtk4_path = conf_dir / "gtk-4.0" / "settings.ini"
+
+        try:
+            self._patch_gtk_ini(gtk3_path, gtk3_entries)
+            if not quiet:
+                for k, v in gtk3_entries.items():
+                    print(f"[+] {gtk3_path}: {k}={v}")
+        except OSError as e:
+            ok = False
+            if not quiet:
+                print(f"[-] {gtk3_path}: {e}")
+
+        try:
+            self._patch_gtk_ini(gtk4_path, gtk4_entries, remove_keys={"gtk-monospace-font-name"})
+            if not quiet:
+                for k, v in gtk4_entries.items():
+                    print(f"[+] {gtk4_path}: {k}={v}")
+        except OSError as e:
+            ok = False
+            if not quiet:
+                print(f"[-] {gtk4_path}: {e}")
 
         gs = shutil.which("gsettings")
         if gs:
@@ -689,10 +703,11 @@ class FontconfigEngine(BaseEngine):
         return str(cls._DEFAULT_GTK_SIZE)
 
     @classmethod
-    def _patch_gtk_ini(cls, path: Path, entries: dict[str, str]) -> None:
+    def _patch_gtk_ini(cls, path: Path, entries: dict[str, str], remove_keys: set[str] | None = None) -> None:
         content = path.read_text() if path.is_file() else ""
         out: list[str] = []
         replaced: set[str] = set()
+        to_remove = remove_keys or set()
         in_settings = False
         for line in content.splitlines():
             stripped = line.strip()
@@ -704,6 +719,8 @@ class FontconfigEngine(BaseEngine):
                 in_settings = False
             if in_settings and "=" in line:
                 key = line.split("=", 1)[0].strip()
+                if key in to_remove:
+                    continue
                 if key in entries:
                     out.append(f"{key}={entries[key]}")
                     replaced.add(key)
