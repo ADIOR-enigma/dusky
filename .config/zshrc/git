@@ -1,11 +1,59 @@
-# 1. Base Bare Repo Alias
-# (Defined first for logical clarity, though strictly not required by Zsh)
-alias git_dusky='/usr/bin/git --git-dir=$HOME/dusky/ --work-tree=$HOME'
+# 1. Base Bare Repo Function & Alias
+# Functions are globally accessible in subshells, functions, and scripts without relying on interactive alias expansion.
+function git_dusky() {
+    /usr/bin/git --git-dir="$HOME/dusky/" --work-tree="$HOME" "$@"
+}
+alias git_dusky=git_dusky
 
-# 2. Add List Alias (FIXED with Subshell)
-# The ( ) runs this specific command inside $HOME so the paths match,
-# but it DOES NOT change your actual terminal directory.
-alias git_dusky_add_list='(cd $HOME && git_dusky add --pathspec-from-file=.git_dusky_list)'
+# 2. Add List Function (Filters missing files gracefully with warning fallback)
+function git_dusky_add_list() {
+    (
+        cd "$HOME" || return 0
+        if [[ ! -f .git_dusky_list ]]; then
+            echo "\033[33m⚠ Warning: .git_dusky_list not found in $HOME\033[0m"
+            return 0
+        fi
+
+        local missing=()
+        local valid=()
+        local line clean
+
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            clean="${line#"${line%%[![:space:]]*}"}"
+            clean="${clean%"${clean##*[![:space:]]}"}"
+            [[ -z "$clean" || "$clean" == \#* ]] && continue
+
+            if [[ "$clean" == *[\*\?\[]* ]]; then
+                local matches=( $~clean(N) )
+                if (( ${#matches[@]} > 0 )); then
+                    valid+=( "${matches[@]}" )
+                else
+                    missing+=( "$clean" )
+                fi
+            else
+                if [[ -e "$clean" || -L "$clean" ]]; then
+                    valid+=( "$clean" )
+                else
+                    missing+=( "$clean" )
+                fi
+            fi
+        done < .git_dusky_list
+
+        if (( ${#missing[@]} > 0 )); then
+            echo "\033[33m⚠ Warning: ${#missing[@]} file(s) in .git_dusky_list missing on disk:\033[0m"
+            for m in "${missing[@]}"; do
+                echo "  \033[90m➔ $m\033[0m"
+            done
+        fi
+
+        if (( ${#valid[@]} > 0 )); then
+            printf '%s\0' "${valid[@]}" | git_dusky add --pathspec-from-file=- --pathspec-file-nul 2>/dev/null
+        fi
+
+        git_dusky add -u 2>/dev/null
+    )
+    return 0
+}
 
 # 3. Alias for discarding all local changes (both staged and unstaged) and revert the state of tracked files to exactly match the last commit (HEAD), this is a destructive operation. (DANGER ZONE)
 alias git_dusky_restore='echo "git --git-dir=$HOME/dusky/ --work-tree=$HOME reset --hard HEAD" && git_dusky reset --hard HEAD'
