@@ -146,7 +146,31 @@ def matches_pathspec(path: str | None, valid_paths: list[str]) -> bool:
             
     return False
 
-def fzf_select(choices: list[str], prompt: str = "Select", multi: bool = False, preview: str | None = None) -> list[str]:
+def format_status_badge(code: str) -> str:
+    """Formats 2-character git status code into a colorized 4-character badge for fzf display."""
+    match code:
+        case " M":
+            return "\033[33m[ M]\033[0m"   # Yellow: Unstaged Modified
+        case "M ":
+            return "\033[32m[M ]\033[0m"   # Green: Staged Modified
+        case "MM":
+            return "\033[35m[MM]\033[0m"   # Magenta: Staged + Modified
+        case " D" | "D ":
+            return "\033[31m[ D]\033[0m" if code == " D" else "\033[31m[D ]\033[0m"  # Red: Deletion
+        case "A " | "AM":
+            return "\033[36m[A ]\033[0m" if code == "A " else "\033[36m[AM]\033[0m"  # Cyan: Addition
+        case "??" | "  ":
+            return "\033[90m[??]\033[0m"   # Muted Gray: Untracked
+        case _:
+            return f"\033[36m[{code}]\033[0m"
+
+def fzf_select(
+    choices: list[str], 
+    prompt: str = "Select", 
+    multi: bool = False, 
+    preview: str | None = None,
+    header: str | None = None
+) -> list[str]:
     """Feeds NUL-terminated strings to FZF safely via synchronous PIPEs."""
     if not choices:
         return []
@@ -174,8 +198,18 @@ def fzf_select(choices: list[str], prompt: str = "Select", multi: bool = False, 
         "--layout=reverse",
         "--border=rounded",
     ]
+    if header:
+        fzf_cmd.append(f"--header={header}")
+    elif multi:
+        default_header = (
+            " \033[90m[TAB]\033[0m Mark  \033[90m[Ctrl-A]\033[0m All  \033[90m[Ctrl-D]\033[0m Clear  \033[90m[ENTER]\033[0m Confirm  │  "
+            "\033[33m[ M]\033[0m Mod  \033[32m[M ]\033[0m Staged  \033[35m[MM]\033[0m Both  \033[31m[ D]\033[0m Del  \033[36m[A ]\033[0m Add  \033[90m[??]\033[0m New"
+        )
+        fzf_cmd.append(f"--header={default_header}")
+
     if multi:
         fzf_cmd.append("--multi")
+        fzf_cmd.append("--bind=ctrl-a:select-all,ctrl-d:deselect-all")
     if preview:
         fzf_cmd.extend(["--preview", preview])
 
@@ -397,6 +431,7 @@ def sync_single() -> None:
     entries = status_out.split('\0')[:-1]
     
     path_map: PathMap = {}
+    display_choices: list[str] = []
     it = iter(entries)
     
     for entry in it:
@@ -414,19 +449,23 @@ def sync_single() -> None:
                 continue
 
         # PEP 634 Structural Pattern Matching
+        badge = format_status_badge(status_code)
         match status_code:
             case s if "R" in s or "C" in s:
-                display = f"{status_code} {path} (from {orig_path})"
+                display = f"{badge} {path} (from {orig_path})"
             case _:
-                display = f"{status_code} {path}"
+                display = f"{badge} {path}"
             
+        plain_display = re.sub(r'\x1b\[[0-9;]*m', '', display)
+        display_choices.append(display)
         path_map[display] = (path, orig_path, status_code)
+        path_map[plain_display] = (path, orig_path, status_code)
 
     if not path_map:
         console.print("[bold yellow]⚠[/bold yellow] No changed files match .git_dusky_list.")
         return
 
-    selected_lines = fzf_select(list(path_map.keys()), prompt="Stage Files (TAB to multi-select)", multi=True)
+    selected_lines = fzf_select(display_choices, prompt="Stage Files", multi=True)
     if not selected_lines:
         return
     
@@ -436,8 +475,10 @@ def sync_single() -> None:
     
     # Flatten both new and old paths to ensure Git correctly registers atomic renames
     for line in selected_lines:
-        if line in path_map:
-            p, op, sc = path_map[line]
+        clean_line = re.sub(r'\x1b\[[0-9;]*m', '', line)
+        target_entry = path_map.get(line) or path_map.get(clean_line)
+        if target_entry:
+            p, op, sc = target_entry
             
             full_path = WORK_TREE / p
             exists = full_path.exists() or full_path.is_symlink()
@@ -612,7 +653,7 @@ def discard_local_changes() -> None:
         
         orig_path = next(it, None) if "R" in status_code or "C" in status_code else None
         
-        if status_code == "??" or status_code == "??":
+        if status_code == "??":
             untracked_to_delete.append(path)
         else:
             display = f"➔ {path}"
@@ -930,7 +971,7 @@ def checkout_pr() -> None:
         console.print(Panel.fit(
             f"[bold green]✔ Checked out PR #{pr_num} on branch '{branch_name}'![/bold green]\n\n"
             f"You can now edit and test your files locally.\n"
-            f"When done, use option 15 ([bold yellow]Branch Management[/bold yellow]) to return to 'main'.",
+            f"When done, use option 7 ([bold yellow]Branch Management[/bold yellow]) to return to 'main'.",
             border_style="green"
         ))
     except subprocess.CalledProcessError:
