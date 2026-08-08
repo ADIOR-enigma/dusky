@@ -132,9 +132,12 @@ class UserContext:
         return env
 
     def demote_fn(self) -> Callable[[], None]:
-        """Subprocess preexec_fn to drop root privileges to user UID/GID."""
-        uid, gid = self.uid, self.gid
+        """Subprocess preexec_fn to drop root privileges to user UID/GID while inheriting supplementary groups."""
+        uid, gid, username = self.uid, self.gid, self.username
         def _demote() -> None:
+            if username != "root":
+                with contextlib.suppress(Exception):
+                    os.initgroups(username, gid)
             os.setgid(gid)
             os.setuid(uid)
         return _demote
@@ -175,16 +178,22 @@ class UserResolver:
 
         # Fallback inspection of runtime directory if variables were omitted
         if not wayland_disp and xdg_runtime.exists():
-            for p in xdg_runtime.glob("wayland-*"):
-                if not p.name.endswith(".lock"):
-                    wayland_disp = p.name
-                    break
+            wayland_sockets = sorted(
+                [p for p in xdg_runtime.glob("wayland-*") if not p.name.endswith(".lock")],
+                key=lambda p: p.stat().st_mtime,
+                reverse=True
+            )
+            if wayland_sockets:
+                wayland_disp = wayland_sockets[0].name
 
-        if not hypr_sig and Path("/tmp/hypr").exists():
-            with contextlib.suppress(Exception):
-                sigs = [p.name for p in Path("/tmp/hypr").iterdir() if p.is_dir()]
-                if sigs:
-                    hypr_sig = sigs[0]
+        if not hypr_sig:
+            for hypr_dir in (xdg_runtime / "hypr", Path("/tmp/hypr")):
+                if hypr_dir.exists():
+                    with contextlib.suppress(Exception):
+                        sigs = [p.name for p in hypr_dir.iterdir() if p.is_dir()]
+                        if sigs:
+                            hypr_sig = sigs[0]
+                            break
 
         return UserContext(
             username=username,
