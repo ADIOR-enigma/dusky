@@ -37,6 +37,7 @@ import shlex
 import shutil
 import signal
 import atexit
+import time
 import ipaddress
 import subprocess
 import contextlib
@@ -668,15 +669,19 @@ class SunshineManager:
     @staticmethod
     def resolve_user_unit() -> str:
         """Finds the systemd USER unit that runs Sunshine (name changed across build/packager).
-        Falls back to generating its own unit when the package ships none."""
+        Prefers the distro-shipped unit over any stale generated fallback; only generates
+        its own unit file when the package ships none."""
         out = CommandRunner.run("systemctl --user list-unit-files", as_user=True).stdout
-        for cand in ("sunshine.service", "app-dev.lizardbyte.app.Sunshine.service"):
-            if cand in out:
-                return cand
-        for line in out.splitlines():
-            name = line.strip().split()[0] if line.strip().split() else ""
-            if name.endswith(".service") and "sunshine" in name.lower():
-                return name
+        names = {ln.split()[0] for ln in out.splitlines() if ln.split()}
+        shipped = [
+            n for n in names
+            if n.endswith(".service") and ("lizardbyte" in n.lower() or n == "sunshine.service")
+        ]
+        if shipped:
+            # Prefer the package's own unit (validated config, correct tray/dbus deps):
+            # the plain `sunshine.service` may be an alias or a stale user-level file.
+            chosen = next((n for n in shipped if "lizardbyte" in n), shipped[0])
+            return chosen
 
         unit_file = user_ctx.home / ".config" / "systemd" / "user" / "sunshine.service"
         unit_file.parent.mkdir(parents=True, exist_ok=True)
@@ -696,6 +701,32 @@ class SunshineManager:
         os.chown(unit_file, user_ctx.uid, user_ctx.gid)
         CommandRunner.run("systemctl --user daemon-reload", as_user=True)
         return "sunshine.service"
+
+    @staticmethod
+    def ensure_unit_active(unit: str) -> bool:
+        """Starts the unit and VERIFIES it truly reached `active` (polling past the
+        ExecStartPre sleep). Auto-recovers from failed state and resurfaces the real
+        journal tail on failure instead of a blind green check."""
+        if CommandRunner.run(f"systemctl --user is-active {shlex.quote(unit)}", as_user=True).returncode == 0:
+            return True
+        CommandRunner.run(f"systemctl --user start {shlex.quote(unit)}", as_user=True)
+        for _ in range(4):
+            if CommandRunner.run(f"systemctl --user is-active {shlex.quote(unit)}", as_user=True).returncode == 0:
+                return True
+            time.sleep(1.5)
+        # Repair path: a previously failed activation can wedge the unit.
+        CommandRunner.run(f"systemctl --user reset-failed {shlex.quote(unit)}", as_user=True)
+        CommandRunner.run(f"systemctl --user start {shlex.quote(unit)}", as_user=True)
+        for _ in range(4):
+            if CommandRunner.run(f"systemctl --user is-active {shlex.quote(unit)}", as_user=True).returncode == 0:
+                return True
+            time.sleep(1.5)
+        logs = CommandRunner.run(
+            f"journalctl --user -u {shlex.quote(unit)} -n 20 --no-pager", as_user=True
+        ).stdout.strip()
+        console.print(f"[bold red]  ✖[/] {unit} did not reach active. Recent unit logs:")
+        console.print(logs[-900:] or "[dim]no logs available[/]")
+        return False
 
     @staticmethod
     def configure_target_display(output_name: str) -> None:
@@ -811,8 +842,14 @@ class ArchIOSLinkCLI:
 
             console.print(f"[bold blue]  ::[/] Enabling Sunshine user daemon for [bold cyan]{self.user}[/]...")
             unit_name = SunshineManager.resolve_user_unit()
-            CommandRunner.run(f"systemctl --user enable --now {shlex.quote(unit_name)}", as_user=True)
-            console.print(f"[bold green]  ✔[/] User unit [bold cyan]{unit_name}[/] enabled and started.")
+            CommandRunner.run(f"systemctl --user enable {shlex.quote(unit_name)}", as_user=True)
+            if not SunshineManager.ensure_unit_active(unit_name):
+                console.print(
+                    "[bold yellow]  ⚠[/] Sunshine could not be started. Re-run the stack after fixing the cause "
+                    "(journal tail above). No pairing link will be shown."
+                )
+                return
+            console.print(f"[bold green]  ✔[/] User unit [bold cyan]{unit_name}[/] enabled, started and verified active.")
 
             primary_ip = NetworkSensingEngine.preferred_ip()
             if primary_ip == "0.0.0.0":
