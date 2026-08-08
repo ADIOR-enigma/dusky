@@ -19,8 +19,9 @@
   5. WayVNC Audited Pipeline: Auto-generates 4096-bit RSA TLS certs, configures
      /etc/pam.d/wayvnc, cleans stale sockets (/run/user/UID/wayvncctl), and validates
      IPs using ipaddress.ip_address with 0.0.0.0 fallback.
-  6. USB Tethering & Pairing: Validates idevicepair trust records, checks for local
-     port conflicts before launching iproxy, and triggers IPv4 DHCP on ipheth interfaces.
+6. USB Tethering & Pairing: Validates idevicepair trust records, detects local
+      port conflicts before launching iproxy (skips busy ports), and relies on
+      NetworkManager (or the distro's DHCP client) to bring up ipheth/USB tether links.
   7. Idempotent Firewalls: Handles UFW, Firewalld, nftables, and iptables idempotently
      without throwing duplicate rule or missing table/chain errors.
   8. Unbreakable Cleanup: Signal handlers (SIGINT/SIGTERM), atexit hooks, and try/finally
@@ -137,12 +138,14 @@ class UserResolver:
         if not username or username == "root":
             if shutil.which("loginctl"):
                 with contextlib.suppress(Exception):
-                    res = subprocess.run(["loginctl", "list-sessions", "--output=json"], capture_output=True, text=True)
+                    res = subprocess.run(["loginctl", "list-sessions", "--json=short"], capture_output=True, text=True, timeout=10)
                     if res.returncode == 0:
                         sessions = json.loads(res.stdout)
                         for s in sessions:
-                            if s.get("uid", 0) >= 1000 and s.get("user") != "root":
-                                username = s.get("user")
+                            if s.get("class") != "user":
+                                continue
+                            if isinstance(s.get("uid"), int) and s["uid"] >= 1000 and s.get("user") != "root":
+                                username = s["user"]
                                 break
 
         if not username or username == "root":
@@ -364,6 +367,24 @@ class NetworkSensingEngine:
         return interfaces
 
     @staticmethod
+    def preferred_ip() -> str:
+        """First usable (non-placeholder, non-loopback) IP across interfaces."""
+        for iface in NetworkSensingEngine.detect_interfaces():
+            ip = NetworkSensingEngine.validate_and_format_ip(iface.ip)
+            if ip != "0.0.0.0" and not ip.startswith("127."):
+                return ip
+        return "0.0.0.0"
+
+    @staticmethod
+    def firewall_interfaces() -> list[str]:
+        """Interfaces to open in the firewall: tailscale0 (if it exists) + USB tether ifaces."""
+        fw = ["tailscale0"] if Path("/sys/class/net/tailscale0").exists() else []
+        for iface in NetworkSensingEngine.detect_interfaces():
+            if iface.if_type == "usb" and iface.name not in fw:
+                fw.append(iface.name)
+        return fw
+
+    @staticmethod
     def _get_iface_ip(iface: str) -> str | None:
         out = CommandRunner.run(f"ip -4 -o addr show {shlex.quote(iface)}").stdout
         if out:
@@ -387,18 +408,60 @@ class HyprlandManager:
             return []
 
     @staticmethod
+    def _geometry_applied(name: str, width: int, height: int, scale: float) -> bool:
+        """Verifies a monitor's live geometry via `hyprctl monitors -j` (tolerance-aware)."""
+        out = CommandRunner.run("hyprctl monitors -j", as_user=True).stdout
+        if not out:
+            return False
+        try:
+            for m in json.loads(out):
+                if m.get("name") != name:
+                    continue
+                if m.get("width") != width or m.get("height") != height:
+                    return False
+                if abs(float(m.get("scale", 0)) - scale) > 0.01:
+                    return False
+                return True
+        except Exception:
+            return False
+        return False
+
+    @staticmethod
     def create_headless_output(res: str = "1170x2532", fps: int = 60, scale: float = 2.0) -> str | None:
         console.print("[bold blue]  ::[/] Requesting Hyprland virtual headless monitor...")
         CommandRunner.run("hyprctl output create headless HEADLESS-1", as_user=True)
-        
+
         monitors = HyprlandManager.get_headless_monitors()
         name = monitors[-1] if monitors else "HEADLESS-1"
 
-        config_cmd = f"hyprctl keyword monitor '{name}, {res}@{fps}, auto, {scale}'"
-        CommandRunner.run(config_cmd, as_user=True)
-        
+        width_s, _, height_s = str(res).partition("x")
+        width, height = int(width_s), int(height_s)
+
+        # Hyprland >= 0.55 moved monitor config to a Lua DSL parser: the legacy
+        # `hyprctl keyword monitor` command silently no-ops (rc=0!) with
+        # "keyword can't work with non-legacy parsers". Use hl.monitor via eval.
+        eval_cmd = (
+            f"hyprctl eval 'hl.monitor({{ output = \"{name}\", mode = \"{res}@{fps}\", "
+            f"position = \"auto\", scale = {scale}, disabled = false }})'"
+        )
+        rc = CommandRunner.run(eval_cmd, as_user=True).returncode
+        applied = HyprlandManager._geometry_applied(name, width, height, scale)
+
+        if not applied:
+            # Pre-0.55 fallback (legacy Hyprlang parser).
+            CommandRunner.run(
+                f"hyprctl keyword monitor '{shlex.quote(name)}, {res}@{fps}, auto, {scale}'",
+                as_user=True,
+            )
+            applied = HyprlandManager._geometry_applied(name, width, height, scale)
+
+        tail = ""
+        if not applied:
+            tail = f" (geometry NOT verified: {name} left at native size)"
+            console.print(f"[bold yellow]  ⚠[/] Could not confirm {res}@{fps}fps scale {scale}{tail}")
+
         ResourceManager.register_headless_display(name)
-        console.print(f"[bold green]  ✔[/] Created virtual display: [bold cyan]{name}[/] ({res}@{fps}fps, scale {scale})")
+        console.print(f"[bold green]  ✔[/] Created virtual display: [bold cyan]{name}[/] ({res}@{fps}fps, scale {scale}){tail}")
         return name
 
     @staticmethod
@@ -515,26 +578,35 @@ class WayVNCManager:
 
         if not key_file.exists() or not cert_file.exists():
             console.print("[bold blue]  ::[/] Auto-generating self-signed TLS certificates for WayVNC...")
-            gen_cmd = (
-                f"openssl req -x509 -nodes -days 365 -newkey rsa:4096 "
-                f"-keyout {shlex.quote(str(key_file))} "
-                f"-out {shlex.quote(str(cert_file))} "
-                f'-subj "/CN=WayVNC"'
+            # PKCS#1 ("BEGIN RSA PRIVATE KEY") is REQUIRED: neatvnc's RSA-AES
+            # security type rejects OpenSSL 3's default PKCS#8 ("PRIVATE KEY").
+            CommandRunner.run(
+                f"openssl genrsa -traditional -out {shlex.quote(str(key_file))} 4096",
+                check=True,
             )
-            CommandRunner.run(gen_cmd, check=True)
+            CommandRunner.run(
+                f"openssl req -new -x509 -key {shlex.quote(str(key_file))} "
+                f"-out {shlex.quote(str(cert_file))} -days 365 -sha256 -subj \"/CN=WayVNC\"",
+                check=True,
+            )
             os.chown(key_file, user_ctx.uid, user_ctx.gid)
             os.chown(cert_file, user_ctx.uid, user_ctx.gid)
             os.chmod(key_file, 0o600)
-            console.print("[bold green]  ✔[/] TLS certificates generated.")
+            console.print("[bold green]  ✔[/] TLS certificates generated (PKCS#1 RSA key pair).")
 
         config_file = wayvnc_dir / "config"
+        # wayvnc >= 0.10: `pam_service` was removed (use `enable_pam`); TLS
+        # key keys are `private_key_file`/`rsa_private_key_file`; add
+        # `relax_encryption` so iOS clients can use Apple Diffie-Hellman.
         config_content = (
             f"address = 0.0.0.0\n"
             f"port = 5900\n"
             f"enable_auth = true\n"
-            f"pam_service = wayvnc\n"
+            f"enable_pam = true\n"
             f"rsa_private_key_file = {key_file}\n"
+            f"private_key_file = {key_file}\n"
             f"certificate_file = {cert_file}\n"
+            f"relax_encryption = true\n"
         )
         config_file.write_text(config_content)
         os.chown(config_file, user_ctx.uid, user_ctx.gid)
@@ -553,6 +625,38 @@ class WayVNCManager:
 # --- 10. Sunshine Configuration Engine ---
 class SunshineManager:
     @staticmethod
+    def resolve_user_unit() -> str:
+        """Finds the systemd USER unit that runs Sunshine (name changed across build/packager).
+        Falls back to generating its own unit when the package ships none."""
+        out = CommandRunner.run("systemctl --user list-unit-files", as_user=True).stdout
+        for cand in ("sunshine.service", "app-dev.lizardbyte.app.Sunshine.service"):
+            if cand in out:
+                return cand
+        for line in out.splitlines():
+            name = line.strip().split()[0] if line.strip().split() else ""
+            if name.endswith(".service") and "sunshine" in name.lower():
+                return name
+
+        unit_file = user_ctx.home / ".config" / "systemd" / "user" / "sunshine.service"
+        unit_file.parent.mkdir(parents=True, exist_ok=True)
+        unit_content = (
+            "[Unit]\n"
+            "Description=Sunshine (game stream host) - generated by Arch-Link Orchestrator\n"
+            "After=graphical-session.target\n"
+            "\n"
+            "[Service]\n"
+            "ExecStart=/usr/bin/sunshine\n"
+            "Restart=on-failure\n"
+            "\n"
+            "[Install]\n"
+            "WantedBy=default.target\n"
+        )
+        unit_file.write_text(unit_content)
+        os.chown(unit_file, user_ctx.uid, user_ctx.gid)
+        CommandRunner.run("systemctl --user daemon-reload", as_user=True)
+        return "sunshine.service"
+
+    @staticmethod
     def configure_target_display(output_name: str) -> None:
         conf_dir = user_ctx.home / ".config" / "sunshine"
         conf_dir.mkdir(parents=True, exist_ok=True)
@@ -563,7 +667,7 @@ class SunshineManager:
             f"output_name = {output_name}",
             "capture = wayland",
             "encoder = nvenc",
-            "min_log_level = info\n"
+            "min_log_level = info"
         ]
         conf_file.write_text("\n".join(lines))
         os.chown(conf_dir, user_ctx.uid, user_ctx.gid)
@@ -661,15 +765,15 @@ class ArchIOSLinkCLI:
 
             FirewallManager.configure_rules(
                 ports=[47984, 47989, 47990, 48010, 47998, 47999, 48000, 48002],
-                interfaces=["tailscale0"]
+                interfaces=NetworkSensingEngine.firewall_interfaces()
             )
 
             console.print(f"[bold blue]  ::[/] Enabling Sunshine user daemon for [bold cyan]{self.user}[/]...")
-            CommandRunner.run("systemctl --user enable --now sunshine", as_user=True)
+            unit_name = SunshineManager.resolve_user_unit()
+            CommandRunner.run(f"systemctl --user enable --now {shlex.quote(unit_name)}", as_user=True)
+            console.print(f"[bold green]  ✔[/] User unit [bold cyan]{unit_name}[/] enabled and started.")
 
-            interfaces = NetworkSensingEngine.detect_interfaces()
-            raw_ip = interfaces[0].ip if interfaces else "127.0.0.1"
-            primary_ip = NetworkSensingEngine.validate_and_format_ip(raw_ip)
+            primary_ip = NetworkSensingEngine.preferred_ip()
             web_ui_url = f"https://{primary_ip}:47990"
 
             console.print("\n[bold green]✔ Sunshine Streaming Server Active![/]")
@@ -697,11 +801,13 @@ class ArchIOSLinkCLI:
             WayVNCManager.cleanup_stale_sockets()
 
             headless_name = HyprlandManager.create_headless_output(res="1080x1920", fps=60, scale=1.5)
-            FirewallManager.configure_rules(ports=[5900], interfaces=["tailscale0"])
+            FirewallManager.configure_rules(
+                ports=[5900],
+                interfaces=NetworkSensingEngine.firewall_interfaces()
+            )
 
-            interfaces = NetworkSensingEngine.detect_interfaces()
-            raw_ip = interfaces[0].ip if interfaces else "0.0.0.0"
-            bind_ip = NetworkSensingEngine.validate_and_format_ip(raw_ip)
+            bind_ip = "0.0.0.0"
+            connect_ip = NetworkSensingEngine.preferred_ip()
 
             console.print(f"[bold blue]  ::[/] Launching WayVNC bound to {bind_ip}:5900 on {headless_name}...")
 
@@ -715,7 +821,7 @@ class ArchIOSLinkCLI:
             )
             ResourceManager.register_process(vnc_proc)
 
-            vnc_uri = f"vnc://{bind_ip}:5900"
+            vnc_uri = f"vnc://{connect_ip}:5900"
             console.print(f"\n[bold green]✔ WayVNC Server Running at {vnc_uri}[/]")
 
             qr = QRRenderer.generate_qr(vnc_uri)
@@ -758,14 +864,34 @@ class ArchIOSLinkCLI:
             if Confirm.ask("\nStart usbmuxd port forwarding (`iproxy`) for VNC, Sunshine & SSH?", default=True):
                 console.print("[bold blue]  ::[/] Launching `iproxy` multi-port tunnel over USB...")
 
-                iproxy_proc = subprocess.Popen(
-                    ["iproxy", "5900:5900", "3389:3389", "47989:47989", "47990:47990", "2222:22"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
-                )
-                ResourceManager.register_process(iproxy_proc)
-                console.print("[bold green]  ✔[/] USB Tunnel active! Localhost ports 5900, 3389, 47990, 2222 forwarded over USB cable.")
-                Prompt.ask("\nPress Enter to stop USB forwarding...")
+                proxy_maps = ["5900:5900", "3389:3389", "47989:47989", "47990:47990", "2222:22"]
+                listen_ports = {int(m.split(":")[0]) for m in proxy_maps}
+
+                busy: set[int] = set()
+                ss_out = CommandRunner.run("ss -tlnH").stdout
+                for line in ss_out.splitlines():
+                    for tok in line.split():
+                        if tok.startswith(("0.0.0.0:", "[::]:", "127.0.0.1:", "*:")):
+                            with contextlib.suppress(ValueError):
+                                busy.add(int(tok.rsplit(":", 1)[1]))
+
+                conflicting = listen_ports & busy
+                if conflicting:
+                    console.print(f"[bold yellow]  ⚠[/] Ports already in use locally, skipping: {sorted(conflicting)}")
+                proxy_maps = [m for m in proxy_maps if int(m.split(":")[0]) not in conflicting]
+
+                if not proxy_maps:
+                    console.print("[bold yellow]  ⚠[/] All requested forwarded ports are busy. Refusing to start iproxy.")
+                else:
+                    iproxy_proc = subprocess.Popen(
+                        ["iproxy"] + proxy_maps,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL
+                    )
+                    ResourceManager.register_process(iproxy_proc)
+                    pending = [m.split(":")[1] for m in proxy_maps]
+                    console.print(f"[bold green]  ✔[/] USB Tunnel active! Localhost ports {', '.join(m.split(':')[0] for m in proxy_maps)} forwarded to device ports {', '.join(pending)} over USB cable.")
+                    Prompt.ask("\nPress Enter to stop USB forwarding...")
         finally:
             if iproxy_proc:
                 with contextlib.suppress(Exception):
@@ -856,6 +982,3 @@ if __name__ == "__main__":
         console.print("\n[bold red]✖ Interrupted by user. Cleaning up...[/bold red]")
         ResourceManager.cleanup_all()
         sys.exit(130)
-EOF
-chmod +x /working_dir/c_98d464d042b58a54/artifacts/arch_ios_link.py
-python3 -m py_compile /working_dir/c_98d464d042b58a54/artifacts/arch_ios_link.py
