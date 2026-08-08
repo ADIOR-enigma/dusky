@@ -209,6 +209,11 @@ Tasks flagged with `once` track successful execution in a **separate database**
 after the script exits 0; its key covers mode, name, args, resolved path,
 scope, and profile, and is bound to a checksum of the script content.
 
+### Re-running & Resetting Tasks
+
+- **Run on every update**: Remove `once` from the task line in the TOML profile. The script will execute every time `update_dusky.py` runs (`once.db` is ignored).
+- **Run one more time**: Keep `once` in the TOML profile and run `python3 update_dusky.py --forget-once SCRIPT`. This deletes the saved record so it executes on the next run.
+
 ### When Does It Re-run?
 
 | `once_mode` | Script unchanged | Script changed |
@@ -300,9 +305,9 @@ group and is reported as exit 124.
 | Situation | Outcome |
 | :--- | :--- |
 | Success | Marked completed |
+| Failure (default) | Marked failed, **pipeline continues sequence** |
 | Failure, `ignore-fail` set | Marked skipped, pipeline continues |
-| Failure, no `ignore-fail` | Marked failed, **pipeline aborts** |
-| Any failure + `--stop-on-fail` | Pipeline aborts |
+| Failure + `--stop-on-fail` | **Pipeline aborts** immediately |
 | Script missing at runtime | Marked skipped with warning |
 
 **Sudo.** If any task is `S` mode, a sudo preflight runs before the sequence
