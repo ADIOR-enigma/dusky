@@ -258,6 +258,13 @@ class SearchHit:
     page_idx: int
     nav_path: tuple[str, ...]
     unique_id: str
+    score: int = 0
+
+
+def _fuzzy_subsequence(needle: str, haystack: str) -> bool:
+    """Return True if all chars of *needle* appear in *haystack* in order."""
+    it = iter(haystack)
+    return all(char in it for char in needle)
 
 
 @dataclass(slots=True)
@@ -940,23 +947,27 @@ class DuskyControlCenter(Adw.Application):
         if self._search_results_group is None:
             return
 
-        count = 0
+        # Collect then sort by relevance so the most useful matches surface first.
+        hits = sorted(
+            (hit for hit in self._iter_matching_items(query) if hit.score > 0),
+            key=lambda hit: hit.score,
+            reverse=True,
+        )
 
-        for hit in self._iter_matching_items(query):
-            if count >= SEARCH_MAX_RESULTS:
-                overflow_row = Adw.ActionRow(
-                    title=f"Showing first {SEARCH_MAX_RESULTS} results...",
-                    subtitle="Refine your search for more specific results",
-                )
-                overflow_row.set_activatable(False)
-                overflow_row.add_css_class("dim-label")
-                self._search_results_group.add(overflow_row)
-                break
-
+        kept = hits[:SEARCH_MAX_RESULTS]
+        for hit in kept:
             self._search_results_group.add(self._build_search_result_row(hit))
-            count += 1
 
-        if count == 0:
+        if len(hits) > SEARCH_MAX_RESULTS:
+            overflow_row = Adw.ActionRow(
+                title=f"Showing first {SEARCH_MAX_RESULTS} results...",
+                subtitle="Refine your search for more specific results",
+            )
+            overflow_row.set_activatable(False)
+            overflow_row.add_css_class("dim-label")
+            self._search_results_group.add(overflow_row)
+
+        if not kept:
             no_results = Adw.ActionRow(
                 title="No results found",
                 subtitle="Try different search terms",
@@ -1143,7 +1154,8 @@ class DuskyControlCenter(Adw.Application):
 
         unique_id = self._generate_widget_id(item)
 
-        if query in title.casefold() or query in desc.casefold():
+        score = self._score_search_match(query, title, desc)
+        if score > 0:
             yield SearchHit(
                 title=title or "Unnamed",
                 description=f"{breadcrumb} • {desc}" if desc else breadcrumb,
@@ -1151,6 +1163,7 @@ class DuskyControlCenter(Adw.Application):
                 page_idx=page_idx,
                 nav_path=nav_path,
                 unique_id=unique_id,
+                score=score,
             )
 
         if item_type == ItemType.NAVIGATION:
@@ -1179,6 +1192,48 @@ class DuskyControlCenter(Adw.Application):
                         page_idx,
                         nav_path,
                     )
+
+    @staticmethod
+    def _score_search_match(query: str, title: str, desc: str) -> int:
+        """
+        Rank a config item against a search query.
+
+        Returns a non-negative relevance score (0 == no match). Substring and
+        word-prefix matches outrank fuzzy subsequences, and title matches
+        always outrank description matches. Typo-tolerant fuzzy matching lets
+        users find settings without needing the exact spelling.
+        """
+        q = query.casefold()
+        if not q:
+            return 0
+        t = title.casefold()
+        d = desc.casefold()
+
+        # Fuzzy subsequence is typo-tolerant but noisy for very short queries;
+        # only apply it once the user has typed enough to disambiguate.
+        allow_fuzzy = len(q) >= 3
+
+        # Exact / prefix / substring match on the title is the strongest signal.
+        if t == q:
+            return 1000
+        if t.startswith(q):
+            return 900
+        if q in t:
+            return 800
+        if any(word.startswith(q) for word in t.split()):
+            return 500
+        if allow_fuzzy and _fuzzy_subsequence(q, t):
+            return 300
+
+        # Description matches are weaker but still useful.
+        if q in d:
+            return 200
+        if any(word.startswith(q) for word in d.split()):
+            return 150
+        if allow_fuzzy and _fuzzy_subsequence(q, d):
+            return 100
+
+        return 0
 
     # ─────────────────────────────────────────────────────────────────────────
     # SIDEBAR

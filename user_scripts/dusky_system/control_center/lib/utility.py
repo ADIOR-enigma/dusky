@@ -19,6 +19,7 @@ import threading
 import tomllib
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Final, TypeVar, overload
 
@@ -69,6 +70,39 @@ _XDG_CONFIG_HOME: Final[Path] = _get_xdg_path("XDG_CONFIG_HOME", ".config")
 
 CACHE_DIR: Final[Path] = _XDG_CACHE_HOME / "duskycc"
 SETTINGS_DIR: Final[Path] = _XDG_CONFIG_HOME / "dusky" / "settings"
+
+# Terminal emulator is user-configurable via default_apps.lua (same source the
+# text-editor launcher reads). Resolved once and cached.
+_TERMINAL_CONFIG_PATH: Final[Path] = (
+    Path.home() / ".config" / "hypr" / "edit_here" / "source" / "default_apps.lua"
+)
+_TERMINAL_DEFAULT: Final[str] = "kitty"
+
+
+@lru_cache(maxsize=1)
+def _get_configured_terminal() -> str:
+    """Return the user's configured terminal, falling back to a sane default."""
+    try:
+        content = _TERMINAL_CONFIG_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return _TERMINAL_DEFAULT
+
+    # Skip Lua comment lines so a commented-out `-- terminal = "..."` never
+    # shadows the real setting.
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("--"):
+            continue
+        match = re.search(
+            r"(?:local\s+)?terminal\s*=\s*['\"]([^'\"]+)['\"]",
+            stripped,
+        )
+        if match:
+            terminal = match.group(1).strip()
+            if terminal:
+                return terminal
+    return _TERMINAL_DEFAULT
+
 
 
 # =============================================================================
@@ -150,18 +184,16 @@ def get_cache_dir() -> Path:
 # CONFIGURATION LOADER
 # =============================================================================
 def load_config(config_path: Path) -> dict[str, object]:
-    try:
-        content = config_path.read_text(encoding="utf-8")
-    except (FileNotFoundError, OSError) as e:
-        log.warning("Config file unreadable: %s (%s)", config_path, e)
-        return {}
+    """Load and parse a TOML config file.
 
-    try:
-        data = tomllib.loads(content)
-    except tomllib.TOMLDecodeError as e:
-        log.error("TOML syntax error in %s: %s", config_path, e)
-        return {}
-
+    Raises:
+        FileNotFoundError: if the file does not exist.
+        TOMLDecodeError:  if the file contains invalid TOML (message includes the
+                          offending line/column so callers can render a useful
+                          error instead of a misleading "missing keys" fallback).
+    """
+    content = config_path.read_text(encoding="utf-8")
+    data = tomllib.loads(content)
     return data if isinstance(data, dict) else {}
 
 
@@ -186,8 +218,9 @@ def execute_command(
         return False
 
     if run_in_terminal:
-        if shutil.which("kitty") is None:
-            log.error("Terminal launcher 'kitty' was not found in PATH")
+        terminal = _get_configured_terminal()
+        if shutil.which(terminal) is None:
+            log.error("Terminal launcher '%s' was not found in PATH", terminal)
             return False
     elif not requires_root and full_cmd[0:2] != ["sh", "-c"]:
         executable = full_cmd[0]
@@ -266,7 +299,7 @@ def _requires_shell(command: str, parsed_args: list[str]) -> bool:
             in_double = True
             token_start = False
             continue
-        if ch in "|&;()<>`$":
+        if ch in "|&;()<>`$*?[!]{}#":
             return True
         if ch == "~" and token_start:
             next_ch = command[index + 1] if index + 1 < len(command) else ""
@@ -277,23 +310,62 @@ def _requires_shell(command: str, parsed_args: list[str]) -> bool:
     return False
 
 
+def _build_terminal_wrapped(
+    terminal: str,
+    safe_title: str,
+    inner_args: list[str],
+) -> list[str]:
+    """Wrap an inner command in the user's configured terminal emulator.
+
+    Flag syntax differs per emulator; the known set mirrors the text-editor
+    launcher. Unknown terminals fall back to the POSIX ``-e`` convention.
+    """
+    term = terminal.lower()
+
+    if term == "foot":
+        return [
+            terminal, "--app-id", "dusky-term", "--title", safe_title,
+            "--hold", *inner_args
+        ]
+
+    if term == "kitty":
+        return [
+            terminal, "--class", "dusky-term", "--title", safe_title,
+            "--hold", *inner_args
+        ]
+
+    if term == "alacritty":
+        return [
+            terminal, "--class", "dusky-term", "--title", safe_title,
+            "--hold", "-e", *inner_args
+        ]
+
+    if term == "wezterm":
+        return [
+            terminal, "start", "--class", "dusky-term", "--title", safe_title,
+            "--", *inner_args
+        ]
+
+    # Generic fallback: $TERM -e <cmd...>
+    return [terminal, "-e", *inner_args]
+
+
 def _build_command_list(
     normalized_cmd: str, safe_title: str, run_in_terminal: bool, requires_root: bool
 ) -> list[str] | None:
+    terminal = _get_configured_terminal()
+
     if requires_root:
         if run_in_terminal:
-            return [
-                "kitty", "--class", "dusky-term", "--title", safe_title,
-                "--hold", "pkexec", "sh", "-c", normalized_cmd
-            ]
-        else:
-            return ["pkexec", "sh", "-c", normalized_cmd]
+            return _build_terminal_wrapped(
+                terminal, safe_title, ["pkexec", "sh", "-c", normalized_cmd]
+            )
+        return ["pkexec", "sh", "-c", normalized_cmd]
 
     if run_in_terminal:
-        return [
-            "kitty", "--class", "dusky-term", "--title", safe_title,
-            "--hold", "sh", "-c", normalized_cmd
-        ]
+        return _build_terminal_wrapped(
+            terminal, safe_title, ["sh", "-c", normalized_cmd]
+        )
 
     try:
         parsed_args = shlex.split(normalized_cmd, posix=True)
