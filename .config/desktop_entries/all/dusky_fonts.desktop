@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=Font Manager TUI
+Name=Dusky Fonts
 GenericName=Font Configurator
 Comment=System fonts, typefaces, subpixel rendering and cache manager
 Exec=foot --app-id=dusky_tui python3 /home/dusk/user_scripts/fonts/tui_fonts.py

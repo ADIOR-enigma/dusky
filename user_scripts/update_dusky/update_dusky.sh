@@ -229,7 +229,7 @@ declare -ra UPDATE_SEQUENCE=(
     "U | 130_systemd_dbus_service_manager.py --default"
 #    "U | 135_battery_notify_service.sh"
 #    "U | 137_snapper_isolation_subvolume.sh --auto"
-#    "U | 140_fc_cache_fv.sh"
+#    "U | 140_dusky_font_configurator.py"
     "U | 145_matugen_directories.py"
 #    "U | 150_wallpapers_download.sh"
 #    "U | 155_blur_shadow_opacity.sh"
