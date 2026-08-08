@@ -78,11 +78,17 @@ def bootstrap_environment() -> None:
             sys.exit(1)
         try:
             subprocess.run(["pacman", "-S", "--needed", "--noconfirm"] + missing_pkgs, check=True)
-            print("[\033[1;32m✔\033[0m] Dependencies installed. Reloading runtime environment...", flush=True)
-            os.execvp(sys.executable, [sys.executable] + sys.argv)
-        except subprocess.CalledProcessError as e:
-            print(f"[\033[1;31m!\033[0m] FATAL: Failed to install packages: {e}", flush=True)
-            sys.exit(1)
+        except subprocess.CalledProcessError:
+            # Fresh installs may have a stale sync DB: refresh mirrors, then retry once.
+            print("[\033[1;36m*\033[0m] First pass failed; syncing pacman databases and retrying...", flush=True)
+            try:
+                subprocess.run(["pacman", "-Sy", "--noconfirm"], check=True)
+                subprocess.run(["pacman", "-S", "--needed", "--noconfirm"] + missing_pkgs, check=True)
+            except subprocess.CalledProcessError as e:
+                print(f"[\033[1;31m!\033[0m] FATAL: Failed to install packages: {e}", flush=True)
+                sys.exit(1)
+        print("[\033[1;32m✔\033[0m] Dependencies installed. Reloading runtime environment...", flush=True)
+        os.execvp(sys.executable, [sys.executable] + sys.argv)
 
 bootstrap_environment()
 
@@ -210,7 +216,7 @@ class CommandRunner:
         cmd: str | list[str],
         user_context: UserContext | None = None,
         check: bool = False,
-        timeout: int = 15,
+        timeout: int | None = 15,
         as_user: bool = False
     ) -> subprocess.CompletedProcess[str]:
         if isinstance(cmd, str):
@@ -225,6 +231,8 @@ class CommandRunner:
             args = ["sudo", "-u", ctx.username, "-E"] + args
 
         try:
+            if timeout is None:
+                return subprocess.run(args, capture_output=True, text=True, check=check, env=env)
             return subprocess.run(args, capture_output=True, text=True, check=check, timeout=timeout, env=env)
         except subprocess.CalledProcessError as e:
             if check:
@@ -305,6 +313,39 @@ class SystemChecker:
     @staticmethod
     def is_pkg_installed(pkg: str) -> bool:
         return CommandRunner.run(f"pacman -Qq {shlex.quote(pkg)}").returncode == 0
+
+    @staticmethod
+    def install_packages(pkgs: list[str]) -> bool:
+        """Autonomous package provisioning: real-time mirror sync retry, no timeout, lock check.
+        Returns True if everything is installed afterwards."""
+        missing = [p for p in pkgs if not SystemChecker.is_pkg_installed(p)]
+        if not missing:
+            return True
+        console.print(f"[bold blue]  ::[/] Installing: {', '.join(missing)}")
+        if Path("/var/lib/pacman/db.lck").exists():
+            console.print("[bold red]  ✖[/] Pacman database locked (/var/lib/pacman/db.lck). Release pacman and retry.")
+            return False
+
+        install_cmd = ["pacman", "-S", "--noconfirm", "--needed"] + missing
+        res = CommandRunner.run(install_cmd, timeout=None)
+        if res.returncode == 0:
+            return True
+
+        # Fresh/minimal installs may have a stale sync DB: refresh mirrors once
+        # and retry before giving up (partial `-Sy` risk is limited to the DB).
+        console.print("[bold blue]  ::[/] First pass failed; syncing pacman databases and retrying...")
+        res = CommandRunner.run("pacman -Sy --noconfirm", timeout=None)
+        if res.returncode != 0:
+            console.print(
+                "[bold yellow]  ⚠[/] `pacman -Sy` failed. Verify network/mirrors in /etc/pacman.d/mirrorlist, "
+                "then re-run the orchestrator."
+            )
+            return False
+        res = CommandRunner.run(install_cmd, timeout=None)
+        if res.returncode != 0:
+            console.print(f"[bold red]  ✖[/] pacman exited {res.returncode}: {res.stderr.strip()[-300:]}")
+            return False
+        return True
 
     @staticmethod
     def sync_user_dbus_env() -> None:
@@ -752,9 +793,9 @@ class ArchIOSLinkCLI:
             self.display_header()
             console.print(Panel("[bold cyan]Sunshine + Moonlight Ultra-Low Latency Streaming Stack[/]", border_style="cyan"))
 
-            if not SystemChecker.is_pkg_installed("sunshine"):
-                console.print("[bold yellow]  ⚠[/] Sunshine not installed. Installing via pacman...")
-                CommandRunner.run("pacman -S --noconfirm --needed sunshine pipewire wireplumber libevdev")
+            if not SystemChecker.install_packages(["sunshine", "pipewire", "wireplumber", "libevdev"]):
+                console.print("[bold red]  ✖[/] Sunshine stack cannot proceed without required packages.")
+                return
 
             self.setup_uinput_permissions()
             SystemChecker.sync_user_dbus_env()
@@ -774,6 +815,12 @@ class ArchIOSLinkCLI:
             console.print(f"[bold green]  ✔[/] User unit [bold cyan]{unit_name}[/] enabled and started.")
 
             primary_ip = NetworkSensingEngine.preferred_ip()
+            if primary_ip == "0.0.0.0":
+                primary_ip = "localhost"
+                console.print(
+                    "[bold yellow]  ⚠[/] No routable IP detected yet — showing the localhost URI. "
+                    "Pair via USB tunnel or after Wi-Fi/DHCP assignment."
+                )
             web_ui_url = f"https://{primary_ip}:47990"
 
             console.print("\n[bold green]✔ Sunshine Streaming Server Active![/]")
@@ -794,8 +841,9 @@ class ArchIOSLinkCLI:
             self.display_header()
             console.print(Panel("[bold cyan]WayVNC Lightweight Headless Display Stack[/]", border_style="cyan"))
 
-            if not SystemChecker.is_pkg_installed("wayvnc"):
-                CommandRunner.run("pacman -S --noconfirm --needed wayvnc openssl")
+            if not SystemChecker.install_packages(["wayvnc", "openssl"]):
+                console.print("[bold red]  ✖[/] WayVNC stack cannot proceed without required packages.")
+                return
 
             WayVNCManager.prepare_environment()
             WayVNCManager.cleanup_stale_sockets()
@@ -808,6 +856,12 @@ class ArchIOSLinkCLI:
 
             bind_ip = "0.0.0.0"
             connect_ip = NetworkSensingEngine.preferred_ip()
+            if connect_ip == "0.0.0.0":
+                connect_ip = "localhost"
+                console.print(
+                    "[bold yellow]  ⚠[/] No routable IP detected yet — showing the localhost URI. "
+                    "It works immediately over the USB iproxy tunnel; re-run once Wi-Fi/DHCP is up for network access."
+                )
 
             console.print(f"[bold blue]  ::[/] Launching WayVNC bound to {bind_ip}:5900 on {headless_name}...")
 
@@ -854,7 +908,7 @@ class ArchIOSLinkCLI:
                     console.print("[bold green]  ✔[/] iOS device trusted and paired.")
                 else:
                     console.print("[bold yellow]  ⚠[/] Device not paired. Unlock iPhone and tap 'Trust This Computer'...")
-                    CommandRunner.run("idevicepair pair")
+                    CommandRunner.run("idevicepair pair", timeout=None)
 
             console.print("\n[bold yellow]Instructions for iOS Device:[/]")
             console.print("  1. Connect iPhone to Linux PC via Lightning/USB-C cable.")
