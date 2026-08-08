@@ -65,7 +65,7 @@ hl_env("QT_WAYLAND_DISABLE_WINDOWDECORATION", "1")
 hl_env("QT_QUICK_CONTROLS_STYLE", "Fusion")
 hl_env("QT_WAYLAND_RECONNECT_AFTER_VT_SWITCH", "1")
 hl_env("QT_AUTO_SCREEN_SCALE_FACTOR", "1")
-hl_env("GSK_RENDERER", "ngl")
+hl_env("GSK_RENDERER", "gl")
 hl_env("SDL_VIDEODRIVER", "wayland,x11")
 hl_env("SDL_VIDEO_DRIVER", "wayland,x11") -- compat for old SDL2 builds
 hl_env("CLUTTER_BACKEND", "wayland")
