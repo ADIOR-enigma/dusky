@@ -866,6 +866,28 @@ class ArchIOSLinkCLI:
             qr = QRRenderer.generate_qr(web_ui_url)
             console.print(Panel(Align.center(qr), title="Scan with iOS to Pair Sunshine Web UI", border_style="cyan", width=60), justify="center")
 
+            console.print(
+                Panel.fit(
+                    "[bold yellow]Setup once (before streaming):[/]\n\n"
+                    "  [bold cyan]1.[/] Turn [bold]off[/] VPNs on both devices ([dim]Cloudflare WARP[/],"
+                    " [dim]Tailscale[/], etc.) — plain [bold]same Wi-Fi[/] only\n"
+                    "  [bold cyan]2.[/] On the iPhone: open [bold]Moonlight[/] → tap"
+                    f" [bold]{os.uname().nodename}[/] [dim](= your PC hostname)[/] when it appears\n"
+                    "  [bold cyan]3.[/] A [bold]4-digit PIN[/] shows on your phone — and a "
+                    "[bold]pairing notification[/] pops up on this laptop\n"
+                    "  [bold cyan]4.[/] Click that notification → it opens [bold]https://localhost:47990/pin[/]"
+                    " [dim](your own browser)[/]\n"
+                    "  [bold cyan]5.[/] Type the PIN from the phone, and set the name to your PC name"
+                    f" [dim](e.g. [bold]{os.uname().nodename}[/])[/]\n"
+                    "  [bold cyan]6.[/] Back on the phone: tap the tile → tap again to connect & stream\n\n"
+                    "[bold green]On this computer:[/] press Enter when you're done streaming "
+                    "(tears down the virtual display).",
+                    title="iOS Streaming Instructions",
+                    border_style="magenta",
+                    width=72,
+                )
+            )
+
             Prompt.ask("\nPress Enter when done streaming to teardown virtual display...")
         finally:
             if headless_name:
@@ -917,6 +939,22 @@ class ArchIOSLinkCLI:
 
             qr = QRRenderer.generate_qr(vnc_uri)
             console.print(Panel(Align.center(qr), title="Scan with Jump Desktop / VNC App", border_style="cyan", width=60), justify="center")
+
+            console.print(
+                Panel.fit(
+                    "[bold yellow]On your iPhone (right now):[/]\n\n"
+                    "  [bold cyan]1.[/] Open [bold]Jump Desktop[/] (from App Store)\n"
+                    f"  [bold cyan]2.[/] Add a VNC connection to [bold]{connect_ip}[/] port [bold]5900[/] "
+                    "[dim](or scan the QR above)[/]\n"
+                    f"  [bold cyan]3.[/] Connect → sign in with your [bold]{user_ctx.username}[/] "
+                    "Linux account password [dim](PAM login, same as this PC)[/]\n"
+                    "  [bold cyan]4.[/] Done! Swipe/tap to control the full desktop\n\n"
+                    "[bold green]On this computer:[/] press Enter to stop WayVNC (tears down the virtual display).",
+                    title="iOS VNC Instructions",
+                    border_style="magenta",
+                    width=72,
+                )
+            )
 
             Prompt.ask("\nPress Enter to stop WayVNC and teardown display...")
         finally:
