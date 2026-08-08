@@ -39,6 +39,7 @@ import signal
 import atexit
 import time
 import ipaddress
+import socket
 import subprocess
 import contextlib
 from pathlib import Path
@@ -756,6 +757,199 @@ class QRRenderer:
         return Text(f"URI: {data}", style="bold cyan")
 
 # --- 12. Master Interactive Orchestrator CLI ---
+class RemoteConnectClient:
+    """Laptop-to-laptop / LAN / Tailscale remote desk control (client side).
+
+    Installs the viewing tools, discovers the host machine (Tailscale, mDNS,
+    MagicDNS or manual IP), and launches VNC (client of the WayVNC stack) or
+    Moonlight (client of the Sunshine stack)."""
+    CONFIG_DIR = user_ctx.home / ".config" / "arch-link"
+    CONFIG_FILE = CONFIG_DIR / "remote.json"
+
+    @staticmethod
+    def _load() -> dict[str, str]:
+        try:
+            return json.loads(RemoteConnectClient.CONFIG_FILE.read_text())
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _save(profile: dict[str, str]) -> None:
+        RemoteConnectClient.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        RemoteConnectClient.CONFIG_FILE.write_text(json.dumps(profile, indent=2))
+        os.chown(RemoteConnectClient.CONFIG_DIR, user_ctx.uid, user_ctx.gid)
+        os.chown(RemoteConnectClient.CONFIG_FILE, user_ctx.uid, user_ctx.gid)
+
+    @staticmethod
+    def install_viewer_tools() -> None:
+        SystemChecker.install_packages(["tigervnc"])
+        if shutil.which("moonlight") or shutil.which("moonlight-qt"):
+            console.print("[bold green]  ✔[/] Moonlight client already available.")
+            return
+        helper = next((h for h in ("yay", "paru") if shutil.which(h)), None)
+        if helper:
+            console.print(f"[bold blue]  ::[/] Installing Moonlight client via [bold cyan]{helper}[/] (AUR)...")
+            CommandRunner.run(f"{helper} -S --noconfirm --needed moonlight-qt", as_user=True, timeout=None)
+        else:
+            console.print(
+                "[bold yellow]  ⚠[/] Moonlight not present and no AUR helper ([dim]yay[/]/[dim]paru[/]) found. "
+                "Install it manually (https://github.com/moonlight-stream/moonlight-qt) or use VNC instead."
+            )
+        if shutil.which("moonlight") or shutil.which("moonlight-qt"):
+            console.print("[bold green]  ✔[/] Moonlight client ready.")
+        else:
+            console.print("[bold yellow]  ⚠[/] Moonlight client missing — VNC mode still available via tigervnc.")
+
+    @staticmethod
+    def discover_host(name: str) -> list[tuple[str, str, str]]:
+        """Returns [(via, host, ip)] candidate endpoints for the host."""
+        found: dict[str, tuple[str, str, str]] = {}
+        name = name.strip().strip(" .")
+
+        # 1) Tailscale: name lookup via CLI; fall back to scanning peer list
+        if shutil.which("tailscale"):
+            r = CommandRunner.run(f"tailscale ip -4 {shlex.quote(name)}")
+            ip = r.stdout.strip().splitlines()[-1].strip() if r.stdout.strip() else ""
+            if ip and ip.count(".") == 3:
+                found[ip] = ("Tailscale", name, ip)
+            else:
+                st = CommandRunner.run("tailscale status --json")
+                try:
+                    for peer in json.loads(st.stdout).get("Peer", {}).values():
+                        if peer.get("HostName", "").lower() == name.lower():
+                            for p in (peer.get("TailscaleIPs") or []):
+                                if ":" not in p:
+                                    found[p] = (f"Tailscale [{peer.get('HostName', '')}]", name, p)
+                except Exception:
+                    pass
+
+        # 2) DNS / MagicDNS + mDNS (.local)
+        for probe in (name, f"{name}.local"):
+            record = CommandRunner.run(f"getent hosts {shlex.quote(probe)}").stdout
+            for line in record.splitlines():
+                parts = line.split()
+                if len(parts) >= 2 and parts[0].count(".") >= 3:
+                    found[parts[0]] = ("mDNS/LAN" if probe.endswith(".local") else "DNS", name, parts[0])
+
+        # 3) Literal IP typed by the user
+        try:
+            ipaddress.ip_address(name)
+            found[name] = ("Manual", name, name)
+        except ValueError:
+            pass
+
+        ordered = [v for v in found.values() if v[0] != "Tailscale"]
+        ordered += [v for v in found.values() if v[0] == "Tailscale"]
+        return ordered
+
+    @staticmethod
+    def probe_port(ip: str, port: int, timeout: float = 2.0) -> bool:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.settimeout(timeout)
+                return sock.connect_ex((ip, port)) == 0
+        except Exception:
+            return False
+
+    @staticmethod
+    def _launch(app: str, ip: str) -> None:
+        moonlight_bin = "moonlight-qt" if shutil.which("moonlight-qt") else "moonlight"
+        if app == "moonlight":
+            cmd = [moonlight_bin, ip]
+        elif app == "vncviewer":
+            cmd = ["vncviewer", f"{ip}:5900"]
+        else:
+            return
+        subprocess.Popen(
+            cmd,
+            env=user_ctx.get_user_env(),
+            preexec_fn=user_ctx.demote_fn(),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        console.print(f"[bold green]  ✔[/] Launched [bold cyan]{cmd[0]}[/] → {ip}. Use the normal PIN / password flow.")
+
+    def connect_to_host(self) -> None:
+        self.display_header()
+        console.print(Panel("[bold cyan]Remote Connect (Client Mode)[/]", border_style="cyan"))
+
+        profile = RemoteConnectClient._load()
+        ans = Prompt.ask("Host hostname or IP", default=profile.get("host") or "", show_default=True)
+        ans = ans.strip()
+        if not ans:
+            console.print("[bold yellow]  ⚠[/] No host given. Aborted.")
+            return
+        try:
+            ipaddress.ip_address(ans)
+            candidates = [("Manual", ans, ans)]
+        except ValueError:
+            candidates = RemoteConnectClient.discover_host(ans)
+
+        if not candidates:
+            console.print(f"[bold red]  ✖[/] No route found to '{ans}'. Check Tailscale login, LAN reachability, or hostname.")
+            return
+
+        saved_ip = profile.get("ip")
+        table = Table(title=f"Host Candidates for {ans}", show_header=True, header_style="bold magenta", border_style="cyan")
+        table.add_column("#", justify="right")
+        table.add_column("Via", style="bold green")
+        table.add_column("IP", style="bold yellow")
+        table.add_column("5900 VNC", justify="center")
+        table.add_column("47989 ML", justify="center")
+        default_idx = 1
+        for idx, (via, _, candidate_ip) in enumerate(candidates):
+            vnc = "✓" if RemoteConnectClient.probe_port(candidate_ip, 5900) else "–"
+            ml = "✓" if RemoteConnectClient.probe_port(candidate_ip, 47989) else "–"
+            if candidate_ip == saved_ip:
+                default_idx = idx + 1
+            table.add_row(str(idx + 1), via, candidate_ip, vnc, ml)
+        console.print(table)
+
+        choice_raw = Prompt.ask(
+            "Pick endpoint or 'm' for manual IP",
+            default=str(default_idx),
+            show_default=True,
+        ).strip()
+        if choice_raw.lower() == "m":
+            choice_raw = Prompt.ask("Full IP address")
+            try:
+                ipaddress.ip_address(choice_raw)
+                selected_ip = choice_raw
+            except ValueError:
+                console.print("[bold yellow]  ⚠[/] Invalid IP. Aborted.")
+                return
+        else:
+            try:
+                selected_ip = candidates[int(choice_raw) - 1][2]
+            except (ValueError, IndexError):
+                selected_ip = next((c[2] for c in candidates), "0.0.0.0")
+
+        RemoteConnectClient._save({"host": ans, "ip": selected_ip})
+        console.print(f"[bold green]  ✔[/] Saved profile: {ans} → {selected_ip}")
+
+        console.print(Panel.fit(
+            f"[bold yellow]Connecting to [bold cyan]{selected_ip}[/]:[/]\n\n"
+            "  [bold cyan]1.[/] VNC control [dim](VNC viewer → 5900, host's WayVNC stack)[/]\n"
+            "  [bold cyan]2.[/] Moonlight streaming [dim](host's Sunshine stack)[/]\n"
+            "  [bold cyan]3.[/] Install / refresh viewer tools\n"
+            "  [bold cyan]4.[/] Back",
+            title="Choose Protocol",
+            border_style="magenta",
+            width=66,
+        ))
+        action = Prompt.ask("Select", choices=["1", "2", "3", "4"], default="1")
+        if action == "1":
+            if not RemoteConnectClient.probe_port(selected_ip, 5900):
+                console.print("[bold yellow]  ⚠[/] Port 5900 is closed on the host — start its Option 2 (WayVNC) there first.")
+            RemoteConnectClient._launch("vncviewer", selected_ip)
+        elif action == "2":
+            if not RemoteConnectClient.probe_port(selected_ip, 47989):
+                console.print("[bold yellow]  ⚠[/] Port 47989 is closed — start its Option 1 (Sunshine) there first.")
+            RemoteConnectClient._launch("moonlight", selected_ip)
+        elif action == "3":
+            RemoteConnectClient.install_viewer_tools()
+
+# --- 12b. Master Interactive Orchestrator CLI ---
 class ArchIOSLinkCLI:
     def __init__(self) -> None:
         self.user = user_ctx.username
@@ -899,6 +1093,13 @@ class ArchIOSLinkCLI:
                     "  [bold cyan]6.[/] Type the PIN and set the name = your PC name "
                     f"[dim](e.g. [bold]{os.uname().nodename}[/])[/] → Save\n"
                     "  [bold cyan]7.[/] Back on the phone: tap the tile → tap again to connect & stream\n\n"
+                    "[bold green]USB / offline mode (no Wi-Fi needed):[/]\n"
+                    "  [bold cyan]•[/] Connect iPhone with a [bold]USB cable[/] → on the phone enable "
+                    "[bold]Personal Hotspot[/] (USB option)\n"
+                    "  [bold cyan]•[/] The PC shows a new [bold]USB[/] row above — type THAT IP "
+                    "[dim](192.168.42.x)[/] into Moonlight\n"
+                    "  [bold cyan]•[/] Works with [bold]Wi-Fi and even airplane mode[/] on "
+                    "[dim](link is pure cable LAN; no internet involved)[/]\n\n"
                     "[bold green]On this computer:[/] press Enter when you're done streaming "
                     "(tears down the virtual display).",
                     title="iOS Streaming Instructions",
@@ -1093,12 +1294,13 @@ class ArchIOSLinkCLI:
             console.print("  [bold cyan]2.[/] Launch WayVNC Lightweight Headless Display Stack")
             console.print("  [bold cyan]3.[/] Configure USB Cable Tethering & usbmuxd Tunnels (`iproxy`)")
             console.print("  [bold cyan]4.[/] View iOS 16.7 Setup Guide & Jailbreak Tweak Matrix")
-            console.print("  [bold cyan]5.[/] Exit Orchestrator")
+            console.print("  [bold cyan]5.[/] Remote Connect (Client Mode): control another machine via VNC / Moonlight")
+            console.print("  [bold cyan]6.[/] Exit Orchestrator")
 
             try:
-                choice = Prompt.ask("\nEnter choice", choices=["1", "2", "3", "4", "5"], default="5")
+                choice = Prompt.ask("\nEnter choice", choices=["1", "2", "3", "4", "5", "6"], default="6")
             except (KeyboardInterrupt, EOFError):
-                choice = "5"
+                choice = "6"
 
             match choice:
                 case "1":
@@ -1110,11 +1312,17 @@ class ArchIOSLinkCLI:
                 case "4":
                     self.display_ios_setup_guide()
                 case "5":
+                    RemoteConnectClient().connect_to_host()
+                case "6":
                     console.print("[bold cyan]Exiting orchestrator. Cleaning up resources...[/bold cyan]")
                     ResourceManager.cleanup_all()
                     sys.exit(0)
 
 def main() -> None:
+    if "--client" in sys.argv:
+        RemoteConnectClient().connect_to_host()
+        sys.exit(0)
+
     ok, msg = SystemChecker.verify_hyprland_environment()
     if not ok:
         console.print(f"[bold red]✖ Environment Error:[/] {msg}")
