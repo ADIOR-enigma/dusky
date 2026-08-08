@@ -5182,9 +5182,13 @@ class DuskyApp(App):
                         await asyncio.to_thread(self.state_store.mark, task, "failed", exit_code=rc, duration=duration)
                     if self.run_logger:
                         self.run_logger.close_task(task, index, "failed", rc, duration)
-                    self.log_main(f"[bold {THEME['error']}][FATAL][/] Process aborted execution sequence (Code {rc}).")
-                    self.log_task(f"\n[bold {THEME['error']}]>>> FATAL EXECUTION FAILURE (Code {rc})[/]", index)
-                    self.abort_flag = True
+                    if OPT_STOP_ON_FAIL:
+                        self.log_main(f"[bold {THEME['error']}][FATAL][/] Process aborted execution sequence (Code {rc}).")
+                        self.log_task(f"\n[bold {THEME['error']}]>>> FATAL EXECUTION FAILURE (Code {rc})[/]", index)
+                        self.abort_flag = True
+                    else:
+                        self.log_main(f"[bold {THEME['error']}][ERROR][/] Process execution failed (Code {rc}). Continuing sequence...")
+                        self.log_task(f"\n[bold {THEME['error']}]>>> EXECUTION FAILED (Code {rc})[/]", index)
                     return "failed"
 
         except Exception as e:
@@ -5197,7 +5201,7 @@ class DuskyApp(App):
                 await asyncio.to_thread(self.state_store.mark, task, "failed", exit_code=1, note=str(e), duration=duration)
             if self.run_logger:
                 self.run_logger.close_task(task, index, "failed", 1, duration)
-            if not task.ignore_fail or OPT_STOP_ON_FAIL:
+            if OPT_STOP_ON_FAIL:
                 self.abort_flag = True
             return "failed"
         finally:
@@ -5358,7 +5362,8 @@ class DuskyApp(App):
             if hard_failed:
                 lines.append(f" [bold {THEME['error']}]✗ HARD FAILED SCRIPTS ({len(hard_failed)}):[/]")
                 for t in hard_failed:
-                    lines.append(f"   • [{t.mode}] {escape(t.name)} [bold {THEME['error']}](Required - Pipeline Aborted)[/]")
+                    status_note = "(Required - Pipeline Aborted)" if self.abort_flag else "(Required - Execution Continued)"
+                    lines.append(f"   • [{t.mode}] {escape(t.name)} [bold {THEME['error']}]{status_note}[/]")
 
             if soft_failed:
                 lines.append(f" [bold {THEME['warning']}]⚠ SOFT FAILED SCRIPTS ({len(soft_failed)}):[/]")
@@ -5614,8 +5619,13 @@ class DuskyApp(App):
         elif OPT_DRY_RUN:
             desktop_notify("Dusky Update", "Dry-run completed successfully", urgency="normal")
             AudioNotifier.play("info")
-        elif self.missing_scripts:
-            desktop_notify("Dusky Update", f"{missing_count} script(s) missing and skipped", urgency="normal")
+        elif self.missing_scripts or fail_count > 0:
+            details = []
+            if fail_count > 0:
+                details.append(f"{fail_count} script(s) failed")
+            if self.missing_scripts:
+                details.append(f"{missing_count} script(s) missing")
+            desktop_notify("Dusky Update", ", ".join(details), urgency="normal")
             AudioNotifier.play("info")
         else:
             desktop_notify("Dusky updated", "", urgency="normal")
@@ -5634,7 +5644,7 @@ class DuskyApp(App):
             dialog_title, dialog_level = "UPDATE ABORTED", "danger"
         elif OPT_DRY_RUN:
             dialog_title, dialog_level = "DRY-RUN COMPLETE", "success"
-        elif self.missing_scripts:
+        elif self.missing_scripts or fail_count > 0:
             dialog_title, dialog_level = "dusky updated", "warning"
         else:
             dialog_title, dialog_level = "dusky updated", "success"
