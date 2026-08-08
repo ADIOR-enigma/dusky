@@ -1989,13 +1989,10 @@ def load_profile(name_or_path: str) -> ProfileConfig:
                 sys.stderr.write(f"[FATAL] Failed to load profile '{p}': {raw_err}\n")
                 sys.exit(1)
             try:
-                backup = p.with_name(p.name + ".bak")
                 p.write_text(repaired, encoding="utf-8")
-                backup.write_text(text, encoding="utf-8")
                 sys.stderr.write(
                     f"[WARN] Inserted {fixes} missing comma(s) in '{p}' -- "
-                    f"auto-repaired, original saved to '{backup}'. "
-                    f"Fix them properly in git!\n"
+                    f"auto-repaired. Fix them properly in git!\n"
                 )
             except OSError as write_err:
                 sys.stderr.write(
@@ -3135,29 +3132,37 @@ class GitEngine:
         if also_main:
             self.log(msg)
 
-    async def _gate_incoming_scripts(self, changed_paths: list[str], idx: int) -> None:
+    async def _gate_incoming_scripts(self, changed_paths: list[str], idx: int, local_head: str = "") -> None:
         """Self-healing gate: validate every .py / .sh the sync just landed.
 
         A broken script that reaches the worktree would fail on the next user
         run with no explanation and no recovery path. Instead we restore the
-        file from the previous local HEAD whenever the incoming version is
+        file from the previous local commit whenever the incoming version is
         syntactically invalid, so the machine always keeps a runnable copy.
         """
         for rel in sorted(set(changed_paths)):
             if not rel.endswith((".py", ".sh")):
                 continue
             target = Path(WORK_TREE) / rel
-            ok, why = _validate_script_syntax(target)
+            ok, why = await asyncio.to_thread(_validate_script_syntax, target)
             if ok:
                 continue
-            rc_old, old_body, _ = await self._run_raw("show", f"HEAD:{rel}", timeout_sec=30)
+            if not local_head:
+                self._tlog(
+                    f"\n[bold {THEME['error']}]WARNING:[/] broken incoming script {rel} (no previous local HEAD)\n"
+                    f"    Reason: {why} — left in place, review it manually.",
+                    idx,
+                    True,
+                )
+                continue
+            rc_old, old_body, _ = await self._run_raw("show", f"{local_head}:{rel}", timeout_sec=30)
             if rc_old == 0 and old_body:
                 try:
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_text(old_body + "\n", encoding="utf-8")
                     self._tlog(
                         f"\n[bold {THEME['warning']}]Invalid incoming update blocked:[/] {rel}\n"
-                        f"    Restored your last working version from HEAD.\n    Reason: {why}",
+                        f"    Restored your last working version from your previous local commit.\n    Reason: {why}",
                         idx,
                         True,
                     )
@@ -4046,7 +4051,7 @@ class GitEngine:
 
                 self._tlog(f"[bold {THEME['success']}]Bare Repository reset applied and synchronized.[/]", idx, True)
 
-                await self._gate_incoming_scripts(change_paths, idx)
+                await self._gate_incoming_scripts(changed_files, idx, local_head)
 
                 if your_changes_backup and change_paths:
                     self._tlog(f"[bold {THEME['accent']}]Restoring your tracked modifications...[/]", idx)
@@ -4129,7 +4134,7 @@ class GitEngine:
 
             self._tlog(f"[bold {THEME['success']}]Bare Repository reset applied and synchronized.[/]", idx, True)
 
-            await self._gate_incoming_scripts(changed_files, idx)
+            await self._gate_incoming_scripts(changed_files, idx, local_head)
 
             if your_changes_backup and change_paths:
                 self._tlog(f"[bold {THEME['accent']}]Restoring your tracked modifications...[/]", idx)
@@ -5442,6 +5447,7 @@ class DuskyApp(App):
                         "danger",
                     )
                     return
+                store_last_good_self()
             self.phase_durations["phase1_git"] = time.monotonic() - p1_start
         else:
             if OPT_POST_SELF_UPDATE:
