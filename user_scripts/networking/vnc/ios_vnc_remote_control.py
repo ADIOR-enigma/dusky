@@ -781,6 +781,40 @@ class RemoteConnectClient:
         os.chown(RemoteConnectClient.CONFIG_FILE, user_ctx.uid, user_ctx.gid)
 
     @staticmethod
+    def viewer_provider() -> str | None:
+        """Which VNC client owns /usr/bin/vncviewer: 'realvnc', 'tigervnc' or None."""
+        if shutil.which("vncviewer") is None:
+            return None
+        if shutil.which("vnclicense") or shutil.which("vnclicensehelper"):
+            return "realvnc"
+        return "tigervnc"
+
+    @staticmethod
+    def install_realvnc_viewer() -> None:
+        if RemoteConnectClient.viewer_provider() == "realvnc":
+            console.print("[bold green]  ✔[/] RealVNC Viewer already installed.")
+            return
+        launched = RemoteConnectClient.viewer_provider() == "tigervnc"
+        if launched:
+            console.print(
+                "[bold yellow]  ⚠[/] tigervnc's vncviewer is installed. RealVNC provides the same "
+                "`vncviewer` binary, so installing it [bold]replaces tigervnc[/]. "
+                "You can reinstall tigervnc afterwards at any time."
+            )
+        helper = next((h for h in ("paru", "yay") if shutil.which(h)), None)
+        if not helper:
+            console.print(
+                "[bold yellow]  ⚠[/] No AUR helper found. Install manually: https://www.realvnc.com/en/connect/download/viewer/"
+            )
+            return
+        console.print(f"[bold blue]  ::[/] Installing RealVNC Viewer via [bold cyan]{helper}[/] (AUR)...")
+        CommandRunner.run(f"{helper} -S --noconfirm --needed realvnc-vnc-viewer", as_user=True, timeout=None)
+        if RemoteConnectClient.viewer_provider() == "realvnc":
+            console.print("[bold green]  ✔[/] RealVNC Viewer ready (tigervnc replaced).")
+        else:
+            console.print("[bold yellow]  ⚠[/] RealVNC install did not complete — check the AUR build log.")
+
+    @staticmethod
     def install_viewer_tools() -> None:
         SystemChecker.install_packages(["tigervnc"])
         if shutil.which("moonlight") or shutil.which("moonlight-qt"):
@@ -856,7 +890,13 @@ class RemoteConnectClient:
         moonlight_bin = "moonlight-qt" if shutil.which("moonlight-qt") else "moonlight"
         if app == "moonlight":
             cmd = [moonlight_bin, ip]
-        elif app == "vncviewer":
+        elif app in ("vncviewer", "realvnc"):
+            if not os.environ.get("DISPLAY") and not Path("/tmp/.X11-unix").glob("X*"):
+                console.print(
+                    "[bold yellow]  ⚠[/] VNC viewers (tigervnc/RealVNC) are X11 apps, but no X display/XWayland "
+                    "was detected here — launch will fail with 'Can't open display'. Enable XWayland "
+                    "(Hyprland: `xwayland:enabled = true`, then relogin) or use Moonlight, which is native Wayland."
+                )
             cmd = ["vncviewer", f"{ip}:5900"]
         else:
             return
@@ -927,26 +967,55 @@ class RemoteConnectClient:
         RemoteConnectClient._save({"host": ans, "ip": selected_ip})
         console.print(f"[bold green]  ✔[/] Saved profile: {ans} → {selected_ip}")
 
+        provider = RemoteConnectClient.viewer_provider()
         console.print(Panel.fit(
             f"[bold yellow]Connecting to [bold cyan]{selected_ip}[/]:[/]\n\n"
-            "  [bold cyan]1.[/] VNC control [dim](VNC viewer → 5900, host's WayVNC stack)[/]\n"
-            "  [bold cyan]2.[/] Moonlight streaming [dim](host's Sunshine stack)[/]\n"
-            "  [bold cyan]3.[/] Install / refresh viewer tools\n"
-            "  [bold cyan]4.[/] Back",
+            "  [bold cyan]1.[/] VNC control via [bold]tigervnc[/] [dim](vncviewer → 5900, host's WayVNC stack)[/]\n"
+            "  [bold cyan]2.[/] VCN control via [bold]RealVNC Viewer[/] [dim](realvnc-vnc-viewer → 5900)[/]\n"
+            "  [bold cyan]3.[/] Moonlight streaming [dim](host's Sunshine stack)[/]\n"
+            "  [bold cyan]4.[/] Install / refresh viewer tools\n"
+            "  [bold cyan]5.[/] Back",
             title="Choose Protocol",
             border_style="magenta",
-            width=66,
+            width=70,
         ))
-        action = Prompt.ask("Select", choices=["1", "2", "3", "4"], default="1")
+        action = Prompt.ask(
+            "Select",
+            choices=["1", "2", "3", "4", "5"],
+            default="1",
+        )
         if action == "1":
             if not RemoteConnectClient.probe_port(selected_ip, 5900):
                 console.print("[bold yellow]  ⚠[/] Port 5900 is closed on the host — start its Option 2 (WayVNC) there first.")
-            RemoteConnectClient._launch("vncviewer", selected_ip)
+            if provider == "realvnc":
+                console.print("[bold yellow]  ⚠[/] RealVNC owns `vncviewer` — tigervnc is not installed. Pick 2 (RealVNC) or run 4 & reinstall tigervnc.")
+            else:
+                if provider is None:
+                    console.print("[bold blue]  ::[/] tigervnc not found — installing it now (root session, no extra prompt)...")
+                    SystemChecker.install_packages(["tigervnc"])
+                    provider = RemoteConnectClient.viewer_provider()
+                if provider == "tigervnc":
+                    RemoteConnectClient._launch("vncviewer", selected_ip)
+                else:
+                    console.print("[bold yellow]  ⚠[/] VNC viewer still unavailable. Run option 4 to install the tools.")
         elif action == "2":
+            if not RemoteConnectClient.probe_port(selected_ip, 5900):
+                console.print("[bold yellow]  ⚠[/] Port 5900 is closed on the host — start its Option 2 (WayVNC) there first.")
+            if provider != "realvnc":
+                console.print("[bold blue]  ::[/] RealVNC Viewer not installed yet.")
+                RemoteConnectClient.install_realvnc_viewer()
+                provider = RemoteConnectClient.viewer_provider()
+            if provider == "realvnc":
+                RemoteConnectClient._launch("realvnc", selected_ip)
+            else:
+                console.print("[bold yellow]  ⚠[/] RealVNC unavailable — falling back to tigervnc if present.")
+                if provider is not None:
+                    RemoteConnectClient._launch("vncviewer", selected_ip)
+        elif action == "3":
             if not RemoteConnectClient.probe_port(selected_ip, 47989):
                 console.print("[bold yellow]  ⚠[/] Port 47989 is closed — start its Option 1 (Sunshine) there first.")
             RemoteConnectClient._launch("moonlight", selected_ip)
-        elif action == "3":
+        elif action == "4":
             RemoteConnectClient.install_viewer_tools()
 
 # --- 12b. Master Interactive Orchestrator CLI ---
@@ -1114,78 +1183,94 @@ class ArchIOSLinkCLI:
                 HyprlandManager.remove_headless_output(headless_name)
 
     def run_wayvnc_stack(self) -> None:
-        headless_name: str | None = None
-        vnc_proc: subprocess.Popen[Any] | None = None
-        try:
+        first_run = True
+        while True:
             self.display_header()
+            if not first_run:
+                console.print("[bold blue]  ::[/] Restarting WayVNC stack (auto-cleaned previous session)...")
+            first_run = False
             console.print(Panel("[bold cyan]WayVNC Lightweight Headless Display Stack[/]", border_style="cyan"))
 
-            if not SystemChecker.install_packages(["wayvnc", "openssl"]):
-                console.print("[bold red]  ✖[/] WayVNC stack cannot proceed without required packages.")
-                return
+            headless_name: str | None = None
+            vnc_proc: subprocess.Popen[Any] | None = None
+            try:
+                if not SystemChecker.install_packages(["wayvnc", "openssl"]):
+                    console.print("[bold red]  ✖[/] WayVNC stack cannot proceed without required packages.")
+                    return
 
-            WayVNCManager.prepare_environment()
-            WayVNCManager.cleanup_stale_sockets()
+                WayVNCManager.prepare_environment()
+                WayVNCManager.cleanup_stale_sockets()
 
-            headless_name = HyprlandManager.create_headless_output(res="1080x1920", fps=60, scale=1.5)
-            FirewallManager.configure_rules(
-                ports=[5900],
-                interfaces=NetworkSensingEngine.firewall_interfaces()
-            )
+                headless_name = HyprlandManager.create_headless_output(res="1080x1920", fps=60, scale=1.5)
+                FirewallManager.configure_rules(
+                    ports=[5900],
+                    interfaces=NetworkSensingEngine.firewall_interfaces()
+                )
 
-            bind_ip = "0.0.0.0"
-            connect_ip = NetworkSensingEngine.preferred_ip()
-            if connect_ip == "0.0.0.0":
-                connect_ip = "localhost"
+                bind_ip = "0.0.0.0"
+                connect_ip = NetworkSensingEngine.preferred_ip()
+                if connect_ip == "0.0.0.0":
+                    connect_ip = "localhost"
+                    console.print(
+                        "[bold yellow]  ⚠[/] No routable IP detected yet — showing the localhost URI. "
+                        "It works immediately over the USB iproxy tunnel; re-run once Wi-Fi/DHCP is up for network access."
+                    )
+
+                hostname = socket.gethostname().split(".")[0]
+                console.print(f"[bold blue]  ::[/] Launching WayVNC bound to {bind_ip}:5900 on {headless_name}...")
+
+                vnc_env = user_ctx.get_user_env()
+                vnc_proc = subprocess.Popen(
+                    ["wayvnc", "-o", headless_name, bind_ip, "5900"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    env=vnc_env,
+                    preexec_fn=user_ctx.demote_fn()
+                )
+                ResourceManager.register_process(vnc_proc)
+
+                vnc_uri = f"vnc://{connect_ip}:5900"
+                console.print(f"\n[bold green]✔ WayVNC Server Running at {vnc_uri}[/]")
+                console.print(f"[bold white]   Host:[/] [bold yellow]{hostname}:5900[/]   [bold white]IP:[/] [bold yellow]{connect_ip}:5900[/]\n")
+
+                qr = QRRenderer.generate_qr(vnc_uri)
+                console.print(Panel(Align.center(qr), title="Scan with RealVNC / VNC App", border_style="cyan", width=60), justify="center")
+
                 console.print(
-                    "[bold yellow]  ⚠[/] No routable IP detected yet — showing the localhost URI. "
-                    "It works immediately over the USB iproxy tunnel; re-run once Wi-Fi/DHCP is up for network access."
+                    Panel.fit(
+                        "[bold yellow]On your iPhone (right now):[/]\n\n"
+                        "  [bold cyan]1.[/] Open [bold]RealVNC (RVNC)[/] → + → add a connection\n"
+                        f"  [bold cyan]2.[/] Enter the server [bold]NAME[/] — the host's system name: [bold]{hostname}[/] "
+                        f"[dim](or IP {connect_ip})[/]\n"
+                        "  [bold cyan]3.[/] It validates the host, then asks for the [bold]port[/] — keep [bold]5900[/]\n"
+                        f"  [bold cyan]4.[/] Then it asks, separately, for the [bold]username[/] → [bold]{user_ctx.username}[/]\n"
+                        f"  [bold cyan]5.[/] And the [bold]password[/] → your Linux account password "
+                        "[dim](PAM login, the same one you use to log in)[/]\n"
+                        "  [bold cyan]6.[/] Confirm the unknown-certificate warning "
+                        "[dim](self-signed WayVNC cert is normal)[/] → Done!\n\n"
+                        "[bold green]On this computer:[/] press Enter at any time to stop WayVNC "
+                        "[dim](tears down the virtual display)[/].\n"
+                        "[bold yellow]Something went wrong?[/] Stale sockets are cleaned automatically; "
+                        "re-run Option 2 or confirm restart below — no reinstall needed.",
+                        title="iOS VNC Instructions",
+                        border_style="magenta",
+                        width=74,
+                    )
                 )
 
-            console.print(f"[bold blue]  ::[/] Launching WayVNC bound to {bind_ip}:5900 on {headless_name}...")
+                Prompt.ask("\nPress Enter to stop WayVNC and teardown display...")
+            finally:
+                if vnc_proc:
+                    with contextlib.suppress(Exception):
+                        vnc_proc.terminate()
+                        vnc_proc.wait(timeout=2)
+                    ResourceManager.unregister_process(vnc_proc)
+                WayVNCManager.cleanup_stale_sockets()
+                if headless_name:
+                    HyprlandManager.remove_headless_output(headless_name)
 
-            vnc_env = user_ctx.get_user_env()
-            vnc_proc = subprocess.Popen(
-                ["wayvnc", "-o", headless_name, bind_ip, "5900"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                env=vnc_env,
-                preexec_fn=user_ctx.demote_fn()
-            )
-            ResourceManager.register_process(vnc_proc)
-
-            vnc_uri = f"vnc://{connect_ip}:5900"
-            console.print(f"\n[bold green]✔ WayVNC Server Running at {vnc_uri}[/]")
-
-            qr = QRRenderer.generate_qr(vnc_uri)
-            console.print(Panel(Align.center(qr), title="Scan with Jump Desktop / VNC App", border_style="cyan", width=60), justify="center")
-
-            console.print(
-                Panel.fit(
-                    "[bold yellow]On your iPhone (right now):[/]\n\n"
-                    "  [bold cyan]1.[/] Open [bold]Jump Desktop[/] (from App Store)\n"
-                    f"  [bold cyan]2.[/] Add a VNC connection to [bold]{connect_ip}[/] port [bold]5900[/] "
-                    "[dim](or scan the QR above)[/]\n"
-                    f"  [bold cyan]3.[/] Connect → sign in with your [bold]{user_ctx.username}[/] "
-                    "Linux account password [dim](PAM login, same as this PC)[/]\n"
-                    "  [bold cyan]4.[/] Done! Swipe/tap to control the full desktop\n\n"
-                    "[bold green]On this computer:[/] press Enter to stop WayVNC (tears down the virtual display).",
-                    title="iOS VNC Instructions",
-                    border_style="magenta",
-                    width=72,
-                )
-            )
-
-            Prompt.ask("\nPress Enter to stop WayVNC and teardown display...")
-        finally:
-            if vnc_proc:
-                with contextlib.suppress(Exception):
-                    vnc_proc.terminate()
-                    vnc_proc.wait(timeout=2)
-                ResourceManager.unregister_process(vnc_proc)
-            WayVNCManager.cleanup_stale_sockets()
-            if headless_name:
-                HyprlandManager.remove_headless_output(headless_name)
+            if not Confirm.ask("\nRestart WayVNC stack?", default=False):
+                break
 
     def setup_usb_tether_and_tunnel(self) -> None:
         iproxy_proc: subprocess.Popen[Any] | None = None
