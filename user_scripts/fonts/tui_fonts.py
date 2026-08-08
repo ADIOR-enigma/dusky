@@ -40,6 +40,14 @@ ENABLE_USER_PRESETS = True
 USER_PRESETS_TAB = "Profiles"
 REQUIRE_ROOT = False
 
+# -------------------------------------------------------------------------
+# 2b. TAB NOTICES (banners shown above each tab)
+# -------------------------------------------------------------------------
+TAB_NOTICES = {
+    0: {"level": "info", "message": "New font files dropped into the archive dir appear here after a TUI restart. Applying any change auto-refreshes the font cache; no manual rebuild needed."},
+    2: {"level": "info", "message": "Applies auto-refresh the font cache. Use 'Force Verbose Cache Rebuild' only if you placed font files manually outside the TUI."},
+}
+
 # =============================================================================
 # 3. TABS DEFINITION
 # =============================================================================
