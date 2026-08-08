@@ -504,30 +504,52 @@ migrate_existing_nested_snapshots() {
         return 0
     fi
 
-    path_is_btrfs_subvolume "$src_path" || fatal "Legacy snapshots path behind ${mount_target} exists, but is not a Btrfs subvolume."
     path_is_btrfs_subvolume "$dst_path" || fatal "Target subvolume ${subvol_target} is missing or invalid."
 
-    if dir_is_empty "$src_path"; then
-        sudo btrfs subvolume delete "$src_path" >/dev/null || fatal "Failed to delete empty legacy snapshots subvolume ${src_path}."
-        info "Removed empty legacy snapshots subvolume behind ${mount_target}."
-        release_temp_mount "$tmp_mnt"
-        return 0
+    if path_is_btrfs_subvolume "$src_path"; then
+        if dir_is_empty "$src_path"; then
+            sudo btrfs subvolume delete "$src_path" >/dev/null || fatal "Failed to delete empty legacy snapshots subvolume ${src_path}."
+            info "Removed empty legacy snapshots subvolume behind ${mount_target}."
+            release_temp_mount "$tmp_mnt"
+            return 0
+        fi
+
+        info "Migrating existing Snapper data from legacy subvolume ${mount_target} into top-level ${subvol_target}..."
+
+        while IFS= read -r -d '' entry; do
+            [[ -n "$entry" ]] || continue
+            src_entry="${src_path}/${entry}"
+
+            sudo test -d "$src_entry" || fatal "Unexpected non-directory item ${src_entry} under legacy snapshots root."
+            migrate_single_legacy_snapshot_entry "$src_entry" "$dst_path" "$entry"
+        done < <(sudo find "$src_path" -mindepth 1 -maxdepth 1 -printf '%f\0' 2>/dev/null)
+
+        dir_is_empty "$src_path" || fatal "Legacy snapshots root ${src_path} is not empty after migration."
+        sudo btrfs subvolume delete "$src_path" >/dev/null || fatal "Failed to delete drained legacy snapshots root ${src_path}."
+
+        info "Migrated existing snapshots into ${subvol_target}."
+    else
+        if dir_is_empty "$src_path"; then
+            release_temp_mount "$tmp_mnt"
+            return 0
+        fi
+
+        info "Migrating existing Snapper data from legacy directory ${mount_target} into top-level ${subvol_target}..."
+
+        while IFS= read -r -d '' entry; do
+            [[ -n "$entry" ]] || continue
+            src_entry="${src_path}/${entry}"
+
+            sudo test -d "$src_entry" || fatal "Unexpected non-directory item ${src_entry} under legacy snapshots root."
+            migrate_single_legacy_snapshot_entry "$src_entry" "$dst_path" "$entry"
+        done < <(sudo find "$src_path" -mindepth 1 -maxdepth 1 -printf '%f\0' 2>/dev/null)
+
+        dir_is_empty "$src_path" || fatal "Legacy snapshots root ${src_path} is not empty after migration."
+        sudo rmdir "$src_path" || fatal "Failed to remove drained legacy snapshots directory ${src_path}."
+
+        info "Migrated existing snapshots into ${subvol_target}."
     fi
 
-    info "Migrating existing Snapper data from legacy ${mount_target} into top-level ${subvol_target}..."
-
-    while IFS= read -r -d '' entry; do
-        [[ -n "$entry" ]] || continue
-        src_entry="${src_path}/${entry}"
-
-        sudo test -d "$src_entry" || fatal "Unexpected non-directory item ${src_entry} under legacy snapshots root."
-        migrate_single_legacy_snapshot_entry "$src_entry" "$dst_path" "$entry"
-    done < <(sudo find "$src_path" -mindepth 1 -maxdepth 1 -printf '%f\0' 2>/dev/null)
-
-    dir_is_empty "$src_path" || fatal "Legacy snapshots root ${src_path} is not empty after migration."
-    sudo btrfs subvolume delete "$src_path" >/dev/null || fatal "Failed to delete drained legacy snapshots root ${src_path}."
-
-    info "Migrated existing snapshots into ${subvol_target}."
     release_temp_mount "$tmp_mnt"
 }
 
