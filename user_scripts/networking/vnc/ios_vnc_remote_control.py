@@ -1088,99 +1088,106 @@ class ArchIOSLinkCLI:
         console.print("[bold green]  ✔[/] /dev/uinput permissions & direct user POSIX ACL granted.")
 
     def run_sunshine_stack(self) -> None:
-        headless_name: str | None = None
-        try:
+        first_run = True
+        while True:
             self.display_header()
+            if not first_run:
+                console.print("[bold blue]  ::[/] Restarting Sunshine stack — stale state was auto-cleaned...")
+            first_run = False
             console.print(Panel("[bold cyan]Sunshine + Moonlight Ultra-Low Latency Streaming Stack[/]", border_style="cyan"))
 
-            if not SystemChecker.install_packages(["sunshine", "pipewire", "wireplumber", "libevdev"]):
-                console.print("[bold red]  ✖[/] Sunshine stack cannot proceed without required packages.")
-                return
+            headless_name: str | None = None
+            try:
+                if not SystemChecker.install_packages(["sunshine", "pipewire", "wireplumber", "libevdev"]):
+                    console.print("[bold red]  ✖[/] Sunshine stack cannot proceed without required packages.")
+                    return
 
-            self.setup_uinput_permissions()
-            SystemChecker.sync_user_dbus_env()
+                self.setup_uinput_permissions()
+                SystemChecker.sync_user_dbus_env()
 
-            headless_name = HyprlandManager.create_headless_output(res="1170x2532", fps=60, scale=2.0)
-            if headless_name:
-                SunshineManager.configure_target_display(headless_name)
+                headless_name = HyprlandManager.create_headless_output(res="1170x2532", fps=60, scale=2.0)
+                if headless_name:
+                    SunshineManager.configure_target_display(headless_name)
 
-            FirewallManager.configure_rules(
-                ports=[47984, 47989, 47990, 48010, 47998, 47999, 48000, 48002],
-                interfaces=NetworkSensingEngine.firewall_interfaces()
-            )
+                FirewallManager.configure_rules(
+                    ports=[47984, 47989, 47990, 48010, 47998, 47999, 48000, 48002],
+                    interfaces=NetworkSensingEngine.firewall_interfaces()
+                )
 
-            console.print(f"[bold blue]  ::[/] Enabling Sunshine user daemon for [bold cyan]{self.user}[/]...")
-            unit_name = SunshineManager.resolve_user_unit()
-            CommandRunner.run(f"systemctl --user enable {shlex.quote(unit_name)}", as_user=True)
-            if not SunshineManager.ensure_unit_active(unit_name):
+                console.print(f"[bold blue]  ::[/] Enabling Sunshine user daemon for [bold cyan]{self.user}[/]...")
+                unit_name = SunshineManager.resolve_user_unit()
+                CommandRunner.run(f"systemctl --user enable {shlex.quote(unit_name)}", as_user=True)
+                if not SunshineManager.ensure_unit_active(unit_name):
+                    console.print(
+                        "[bold yellow]  ⚠[/] Sunshine could not be started. Re-run the stack after fixing the cause "
+                        "(journal tail above). No pairing link will be shown."
+                    )
+                    return
+                console.print(f"[bold green]  ✔[/] User unit [bold cyan]{unit_name}[/] enabled, started and verified active.")
+
+                primary_ip = NetworkSensingEngine.preferred_ip()
+                if primary_ip == "0.0.0.0":
+                    primary_ip = "localhost"
+                    console.print(
+                        "[bold yellow]  ⚠[/] No routable IP detected yet — showing the localhost URI. "
+                        "Pair via USB tunnel or after Wi-Fi/DHCP assignment."
+                    )
+                web_ui_url = f"https://{primary_ip}:47990"
+                console.print(f"\n[bold green]✔ Sunshine Streaming Server Active![/]")
+                console.print(f"  Web UI Pair Link: [bold cyan]{web_ui_url}[/]")
+
+                qr = QRRenderer.generate_qr(web_ui_url)
+                console.print(Panel(Align.center(qr), title="Scan with iOS to Pair Sunshine Web UI", border_style="cyan", width=60), justify="center")
+
+                ip_rows = [
+                    (it.if_type.upper(), it.ip)
+                    for it in NetworkSensingEngine.detect_interfaces()
+                    if NetworkSensingEngine.validate_and_format_ip(it.ip) != "0.0.0.0"
+                    and not it.ip.startswith("127.")
+                ]
+                ip_block = "\n".join(
+                    f"      [bold cyan]•[/] {label}: [bold yellow]{ip}[/]"
+                    for label, ip in ip_rows
+                ) or "      [dim]no network IP detected yet[/]"
+
                 console.print(
-                    "[bold yellow]  ⚠[/] Sunshine could not be started. Re-run the stack after fixing the cause "
-                    "(journal tail above). No pairing link will be shown."
+                    Panel.fit(
+                        "[bold yellow]On your iPhone (right now):[/]\n\n"
+                        "  [bold cyan]1.[/] Turn [bold]off[/] VPNs ([dim]Cloudflare WARP[/], [dim]Tailscale[/], ...) "
+                        "on the phone — plain [bold]same Wi-Fi[/]\n"
+                        "  [bold cyan]2.[/] Open [bold]Moonlight[/] → tap the [bold]＋ / Add Host[/] button "
+                        "[dim](it will NOT auto-detect your PC)[/]\n"
+                        "  [bold cyan]3.[/] Type [bold]any[/] of these IPs (your PC's network addresses):\n"
+                        f"{ip_block}\n"
+                        "  [bold cyan]4.[/] Tap the new host → Moonlight shows a [bold]4-digit PIN[/] — "
+                        "a [bold]pairing notification[/] pops up on this laptop\n"
+                        "  [bold cyan]5.[/] Click that notification → it opens [bold]https://localhost:47990/pin[/] "
+                        "[dim](your own browser)[/]\n"
+                        "  [bold cyan]6.[/] Type the PIN and set the name = your PC name "
+                        f"[dim](e.g. [bold]{os.uname().nodename}[/])[/] → Save\n"
+                        "  [bold cyan]7.[/] Back on the phone: tap the tile → tap again to connect & stream\n\n"
+                        "[bold green]USB / offline mode (no Wi-Fi needed):[/]\n"
+                        "  [bold cyan]•[/] Connect iPhone with a [bold]USB cable[/] → on the phone enable "
+                        "[bold]Personal Hotspot[/] (USB option)\n"
+                        "  [bold cyan]•[/] The PC shows a new [bold]USB[/] row above — type THAT IP "
+                        "[dim](192.168.42.x)[/] into Moonlight\n"
+                        "  [bold cyan]•[/] Works with [bold]Wi-Fi and even airplane mode[/] on "
+                        "[dim](link is pure cable LAN; no internet involved)[/]\n\n"
+                        "[bold green]On this computer:[/] press Enter when you're done streaming "
+                        "(tears down the virtual display).",
+                        title="iOS Streaming Instructions",
+                        border_style="magenta",
+                        width=72,
+                    )
                 )
-                return
-            console.print(f"[bold green]  ✔[/] User unit [bold cyan]{unit_name}[/] enabled, started and verified active.")
 
-            primary_ip = NetworkSensingEngine.preferred_ip()
-            if primary_ip == "0.0.0.0":
-                primary_ip = "localhost"
-                console.print(
-                    "[bold yellow]  ⚠[/] No routable IP detected yet — showing the localhost URI. "
-                    "Pair via USB tunnel or after Wi-Fi/DHCP assignment."
-                )
-            web_ui_url = f"https://{primary_ip}:47990"
+                Prompt.ask("\nPress Enter when done streaming to teardown virtual display...")
+            finally:
+                if headless_name:
+                    HyprlandManager.remove_headless_output(headless_name)
 
-            console.print("\n[bold green]✔ Sunshine Streaming Server Active![/]")
-            console.print(f"  Web UI Pair Link: [bold cyan]{web_ui_url}[/]")
-
-            qr = QRRenderer.generate_qr(web_ui_url)
-            console.print(Panel(Align.center(qr), title="Scan with iOS to Pair Sunshine Web UI", border_style="cyan", width=60), justify="center")
-
-            ip_rows = [
-                (it.if_type.upper(), it.ip)
-                for it in NetworkSensingEngine.detect_interfaces()
-                if NetworkSensingEngine.validate_and_format_ip(it.ip) != "0.0.0.0"
-                and not it.ip.startswith("127.")
-            ]
-            ip_block = "\n".join(
-                f"      [bold cyan]•[/] {label}: [bold yellow]{ip}[/]"
-                for label, ip in ip_rows
-            ) or "      [dim]no network IP detected yet[/]"
-
-            console.print(
-                Panel.fit(
-                    "[bold yellow]On your iPhone (right now):[/]\n\n"
-                    "  [bold cyan]1.[/] Turn [bold]off[/] VPNs ([dim]Cloudflare WARP[/], [dim]Tailscale[/], ...) "
-                    "on the phone — plain [bold]same Wi-Fi[/]\n"
-                    "  [bold cyan]2.[/] Open [bold]Moonlight[/] → tap the [bold]＋ / Add Host[/] button "
-                    "[dim](it will NOT auto-detect your PC)[/]\n"
-                    "  [bold cyan]3.[/] Type [bold]any[/] of these IPs (your PC's network addresses):\n"
-                    f"{ip_block}\n"
-                    "  [bold cyan]4.[/] Tap the new host → Moonlight shows a [bold]4-digit PIN[/] — "
-                    "a [bold]pairing notification[/] pops up on this laptop\n"
-                    "  [bold cyan]5.[/] Click that notification → it opens [bold]https://localhost:47990/pin[/] "
-                    "[dim](your own browser)[/]\n"
-                    "  [bold cyan]6.[/] Type the PIN and set the name = your PC name "
-                    f"[dim](e.g. [bold]{os.uname().nodename}[/])[/] → Save\n"
-                    "  [bold cyan]7.[/] Back on the phone: tap the tile → tap again to connect & stream\n\n"
-                    "[bold green]USB / offline mode (no Wi-Fi needed):[/]\n"
-                    "  [bold cyan]•[/] Connect iPhone with a [bold]USB cable[/] → on the phone enable "
-                    "[bold]Personal Hotspot[/] (USB option)\n"
-                    "  [bold cyan]•[/] The PC shows a new [bold]USB[/] row above — type THAT IP "
-                    "[dim](192.168.42.x)[/] into Moonlight\n"
-                    "  [bold cyan]•[/] Works with [bold]Wi-Fi and even airplane mode[/] on "
-                    "[dim](link is pure cable LAN; no internet involved)[/]\n\n"
-                    "[bold green]On this computer:[/] press Enter when you're done streaming "
-                    "(tears down the virtual display).",
-                    title="iOS Streaming Instructions",
-                    border_style="magenta",
-                    width=72,
-                )
-            )
-
-            Prompt.ask("\nPress Enter when done streaming to teardown virtual display...")
-        finally:
-            if headless_name:
-                HyprlandManager.remove_headless_output(headless_name)
+            if not Confirm.ask("\nRestart Sunshine stack?", default=False):
+                break
 
     def run_wayvnc_stack(self) -> None:
         first_run = True
@@ -1251,7 +1258,10 @@ class ArchIOSLinkCLI:
                         "[bold green]On this computer:[/] press Enter at any time to stop WayVNC "
                         "[dim](tears down the virtual display)[/].\n"
                         "[bold yellow]Something went wrong?[/] Stale sockets are cleaned automatically; "
-                        "re-run Option 2 or confirm restart below — no reinstall needed.",
+                        "re-run Option 2 or confirm restart below — no reinstall needed.\n"
+                        "[bold red]Troubleshooting (RVNC):[/] if you can't connect from the phone, open "
+                        "RVNC → Settings → [bold]disable 'Connect via proxy'[/] — its own description says "
+                        "to turn it off when a connection can't be established, and it is ON by default.",
                         title="iOS VNC Instructions",
                         border_style="magenta",
                         width=74,
@@ -1273,65 +1283,73 @@ class ArchIOSLinkCLI:
                 break
 
     def setup_usb_tether_and_tunnel(self) -> None:
-        iproxy_proc: subprocess.Popen[Any] | None = None
-        try:
+        first_run = True
+        while True:
             self.display_header()
+            if not first_run:
+                console.print("[bold blue]  ::[/] Restarting USB stack — old forwarding sessions were shut down...")
+            first_run = False
             console.print(Panel("[bold cyan]USB Cable Tethering & usbmuxd Reverse Tunneling[/]", border_style="cyan"))
 
-            CommandRunner.run("systemctl enable --now usbmuxd")
-            console.print("[bold green]  ✔[/] usbmuxd service active.")
+            iproxy_proc: subprocess.Popen[Any] | None = None
+            try:
+                CommandRunner.run("systemctl enable --now usbmuxd")
+                console.print("[bold green]  ✔[/] usbmuxd service active.")
 
-            # Pairing Validation
-            if shutil.which("idevicepair"):
-                pair_check = CommandRunner.run("idevicepair validate")
-                if pair_check.returncode == 0 and "SUCCESS" in pair_check.stdout:
-                    console.print("[bold green]  ✔[/] iOS device trusted and paired.")
-                else:
-                    console.print("[bold yellow]  ⚠[/] Device not paired. Unlock iPhone and tap 'Trust This Computer'...")
-                    CommandRunner.run("idevicepair pair", timeout=None)
+                # Pairing Validation
+                if shutil.which("idevicepair"):
+                    pair_check = CommandRunner.run("idevicepair validate")
+                    if pair_check.returncode == 0 and "SUCCESS" in pair_check.stdout:
+                        console.print("[bold green]  ✔[/] iOS device trusted and paired.")
+                    else:
+                        console.print("[bold yellow]  ⚠[/] Device not paired. Unlock iPhone and tap 'Trust This Computer'...")
+                        CommandRunner.run("idevicepair pair", timeout=None)
 
-            console.print("\n[bold yellow]Instructions for iOS Device:[/]")
-            console.print("  1. Connect iPhone to Linux PC via Lightning/USB-C cable.")
-            console.print("  2. Unlock iPhone and tap 'Trust This Computer' if prompted.")
-            console.print("  3. Enable Personal Hotspot (USB Only) in Settings.")
+                console.print("\n[bold yellow]Instructions for iOS Device:[/]")
+                console.print("  1. Connect iPhone to Linux PC via Lightning/USB-C cable.")
+                console.print("  2. Unlock iPhone and tap 'Trust This Computer' if prompted.")
+                console.print("  3. Enable Personal Hotspot (USB Only) in Settings.")
 
-            if Confirm.ask("\nStart usbmuxd port forwarding (`iproxy`) for VNC, Sunshine & SSH?", default=True):
-                console.print("[bold blue]  ::[/] Launching `iproxy` multi-port tunnel over USB...")
+                if Confirm.ask("\nStart usbmuxd port forwarding (`iproxy`) for VNC, Sunshine & SSH?", default=True):
+                    console.print("[bold blue]  ::[/] Launching `iproxy` multi-port tunnel over USB...")
 
-                proxy_maps = ["5900:5900", "3389:3389", "47989:47989", "47990:47990", "2222:22"]
-                listen_ports = {int(m.split(":")[0]) for m in proxy_maps}
+                    proxy_maps = ["5900:5900", "3389:3389", "47989:47989", "47990:47990", "2222:22"]
+                    listen_ports = {int(m.split(":")[0]) for m in proxy_maps}
 
-                busy: set[int] = set()
-                ss_out = CommandRunner.run("ss -tlnH").stdout
-                for line in ss_out.splitlines():
-                    for tok in line.split():
-                        if tok.startswith(("0.0.0.0:", "[::]:", "127.0.0.1:", "*:")):
-                            with contextlib.suppress(ValueError):
-                                busy.add(int(tok.rsplit(":", 1)[1]))
+                    busy: set[int] = set()
+                    ss_out = CommandRunner.run("ss -tlnH").stdout
+                    for line in ss_out.splitlines():
+                        for tok in line.split():
+                            if tok.startswith(("0.0.0.0:", "[::]:", "127.0.0.1:", "*:")):
+                                with contextlib.suppress(ValueError):
+                                    busy.add(int(tok.rsplit(":", 1)[1]))
 
-                conflicting = listen_ports & busy
-                if conflicting:
-                    console.print(f"[bold yellow]  ⚠[/] Ports already in use locally, skipping: {sorted(conflicting)}")
-                proxy_maps = [m for m in proxy_maps if int(m.split(":")[0]) not in conflicting]
+                    conflicting = listen_ports & busy
+                    if conflicting:
+                        console.print(f"[bold yellow]  ⚠[/] Ports already in use locally, skipping: {sorted(conflicting)}")
+                    proxy_maps = [m for m in proxy_maps if int(m.split(":")[0]) not in conflicting]
 
-                if not proxy_maps:
-                    console.print("[bold yellow]  ⚠[/] All requested forwarded ports are busy. Refusing to start iproxy.")
-                else:
-                    iproxy_proc = subprocess.Popen(
-                        ["iproxy"] + proxy_maps,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL
-                    )
-                    ResourceManager.register_process(iproxy_proc)
-                    pending = [m.split(":")[1] for m in proxy_maps]
-                    console.print(f"[bold green]  ✔[/] USB Tunnel active! Localhost ports {', '.join(m.split(':')[0] for m in proxy_maps)} forwarded to device ports {', '.join(pending)} over USB cable.")
-                    Prompt.ask("\nPress Enter to stop USB forwarding...")
-        finally:
-            if iproxy_proc:
-                with contextlib.suppress(Exception):
-                    iproxy_proc.terminate()
-                    iproxy_proc.wait(timeout=2)
-                ResourceManager.unregister_process(iproxy_proc)
+                    if not proxy_maps:
+                        console.print("[bold yellow]  ⚠[/] All requested forwarded ports are busy. Refusing to start iproxy.")
+                    else:
+                        iproxy_proc = subprocess.Popen(
+                            ["iproxy"] + proxy_maps,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL
+                        )
+                        ResourceManager.register_process(iproxy_proc)
+                        pending = [m.split(":")[1] for m in proxy_maps]
+                        console.print(f"[bold green]  ✔[/] USB Tunnel active! Localhost ports {', '.join(m.split(':')[0] for m in proxy_maps)} forwarded to device ports {', '.join(pending)} over USB cable.")
+                        Prompt.ask("\nPress Enter to stop USB forwarding...")
+            finally:
+                if iproxy_proc:
+                    with contextlib.suppress(Exception):
+                        iproxy_proc.terminate()
+                        iproxy_proc.wait(timeout=2)
+                    ResourceManager.unregister_process(iproxy_proc)
+
+            if not Confirm.ask("\nRestart USB forwarding / re-check the cable?", default=False):
+                break
 
     def display_ios_setup_guide(self) -> None:
         self.display_header()
