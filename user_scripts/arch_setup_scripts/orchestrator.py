@@ -2393,9 +2393,176 @@ def parse_task_table(table: dict, index: int) -> OrchestratorTask:
     )
 
 
+def repair_missing_commas(text: str) -> tuple[str, int]:
+    """Insert missing commas inside array / inline-table literals.
+
+    A single omitted comma inside any [] or {} literal makes the WHOLE profile
+    unparseable. This tokenizer-based repairer inserts a comma wherever one
+    value token is directly followed by another value token without a
+    separator. Safety contract: only applied on a strict tomllib failure and
+    only when the repaired text re-parses cleanly; strings, arrays, tables and
+    bare words are handled such that valid files are returned byte-for-byte
+    untouched and parseable output never changes meaning.
+
+    Returns ``(repaired_text, number_of_fixes)``.
+    """
+    _NUM_BOOL_RE = re.compile(
+        r"[+-]?(?:\d[\d_]*(?:\.\d[\d_]*)?(?:[eE][+-]?\d+)?"
+        r"|0[xX][0-9a-fA-F_]+|0[oO][0-7_]+|0[bB][01_]+)"
+    )
+    _BOOL_WORDS = {"true", "false", "inf", "+inf", "-inf", "nan", "+nan", "-nan"}
+    _WORD_CHARS = "_.+-:"
+
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    depth = 0
+    pending_value = False
+    pending_is_word = False
+    value_end = -1
+    fixes = 0
+
+    def is_num_or_bool(word: str) -> bool:
+        return word in _BOOL_WORDS or _NUM_BOOL_RE.fullmatch(word) is not None
+
+    while i < n:
+        c = text[i]
+
+        if c == '#':
+            j = text.find('\n', i)
+            if j == -1:
+                j = n
+            out.append(text[i:j])
+            i = j
+            continue
+
+        if depth and pending_value and (c in '"\'[{+-' or c.isalnum()) and not (c == '-' and i + 1 >= n):
+            k = i
+            while k < n and (text[k].isalnum() or text[k] in _WORD_CHARS):
+                k += 1
+            word_end = k
+            while k < n and text[k] in ' \t':
+                k += 1
+            is_key = k < n and text[k] == '='
+            insert = True
+            if c.isalnum() and pending_is_word and not is_key and not is_num_or_bool(text[i:word_end]):
+                insert = False
+            if insert:
+                out.insert(value_end, ',')
+                pending_value = False
+                pending_is_word = False
+                fixes += 1
+
+        if c in '"\'':
+            quote = c
+            str_start = i
+            if text.startswith(quote * 3, i):
+                i += 3
+                while i < n and not text.startswith(quote * 3, i):
+                    if text[i] == '\\':
+                        i += 1
+                    i += 1
+                i = min(i + 3, n)
+            else:
+                i += 1
+                while i < n and text[i] != quote:
+                    if text[i] == '\\':
+                        i += 1
+                    i += 1
+                i += 1
+            out.append(text[str_start:i])
+            if depth:
+                pending_value = True
+                pending_is_word = False
+                value_end = len(out)
+            continue
+
+        if c == '=':
+            pending_value = False
+            pending_is_word = False
+            out.append(c)
+            i += 1
+            continue
+
+        if c in '[{':
+            depth += 1
+            pending_value = False
+            pending_is_word = False
+            out.append(c)
+            i += 1
+            continue
+
+        if c in ']}':
+            depth = max(0, depth - 1)
+            out.append(c)
+            i += 1
+            if depth:
+                pending_value = True
+                pending_is_word = False
+                value_end = len(out)
+            else:
+                pending_value = False
+                pending_is_word = False
+            continue
+
+        if c == ',':
+            pending_value = False
+            pending_is_word = False
+            out.append(c)
+            i += 1
+            continue
+
+        if c in ' \t\r\n':
+            out.append(c)
+            i += 1
+            continue
+
+        word_start_idx = i
+        while i < n and (text[i].isalnum() or text[i] in _WORD_CHARS):
+            i += 1
+        if i > word_start_idx:
+            out.append(text[word_start_idx:i])
+            k = i
+            while k < n and text[k] in ' \t':
+                k += 1
+            if depth and text[k] != '=':
+                pending_value = True
+                pending_is_word = True
+                value_end = len(out)
+            else:
+                pending_value = False
+                pending_is_word = False
+            continue
+
+        out.append(c)
+        i += 1
+
+    return ''.join(out), fixes
+
+
 def load_profile(filepath: Path) -> ProfileConfig:
-    with open(filepath, "rb") as f:
-        data = tomllib.load(f)
+    text = filepath.read_text(encoding="utf-8")
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as raw_err:
+        repaired, fixes = repair_missing_commas(text)
+        if fixes == 0:
+            raise raw_err
+        try:
+            data = tomllib.loads(repaired)
+        except tomllib.TOMLDecodeError:
+            raise raw_err
+        try:
+            filepath.write_text(repaired, encoding="utf-8")
+            sys.stderr.write(
+                f"[WARN] Inserted {fixes} missing comma(s) in '{filepath}' -- "
+                f"auto-repaired. Fix them properly in git!\n"
+            )
+        except OSError as write_err:
+            sys.stderr.write(
+                f"[WARN] Inserted {fixes} missing comma(s) in '{filepath}' (in-memory "
+                f"repair only, could not save: {write_err}). Fix them in git!\n"
+            )
 
     p_data = data.get("profile", {})
     g_data = data.get("git", {})
@@ -3782,8 +3949,21 @@ def validate_updated_sources(my_path: Path, wrapper_path: Path) -> None:
 
     if PROFILES_DIR.exists():
         for profile_file in PROFILES_DIR.glob("*.toml"):
-            with open(profile_file, "rb") as f:
-                tomllib.load(f)
+            text = profile_file.read_text(encoding="utf-8")
+            try:
+                tomllib.loads(text)
+            except tomllib.TOMLDecodeError as raw_err:
+                repaired, fixes = repair_missing_commas(text)
+                if fixes == 0:
+                    raise raw_err
+                try:
+                    tomllib.loads(repaired)
+                except tomllib.TOMLDecodeError:
+                    raise raw_err
+                profile_file.write_text(repaired, encoding="utf-8")
+                sys.stderr.write(
+                    f"[WARN] Inserted {fixes} missing comma(s) in '{profile_file}' -- auto-repaired.\n"
+                )
 
 
 def run_git_self_update(
