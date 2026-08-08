@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 ===============================================================================
- Title:        Arch Linux to iOS 16.7 Remote Control & Screen Link (v7.0 Golden)
- Target:       Arch Linux (Wayland / Hyprland), iOS 16.7 (Jailbroken)
+ Title:        Arch Linux Remote Control & Screen Link for iOS (v7.0 Golden)
+ Target:       Arch Linux (Wayland / Hyprland) — any modern iOS (VNC). Generic Linux client.
  Python:       Python 3.10 - 3.14+ (Modern Syntax & Strict Audit Compliance)
  -------------------------------------------------------------------------------
  Audit & Safety Guarantees:
@@ -960,7 +960,7 @@ class ArchIOSLinkCLI:
         console.print(
             Panel.fit(
                 f"[bold white]Target Architecture:[/] [bold cyan]Arch Linux (Wayland/Hyprland)[/]\n"
-                f"[bold white]Target Client:[/] [bold green]iOS 16.7 (Jailbroken)[/]\n"
+                f"[bold white]Target Client:[/] [bold green]iOS (any version, standard VNC) / Linux (Moonlight)[/]\n"
                 f"[bold white]Active Desktop User:[/] [bold yellow]{self.user}[/] [dim](UID: {user_ctx.uid})[/]\n"
                 f"[bold white]Wayland Display:[/] [bold magenta]{user_ctx.wayland_display or 'Unknown'}[/]",
                 title="[bold green]✦ Arch Linux ↔ iOS Remote Link Orchestrator v7.0 Golden ✦[/]",
@@ -1250,25 +1250,15 @@ class ArchIOSLinkCLI:
 
     def display_ios_setup_guide(self) -> None:
         self.display_header()
-        guide = Table(title="[bold]iOS 16.7 Jailbreak Ecosystem Setup Guide[/]", show_header=True, header_style="bold magenta", border_style="green")
+        guide = Table(title="[bold]iOS Remote Client Setup Guide (Version-Agnostic)[/]", show_header=True, header_style="bold magenta", border_style="green")
         guide.add_column("Category", style="bold cyan")
-        guide.add_column("Recommended Tool / Tweak", style="bold yellow")
+        guide.add_column("Recommended Tool", style="bold yellow")
         guide.add_column("Purpose & Instructions", style="white")
 
         guide.add_row(
-            "Jailbreak Environment",
-            "palera1n (Rootless)",
-            "iOS 16.7 jailbreak tool. Ensure Procursus rootless bootstrap is active."
-        )
-        guide.add_row(
-            "Backgrounding Tweak",
-            "Immortalizer (by sergy)",
-            "CRITICAL: Keeps Jump Desktop / Moonlight / Termius active in background when minimized or locked."
-        )
-        guide.add_row(
             "Remote Control Client",
             "Jump Desktop (VNC/RDP/Fluid)",
-            "Best for full desktop control, touch gestures, trackpad mode, and extended modifier keybars."
+            "Best for full desktop control, touch gestures, trackpad mode, and extended modifier keybars. Available on any supported iOS version."
         )
         guide.add_row(
             "Streaming Client",
@@ -1293,7 +1283,7 @@ class ArchIOSLinkCLI:
             console.print("  [bold cyan]1.[/] Launch Sunshine + Moonlight Ultra-Low Latency Streaming Stack")
             console.print("  [bold cyan]2.[/] Launch WayVNC Lightweight Headless Display Stack")
             console.print("  [bold cyan]3.[/] Configure USB Cable Tethering & usbmuxd Tunnels (`iproxy`)")
-            console.print("  [bold cyan]4.[/] View iOS 16.7 Setup Guide & Jailbreak Tweak Matrix")
+            console.print("  [bold cyan]4.[/] View iOS Remote Client Setup Guide (version-agnostic)")
             console.print("  [bold cyan]5.[/] Remote Connect (Client Mode): control another machine via VNC / Moonlight")
             console.print("  [bold cyan]6.[/] Exit Orchestrator")
 
