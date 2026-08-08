@@ -44,9 +44,9 @@ REQUIRE_ROOT = False
 # 3. TABS DEFINITION
 # =============================================================================
 TABS = [
-    "Typefaces",
-    "Rendering Options",
-    "System & Cache",
+    "Fonts",
+    "Rendering",
+    "Cache & Tools",
     "Profiles"
 ]
 
@@ -72,7 +72,7 @@ _CURATED_FALLBACK = {
 }
 
 _FAMILY_HINTS = {
-    "Atkinson Hyperlegible": "High legibility (Braille Inst.)",
+    "Atkinson Hyperlegible": "High legibility",
     "Liberation Sans": "Metric-compatible Arial",
     "Adwaita Sans": "GNOME default",
     "FreeSans": "GNU free core",
@@ -191,7 +191,7 @@ _EMOJI_OPTIONS, _EMOJI_HINTS = _picker_options("emoji", "Noto Color Emoji")
 # =============================================================================
 SCHEMA = {
     # -------------------------------------------------------------------------
-    # TAB 0: TYPEFACES
+    # TAB 0: FONTS
     # -------------------------------------------------------------------------
     0: [
         ConfigItem(
@@ -245,7 +245,7 @@ SCHEMA = {
     ],
     
     # -------------------------------------------------------------------------
-    # TAB 1: RENDERING OPTIONS
+    # TAB 1: RENDERING
     # -------------------------------------------------------------------------
     1: [
         ConfigItem(
@@ -322,7 +322,7 @@ SCHEMA = {
     ],
 
     # -------------------------------------------------------------------------
-    # TAB 2: SYSTEM & CACHE
+    # TAB 2: CACHE & TOOLS
     # -------------------------------------------------------------------------
     2: [
         ConfigItem(
