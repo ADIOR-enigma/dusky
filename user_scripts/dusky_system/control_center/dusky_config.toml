@@ -682,6 +682,18 @@ terminal = false
 [[pages.layout.items]]
 type = "button"
 [pages.layout.items.properties]
+title = "Step 3: VNC / iOS Remote"
+description = "WayVNC + Sunshine remote control setup"
+icon = "preferences-desktop-remote-desktop-symbolic"
+button_text = "Setup"
+[pages.layout.items.on_press]
+type = "exec"
+command = "kitty --class vnc_setup.py --hold sh -c \"python3 $HOME/user_scripts/networking/vnc/vnc_setup.py\""
+terminal = false
+
+[[pages.layout.items]]
+type = "button"
+[pages.layout.items.properties]
 title = "Tailscale Uninstall"
 description = "Remove Tailscale configuration"
 icon = "user-trash-symbolic"
@@ -848,12 +860,12 @@ terminal = false
 type = "button"
 [pages.layout.items.properties]
 title = "Airmon-ng Setup"
-description = "Enable monitor mode on wireless interface"
+description = "GPU-accelerated WiFi audit (monitor mode + hashcat)"
 icon = "network-wireless-hotspot-symbolic"
 button_text = "Setup"
 [pages.layout.items.on_press]
 type = "exec"
-command = "kitty --class airmon_ng.sh --hold sh -c ~/user_scripts/networking/airmon_ng.sh"
+command = "kitty --class airmon_ng_gpu.py --hold sh -c \"$HOME/user_scripts/networking/airmon_ng_gpu.py\""
 terminal = false
 
 [[pages.layout]]
@@ -2208,6 +2220,13 @@ style = "suggested"
 type = "exec"
 command = "foot --app-id=dusky_tui --hold python3 $HOME/user_scripts/fonts/tui_fonts.py"
 
+[[pages.layout.items.layout.items.properties.buttons]]
+icon = "system-run-symbolic"
+button_text = "Setup"
+[pages.layout.items.layout.items.properties.buttons.on_press]
+type = "exec"
+command = "kitty --class 140_dusky_font_configurator.py --hold sh -c \"python3 $HOME/user_scripts/arch_setup_scripts/scripts/140_dusky_font_configurator.py\""
+
 [[pages.layout.items.layout.items]]
 type = "button"
 [pages.layout.items.layout.items.properties]
@@ -3274,12 +3293,12 @@ terminal = false
 type = "button"
 [pages.layout.items.properties]
 title = "Fix Firefox Theme"
-description = "Apply Matugen/Pywalfox theme"
+description = "Provision Dusky Sites / userChrome theme hooks"
 icon = "web-browser-symbolic"
 button_text = "Fix"
 [pages.layout.items.on_press]
 type = "exec"
-command = "kitty --class 400_firefox_matugen_pywalfox.sh --hold sh -c \"$HOME/user_scripts/firefox/400_firefox_matugen_pywalfox.sh\""
+command = "kitty --class dusky_sites_setup.py --hold sh -c \"python3 $HOME/user_scripts/firefox/theme_matugen/dusky_sites_setup.py\""
 terminal = false
 
 [[pages.layout.items]]
