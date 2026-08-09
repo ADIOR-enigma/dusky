@@ -129,9 +129,9 @@ built from the embedded `eglfix.c` in `fix_run_on_wayland.py`):
 
 ## 5. Required packages (fresh Arch install)
 
-Installed automatically by `install_fix.py` (auto-elevates to sudo only for
-pacman; everything else runs as your user). All are also listed here for manual
-install:
+Installed automatically by `fix_run_on_wayland.py` (auto-elevates to sudo only
+for pacman; everything else runs as your user). All are also listed here for
+manual install:
 
 | Package | Why it's needed |
 |---|---|
@@ -237,7 +237,9 @@ python3 fix_run_on_wayland.py [--game-dir DIR] [--check] [--force] [--skip-packa
 - `--reset` — **remove everything the fix generated**: both shim dirs, the
   legacy in-game `eglfix/` dir (if any), the `ENV=` line (or the whole
   `local.config` if the script created it), and any stray `.bak`. Asks for
-  confirmation unless `-y/--yes`. Then re-run without flags to reinstall.
+  confirmation unless `-y/--yes` (piped stdin is treated as "no"). **Works even
+  if the game dir is gone** (e.g. you deleted the game — the shims live in
+  `$HOME`, not the game dir). Then re-run without flags to reinstall.
 - `--troubleshoot` — read-only full diagnostic: state table, live smoke test,
   shim log (`/tmp/eglfix.log`), game logs (sandbox + host), and suggested fixes.
 
@@ -273,10 +275,10 @@ The game itself, both sandboxed and unsandboxed, with the shim:
 - [x] Log shows `Video driver: wayland` + `Initialised OpenGL: Mesa Intel Iris Xe` and **no** `Failed to create shader` crash.
 - [x] Reaches the main menu; **keyboard input works** (wtype keypresses navigate the menu).
 - [x] Loads a save: `Loading level.dat` + `Map version 2.1.14-1` (in the sandbox too).
-- [x] Renders: `Custom mipmaps uploaded (2370)`; screenshots show real in-game
-      content (100k+ colors, not a black screen).
+- [x] Renders: screenshots show real in-game content (40k-100k+ colors, not a
+      black screen) and the view actually changes on WASD/zoom input.
 - [x] **Zero** per-frame `INVALID_OPERATION` GL errors (were present pre-fix).
-- [x] Shim event log shows exactly one `ensure_current: rebind ... -> 1`.
+- [x] Shim event log shows `ensure_current: rebind ... -> 1` inside the game process.
 
 The installer's built-in smoke test (runs on every install): creates a
 surfaceless EGL context, unbinds it, then calls `glCreateShader` — the shim
@@ -294,11 +296,42 @@ the whole process tree it started. Output on this machine:
 [*] GAME LAUNCH CHECK PASSED: reached 'Factorio initialised' on native Wayland
 ```
 
+### Final from-scratch stress test (2026-08-09, everything re-verified)
+
+An end-to-end test on the exact shipped files — wipe-everything-and-rebuild,
+no assumptions:
+
+- **Kit integrity:** `generate.py` regenerates the installer; `py_compile` OK;
+  embedded `eglfix.c`/`export.map` SHA-identical to `sources/`; all 12 flags
+  present in `--help`.
+- **Fresh-install simulation:** deleted both shim dirs + `local.config`, broke
+  the exec bits on `start.n.sh`/`space.age.sh`/`actions.sh` → `--check`
+  reported all 4 problems → one install run restored exec bits, rebuilt +
+  mirrored the shim, re-created `local.config`, smoke test passed, exit 0.
+- **Stress suite:** **20/20 assertions pass** (break/repair, fresh-sim,
+  deterministic `--force` rebuild, idempotency ×4, `--check`=0, `--reset`
+  completeness incl. `.bak`, reinstall). Post-stress `--check`: 0 problems.
+- **`--verify-game`:** game reached `Factorio initialised` on native Wayland
+  (sandboxed), shim rebind fired, processes cleaned up after.
+- **`run.sh` launch path:** shim preloaded through the user launcher, game
+  booted on Wayland, 40k-color rendering, **0 GL errors**.
+- **Deep gameplay (sandboxed):** keyboard-loaded the save
+  (`Map version 2.1.14-1`), world rendered (49k colors), WASD/zoom moved the
+  camera (screenshot mean changed), **0 GL errors**.
+- **`--reset` round-trip:** piped "n" aborts (exit 1, no changes); `--yes`
+  removes both shim dirs + config; `--troubleshoot` then correctly reports the
+  missing pieces and suggests the fix; reinstall restores everything.
+- **Game-independent `--reset`:** works when no game dir can be found (shims
+  live in `$HOME`), so you can clean up after deleting the game.
+
 ## 9. Troubleshooting
 
 - **Smoke test fails:** check `/tmp/eglfix.log` (shim diagnostics) and the
   script output. Usually: missing EGL headers (`sudo pacman -S libglvnd`) or
   the real `libEGL.so.1` missing.
+- **Fresh-install quick check:** if the game crashes right after a fresh
+  download, run `python3 fix_run_on_wayland.py --check` first — it reports
+  missing shims, unwired config, and lost exec bits in one table.
 - **Game still crashes with the old error:** run `python3 fix_run_on_wayland.py`
   again (or `--force` to rebuild), then `--verify-game` to prove it. If that
   still fails, `--reset` and reinstall.
