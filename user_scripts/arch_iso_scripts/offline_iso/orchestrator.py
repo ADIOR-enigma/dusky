@@ -1687,7 +1687,7 @@ class DuskyOrchestratorApp(App):
         try:
             row = self.query_one(f"#row_{idx}")
             icon_w = row.children[0]
-            name_w = row.children[2]
+            name_w = row.children[1]
             t = self.tasks[idx]
             if status == TaskStatus.RUNNING:
                 icon_w.update(f"[bold #58a6ff]{S('running')}[/]")
@@ -1984,6 +1984,7 @@ class DuskyOrchestratorApp(App):
 
     async def task_success(self, task: OrchestratorTask, duration: float = 0.0):
         self.update_task_status(self.current_idx, TaskStatus.COMPLETED)
+        task.duration = duration
         self.log_task("\n\033[1;32m>>> EXECUTION SUCCESSFUL\033[0m")
         self.completed_keys.add(task.state_key)
         self.task_statuses[task.state_key] = "COMPLETED"
@@ -2016,6 +2017,7 @@ class DuskyOrchestratorApp(App):
 
     async def task_failure(self, task: OrchestratorTask, reason: str, duration: float = 0.0):
         self.update_task_status(self.current_idx, TaskStatus.FAILED)
+        task.duration = duration
         self.log_task(f"\n\033[1;31m>>> EXECUTION FAILED: {reason}\033[0m")
         self.task_statuses[task.state_key] = "FAILED"
         self.counters["failed"] += 1
