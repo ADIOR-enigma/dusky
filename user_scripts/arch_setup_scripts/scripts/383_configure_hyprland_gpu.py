@@ -260,10 +260,13 @@ def gen_lua(primary: Gpu, ordered: List[Gpu], mode: str) -> str:
             L.append("-- AMD")
             if pr["radeonsi"]: L.append('hl.env("LIBVA_DRIVER_NAME", "radeonsi")')
         case "0x10de":
-            if drv == "nvidia" or Path("/usr/lib/gbm/nvidia-drm_gbm.so").exists() or Path("/usr/lib64/gbm/nvidia-drm_gbm.so").exists():
+            # Post-boot userspace script: respect live kernel driver first so running Nouveau is never forced into nvidia-drm
+            if drv == "nvidia":
                 tgt = "nvidia"
             elif drv == "nouveau":
                 tgt = "nouveau"
+            elif Path("/usr/lib/gbm/nvidia-drm_gbm.so").exists() or Path("/usr/lib64/gbm/nvidia-drm_gbm.so").exists():
+                tgt = "nvidia"
             else:
                 tgt = drv
 
@@ -354,10 +357,12 @@ def nvidia_target(primary: Gpu) -> str:
     if primary.vendor_id.lower() != "0x10de":
         return primary.driver.lower()
     drv = primary.driver.lower()
-    if drv == "nvidia" or Path("/usr/lib/gbm/nvidia-drm_gbm.so").exists() or Path("/usr/lib64/gbm/nvidia-drm_gbm.so").exists():
+    if drv == "nvidia":
         return "nvidia"
     elif drv == "nouveau":
         return "nouveau"
+    elif Path("/usr/lib/gbm/nvidia-drm_gbm.so").exists() or Path("/usr/lib64/gbm/nvidia-drm_gbm.so").exists():
+        return "nvidia"
     return drv
 
 def nvidia_modeset_confirmed(cards: Optional[List[Gpu]] = None) -> bool:
