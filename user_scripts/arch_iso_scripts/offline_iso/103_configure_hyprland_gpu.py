@@ -327,9 +327,13 @@ def gen_lua(primary: Gpu, ordered: List[Gpu], mode: str) -> str:
             L.append("-- AMD")
             if pr["radeonsi"]: L.append('hl.env("LIBVA_DRIVER_NAME", "radeonsi")')
         case "0x10de":
-            tgt = drv
-            if tgt not in ("nvidia", "nouveau") and Path("/usr/lib/gbm/nvidia-drm_gbm.so").exists():
+            if drv == "nvidia" or Path("/usr/lib/gbm/nvidia-drm_gbm.so").exists() or Path("/usr/lib64/gbm/nvidia-drm_gbm.so").exists():
                 tgt = "nvidia"
+            elif drv == "nouveau":
+                tgt = "nouveau"
+            else:
+                tgt = drv
+
             if tgt == "nvidia":
                 L.append("-- NVIDIA Proprietary")
                 L.append('hl.env("GBM_BACKEND", "nvidia-drm")')
@@ -419,8 +423,10 @@ def nvidia_target(primary: Gpu) -> str:
     if primary.vendor_id.lower() != "0x10de":
         return primary.driver.lower()
     drv = primary.driver.lower()
-    if drv not in ("nvidia", "nouveau") and Path("/usr/lib/gbm/nvidia-drm_gbm.so").exists():
+    if drv == "nvidia" or Path("/usr/lib/gbm/nvidia-drm_gbm.so").exists() or Path("/usr/lib64/gbm/nvidia-drm_gbm.so").exists():
         return "nvidia"
+    elif drv == "nouveau":
+        return "nouveau"
     return drv
 
 def nvidia_modeset_confirmed(cards: Optional[List[Gpu]] = None) -> bool:
