@@ -1369,9 +1369,7 @@ class DuskyOrchestratorApp(App):
         height: 1;
     }
     .task_icon { width: 3; text-align: center; }
-    .task_mode { width: 5; text-align: center; color: #d29922; }
-    .task_mode_sudo { width: 5; text-align: center; color: #f85149; text-style: bold; }
-    .task_mode_user { width: 5; text-align: center; color: #3fb950; text-style: bold; }
+    .task_mode { width: 5; text-align: center; }
     .task_name { width: 1fr; color: #c9d1d9; }
     
     RichLog {
@@ -1654,12 +1652,7 @@ class DuskyOrchestratorApp(App):
             else:
                 icon = f"[#8b949e]{S('pending')}[/]"
 
-            if t.mode == "S":
-                mode_cls = "task_mode_sudo"
-                mode_str = "SUDO"
-            else:
-                mode_cls = "task_mode_user"
-                mode_str = "USER"
+            mode_str = "SUDO" if t.mode == "S" else "USER"
 
             if t.status == TaskStatus.COMPLETED or t.state_key in self.completed_keys:
                 name_style = "bold #3fb950"
@@ -1676,7 +1669,7 @@ class DuskyOrchestratorApp(App):
             row = Horizontal(
                 Static(icon, classes="task_icon"),
                 Static(name_text, classes="task_name"),
-                Static(mode_str, classes=mode_cls),
+                Static(f"[{name_style}]{mode_str}[/]", classes="task_mode"),
                 classes="task_row",
                 id=f"row_{i}",
             )
@@ -1688,19 +1681,25 @@ class DuskyOrchestratorApp(App):
             row = self.query_one(f"#row_{idx}")
             icon_w = row.children[0]
             name_w = row.children[1]
+            mode_w = row.children[2]
             t = self.tasks[idx]
+            mode_str = "SUDO" if t.mode == "S" else "USER"
             if status == TaskStatus.RUNNING:
                 icon_w.update(f"[bold #58a6ff]{S('running')}[/]")
                 name_w.update(f"[bold #58a6ff]{t.script_name}[/]")
+                mode_w.update(f"[bold #58a6ff]{mode_str}[/]")
             elif status == TaskStatus.COMPLETED:
                 icon_w.update(f"[bold #3fb950]{S('completed')}[/]")
                 name_w.update(f"[bold #3fb950]{t.script_name}[/]")
+                mode_w.update(f"[bold #3fb950]{mode_str}[/]")
             elif status == TaskStatus.FAILED:
                 icon_w.update(f"[bold #f85149]{S('failed')}[/]")
                 name_w.update(f"[bold #f85149]{t.script_name}[/]")
+                mode_w.update(f"[bold #f85149]{mode_str}[/]")
             elif status == TaskStatus.SKIPPED:
                 icon_w.update(f"[bold #d29922]{S('skipped')}[/]")
                 name_w.update(f"[dim #d29922]{t.script_name}[/]")
+                mode_w.update(f"[dim #d29922]{mode_str}[/]")
         except Exception:
             pass
 
