@@ -4208,11 +4208,11 @@ class TaskItem(ListItem):
             return
 
         if self.dusky_task.mode == 'GIT':
-            badge = f"[bold {THEME['accent']}]GIT[/]"
+            mode_text = "GIT"
         elif self.dusky_task.mode == 'S':
-            badge = f"[bold {THEME['error']}]SUDO[/]"
+            mode_text = "SUDO"
         else:
-            badge = f"[bold {THEME['success']}]USER[/]"
+            mode_text = "USER"
 
         cmd_str = f"{self.dusky_task.name} {' '.join(self.dusky_task.args)}".strip()
         cmd_str = escape(cmd_str)
@@ -4249,7 +4249,7 @@ class TaskItem(ListItem):
         color = color_map.get(self.status, "white")
 
         with suppress(Exception):
-            self.query_one(Label).update(f" {icon}  [{color}]{cmd_str}[/]{suffix}  {badge}")
+            self.query_one(Label).update(f" {icon}  [{color}]{cmd_str}[/]{suffix}  [{color}]{mode_text}[/]")
 
 
 class TaskSearchScreen(ModalScreen[int | None]):

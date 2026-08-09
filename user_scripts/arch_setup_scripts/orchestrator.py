@@ -4396,11 +4396,11 @@ def _task_label(task: OrchestratorTask) -> Text:
 
     txt.append("  ")
     if task.mode == "S":
-        txt.append("SUDO", style=f"bold {PALETTE['error']}")
+        txt.append("SUDO", style=script_style)
     elif task.mode == "GIT":
-        txt.append("GIT", style=f"bold {PALETTE['accent']}")
+        txt.append("GIT", style=script_style)
     else:
-        txt.append("USER", style=f"bold {PALETTE['success']}")
+        txt.append("USER", style=script_style)
 
     return txt
 
