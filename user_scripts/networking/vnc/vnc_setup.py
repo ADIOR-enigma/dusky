@@ -19,9 +19,9 @@
   5. WayVNC Audited Pipeline: Auto-generates 4096-bit RSA TLS certs, configures
      /etc/pam.d/wayvnc, cleans stale sockets (/run/user/UID/wayvncctl), and validates
      IPs using ipaddress.ip_address with 0.0.0.0 fallback.
-6. USB Tethering & Pairing: Validates idevicepair trust records, detects local
-      port conflicts before launching iproxy (skips busy ports), and relies on
-      NetworkManager (or the distro's DHCP client) to bring up ipheth/USB tether links.
+  6. USB Tethering & Pairing: Validates idevicepair trust records, detects local
+     port conflicts before launching iproxy (skips busy ports), and relies on
+     NetworkManager (or the distro's DHCP client) to bring up ipheth/USB tether links.
   7. Idempotent Firewalls: Handles UFW, Firewalld, nftables, and iptables idempotently
      without throwing duplicate rule or missing table/chain errors.
   8. Unbreakable Cleanup: Signal handlers (SIGINT/SIGTERM), atexit hooks, and try/finally
@@ -49,6 +49,10 @@ from typing import Any, Callable
 # --- 1. Early Privilege Escalation & Environment Preservation ---
 def bootstrap_environment() -> None:
     """Ensures root privileges while preserving critical Wayland & Hyprland environment variables."""
+    # Client-only mode does not require root privileges for pacman/udev system setup
+    if "--client" in sys.argv:
+        return
+
     if os.geteuid() != 0:
         print("[\033[1;33m*\033[0m] Escalating privileges via sudo for Arch Linux system-level setup...", flush=True)
         preserve_vars = "WAYLAND_DISPLAY,HYPRLAND_INSTANCE_SIGNATURE,XDG_RUNTIME_DIR,XDG_CURRENT_DESKTOP,XDG_SESSION_TYPE"
@@ -749,7 +753,7 @@ class SunshineManager:
             f"output_name = {output_name}",
             "# XDG Portal capture (Wayland direct capture is broken upstream on Hyprland 0.5x)",
             "capture = portal",
-            "encoder = nvenc",
+            "encoder = auto",
             "min_log_level = info"
         ]
         conf_file.write_text("\n".join(lines))
