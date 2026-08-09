@@ -105,7 +105,7 @@ require_internet() {
         fi
     fi
 
-    log ERROR "Internet is required to install missing dependencies."
+    log ERROR "Internet is required for the orchestration pipeline."
     exit 1
 }
 
@@ -219,6 +219,10 @@ main() {
         LD_PRELOAD LD_AUDIT LD_DEBUG LD_LIBRARY_PATH LD_ORIGIN_PATH \
         LD_PROFILE LD_SHOW_AUXV LD_USE_LOAD_BIAS PYTHONSTARTUP PYTHONHOME \
         PYTHONPATH PERL5LIB RUBYLIB NODE_OPTIONS 2>/dev/null || true
+
+    # Guarantee connectivity before handing off to the Python orchestrator.
+    # The network helper script runs only when the system is offline.
+    require_internet
 
     local has_allow_root=0
     local arg
