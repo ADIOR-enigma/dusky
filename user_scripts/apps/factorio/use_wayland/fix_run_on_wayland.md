@@ -10,10 +10,13 @@ Everything you need is in this folder:
 
 | File | What it is |
 |---|---|
-| `install_fix.py` | **Self-contained installer** (embeds the shim source + a verification smoke test). Run it, done. |
-| `INSTALL_FIX.md` | This guide. |
-| `generate.py` | Dev-only: regenerates `install_fix.py` after editing the shim source in `../eglfix/`. |
-| `stress_test.sh` | Dev-only: the stress-test suite used to verify the installer (break/repair, fresh-sim, idempotency). |
+| `fix_run_on_wayland.py` | **Self-contained installer** (embeds the shim source + a verification smoke test + a game-launch verifier). Run it, done. |
+| `fix_run_on_wayland.md` | This guide. |
+| `sources/` | Dev-only: the original `eglfix.c` + `export.map` used to regenerate the installer. |
+| `generate.py` | Dev-only: regenerates `fix_run_on_wayland.py` from the template + `sources/`. |
+| `install_fix.template.py` | Dev-only: the template `generate.py` fills in. |
+| `stress_test.sh` | Dev-only: the stress-test suite (break/repair, fresh-sim, idempotency, reset). |
+| `runsh_test.sh`, `deep_test.sh` | Dev-only: automated game-launch tests. |
 
 ---
 
@@ -40,11 +43,13 @@ that, the game renders normally on native Wayland.
 
 **To fix a fresh install:**
 ```bash
-sudo pacman -S --needed gcc libglvnd sdl3 fuse-overlayfs bubblewrap
-python3 install_fix.py --game-dir /path/to/Factorio_2.1.14
+python3 fix_run_on_wayland.py --game-dir /path/to/Factorio_2.1.14
 cd /path/to/Factorio_2.1.14 && ./start.n.sh
 ```
-The script installs the packages itself (auto-sudo) if you omit the pacman line.
+The script installs the packages itself (auto-sudo) if you omit a manual
+pacman line. It auto-detects the game dir if you omit `--game-dir`
+(known locations incl. `~/Downloads/Factorio-jc141`, `/mnt/zram1/Factorio_2.1.14`,
+`FACTORIO_DIR` env var, and `start.n.sh` in the current dir).
 
 ---
 
@@ -104,8 +109,8 @@ Why a naive LD_PRELOAD doesn't fix it:
 
 ## 4. How the fix works
 
-`libEGL.so.1` (in the game's `eglfix/` directory, built from the embedded
-`eglfix.c` in `install_fix.py`):
+`libEGL.so.1` (installed to the **persistent** location `~/.factorio/wayland_fix/`,
+built from the embedded `eglfix.c` in `fix_run_on_wayland.py`):
 
 1. Declares `SONAME libEGL.so.1` → any `dlopen("libEGL.so.1")` in the process
    (game or SDL) resolves to it.
@@ -135,6 +140,7 @@ install:
 | `sdl3` | Factorio 2.1.x links host SDL3 (the Wayland/EGL path runs through it). |
 | `fuse-overlayfs` | Required by the jc141 launcher to mount `files/game-root` from the DwarFS archive. |
 | `bubblewrap` | Required by the jc141 sandbox (`ISOLATE=1` in `~/.jc141rc`). |
+| `python-rich` | Pretty tables/panels for `--check`/`--troubleshoot` (optional; the installer falls back to plain text if absent). |
 | `wtype`, `grim`, `imagemagick` (optional, `--with-testing-tools`) | Only for automated testing (keyboard injection, screenshots, image stats). Not needed to play. |
 
 Already part of any desktop Arch install (not installed by the script): `mesa`
@@ -146,20 +152,38 @@ inside the repack** (`files/dwarfs-binary`), so no package needed for that.
 
 Keep **these two files** somewhere safe (USB/cloud/another machine):
 
-1. **`install_fix.py`** — the whole kit in one self-contained file: the shim
-   source, the version script, and the verification smoke test. Nothing else is
-   needed to rebuild and reinstall the fix.
-2. **`INSTALL_FIX.md`** — this guide.
+1. **`fix_run_on_wayland.py`** — the whole kit in one self-contained file: the
+   shim source, the version script, the smoke test, and the game-launch
+   verifier. Nothing else is needed to rebuild and reinstall the fix.
+2. **`fix_run_on_wayland.md`** — this guide.
 
-Optional to keep (dev/reference): `generate.py`, `stress_test.sh`, and the
-already-built `Factorio_2.1.14/eglfix/` directory. The script regenerates the
-game-side files anyway, so only the two files above are strictly required.
+Optional to keep (dev/reference): `sources/`, `generate.py`,
+`install_fix.template.py`, `stress_test.sh`, `runsh_test.sh`, `deep_test.sh`.
+The script regenerates the game-side files anyway, so only the two files above
+are strictly required.
 
-What the script (re)creates on the game machine:
-- `<game>/eglfix/libEGL.so.1` — the fix.
-- `<game>/eglfix/eglfix.c`, `<game>/eglfix/export.map` — sources for reference.
-- `<game>/local.config` — one line added/updated:
-  `ENV="env LD_PRELOAD=<game>/eglfix/libEGL.so.1"` (backup: `local.config.bak`).
+### Where the fix lives (persistent — survives game re-downloads)
+
+On a fresh reinstall of the *game*, none of this is lost, because the shim does
+NOT live inside the game directory anymore:
+
+| Location | Purpose |
+|---|---|
+| `~/.factorio/wayland_fix/libEGL.so.1` (+ `eglfix.c`, `export.map`, `README.md`) | The built shim + sources (used for non-sandboxed launches). |
+| `<JC_DIRECTORY>/native-docs/.factorio/wayland_fix/libEGL.so.1` | **Mirror** of the shim inside the jc141 sandbox home (`JC_DIRECTORY` from `~/.jc141rc`, default `~/Games/jc141`). The bubblewrap sandbox maps `/home/<you>` → `native-docs`, so this copy is what a sandboxed launch sees. |
+| `<game>/local.config` | One line added/updated (see below). |
+
+`local.config` gets:
+
+```
+ENV="env LD_PRELOAD=$HOME/.factorio/wayland_fix/libEGL.so.1"
+```
+
+`$HOME` expands when `start.n.sh` sources the file, and the resulting path
+resolves in **both** launch modes: unsandboxed it is the real `~/.factorio/...`;
+inside the sandbox `/home/<you>/...` maps to `native-docs/...` where the mirror
+sits. Backup of a pre-existing config is kept at `local.config.bak` (written
+only once; deleted on `--reset`).
 
 The `env` prefix in the ENV line is **required**: the jc141 launcher inserts
 `$ENV` word-split into the command array (`RUN+=( $ENV ... )`), and inside the
@@ -176,32 +200,71 @@ silently. (Verified: sandboxed launch failed until the `env` prefix was added.)
 #    /mnt/zram1/Factorio_2.1.14   (this machine's location, zram tmpfs)
 
 # 2. Run the installer (it finds the game dir automatically, or pass --game-dir):
-python3 install_fix.py --game-dir /mnt/zram1/Factorio_2.1.14
+python3 fix_run_on_wayland.py --game-dir /mnt/zram1/Factorio_2.1.14
 #    - installs missing packages (sudo prompt, or SUDO_STDIN=1 for piped password)
-#    - builds the shim, wires local.config, runs a smoke test that MUST pass
+#    - builds the shim into ~/.factorio/wayland_fix/, mirrors it into the
+#      sandbox home, wires local.config, runs a smoke test that MUST pass
 #    - exit 0 = fixed; exit 2 in --check mode = problems found
 
 # 3. Launch normally:
 cd /mnt/zram1/Factorio_2.1.14 && ./start.n.sh
 ```
 
-Useful flags: `--check` (inspect only), `--force` (rebuild), `--skip-packages`,
-`--with-testing-tools`, `--game-dir`, and `--verify-game` — after installing,
-launch the real game through `start.n.sh` and automatically confirm it reaches
-`Factorio initialised` on native Wayland (needs a live Wayland/X11 session;
-skips gracefully if there's no display or a game is already running).
+The script auto-detects the game dir from several locations, including
+`~/Downloads/Factorio-jc141` (the default in the companion `run.sh` launcher).
+
+> **Launching via `~/user_scripts/apps/factorio/run.sh`?** `run.sh` launches
+> the game binary directly (it does not go through `start.n.sh`), so the shim
+> must be applied by run.sh itself — it now does this automatically (sets
+> `LD_PRELOAD=$HOME/.factorio/wayland_fix/libEGL.so.1` when present, gracefully
+> ignored when not). No extra step needed.
+
+### All flags
+
+```
+python3 fix_run_on_wayland.py [--game-dir DIR] [--check] [--force] [--skip-packages]
+                              [--with-testing-tools] [--verify-game] [--reset] [--troubleshoot] [-y]
+```
+
+- `--check` — inspect only (packages, shim, wiring, exec bits), exit 2 if problems.
+- `--force` — rebuild the shim even if up to date (deterministic: same hash).
+- `--skip-packages` — don't run pacman.
+- `--with-testing-tools` — also install wtype/grim/imagemagick.
+- `--verify-game` — after installing, launch the real game through `start.n.sh`
+  and automatically confirm it reaches `Factorio initialised` on native Wayland
+  (needs a live Wayland/X11 session; skips gracefully if there's no display or
+  a game is already running; kills its own process tree afterwards).
+- `--reset` — **remove everything the fix generated**: both shim dirs, the
+  legacy in-game `eglfix/` dir (if any), the `ENV=` line (or the whole
+  `local.config` if the script created it), and any stray `.bak`. Asks for
+  confirmation unless `-y/--yes`. Then re-run without flags to reinstall.
+- `--troubleshoot` — read-only full diagnostic: state table, live smoke test,
+  shim log (`/tmp/eglfix.log`), game logs (sandbox + host), and suggested fixes.
+
+### Fresh-install robustness (all handled automatically)
+Empirically discovered on a real fresh download (2026-08-09):
+- **Missing `local.config`** — some jc141 extractions ship without it (the
+  launcher auto-generates one). The installer now **creates it** with the
+  `ENV=` fix line when absent.
+- **Lost exec bits** — fresh extractions frequently come out `rw-r--r--` on
+  `start.n.sh`/`space.age.sh`/`actions.sh`/`files/dwarfs-binary`, which breaks
+  `./start.n.sh` with "Permission denied". The installer now **restores the
+  exec bit** automatically (and `--check` reports it as a problem).
 
 ### Manual (if you prefer, or for non-Arch)
 
 ```bash
 sudo pacman -S --needed gcc libglvnd sdl3 fuse-overlayfs bubblewrap
-cd /mnt/zram1/Factorio_2.1.14
-mkdir -p eglfix
-# copy eglfix.c + export.map (embedded in install_fix.py) into eglfix/
-gcc -shared -fPIC -O2 -Wall -o eglfix/libEGL.so.1 eglfix/eglfix.c -ldl -pthread \
-    -Wl,-soname,libEGL.so.1 -Wl,--version-script=eglfix/export.map
-# add to local.config:
-echo 'ENV="env LD_PRELOAD=/mnt/zram1/Factorio_2.1.14/eglfix/libEGL.so.1"' >> local.config
+mkdir -p ~/.factorio/wayland_fix
+# copy eglfix.c + export.map (embedded in fix_run_on_wayland.py) there
+gcc -shared -fPIC -O2 -Wall -o ~/.factorio/wayland_fix/libEGL.so.1 \
+    ~/.factorio/wayland_fix/eglfix.c -ldl -pthread \
+    -Wl,-soname,libEGL.so.1 -Wl,--version-script=~/.factorio/wayland_fix/export.map
+# mirror into the sandbox home (same bytes):
+mkdir -p ~/Games/jc141/native-docs/.factorio/wayland_fix
+cp ~/.factorio/wayland_fix/libEGL.so.1 ~/Games/jc141/native-docs/.factorio/wayland_fix/
+# add to <game>/local.config:
+echo 'ENV="env LD_PRELOAD=$HOME/.factorio/wayland_fix/libEGL.so.1"' >> local.config
 ```
 
 ## 8. Verification checklist (all performed 2026-08-09)
@@ -236,25 +299,35 @@ the whole process tree it started. Output on this machine:
 - **Smoke test fails:** check `/tmp/eglfix.log` (shim diagnostics) and the
   script output. Usually: missing EGL headers (`sudo pacman -S libglvnd`) or
   the real `libEGL.so.1` missing.
-- **Game still crashes with the old error:** the `ENV=` line was probably lost
-  (re-run the installer) or the game dir moved (the hardcoded path in
-  `local.config` silently no-ops — ld.so prints "cannot preload ... ignored";
-  re-run `install_fix.py --force` to refresh paths).
+- **Game still crashes with the old error:** run `python3 fix_run_on_wayland.py`
+  again (or `--force` to rebuild), then `--verify-game` to prove it. If that
+  still fails, `--reset` and reinstall.
+- **Want a full picture before touching anything:** `python3 fix_run_on_wayland.py
+  --troubleshoot` — read-only, prints the state table, re-runs the smoke test,
+  and tails the shim + game logs with suggested fixes.
+- **Reset everything the fix did:** `python3 fix_run_on_wayland.py --reset`
+  (add `-y` to skip the confirmation). Removes both shim dirs, the ENV line,
+  and any stray `.bak`/legacy `eglfix/`.
 - **Launcher dies silently with no banner:** the `env` prefix is missing from
   the `ENV=` line (see §6).
 - **You only see the crash on Wayland, X11 is fine:** that is expected — the
   bug is native-Wayland-specific; the shim makes the Wayland path work.
 - **Space Age (`space.age.sh`):** uses the same `local.config`, so the fix
   applies automatically; no extra step.
+- **Legacy in-game `eglfix/` dir (old layout):** the installer removes it
+  automatically; nothing to do.
 
 ## 10. Limitations & notes
 
-- The shim is a **targeted fix for this game's single-context Wayland bug**,
-  not a general-purpose EGL interposer (it assumes one primary context; the
+- The shim is a **targeted fix for this game's single-context Wayland bug**, not
+  a general-purpose EGL interposer (it assumes one primary context; the
   auto-rebind is one-shot per binding for that reason).
-- The game binary was never modified — only the launcher config and a new
-  `eglfix/` directory were added. To remove the fix: delete the `ENV=` line
-  from `local.config` and the `eglfix/` directory.
+- The game binary was never modified — only the launcher config and the
+  persistent `~/.factorio/wayland_fix/` (+ sandbox mirror) were added. To remove
+  the fix: `fix_run_on_wayland.py --reset`.
+- The shim lives OUTSIDE the game directory, so it survives game re-downloads
+  and repack updates; a re-downloaded game only needs the `ENV=` line
+  re-applied, which the installer does automatically.
 - The shim writes a tiny diagnostic log to `/tmp/eglfix.log` (bind/ensure
   events only; no hot-path logging).
 - This fix is for **Factorio 2.1.x on native Wayland**. If a future Factorio

@@ -128,5 +128,15 @@ if [ ! -x "$GAME_BIN" ]; then
     exit 1
 fi
 
+# Native-Wayland EGL shim fix (applied by use_wayland/fix_run_on_wayland.py).
+# Launched directly here (bypassing start.n.sh), the game needs the shim set
+# explicitly; gracefully no-ops if the fix hasn't been installed yet.
+# Persistent location: ~/.factorio/wayland_fix (survives game re-downloads).
+# run.sh runs unsandboxed, so the primary copy is the right one.
+SHIM="$HOME/.factorio/wayland_fix/libEGL.so.1"
+if [ -f "$SHIM" ]; then
+    export LD_PRELOAD="$SHIM${LD_PRELOAD:+:$LD_PRELOAD}"
+fi
+
 exec "$NVIDIA_WRAPPER" "$GAME_BIN" "$@"
 
