@@ -2,33 +2,53 @@
 """
 Dusk Personal Custom Setup (Arch Linux / Python 3.14+ / Firefox 140+)
 ========================================================================
-Personal Firefox chrome customization that hides the redesigned sidebar for
+Personal Firefox chrome customization that hides the built-in sidebar for
 *your* profiles only — deliberately separate from the shared Dusky Sites setup
 (dusky_sites_setup.py) so other people who use your dotfiles are unaffected.
 dusky_sites_setup.py is never modified or touched by this script.
 
 ───────────────────────────────────────────────────────────────────────────
-CUSTOMIZATION — add / remove your own CSS blocks
+FEATURES — every element this script can hide or alter
 ───────────────────────────────────────────────────────────────────────────
-Edit the PERSONAL_CSS_CONTENT block right below this docstring. It is the
-single source of truth: every CSS rule you put there is written verbatim into
-each profile's chrome/dusk_personal_custom.css. Add or remove rule blocks
-freely (plain CSS, no escaping needed), then re-run this script to push the
-changes into every profile.
+Each entry in the FEATURES list below is a toggleable item with:
+  * key        — CLI flag name (--<key> / --no-<key>) and config key
+  * title      — short display name
+  * desc       — what it does (shown in prompts and --list)
+  * selectors  — CSS selectors hidden when enabled (None = no CSS)
+  * pref       — user.js pref written when enabled (None = no pref)
+  * default    — initial state until you answer the questionnaire
+
+You can also append plain CSS to EXTRA_CSS_CONTENT (written verbatim into
+every profile's chrome/dusk_personal_custom.css) for rules that don't fit
+the feature list.
+
+───────────────────────────────────────────────────────────────────────────
+INTERACTIVE / CONFIG
+───────────────────────────────────────────────────────────────────────────
+  * First run from a terminal asks you y/n for every feature and saves your
+    answers to ~/.config/dusk_personal_custom/config.json.
+  * Later runs are non-interactive and reuse that config (idempotent).
+  * `--configure` re-opens the questionnaire at any time.
+  * `--<key>` / `--no-<key>` (e.g. `--no-launcher-rail`) override the config
+    for that single run only — they are never persisted.
+  * `--yes` / `--no-prompt` forces non-interactive mode (for automation);
+    when stdin is not a terminal the script never prompts anyway.
+  * `--list` prints the current effective feature states without installing.
 
 ───────────────────────────────────────────────────────────────────────────
 What it does per profile:
-  * Writes chrome/dusk_personal_custom.css   (PERSONAL_CSS_CONTENT, verbatim)
+  * Writes chrome/dusk_personal_custom.css (generated from the enabled
+    features + EXTRA_CSS_CONTENT, verbatim)
   * Adds its own @import line to chrome/userChrome.css
-  * Ensures toolkit.legacyUserProfileCustomizations.stylesheets = true in user.js
+  * Ensures the enabled prefs in user.js (and removes lines for features
+    you switched OFF, so disabling truly un-does the change)
 
 Works hand-in-hand with dusky_sites_setup.py:
   * This script manages ONLY dusk_personal_custom.css and its own @import line.
     It never touches dusky_menu.css, dusky's imports, or dusky's config.
-  * It never removes the shared `toolkit.legacyUserProfileCustomizations.stylesheets`
-    pref while Dusky's chrome files are still referenced, so uninstalling this
-    script can never break Dusky Sites.
-  * `--uninstall` removes only the artifacts this script deployed into profiles.
+  * The shared toolkit.legacyUserProfileCustomizations.stylesheets pref is
+    only removed on uninstall while Dusky's chrome files are still referenced,
+    so uninstalling this script can never break Dusky Sites.
 
 Design guarantees:
   * Idempotent — safe to run any number of times; imports and prefs never
@@ -42,72 +62,158 @@ Design guarantees:
     are still covered. Non-profile dirs (Crash Reports, etc.) are skipped.
 
 Usage:
-  dusk_personal_custom.py              # install / ensure (pushes your CSS)
+  dusk_personal_custom.py              # install/ensure with saved config (asks on first run)
+  dusk_personal_custom.py --configure  # re-run the interactive questionnaire, then apply
+  dusk_personal_custom.py --list       # show effective feature states
+  dusk_personal_custom.py --no-launcher-rail   # one-shot override for a single run
   dusk_personal_custom.py --uninstall  # remove only what this script deployed
-  dusk_personal_custom.py --yes        # skip the confirmation prompt
+  dusk_personal_custom.py --yes        # never prompt (uninstall confirm / questionnaire)
   dusk_personal_custom.py --help
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
 from pathlib import Path
 
 # ══════════════════════════════════════════════════════════════════════════
-# YOUR PERSONAL CSS — EDIT THIS BLOCK
+# FEATURES — EDIT THIS BLOCK
 # ══════════════════════════════════════════════════════════════════════════
-# This is the ONLY thing you need to edit. Add or remove rule blocks freely;
-# the whole block below is written verbatim into every profile's
-# chrome/dusk_personal_custom.css when you run this script.
+# Add, remove, or reorder entries freely; re-run the script to apply.
 #
-# NOTE: this is a Python raw string. Write plain CSS exactly as you would in
-# a .css file — no escaping needed. Keep at least one rule here, and never
-# delete the three double-quotes that close the block below.
-PERSONAL_CSS_CONTENT = r"""/* Auto-generated by Dusk Personal Custom — edit the PERSONAL_CSS_CONTENT
-   block at the top of dusk_personal_custom.py to change these rules. */
-/* Hides Firefox's built-in sidebar chrome (launcher rail, headers,
-   drag splitters, AI window). Verified against the Firefox 153 DOM:
-     #sidebar-container         — parent wrapper of the new unified sidebar
-     sidebar-main               — the launcher rail (custom ELEMENT, not an ID!)
-     #sidebar-header            — the classic panel header
-     sidebar-panel-header       — the panel header (custom element)
-     #sidebar-launcher-splitter — drag handle for the launcher
-     #ai-window-box/splitter    — the separate AI chatbot window sidebar
-   IMPORTANT: #sidebar-box is deliberately LEFT VISIBLE — native-sidebar
-   extensions (Sidebery and similar) render their vertical tabs/panels
-   inside it, and Firefox un-hides it whenever such a panel is open.
-   Hiding #sidebar-box would hide your extension's sidebar too.
-   The `#sidebar-splitter` resize handle is kept so Sidebery's panel width
-   stays adjustable; add it to the list below if you want it gone too.
-   NOTES on selectors:
-   * Since the Firefox 136+ rewrite, `sidebar-main` is a custom ELEMENT,
-     not an ID — the old `#sidebar-main { display:none }` rules match
-     NOTHING on current Firefox. The `sidebar-main` element rule below is
-     the one that actually removes the launcher rail.
-   * `sidebar-panel-header` renders inside the sidebar's panel <browser>
-     (a child document), which userChrome.css cannot style — that rule is
-     currently inert and kept only as insurance; the launcher rail and
-     containers above are what actually hide the sidebar chrome. */
-#sidebar-container,
-sidebar-main,
-#sidebar-header,
-sidebar-panel-header,
-#sidebar-launcher-splitter,
-#ai-window-box,
-#ai-window-splitter {
-  display: none !important;
+# Selector notes (verified against the Firefox 153 chrome DOM):
+#   * Since the Firefox 136+ sidebar rewrite, `sidebar-main` is a custom
+#     ELEMENT, not an ID — the old `#sidebar-main { display:none }` rules
+#     match nothing on current Firefox. Use the element name.
+#   * #sidebar-box is deliberately never hidden: native-sidebar extensions
+#     (Sidebery and similar) render their vertical tabs/panels inside it.
+#   * `sidebar-panel-header` renders inside the sidebar's panel <browser>
+#     (a child document), which userChrome.css cannot style — that rule is
+#     inert insurance; the wrappers below do the real hiding.
+#   * Firefox's built-in AI chatbot sidebar (genai/chat.html — its #header and
+#     #summarize-btn-container) ALSO renders in the sidebar <browser>
+#     sub-document, which userChrome.css cannot style — do not add those
+#     selectors here; disable the whole AI chatbot instead (pref
+#     browser.ai.control.sidebarChatbot).
+FEATURES = [
+    {
+        "key": "sidebar_container",
+        "title": "Sidebar container",
+        "desc": "hide the new-sidebar wrapper (#sidebar-container)",
+        "selectors": ["#sidebar-container"],
+        "pref": None,
+        "default": True,
+    },
+    {
+        "key": "launcher_rail",
+        "title": "Launcher rail",
+        "desc": "hide the launcher rail element (sidebar-main) — the icon column",
+        "selectors": ["sidebar-main"],
+        "pref": None,
+        "default": True,
+    },
+    {
+        "key": "panel_header",
+        "title": "Panel header",
+        "desc": "hide the panel header (#sidebar-header, sidebar-panel-header)",
+        "selectors": ["#sidebar-header", "sidebar-panel-header"],
+        "pref": None,
+        "default": True,
+    },
+    {
+        "key": "launcher_splitter",
+        "title": "Launcher splitter",
+        "desc": "hide the launcher drag handle (#sidebar-launcher-splitter)",
+        "selectors": ["#sidebar-launcher-splitter"],
+        "pref": None,
+        "default": True,
+    },
+    {
+        "key": "ai_window",
+        "title": "AI chatbot window",
+        "desc": "hide the AI chatbot window sidebar (#ai-window-box, #ai-window-splitter)",
+        "selectors": ["#ai-window-box", "#ai-window-splitter"],
+        "pref": None,
+        "default": True,
+    },
+    {
+        "key": "titlebar_buttons",
+        "title": "Titlebar window buttons",
+        "desc": "hide the window minimize/maximize/close buttons (.titlebar-buttonbox-container) — WM shortcuts or Alt+F4 still close the window",
+        "selectors": [".titlebar-buttonbox-container"],
+        "pref": None,
+        "default": True,
+    },
+    {
+        "key": "fxa_button",
+        "title": "Firefox Account button",
+        "desc": "hide the Firefox Account toolbar button (#fxa-toolbar-menu-button)",
+        "selectors": ["#fxa-toolbar-menu-button"],
+        "pref": None,
+        "default": True,
+    },
+    {
+        "key": "sidebar_splitter",
+        "title": "Sidebar resize handle",
+        "desc": "also hide #sidebar-splitter — the drag handle that resizes an open panel (Sidebery's width then isn't drag-adjustable)",
+        "selectors": ["#sidebar-splitter"],
+        "pref": None,
+        "default": False,
+    },
+    {
+        "key": "horizontal_tabs",
+        "title": "Horizontal tabs",
+        "desc": "disable Firefox's built-in vertical tabs so the tab strip returns to the top (sidebar.verticalTabs=false)",
+        "selectors": None,
+        "pref": ("sidebar.verticalTabs", "false"),
+        "default": False,
+    },
+    {
+        "key": "stylesheets",
+        "title": "userChrome loading",
+        "desc": "keep toolkit.legacyUserProfileCustomizations.stylesheets=true — REQUIRED for all of the above (also for Dusky's chrome CSS)",
+        "selectors": None,
+        "pref": ("toolkit.legacyUserProfileCustomizations.stylesheets", "true"),
+        "default": True,
+    },
+]
+
+
+# ── Optional extra CSS, appended verbatim (plain CSS, no escaping needed) ──
+EXTRA_CSS_CONTENT = r""""""
+
+
+# ── Reserved CLI words feature keys must not collide with ─────────────────
+_RESERVED_ARGS = {
+    "--help", "-h", "--uninstall", "--purge", "--configure", "--interactive", "-i",
+    "--yes", "--no-prompt", "--list", "--status",
 }
-"""
 
 
-# ── CONFIG ──────────────────────────────────────────────────────────────
-# Optional: also force Firefox back to the horizontal top tab strip by
-# disabling its built-in vertical tabs (`sidebar.verticalTabs`). Only
-# useful if you use an extension like Sidebery for the on-the-side tabs.
-# Default False keeps the script purely CSS (it never touches tab prefs).
-FORCE_HORIZONTAL_TABS = False
+def _feature_flag(key: str) -> str:
+    """snake_case key -> kebab-case CLI flag suffix (ai_window -> ai-window)."""
+    return key.replace("_", "-")
+
+
+def _validate_features() -> None:
+    seen: set[str] = set()
+    for feat in FEATURES:
+        key = feat["key"]
+        if key in seen:
+            raise ValueError(f"duplicate feature key {key!r}")
+        seen.add(key)
+        flag = f"--{_feature_flag(key)}"
+        no_flag = f"--no-{_feature_flag(key)}"
+        if flag in _RESERVED_ARGS or no_flag in _RESERVED_ARGS:
+            raise ValueError(f"feature key {key!r} collides with a reserved CLI flag")
+        if not (feat.get("selectors") or feat.get("pref")):
+            raise ValueError(f"feature {key!r} has neither selectors nor pref")
+
+
+_validate_features()
 
 
 # ── Terminal styling ──────────────────────────────────────────────────────
@@ -115,6 +221,7 @@ C_CYAN = "\033[0;36m"
 C_GREEN = "\033[0;32m"
 C_BLUE = "\033[0;34m"
 C_YELLOW = "\033[1;33m"
+C_RED = "\033[0;31m"
 C_RESET = "\033[0m"
 
 
@@ -130,45 +237,159 @@ def print_warn(msg: str) -> None:
     print(f"{C_YELLOW}[!] {msg}")
 
 
+def print_error(msg: str) -> None:
+    print(f"{C_RED}[!] Error:{C_RESET} {msg}")
+    sys.exit(1)
+
+
 # ── Identity (namespaced so it can never collide with Dusky's files) ──────
 CSS_FILE_NAME = "dusk_personal_custom.css"
 IMPORT_LINE = f'@import url("{CSS_FILE_NAME}");'
 
 # The stylesheets pref is SHARED with dusky_sites_setup.py — it is only
-# removed on uninstall while Dusky's chrome files are still referenced, so
-# uninstalling this script can never silently break Dusky's theming.
+# removed while Dusky's chrome files are still referenced, so this script can
+# never silently break Dusky's theming (neither on uninstall nor when the
+# `stylesheets` feature is switched off).
 SHARED_PREF = ("toolkit.legacyUserProfileCustomizations.stylesheets", "true")
 
-
-def personal_prefs() -> list[tuple[str, str]]:
-    """Prefs this script manages, computed at call time for the current CONFIG.
-
-    Computing per call (instead of mutating a module-level constant) means
-    install and uninstall always agree on the exact pref set for the
-    ``FORCE_HORIZONTAL_TABS`` setting in effect, even if that knob changes
-    between runs. Only ``SHARED_PREF`` is ever gated on Dusky's presence.
-    """
-    prefs = [SHARED_PREF]
-    if FORCE_HORIZONTAL_TABS:
-        prefs.append(("sidebar.verticalTabs", "false"))
-    return prefs
+# Prefs we always remove on uninstall (never shared with Dusky). Derived from
+# FEATURES so editing a feature's pref can never drift from uninstall behavior.
+_UNSHARED_PREFS = [f["pref"] for f in FEATURES if f["pref"] and f["pref"] != SHARED_PREF]
 
 
-_OUR_IMPORT_RE = re.compile(
-    r"@import\s+url\(\s*[\"']?" + re.escape(CSS_FILE_NAME) + r"[\"']?\s*\)"
-)
+# ── Feature state: defaults ← config file ← CLI overrides ─────────────────
+def feature_keys() -> list[str]:
+    return [feat["key"] for feat in FEATURES]
 
 
-def _is_our_import(line: str) -> bool:
-    """Robust check: is this an @import line that references our CSS file?
+def default_enabled() -> dict[str, bool]:
+    return {feat["key"]: bool(feat["default"]) for feat in FEATURES}
 
-    Matches ``@import url("dusk_personal_custom.css");`` allowing optional
-    whitespace and single/double quotes around the filename, plus trailing
-    comments. Anchors the filename inside ``url(...)`` so unrelated imports
-    (e.g. ``dusk_personal_custom_old.css``) can never false-positive — both
-    when avoiding duplicate imports and when removing our import on uninstall.
-    """
-    return _OUR_IMPORT_RE.search(line) is not None
+
+def _xdg_config_home(home: Path) -> Path:
+    raw = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    if raw:
+        p = Path(raw).expanduser()
+        return p if p.is_absolute() else home / ".config"
+    return home / ".config"
+
+
+def config_path(home: Path) -> Path:
+    return _xdg_config_home(home) / "dusk_personal_custom" / "config.json"
+
+
+def _as_bool(value) -> bool:
+    """Robust bool coercion for config values (handles hand-edited strings)."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return bool(value)
+
+
+def load_config(home: Path) -> dict[str, bool]:
+    """Load saved feature states. Corrupt/missing config → {} (caller falls back to defaults)."""
+    path = config_path(home)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    raw = data.get("features") if isinstance(data, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    keys = set(feature_keys())
+    return {k: _as_bool(v) for k, v in raw.items() if k in keys}
+
+
+def save_config(home: Path, enabled: dict[str, bool]) -> Path:
+    path = config_path(home)
+    payload = {"features": {feat["key"]: bool(enabled[feat["key"]]) for feat in FEATURES}}
+    atomic_write_text(path, json.dumps(payload, indent=2) + "\n")
+    return path
+
+
+def resolve_enabled(home: Path, overrides: dict[str, bool] | None = None) -> dict[str, bool]:
+    """Effective feature states: defaults ← saved config ← CLI overrides."""
+    enabled = default_enabled()
+    enabled.update(load_config(home))
+    if overrides:
+        enabled.update(overrides)
+    return enabled
+
+
+# ── Interactive questionnaire ─────────────────────────────────────────────
+def ask_yes_no(prompt: str, default: bool) -> bool | None:
+    """One y/n question. Returns the answer, or None if the user aborted (q / EOF)."""
+    suffix = "Y/n" if default else "y/N"
+    try:
+        resp = input(f"{prompt} [{suffix}] ").strip().lower()
+    except EOFError:
+        return None
+    if resp in ("q", "quit"):
+        return None
+    if resp in ("y", "yes"):
+        return True
+    if resp in ("n", "no"):
+        return False
+    return default
+
+
+def run_questionnaire(current: dict[str, bool]) -> dict[str, bool] | None:
+    """Ask about every feature. Returns the new states, or None if aborted."""
+    print(f"\n{C_CYAN}Dusk Personal Custom — feature configuration{C_RESET}\n")
+    print("Answer y/n for each element (Enter keeps the default). Type 'q' to abort.\n")
+    enabled = dict(current)
+    for feat in FEATURES:
+        answer = ask_yes_no(f"{feat['title']}: {feat['desc']}", enabled[feat["key"]])
+        if answer is None:
+            return None
+        enabled[feat["key"]] = answer
+    if not enabled["stylesheets"]:
+        print_warn(
+            "'userChrome loading' is OFF — userChrome.css will not load, so the sidebar "
+            "hider (and Dusky's chrome CSS) will stop working."
+        )
+    return enabled
+
+
+# ── CSS generation from the enabled features ──────────────────────────────
+def build_css(enabled: dict[str, bool]) -> str:
+    """Generate dusk_personal_custom.css content for the given feature states."""
+    lines = [
+        "/* Auto-generated by Dusk Personal Custom — see the FEATURES list in",
+        "   dusk_personal_custom.py. Re-run the script or use `--configure` to change. */",
+        "",
+    ]
+    for feat in FEATURES:
+        if not feat["selectors"]:
+            continue
+        lines.append(f"/* [{feat['key']}] {feat['title']} */")
+        if enabled[feat["key"]]:
+            lines.append(f"{', '.join(feat['selectors'])} {{")
+            lines.append("  display: none !important;")
+            lines.append("}")
+        else:
+            lines.append("/* disabled */")
+        lines.append("")
+    extra = EXTRA_CSS_CONTENT.strip()
+    if extra:
+        lines.append("/* [extra] custom rules from EXTRA_CSS_CONTENT */")
+        lines.append(extra)
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+# ── Prefs for the current feature states ──────────────────────────────────
+def prefs_for_enabled(enabled: dict[str, bool]) -> list[tuple[str, str]]:
+    return [feat["pref"] for feat in FEATURES if feat["pref"] and enabled[feat["key"]]]
+
+
+def prefs_for_disabled(enabled: dict[str, bool]) -> list[tuple[str, str]]:
+    """Prefs this script would write but the feature is OFF — remove them so
+    disabling truly reverses the change."""
+    return [feat["pref"] for feat in FEATURES if feat["pref"] and not enabled[feat["key"]]]
 
 
 # ── Atomic, symlink-aware writes ──────────────────────────────────────────
@@ -219,22 +440,30 @@ def _remove_file(path: Path) -> bool:
     return False
 
 
-# ── user.js prefs (only the one pref this script needs) ───────────────────
-def ensure_prefs(user_js: Path) -> bool:
-    """Ensure the stylesheets pref is present with our value. Returns True if changed."""
+# ── user.js prefs ─────────────────────────────────────────────────────────
+def ensure_prefs(user_js: Path, ensure: list[tuple[str, str]], remove: list[tuple[str, str]]) -> bool:
+    """Write the ``ensure`` prefs, drop the exact ``remove`` lines. Returns True if changed."""
     try:
         content = user_js.read_text(encoding="utf-8", errors="replace") if user_js.is_file() else ""
     except OSError as e:
         print_warn(f"Could not read {user_js}: {e}")
         return False
     original = content
-    for pref_name, pref_val in personal_prefs():
+
+    for pref_name, pref_val in ensure:
         pref_re = re.compile(rf'user_pref\(\s*"{re.escape(pref_name)}"\s*,\s*[^)]+\)\s*;')
         pref_line = f'user_pref("{pref_name}", {pref_val});'
         if pref_re.search(content):
             content = pref_re.sub(pref_line, content)
         elif pref_line not in content:
             content = content.rstrip() + f"\n{pref_line}\n"
+
+    if remove:
+        exact_lines = {f'user_pref("{name}", {val});' for name, val in remove}
+        content = "".join(
+            ln for ln in content.splitlines(keepends=True) if ln.strip() not in exact_lines
+        )
+
     if content != original:
         try:
             atomic_write_text(user_js, content)
@@ -378,27 +607,39 @@ def _browser_processes_running() -> list[str]:
 
 
 # ── Per-profile install / restore ─────────────────────────────────────────
-def setup_profile(profile: Path) -> bool:
-    """Install CSS + import + pref into one profile. Returns True if anything changed."""
-    changed = False
-    if ensure_prefs(profile / "user.js"):
-        changed = True
-
+def setup_profile(profile: Path, css_content: str, ensure_prefs_list: list, remove_prefs_list: list) -> bool:
+    """Install CSS + import + prefs into one profile. Returns True if anything changed."""
     chrome_dir = profile / "chrome"
     try:
         chrome_dir.mkdir(parents=True, exist_ok=True)
     except OSError as e:
         print_warn(f"Could not create {chrome_dir}: {e}")
-        return changed
+
+    # Never remove the shared stylesheets pref while Dusky's chrome files are
+    # still referenced — same guarantee the uninstall path honours.
+    remove_unshared = [p for p in remove_prefs_list if p != SHARED_PREF]
+    remove_shared = [p for p in remove_prefs_list if p == SHARED_PREF]
+    prefs_to_remove = list(remove_unshared)
+    if remove_shared:
+        if _dusky_chrome_present(chrome_dir):
+            print_warn(
+                f"{profile}: keeping the shared stylesheets pref — Dusky's chrome files are still in use."
+            )
+        else:
+            prefs_to_remove.extend(remove_shared)
+
+    changed = False
+    if ensure_prefs(profile / "user.js", ensure_prefs_list, prefs_to_remove):
+        changed = True
 
     # CSS file — write only if missing or different (idempotent; picks up edits
-    # to PERSONAL_CSS_CONTENT).
+    # to FEATURES / EXTRA_CSS_CONTENT).
     css_path = chrome_dir / CSS_FILE_NAME
     try:
-        if css_path.is_file() and css_path.read_text(encoding="utf-8", errors="replace") == PERSONAL_CSS_CONTENT:
+        if css_path.is_file() and css_path.read_text(encoding="utf-8", errors="replace") == css_content:
             pass
         else:
-            atomic_write_text(css_path, PERSONAL_CSS_CONTENT)
+            atomic_write_text(css_path, css_content)
             changed = True
     except OSError as e:
         print_warn(f"Could not write {css_path}: {e}")
@@ -421,6 +662,23 @@ def setup_profile(profile: Path) -> bool:
         print_warn(f"Could not write {uc_path}: {e}")
 
     return changed
+
+
+_OUR_IMPORT_RE = re.compile(
+    r"@import\s+url\(\s*[\"']?" + re.escape(CSS_FILE_NAME) + r"[\"']?\s*\)"
+)
+
+
+def _is_our_import(line: str) -> bool:
+    """Robust check: is this an @import line that references our CSS file?
+
+    Matches ``@import url("dusk_personal_custom.css");`` allowing optional
+    whitespace and single/double quotes around the filename, plus trailing
+    comments. Anchors the filename inside ``url(...)`` so unrelated imports
+    (e.g. ``dusk_personal_custom_old.css``) can never false-positive — both
+    when avoiding duplicate imports and when removing our import on uninstall.
+    """
+    return _OUR_IMPORT_RE.search(line) is not None
 
 
 def _dusky_chrome_present(chrome_dir: Path) -> bool:
@@ -457,7 +715,6 @@ def restore_profile(profile: Path) -> bool:
             removed = True
 
         uc_path = chrome_dir / "userChrome.css"
-        uc_changed = False
         if uc_path.is_file() or uc_path.is_symlink():
             try:
                 lines = uc_path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -465,8 +722,7 @@ def restore_profile(profile: Path) -> bool:
                 print_warn(f"Could not read {uc_path}: {e}")
                 return removed
             kept = [ln for ln in lines if not _is_our_import(ln)]
-            uc_changed = len(kept) != len(lines)
-            if uc_changed:
+            if len(kept) != len(lines):
                 while kept and kept[0].strip() == "":
                     kept.pop(0)
                 new_text = "\n".join(kept).rstrip() + "\n"
@@ -492,11 +748,9 @@ def restore_profile(profile: Path) -> bool:
                         print_success(f"Removed empty {uc_path}")
                 removed = True
 
-        # Optional knob pref (sidebar.verticalTabs=false) is never shared with
-        # Dusky. Remove it unconditionally — the exact-line match makes this a
-        # safe no-op if it was never written, and it stays correct even if
-        # FORCE_HORIZONTAL_TABS was changed between install and uninstall.
-        if restore_pref_line(profile / "user.js", [("sidebar.verticalTabs", "false")]):
+        # Unshared pref lines (sidebar.verticalTabs=false) are never gated on
+        # Dusky — exact-line match makes this a safe no-op if never written.
+        if restore_pref_line(profile / "user.js", _UNSHARED_PREFS):
             removed = True
 
         # Shared pref: only remove if Dusky isn't still using userChrome.
@@ -507,8 +761,22 @@ def restore_profile(profile: Path) -> bool:
 
 
 # ── Install / uninstall drivers ───────────────────────────────────────────
-def run_install(home: Path) -> None:
+def run_install(home: Path, enabled: dict[str, bool]) -> None:
     print(f"\n{C_CYAN}Dusk Personal Custom Setup (Arch Linux / Python 3.14+){C_RESET}\n")
+
+    print_step("Feature configuration:")
+    for feat in FEATURES:
+        mark = f"{C_GREEN}✓{C_RESET}" if enabled[feat["key"]] else f"{C_RED}✗{C_RESET}"
+        print(f"  {mark} {feat['key']:<20} {feat['title']}")
+    if not enabled["stylesheets"]:
+        print_warn(
+            "'userChrome loading' is OFF — userChrome.css will not load, so the sidebar "
+            "hider (and Dusky's chrome CSS) will stop working."
+        )
+
+    css_content = build_css(enabled)
+    ensure = prefs_for_enabled(enabled)
+    remove = prefs_for_disabled(enabled)
 
     running = _browser_processes_running()
     if running:
@@ -523,7 +791,7 @@ def run_install(home: Path) -> None:
             continue
         for profile in iter_firefox_profiles(base_dir):
             total += 1
-            if setup_profile(profile):
+            if setup_profile(profile, css_content, ensure, remove):
                 touched += 1
             print_success(f"Ensured personal custom in {profile}")
 
@@ -563,18 +831,53 @@ def run_uninstall(home: Path) -> None:
     print(f"\n{C_GREEN}[+] Uninstall complete. Dusky Sites artifacts were left untouched.{C_RESET}\n")
 
 
+# ── CLI ───────────────────────────────────────────────────────────────────
+def _print_list(enabled: dict[str, bool], home: Path) -> None:
+    print(f"\n{C_CYAN}Dusk Personal Custom — current features{C_RESET}\n")
+    print(f"{'Feature key':<20} {'State':<7} What it does")
+    print("-" * 78)
+    for feat in FEATURES:
+        state = f"{C_GREEN}on{C_RESET}" if enabled[feat["key"]] else f"{C_RED}off{C_RESET}"
+        print(f"{feat['key']:<20} {state:<18} {feat['title']}: {feat['desc']}")
+    cfg = config_path(home)
+    print(f"\nConfig file: {cfg} ({'exists' if cfg.is_file() else 'not created yet — defaults shown'})")
+    print("Change: run `--configure`, or pass `--<key>` / `--no-<key>` for one run.\n")
+
+
+def _print_help() -> None:
+    print(__doc__)
+    print("Options:")
+    print("  --configure, -i, --interactive   Re-run the interactive questionnaire, then apply.")
+    print("  --list, --status                 Show effective feature states without installing.")
+    print("  --yes, --no-prompt               Never prompt (skips questionnaire / uninstall confirm).")
+    print("  --uninstall, --purge             Remove only what this script deployed.")
+    print("  Feature flags (one-shot, not persisted):")
+    for feat in FEATURES:
+        flag = _feature_flag(feat["key"])
+        print(f"    --{flag:<20} enable  |  --no-{flag:<17} disable  ({feat['title']})")
+
+
 def main() -> None:
     args = [a for a in sys.argv[1:]]
+    home = Path.home()
 
-    if "--help" in args or "-h" in args:
-        print(__doc__)
-        print("Options:")
-        print("  --uninstall   Remove deployed CSS/import/pref from profiles.")
-        print("  --yes         Skip the confirmation prompt.")
+    if any(a in ("--help", "-h") for a in args):
+        _print_help()
         return
 
-    if "--uninstall" in args or "--purge" in args:
-        auto_yes = "--yes" in args
+    # Reject unknown flags on every path (reliability: typos fail loudly instead
+    # of silently doing nothing — including on --uninstall).
+    known = set(_RESERVED_ARGS)
+    for feat in FEATURES:
+        flag = _feature_flag(feat["key"])
+        known.add(f"--{flag}")
+        known.add(f"--no-{flag}")
+    unknown = [a for a in args if a not in known]
+    if unknown:
+        print_error(f"Unknown option(s): {', '.join(unknown)} — run with --help to see valid flags.")
+
+    if any(a in ("--uninstall", "--purge") for a in args):
+        auto_yes = any(a in ("--yes", "--no-prompt") for a in args)
         if not auto_yes:
             try:
                 resp = input(
@@ -585,10 +888,43 @@ def main() -> None:
             if resp not in ("y", "yes"):
                 print("Aborted.")
                 return
-        run_uninstall(Path.home())
+        run_uninstall(home)
         return
 
-    run_install(Path.home())
+    want_configure = any(a in ("--configure", "--interactive", "-i") for a in args)
+    want_list = any(a in ("--list", "--status") for a in args)
+    no_prompt = any(a in ("--yes", "--no-prompt") for a in args)
+
+    # One-shot CLI overrides (never persisted).
+    overrides: dict[str, bool] = {}
+    for feat in FEATURES:
+        key = feat["key"]
+        flag = _feature_flag(key)
+        if f"--{flag}" in args:
+            overrides[key] = True
+        elif f"--no-{flag}" in args:
+            overrides[key] = False
+
+    enabled = resolve_enabled(home, overrides)
+    config_exists = config_path(home).is_file()
+
+    if want_list:
+        _print_list(enabled, home)
+        return
+
+    if want_configure or (not config_exists and not no_prompt and not overrides and sys.stdin.isatty()):
+        answered = run_questionnaire(enabled)
+        if answered is None:
+            print("Aborted.")
+            return
+        enabled = answered
+        saved = save_config(home, enabled)
+        print_success(f"Configuration saved to {saved}")
+
+    if not want_configure and not overrides and config_exists and sys.stdin.isatty():
+        print_warn("Using saved configuration. Run with --configure to change it.")
+
+    run_install(home, enabled)
 
 
 if __name__ == "__main__":
