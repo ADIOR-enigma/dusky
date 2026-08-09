@@ -15,7 +15,7 @@ Fixes:
 """
 
 from __future__ import annotations
-import os, sys, re, json, shlex, signal, subprocess, tempfile, argparse
+import os, sys, re, json, shlex, shutil, signal, subprocess, tempfile, argparse
 from pathlib import Path
 
 def _ensure_rich():
@@ -260,12 +260,15 @@ def load_state():
 
 def get_partition_path(disk,num):
     disk=disk.rstrip("/")
-    if re.search(rf"p{num}$",disk):
-        return disk
+    num_str=str(num)
     name=Path(disk).name
+    if re.search(rf"\d+p{num_str}$",name):
+        return disk
+    if re.search(rf"[a-zA-Z]{num_str}$",name) and not re.search(r"(?:nvme\d+n\d+|mmcblk\d+|loop\d+|nbd\d+|pmem\d+)$",name):
+        return disk
     if re.search(r"(?:nvme\d+n\d+|mmcblk\d+|loop\d+|nbd\d+|pmem\d+)$",name) or (disk and disk[-1].isdigit()):
-        return f"{disk}p{num}"
-    return f"{disk}{num}"
+        return f"{disk}p{num_str}"
+    return f"{disk}{num_str}"
 
 def determine_root_partition(auto_mode):
     state=load_state()
@@ -276,11 +279,29 @@ def determine_root_partition(auto_mode):
         use_crypt=encrypt_hint
     elif has_mapper:
         use_crypt=True
+
     if use_crypt:
         mapped=Path("/dev/mapper/cryptroot")
         if not mapped.exists():
-            console.print("[red]LUKS expected no mapper[/red]")
-            sys.exit(1)
+            prov=state.get("root_part")
+            if prov and Path(prov).exists() and run("cryptsetup","isLuks",prov,check=False,capture=True).returncode == 0:
+                console.print(f"[yellow]Opening LUKS mapper cryptroot on {prov}...[/yellow]")
+                cred_pass = None
+                try:
+                    cred_file = Path("./.arch_credentials")
+                    if cred_file.exists():
+                        script = f'set +u; source {shlex.quote(str(cred_file))} 2>/dev/null; echo "$ROOT_PASS"'
+                        r_pass = subprocess.run(["bash","-c",script], text=True, capture_output=True, check=False, timeout=5)
+                        if r_pass.stdout.strip():
+                            cred_pass = bytearray(r_pass.stdout.strip().encode())
+                except Exception:
+                    pass
+                if cred_pass:
+                    run("cryptsetup","open","--allow-discards","--key-file","-",prov,"cryptroot", input_text=cred_pass, check=False, capture=True)
+                    for i in range(len(cred_pass)): cred_pass[i] = 0
+            if not mapped.exists():
+                console.print("[red]LUKS expected no mapper[/red]")
+                sys.exit(1)
         backing=""
         try:
             for dm in Path("/sys/class/block").iterdir():
@@ -311,8 +332,31 @@ def determine_root_partition(auto_mode):
         if auto_mode:
             prov=state.get("root_part")
             if prov and Path(prov).exists():
-                root_part=Path(prov).resolve()
-                mapped_root=root_part
+                if run("cryptsetup","isLuks",prov,check=False,capture=True).returncode == 0:
+                    mapped=Path("/dev/mapper/cryptroot")
+                    if not mapped.exists():
+                        cred_pass = None
+                        try:
+                            cred_file = Path("./.arch_credentials")
+                            if cred_file.exists():
+                                script = f'set +u; source {shlex.quote(str(cred_file))} 2>/dev/null; echo "$ROOT_PASS"'
+                                r_pass = subprocess.run(["bash","-c",script], text=True, capture_output=True, check=False, timeout=5)
+                                if r_pass.stdout.strip():
+                                    cred_pass = bytearray(r_pass.stdout.strip().encode())
+                        except Exception:
+                            pass
+                        if cred_pass:
+                            run("cryptsetup","open","--allow-discards","--key-file","-",prov,"cryptroot", input_text=cred_pass, check=False, capture=True)
+                            for i in range(len(cred_pass)): cred_pass[i] = 0
+                    if mapped.exists():
+                        root_part=Path(prov).resolve()
+                        mapped_root=mapped
+                    else:
+                        root_part=Path(prov).resolve()
+                        mapped_root=root_part
+                else:
+                    root_part=Path(prov).resolve()
+                    mapped_root=root_part
             else:
                 r=run("lsblk","-pnro","NAME,FSTYPE,LABEL",check=False,capture=True)
                 btrfs_parts=[]
@@ -483,19 +527,28 @@ def determine_efi_partition(auto_mode,root_disk,root_part):
     if BOOT_MODE!="UEFI":
         return None
     state=load_state()
-    if auto_mode:
-        prov=state.get("efi_part")
-        if prov and Path(prov).exists():
-            console.print(f"[cyan]Auto EFI {prov}[/cyan]")
-            return Path(prov).resolve()
-        det=auto_detect_efi_partition(root_disk,root_part)
-        if det:
-            console.print(f"[cyan]Auto EFI {det}[/cyan]")
-            return det
-        console.print("[yellow]Cannot auto-detect EFI, prompting[/yellow]")
-        return prompt_for_efi_partition(root_disk)
-    else:
-        return prompt_for_efi_partition(root_disk)
+    prov=state.get("efi_part")
+    if prov and Path(prov).exists():
+        console.print(f"[cyan]Auto EFI {prov}[/cyan]")
+        return Path(prov).resolve()
+    det=auto_detect_efi_partition(root_disk,root_part)
+    if det:
+        console.print(f"[cyan]Auto EFI {det}[/cyan]")
+        return det
+    if auto_mode or not sys.stdin.isatty():
+        try:
+            parts = flatten_lsblk(json.loads(run("lsblk","--json","--paths","--tree","-o","NAME,PATH,TYPE,PARTTYPE,FSTYPE,PARTLABEL,LABEL",str(root_disk),check=False,capture=True).stdout))
+            for p in parts:
+                if p.get("type") == "part" and (p.get("parttype","").lower() == EFI_GPT_TYPE or p.get("fstype","").lower() in ("vfat","fat32")):
+                    p_path = Path(p.get("path") or p.get("name")).resolve()
+                    if p_path != root_part.resolve():
+                        console.print(f"[cyan]Auto-fallback EFI {p_path}[/cyan]")
+                        return p_path
+        except Exception:
+            pass
+        console.print("[yellow]No EFI partition detected in auto mode[/yellow]")
+        return None
+    return prompt_for_efi_partition(root_disk)
 
 def construct_subvolume_matrix(mapped_root):
     console.print("[yellow]>> Constructing DUSKY Subvolume Matrix...[/yellow]")
@@ -546,7 +599,7 @@ def assemble_fhs(mapped_root,efi_part):
     if BOOT_MODE=="UEFI" and efi_part:
         console.print(f"[yellow]>> Mounting EFI {efi_part} to /mnt/boot (hardened)...[/yellow]")
         run("mount","-t","vfat","-o","fmask=0177,dmask=0077,noexec,nosuid,nodev",str(efi_part),"/mnt/boot",capture=True)
-        sync_secondary_efi_bootloaders("/mnt/boot")
+        sync_secondary_efi_bootloaders("/mnt/boot", str(efi_part))
 
     if STATE_JSON.exists():
         try:
@@ -556,65 +609,123 @@ def assemble_fhs(mapped_root,efi_part):
         except Exception:
             pass
 
-def sync_secondary_efi_bootloaders(primary_esp_mnt: str = "/mnt/boot"):
+def sync_secondary_efi_bootloaders(primary_esp_mnt: str = "/mnt/boot", primary_esp_dev: Optional[str] = None):
+    """
+    Best-effort copy of vendor EFI dirs from other ESPs (dual-boot / extra USB).
+    Must NEVER abort the install: missing secondary media, busy devices, or
+    copy errors are warnings only. Previously a missing `import shutil` turned
+    any secondary vfat into a hard Fatal.
+    """
     if BOOT_MODE != "UEFI":
         return
-    console.print("[yellow]>> Scanning for secondary EFI bootloaders to synchronize...[/yellow]")
-    r = run("lsblk", "--json", "--paths", "--tree", "-o", "PATH,TYPE,FSTYPE,PARTTYPE,LABEL", check=False, capture=True)
-    if r.returncode != 0 or not r.stdout:
-        return
     try:
-        data = json.loads(r.stdout)
-    except Exception:
-        return
-
-    esp_guid = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
-    primary_esp_path = ""
-    try:
-        r_mnt = run("findmnt", "-n", "-e", "-o", "SOURCE", primary_esp_mnt, check=False, capture=True)
-        if r_mnt.stdout:
-            primary_esp_path = str(Path(r_mnt.stdout.strip()).resolve())
-    except Exception:
-        pass
-
-    target_efi_dir = Path(primary_esp_mnt) / "EFI"
-    target_efi_dir.mkdir(parents=True, exist_ok=True)
-
-    for child in flatten_lsblk(data):
-        path = child.get("path") or child.get("name")
-        if not path:
-            continue
+        console.print("[yellow]>> Scanning for secondary EFI bootloaders to synchronize...[/yellow]")
+        r = run("lsblk", "--json", "--paths", "--tree", "-o", "PATH,TYPE,FSTYPE,PARTTYPE,LABEL,MOUNTPOINTS", check=False, capture=True)
+        if r.returncode != 0 or not r.stdout:
+            return
         try:
-            p_res = str(Path(path).resolve())
+            data = json.loads(r.stdout)
         except Exception:
-            p_res = path
-        if primary_esp_path and p_res == primary_esp_path:
-            continue
+            return
 
-        ptype = (child.get("parttype") or "").lower()
-        fstype = (child.get("fstype") or "").lower()
-        if ptype == esp_guid or fstype in ("vfat", "fat32"):
-            tmp_dir = tempfile.mkdtemp(prefix="dusky_sec_esp_")
+        esp_guid = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
+        primary_esp_path = ""
+        if primary_esp_dev:
             try:
-                m_res = run("mount", "-t", "vfat", "-o", "ro,noexec,nosuid,nodev", p_res, tmp_dir, check=False, capture=True)
-                if m_res.returncode == 0:
+                primary_esp_path = str(Path(primary_esp_dev).resolve())
+            except Exception:
+                pass
+
+        if not primary_esp_path:
+            try:
+                r_mnt = run("findmnt", "-n", "-e", "-o", "SOURCE", primary_esp_mnt, check=False, capture=True)
+                src = (r_mnt.stdout or "").strip()
+                if src and src.startswith("/"):
+                    primary_esp_path = str(Path(src).resolve())
+            except Exception:
+                pass
+
+        target_efi_dir = Path(primary_esp_mnt) / "EFI"
+        target_efi_dir.mkdir(parents=True, exist_ok=True)
+
+        for child in flatten_lsblk(data):
+            try:
+                path = child.get("path") or child.get("name")
+                if not path:
+                    continue
+                dev_type = (child.get("type") or "").lower()
+                # Only real partitions. Whole disks / loops / roms are not dual-boot ESPs
+                if dev_type and dev_type != "part":
+                    continue
+
+                try:
+                    p_res = str(Path(path).resolve())
+                except Exception:
+                    p_res = path
+
+                if primary_esp_path and p_res == primary_esp_path:
+                    continue
+
+                # Never touch live ISO / airootfs backing devices or existing /mnt mounts
+                mps = child.get("mountpoints") or child.get("mountpoint") or []
+                if isinstance(mps, str):
+                    mps = [mps]
+                if any(isinstance(m, str) and (m.startswith("/run/archiso") or m.startswith("/mnt") or m in ("/", "/boot", "/efi")) for m in mps if m):
+                    continue
+
+                ptype = (child.get("parttype") or "").lower()
+                fstype = (child.get("fstype") or "").lower()
+                is_esp = ptype == esp_guid
+                is_vfat = fstype in ("vfat", "fat32")
+                if not (is_esp or is_vfat):
+                    continue
+
+                tmp_dir = None
+                try:
+                    tmp_dir = tempfile.mkdtemp(prefix="dusky_sec_esp_")
+                    m_res = run("mount", "-t", "vfat", "-o", "ro,noexec,nosuid,nodev", p_res, tmp_dir, check=False, capture=True)
+                    if m_res.returncode != 0:
+                        continue
                     sec_efi = Path(tmp_dir) / "EFI"
-                    if sec_efi.is_dir():
-                        for vendor_dir in sec_efi.iterdir():
-                            if vendor_dir.is_dir():
-                                v_name = vendor_dir.name
-                                dst_vendor = target_efi_dir / v_name
-                                console.print(f"[cyan]Syncing secondary EFI vendor directory '{v_name}' from {p_res} -> {dst_vendor}[/cyan]")
-                                try:
-                                    shutil.copytree(vendor_dir, dst_vendor, dirs_exist_ok=True, copy_function=shutil.copy)
-                                except Exception as e:
-                                    console.print(f"[yellow]Warning syncing {v_name}: {e}[/yellow]")
-                run("umount", tmp_dir, check=False, capture=True)
-            finally:
-                shutil.rmtree(tmp_dir, ignore_errors=True)
+                    if not sec_efi.is_dir():
+                        continue
+                    for vendor_dir in sec_efi.iterdir():
+                        if not vendor_dir.is_dir():
+                            continue
+                        v_name = vendor_dir.name
+                        if not v_name or v_name.startswith("."):
+                            continue
+                        dst_vendor = target_efi_dir / v_name
+                        console.print(f"[cyan]Syncing secondary EFI vendor directory '{v_name}' from {p_res} -> {dst_vendor}[/cyan]")
+                        try:
+                            shutil.copytree(vendor_dir, dst_vendor, dirs_exist_ok=True, copy_function=shutil.copy2)
+                        except Exception as e:
+                            console.print(f"[yellow]Warning syncing {v_name}: {e}[/yellow]")
+                except Exception as e:
+                    console.print(f"[yellow]Warning: secondary ESP {path}: {e}[/yellow]")
+                finally:
+                    if tmp_dir:
+                        run("umount", tmp_dir, check=False, capture=True)
+                        try:
+                            shutil.rmtree(tmp_dir, ignore_errors=True)
+                        except Exception:
+                            pass
+            except Exception as e:
+                console.print(f"[yellow]Warning: secondary EFI candidate skipped: {e}[/yellow]")
+                continue
+    except Exception as e:
+        console.print(f"[yellow]Warning: secondary EFI sync skipped: {e}[/yellow]")
+        return
+
+def get_free_bytes(path: Path | str) -> int:
+    try:
+        st = os.statvfs(path)
+        return st.f_bavail * st.f_frsize
+    except Exception:
+        return 8 * 1024**3
 
 def initialize_swapfile():
-    console.print("[yellow]>> Ensuring 4GB swapfile...[/yellow]")
+    console.print("[yellow]>> Ensuring swapfile...[/yellow]")
     try:
         r=run("swapon","--show=NAME","--raw","--noheadings",check=False,capture=True)
         for line in r.stdout.splitlines():
@@ -633,14 +744,24 @@ def initialize_swapfile():
             pass
     except:
         pass
+
     if SWAPFILE_PATH.exists() and not SWAPFILE_PATH.is_file():
         console.print(f"[red]{SWAPFILE_PATH} not regular file[/red]")
         sys.exit(1)
+
+    free_bytes = get_free_bytes("/mnt/swap")
+    desired_size = 4 * 1024**3
+    if free_bytes < 3 * 1024**3:
+        desired_size = max(256 * 1024**2, int(free_bytes * 0.35))
+
+    size_str = f"{max(256, desired_size // (1024**2))}M"
+
     if SWAPFILE_PATH.is_file():
         try:
-            if SWAPFILE_PATH.stat().st_size==4*1024**3:
+            cur_sz = SWAPFILE_PATH.stat().st_size
+            if cur_sz >= 256 * 1024**2 and abs(cur_sz - desired_size) < 512 * 1024**2:
                 if run("swapon",str(SWAPFILE_PATH),check=False,capture=True).returncode==0:
-                    console.print("[green]>> Swap re-activated[/green]")
+                    console.print(f"[green]>> Swap ({size_str}) re-activated[/green]")
                     return
         except:
             pass
@@ -649,10 +770,29 @@ def initialize_swapfile():
             run("sync", check=False, capture=True)
             run("udevadm", "settle", "--timeout=5", check=False, capture=True)
         except Exception as e:
-            console.print(f"[red]Failed to remove stale swapfile {SWAPFILE_PATH}: {e}[/red]")
-            sys.exit(1)
-    run("btrfs","filesystem","mkswapfile","--size","4G","--uuid","clear",str(SWAPFILE_PATH),capture=True)
-    run("swapon",str(SWAPFILE_PATH),capture=True)
+            console.print(f"[yellow]Warning removing old swapfile: {e}[/yellow]")
+
+    mk_res = run("btrfs","filesystem","mkswapfile","--size",size_str,"--uuid","clear",str(SWAPFILE_PATH),check=False,capture=True)
+    if mk_res.returncode == 0 and SWAPFILE_PATH.is_file():
+        sw_res = run("swapon",str(SWAPFILE_PATH),check=False,capture=True)
+        if sw_res.returncode == 0:
+            console.print(f"[green]>> Swapfile ({size_str}) created and activated.[/green]")
+            return
+
+    try:
+        SWAPFILE_PATH.unlink(missing_ok=True)
+        run("truncate", "-s", size_str, str(SWAPFILE_PATH), check=False)
+        run("chattr", "+C", str(SWAPFILE_PATH), check=False)
+        run("chmod", "600", str(SWAPFILE_PATH), check=False)
+        run("mkswap", str(SWAPFILE_PATH), check=False)
+        sw_res2 = run("swapon",str(SWAPFILE_PATH),check=False,capture=True)
+        if sw_res2.returncode == 0:
+            console.print(f"[green]>> Swapfile ({size_str}) created via fallback and activated.[/green]")
+            return
+    except Exception as e:
+        console.print(f"[yellow]Warning setting up swapfile: {e}[/yellow]")
+
+    console.print("[yellow]Warning: Swapfile activation skipped[/yellow]")
 
 def teardown_state():
     try:

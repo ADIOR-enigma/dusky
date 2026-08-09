@@ -261,12 +261,15 @@ def arrow_menu(title: str, options: List[Tuple[str,str]], default_idx: int = 0) 
 
 def get_partition_path(disk, num):
     disk = disk.rstrip("/")
-    if re.search(rf"p{num}$", disk):
-        return disk
+    num_str = str(num)
     name = Path(disk).name
+    if re.search(rf"\d+p{num_str}$", name):
+        return disk
+    if re.search(rf"[a-zA-Z]{num_str}$", name) and not re.search(r"(?:nvme\d+n\d+|mmcblk\d+|loop\d+|nbd\d+|pmem\d+)$", name):
+        return disk
     if re.search(r"(?:nvme\d+n\d+|mmcblk\d+|loop\d+|nbd\d+|pmem\d+)$", name) or (disk and disk[-1].isdigit()):
-        return f"{disk}p{num}"
-    return f"{disk}{num}"
+        return f"{disk}p{num_str}"
+    return f"{disk}{num_str}"
 
 def detect_boot_mode() -> Literal["UEFI","BIOS"]:
     if Path("/sys/firmware/efi").is_dir():
@@ -732,6 +735,10 @@ def write_gpt_sfdisk(disk, boot_mode, encrypt, efi_size="1.3G"):
         run("blockdev", "--rereadpt", disk, check=False, capture=True)
         try:
             run("partx", "-u", disk, check=False, capture=True)
+        except Exception:
+            pass
+        try:
+            run("partx", "-a", disk, check=False, capture=True)
         except Exception:
             pass
     finally:
