@@ -573,7 +573,7 @@ def assemble_fhs(mapped_root,efi_part):
     run("mount","-o",f"{BTRFS_OPTS},subvol=@",str(mapped_root),"/mnt",capture=True)
     
     # Removed "home/.snapshots" from this loop to prevent creating a masked directory inside the @ subvolume root
-    for mp in ["home",".snapshots","var/log","var/cache","var/tmp","var/lib/machines","var/lib/portables","var/lib/libvirt","var/lib/mysql","var/lib/postgres","swap","boot"]:
+    for mp in ["home",".snapshots","var/log","var/cache","var/tmp","var/lib/machines","var/lib/portables","var/lib/libvirt","var/lib/mysql","var/lib/postgres","swap","boot","proc","sys","dev","run","etc","tmp","root","mnt","opt","srv"]:
         Path(f"/mnt/{mp}").mkdir(parents=True,exist_ok=True)
         
     mounts=[
