@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-🦊 Dusky Sites Setup Script (Arch Linux / Python 3.12+ / Firefox 115+)
+Dusky Sites Setup Script (Arch Linux / Python 3.12+ / Firefox 115+)
 ======================================================================
 Provisions XDG configuration directories, installs native messaging host
 to ~/.local/share/dusky-sites/dusky_sites_host.py, parses profiles.ini,
@@ -30,8 +30,8 @@ EXTENSION_ID = "dusky_sites@dusky.com"
 
 def print_step(msg: str) -> None: print(f"{C_BLUE}==>{C_RESET} {msg}")
 def print_success(msg: str) -> None: print(f"{C_GREEN}✓{C_RESET} {msg}")
-def print_warn(msg: str) -> None: print(f"{C_YELLOW}⚠{C_RESET} {msg}")
-def print_error(msg: str) -> None: print(f"{C_RED}❌ Error:{C_RESET} {msg}"); sys.exit(1)
+def print_warn(msg: str) -> None: print(f"{C_YELLOW}[!] {msg}")
+def print_error(msg: str) -> None: print(f"{C_RED}[!] Error:{C_RESET} {msg}"); sys.exit(1)
 
 PREFS_TO_SET = [
     ("toolkit.legacyUserProfileCustomizations.stylesheets", "true"),
@@ -888,7 +888,7 @@ def uninstall_host(data_home: Path) -> bool:
     return removed
 
 def run_uninstall(home: Path) -> None:
-    print(f"\n{C_CYAN}🧹 Dusky Sites Uninstaller{C_RESET}\n")
+    print(f"\n{C_CYAN}[-] Dusky Sites Uninstaller{C_RESET}\n")
 
     running = _browser_processes_running()
     if running:
@@ -937,7 +937,7 @@ def run_uninstall(home: Path) -> None:
     if not purged:
         print_warn("No configuration files found to purge.")
 
-    print(f"\n{C_GREEN}✅ Uninstall complete.{C_RESET}")
+    print(f"\n{C_GREEN}[+] Uninstall complete.{C_RESET}")
     print("------------------------------------------------------------------")
     print(f"Removed: {manifests} manifest(s), {global_xpis} global XPI(s), host, {profiles} profile(s) cleaned.")
     print("Purging: User configuration (config.json) and generated CSS removed.")
@@ -965,7 +965,7 @@ def main() -> None:
         run_uninstall(home)
         return
 
-    print(f"\n{C_CYAN}🦊 Dusky Sites Setup Script (Arch Linux / Python 3.12+){C_RESET}\n")
+    print(f"\n{C_CYAN}Dusky Sites Setup Script (Arch Linux / Python 3.12+){C_RESET}\n")
 
     script_dir = Path(__file__).parent.resolve()
     source_host = resolve_source_host(script_dir)
@@ -1105,7 +1105,7 @@ def main() -> None:
     print_step("Provisioning native context menu, userChrome & profile XPI extensions...")
     setup_user_chrome(home, source_xpi)
 
-    print(f"\n{C_GREEN}✅ Setup Complete! Dusky Sites host and signed WebExtension provisioned cleanly.{C_RESET}")
+    print(f"\n{C_GREEN}[+] Setup Complete! Dusky Sites host and signed WebExtension provisioned cleanly.{C_RESET}")
     print("------------------------------------------------------------------")
     print(f"{C_CYAN}Host path:{C_RESET} {installed_host}")
     print(f"{C_CYAN}Manifest name:{C_RESET} {MANIFEST_NAME} (native app name: dusky_sites)")
