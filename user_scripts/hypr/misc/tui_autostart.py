@@ -86,6 +86,16 @@ SCHEMA = {
             extended_help="**CPU Glance**\n\nExecutes the Rofi overlay to display current CPU utilization and core statistics."
         ),
         ConfigItem(
+            label="Glance: CPU Power",
+            key="action_glance_cpu_power",
+            scope="DEFAULT",
+            type_="action",
+            default="~/user_scripts/rofi/dusky_glance.sh --cpu-power",
+            parent_ref="menu_dusky_glance",
+            group="Monitors",
+            extended_help="**CPU Power Glance**\n\nExecutes the Rofi overlay to display live CPU package power consumption in Watts."
+        ),
+        ConfigItem(
             label="Glance: Memory (RAM)",
             key="action_glance_ram",
             scope="DEFAULT",
@@ -94,6 +104,26 @@ SCHEMA = {
             parent_ref="menu_dusky_glance",
             group="Monitors",
             extended_help="**RAM Glance**\n\nExecutes the Rofi overlay to display current Memory usage, caching, and swap allocation."
+        ),
+        ConfigItem(
+            label="Glance: RAM Temperature",
+            key="action_glance_ram_temp",
+            scope="DEFAULT",
+            type_="action",
+            default="~/user_scripts/rofi/dusky_glance.sh --ram-temp",
+            parent_ref="menu_dusky_glance",
+            group="Monitors",
+            extended_help="**RAM Temperature Glance**\n\nExecutes the Rofi overlay to display the current thermal state of your memory modules."
+        ),
+        ConfigItem(
+            label="Glance: ZRAM Usage",
+            key="action_glance_zram",
+            scope="DEFAULT",
+            type_="action",
+            default="~/user_scripts/rofi/dusky_glance.sh --zram",
+            parent_ref="menu_dusky_glance",
+            group="Monitors",
+            extended_help="**ZRAM Glance**\n\nExecutes the Rofi overlay to display live ZRAM compression and swap statistics."
         ),
         ConfigItem(
             label="Glance: Temperatures",
@@ -114,6 +144,36 @@ SCHEMA = {
             parent_ref="menu_dusky_glance",
             group="Monitors",
             extended_help="**Battery Glance**\n\nExecutes the Rofi overlay to display the charging state, overall health, and exact capacity of the internal battery."
+        ),
+        ConfigItem(
+            label="Glance: Battery Percent",
+            key="action_glance_battery_percent",
+            scope="DEFAULT",
+            type_="action",
+            default="~/user_scripts/rofi/dusky_glance.sh --battery-percent",
+            parent_ref="menu_dusky_glance",
+            group="Monitors",
+            extended_help="**Battery Percent Glance**\n\nExecutes the Rofi overlay to display the exact battery charge percentage only."
+        ),
+        ConfigItem(
+            label="Glance: Battery Power Draw",
+            key="action_glance_battery_watts",
+            scope="DEFAULT",
+            type_="action",
+            default="~/user_scripts/rofi/dusky_glance.sh --battery-watts",
+            parent_ref="menu_dusky_glance",
+            group="Monitors",
+            extended_help="**Battery Power Draw Glance**\n\nExecutes the Rofi overlay to display the current battery power draw in Watts."
+        ),
+        ConfigItem(
+            label="Glance: Battery Time Remaining",
+            key="action_glance_battery_time",
+            scope="DEFAULT",
+            type_="action",
+            default="~/user_scripts/rofi/dusky_glance.sh --battery-time",
+            parent_ref="menu_dusky_glance",
+            group="Monitors",
+            extended_help="**Battery Time Glance**\n\nExecutes the Rofi overlay to display the estimated time remaining on the current charge."
         ),
         ConfigItem(
             label="Glance: Network",
@@ -146,6 +206,16 @@ SCHEMA = {
             extended_help="**Workspace Glance**\n\nExecutes the Rofi overlay to display the current active workspace overview."
         ),
         ConfigItem(
+            label="Glance: Disk Usage",
+            key="action_glance_disk",
+            scope="DEFAULT",
+            type_="action",
+            default="~/user_scripts/rofi/dusky_glance.sh --disk",
+            parent_ref="menu_dusky_glance",
+            group="Monitors",
+            extended_help="**Disk Glance**\n\nExecutes the Rofi overlay to display the current usage and free space of the root partition."
+        ),
+        ConfigItem(
             label="Glance: Clock",
             key="action_glance_clock",
             scope="DEFAULT",
@@ -155,6 +225,26 @@ SCHEMA = {
             group="Monitors",
             extended_help="**Clock Glance**\n\nExecutes the Rofi overlay to display the current time, date, and calendar."
         ),
+        ConfigItem(
+            label="Glance: Clock (Short)",
+            key="action_glance_clock_short",
+            scope="DEFAULT",
+            type_="action",
+            default="~/user_scripts/rofi/dusky_glance.sh --clock-short",
+            parent_ref="menu_dusky_glance",
+            group="Monitors",
+            extended_help="**Compact Clock Glance**\n\nExecutes the Rofi overlay to display a minimal clock with hours and minutes only (no seconds)."
+        ),
+        ConfigItem(
+            label="Glance: Stopwatch",
+            key="action_glance_stopwatch",
+            scope="DEFAULT",
+            type_="action",
+            default="~/user_scripts/rofi/dusky_glance.sh --stopwatch",
+            parent_ref="menu_dusky_glance",
+            group="Monitors",
+            extended_help="**Stopwatch Glance**\n\nExecutes the Rofi overlay to start a live stopwatch counter."
+        ),
 
         # --- INDIVIDUAL ACTIONS: Interface Control ---
         ConfigItem(
@@ -162,7 +252,7 @@ SCHEMA = {
             key="action_launch_waybar",
             scope="DEFAULT",
             type_="action",
-            default="hypr-app $HOME/user_scripts/waybar/waybar_autostart.sh",
+            default="hypr-app $HOME/user_scripts/waybar/waybar_toggle.sh",
             group="Interface",
             extended_help="**Waybar Controller**\n\nManually triggers the Waybar launch script. This is highly useful if the status bar crashes or if you want to apply Waybar configuration changes without rebooting."
         ),
