@@ -76,6 +76,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import sys
 from pathlib import Path
 
@@ -269,8 +270,12 @@ def default_enabled() -> dict[str, bool]:
 def _xdg_config_home(home: Path) -> Path:
     raw = os.environ.get("XDG_CONFIG_HOME", "").strip()
     if raw:
-        p = Path(raw).expanduser()
-        return p if p.is_absolute() else home / ".config"
+        try:
+            p = Path(raw).expanduser()
+            if p.is_absolute():
+                return p
+        except (OSError, RuntimeError):
+            pass  # unresolvable value — fall back to the XDG default below
     return home / ".config"
 
 
@@ -394,16 +399,21 @@ def prefs_for_disabled(enabled: dict[str, bool]) -> list[tuple[str, str]]:
 
 # ── Atomic, symlink-aware writes ──────────────────────────────────────────
 def atomic_write_text(path: Path, text: str) -> None:
-    """Write text atomically (temp file + fsync + same-dir rename).
+    """Write text atomically (unique temp + fsync + same-dir rename + dir fsync).
 
     If ``path`` is a symlink (typical for dotfiles repos), write *through* it
     to the resolved target so the symlink is preserved, never replaced.
-    Preserves the original file's permission bits, uses a unique temp name so
-    concurrent runs can never race on the same temp file, and fsyncs the data
-    to disk *before* the atomic rename — a crash at any point leaves either
-    the old file or the complete new file, never a truncated one.
+    Preserves the original file's permission bits, uses a random-named temp
+    file created with O_EXCL so concurrent runs can never collide, fsyncs the
+    data *and* the parent directory before the rename (so the new directory
+    entry survives a crash), and cleans the temp file up on failure — a crash
+    at any point leaves either the old file or the complete new file, never a
+    truncated one and never a dangling temp.
     """
-    target = path.resolve() if path.is_symlink() else path
+    try:
+        target = path.resolve() if path.is_symlink() else path
+    except (OSError, RuntimeError):
+        target = path  # symlink loop / unresolvable — write the path itself
     target.parent.mkdir(parents=True, exist_ok=True)
     mode = None
     try:
@@ -411,29 +421,50 @@ def atomic_write_text(path: Path, text: str) -> None:
             mode = target.stat().st_mode
     except OSError:
         pass
-    tmp = target.with_name(f".{target.name}.tmp{os.getpid()}")
+    tmp = target.with_name(f".{target.name}.tmp.{os.getpid()}.{secrets.token_hex(6)}")
     data = text.encode("utf-8")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o666)
+    created = False
     try:
-        view = memoryview(data)
-        written = 0
-        while written < len(view):
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+        created = True
+        try:
+            view = memoryview(data)
+            written = 0
+            while written < len(view):
+                try:
+                    written += os.write(fd, view[written:])
+                except InterruptedError:
+                    continue
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        if mode is not None:
+            os.chmod(tmp, mode & 0o7777)
+        os.replace(tmp, target)
+        # Persist the rename on Linux filesystems (ext4/btrfs/zfs).
+        try:
+            dir_fd = os.open(target.parent, os.O_RDONLY)
             try:
-                written += os.write(fd, view[written:])
-            except InterruptedError:
-                continue
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    if mode is not None:
-        os.chmod(tmp, mode & 0o7777)
-    os.replace(tmp, target)
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
+    except OSError:
+        # Only remove a temp file we actually created (O_EXCL collision with a
+        # pre-existing stale file is ~impossible, but never delete one we didn't).
+        if created:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise
 
 
 def _remove_file(path: Path) -> bool:
     try:
         if path.is_symlink() or path.is_file():
-            path.unlink()
+            path.unlink(missing_ok=True)
             return True
     except OSError as e:
         print_warn(f"Could not remove {path}: {e}")
@@ -475,13 +506,16 @@ def ensure_prefs(user_js: Path, ensure: list[tuple[str, str]], remove: list[tupl
 
 
 def restore_pref_line(user_js: Path, prefs: list[tuple[str, str]]) -> bool:
-    """Remove exact pref lines from ``prefs``. Returns True if any removed.
+    """Remove pref lines from ``prefs``. Returns True if any removed.
 
-    Only exact lines matching the values this script would write are removed
-    (an identical line written by hand is indistinguishable — the same
-    exact-line pattern dusky_sites_setup.py uses).
+    Matches are regex-based but anchored to the exact pref name AND value this
+    script would write, tolerant of surrounding whitespace and trailing
+    comments — so disabling a feature / uninstalling removes the pref even if
+    the line was hand-edited with different spacing, while a line holding a
+    *different* value for the same pref (e.g. the user set ``true`` by hand)
+    is deliberately left alone. Pref names are case-sensitive in Firefox, so
+    matching is case-sensitive too.
     """
-    exact_lines = [f'user_pref("{name}", {val});' for name, val in prefs]
     if not (user_js.is_file() or user_js.is_symlink()):
         return False
     try:
@@ -489,8 +523,13 @@ def restore_pref_line(user_js: Path, prefs: list[tuple[str, str]]) -> bool:
     except OSError as e:
         print_warn(f"Could not read {user_js}: {e}")
         return False
-    kept = [ln for ln in content.splitlines(keepends=True) if ln.strip() not in exact_lines]
-    if len(kept) == len(content.splitlines(keepends=True)):
+    patterns = [
+        re.compile(rf'^\s*user_pref\(\s*"{re.escape(name)}"\s*,\s*{re.escape(val)}\s*\)\s*;.*$')
+        for name, val in prefs
+    ]
+    lines = content.splitlines(keepends=True)
+    kept = [ln for ln in lines if not any(p.match(ln) for p in patterns)]
+    if len(kept) == len(lines):
         return False
     try:
         atomic_write_text(user_js, "".join(kept))
@@ -512,6 +551,13 @@ def iter_firefox_profiles(base_dir: Path):
     while user.js can already exist). Results are resolved, deduplicated, and
     sorted for deterministic order. Non-profile dirs (Crash Reports, Pending
     Pings, Profile Groups, etc.) contain neither file and are never yielded.
+
+    profiles.ini is parsed section-aware (no state bleed between sections):
+    ``[ProfileN]`` sections contribute their ``Path`` (honouring ``IsRelative``),
+    and ``[Install...]`` sections' ``Default`` entries (Firefox 67+ dedicated
+    profiles) are honoured too. Comments, blank lines, surrounding quotes and
+    inline ``;``/``#`` comments are tolerated. A never-yet-launched profile
+    listed in profiles.ini is still yielded if its directory exists.
     """
     found: set[Path] = set()
 
@@ -525,22 +571,43 @@ def iter_firefox_profiles(base_dir: Path):
 
     ini = base_dir / "profiles.ini"
     if ini.is_file():
-        current: dict[str, str] = {}
         try:
             text = ini.read_text(encoding="utf-8", errors="replace")
         except OSError:
             text = ""
 
-        def consider(cur: dict[str, str]) -> None:
-            rel = cur.get("path")
+        sections: list[tuple[str, dict[str, str]]] = []
+        cur_sec = ""
+        cur_kv: dict[str, str] = {}
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith(("#", ";")):
+                continue
+            if line.startswith("[") and "]" in line:
+                if cur_sec:
+                    sections.append((cur_sec, cur_kv))
+                cur_sec = line[1:line.index("]")].strip().lower()
+                cur_kv = {}
+            elif "=" in line and cur_sec:
+                k, v = line.split("=", 1)
+                v = re.split(r"\s+[;#]", v)[0].strip().strip('\"').strip("'")
+                cur_kv[k.strip().lower()] = v
+        if cur_sec:
+            sections.append((cur_sec, cur_kv))
+
+        def consider(sec_name: str, kv: dict[str, str]) -> None:
+            if sec_name.startswith("profile"):
+                rel = kv.get("path")
+                is_relative = kv.get("isrelative", "1") != "0"
+            elif sec_name.startswith("install"):
+                rel = kv.get("default")
+                is_relative = rel is not None and not rel.startswith("/")
+            else:
+                return
             if not rel:
                 return
             p = Path(rel)
-            is_relative = cur.get("isrelative", "1") != "0"
-            if is_relative:
-                profile = base_dir / p
-            else:
-                profile = p if p.is_absolute() else (base_dir / p)
+            profile = (base_dir / p) if is_relative else p
             try:
                 if profile.is_dir():
                     emit(profile)
@@ -548,15 +615,8 @@ def iter_firefox_profiles(base_dir: Path):
                 if profile.is_dir():
                     emit(profile)
 
-        for line in text.splitlines():
-            line = line.strip()
-            if line.startswith("[") and line.endswith("]"):
-                consider(current)
-                current = {}
-            elif "=" in line:
-                k, v = line.split("=", 1)
-                current[k.strip().lower()] = v.strip()
-        consider(current)
+        for sec_name, kv in sections:
+            consider(sec_name, kv)
 
     try:
         for profile in base_dir.iterdir():
@@ -571,7 +631,7 @@ def iter_firefox_profiles(base_dir: Path):
 
 
 def _profile_base_dirs(home: Path) -> list[Path]:
-    """Firefox-family profile roots (same list as Dusky Sites)."""
+    """Firefox-family profile roots: native, Flatpak, and Snap variants."""
     return [
         home / ".mozilla" / "firefox",
         home / ".config" / "mozilla" / "firefox",
@@ -584,26 +644,65 @@ def _profile_base_dirs(home: Path) -> list[Path]:
         home / ".firedragon",
         home / ".var" / "app" / "org.mozilla.firefox" / ".mozilla" / "firefox",
         home / ".var" / "app" / "io.gitlab.librewolf-community" / ".librewolf",
+        home / ".var" / "app" / "app.zen_browser.zen" / ".zen",
+        home / ".var" / "app" / "one.ablaze.floorp" / ".floorp",
+        home / ".var" / "app" / "net.waterfox.waterfox" / ".waterfox",
+        home / "snap" / "firefox" / "common" / ".mozilla" / "firefox",
     ]
+
+
+_BROWSER_PROC_PATTERNS = {
+    "firefox": re.compile(r"(?:^|/)(?:firefox(?:-bin|-esr|-nightly)?|org\.mozilla\.firefox)(?:\s|$)"),
+    "librewolf": re.compile(r"(?:^|/)(?:librewolf(?:-bin)?|io\.gitlab\.librewolf)(?:\s|$)"),
+    "zen": re.compile(r"(?:^|/)(?:zen(?:-bin|-browser)?|app\.zen_browser\.zen)(?:\s|$)"),
+    "waterfox": re.compile(r"(?:^|/)(?:waterfox(?:-bin|-g)?|net\.waterfox\.waterfox)(?:\s|$)"),
+    "floorp": re.compile(r"(?:^|/)(?:floorp(?:-bin)?|one\.ablaze\.floorp)(?:\s|$)"),
+    "firedragon": re.compile(r"(?:^|/)(?:firedragon(?:-bin)?|org\.garudalinux\.firedragon)(?:\s|$)"),
+}
 
 
 def _browser_processes_running() -> list[str]:
     """Return names of detected running Firefox-family browsers (informational).
 
-    Runs one `pgrep -x` per browser name. (`pgrep -x` requires an exact
-    process-name match, so a single pipe-delimited pattern like
-    ``"firefox|librewolf"`` would never match anything.)
+    Inspects /proc directly instead of `pgrep` — zero external dependencies
+    (so it also works in minimal chroots/containers where pgrep is missing) and
+    it catches binary variants (`zen-bin`, `librewolf-bin`, `firefox-esr`) and
+    Flatpak app IDs that a `pgrep -x` exact-comm match can never see. Only
+    processes owned by the current user are considered; returns [] if /proc is
+    unavailable.
     """
-    import subprocess
-    names: set[str] = set()
-    for browser in ("firefox", "librewolf", "zen", "waterfox", "floorp", "firedragon"):
+    current_uid = os.getuid()
+    detected: set[str] = set()
+    try:
+        pids = [p for p in os.listdir("/proc") if p.isdigit()]
+    except OSError:
+        return []
+    for pid in pids:
+        pid_dir = f"/proc/{pid}"
         try:
-            proc = subprocess.run(["pgrep", "-x", browser], capture_output=True, text=True)
+            if os.stat(pid_dir).st_uid != current_uid:
+                continue
         except OSError:
             continue
-        if proc.returncode == 0 and proc.stdout.strip():
-            names.add(browser)
-    return sorted(names)
+        comm = ""
+        cmdline = ""
+        try:
+            with open(f"{pid_dir}/comm", "r", encoding="utf-8", errors="replace") as f:
+                comm = f.read().strip()
+        except OSError:
+            pass
+        try:
+            with open(f"{pid_dir}/cmdline", "rb") as f:
+                cmdline = " ".join(
+                    p.decode("utf-8", errors="replace")
+                    for p in f.read().split(b"\x00") if p
+                )
+        except OSError:
+            pass
+        for browser, pattern in _BROWSER_PROC_PATTERNS.items():
+            if browser not in detected and (pattern.search(comm) or pattern.search(cmdline)):
+                detected.add(browser)
+    return sorted(detected)
 
 
 # ── Per-profile install / restore ─────────────────────────────────────────
@@ -645,6 +744,10 @@ def setup_profile(profile: Path, css_content: str, ensure_prefs_list: list, remo
         print_warn(f"Could not write {css_path}: {e}")
 
     # @import line — add only if not already present (idempotent; whitespace-insensitive).
+    # W3C CSS: @import must follow any leading @charset/@layer statements and must
+    # precede @namespace or any other rule, or Gecko silently drops it. So scan
+    # past leading blank lines / comments (incl. multi-line) / @charset / @layer /
+    # existing @imports, then insert our import at the first rule boundary.
     uc_path = chrome_dir / "userChrome.css"
     try:
         existing = uc_path.read_text(encoding="utf-8", errors="replace") if uc_path.is_file() else ""
@@ -652,11 +755,53 @@ def setup_profile(profile: Path, css_content: str, ensure_prefs_list: list, remo
         if already_imported:
             pass
         else:
-            if existing.strip():
-                new_content = f"{IMPORT_LINE}\n\n{existing}"
-            else:
-                new_content = f"{IMPORT_LINE}\n"
-            atomic_write_text(uc_path, new_content)
+            lines = existing.splitlines(keepends=True)
+            insert_at = 0
+            in_comment = False
+            for idx, line in enumerate(lines):
+                stripped = line.strip()
+                if in_comment:
+                    if "*/" in stripped:
+                        in_comment = False
+                        rest = stripped.partition("*/")[2].strip()
+                        if rest:  # rule content after the comment close
+                            break
+                    insert_at = idx + 1
+                    continue
+                if not stripped:
+                    insert_at = idx + 1
+                    continue
+                if stripped.startswith("/*"):
+                    if "*/" in stripped:
+                        rest = stripped.partition("*/")[2].strip()
+                        if rest:  # comment + rule on the same line -> boundary
+                            break
+                        insert_at = idx + 1
+                    else:
+                        in_comment = True
+                        insert_at = idx + 1
+                    continue
+                lower = stripped.lower()
+                if lower.startswith("@charset"):
+                    insert_at = idx + 1
+                    continue
+                if lower.startswith("@layer"):
+                    # Only the statement form (`@layer name;`) may precede @import;
+                    # a block form (`@layer name {`) is a hard boundary.
+                    if "{" in stripped:
+                        break
+                    insert_at = idx + 1
+                    continue
+                if lower.startswith("@import"):
+                    insert_at = idx + 1
+                    continue
+                break  # first @namespace or style rule
+            # Files without a trailing newline would glue the import onto the
+            # previous line; make sure it sits on its own line.
+            if insert_at > 0 and lines[insert_at - 1] and not lines[insert_at - 1].endswith("\n"):
+                lines[insert_at - 1] += "\n"
+            lines.insert(insert_at, f"{IMPORT_LINE}\n")
+            atomic_write_text(uc_path, "".join(lines))
             changed = True
     except OSError as e:
         print_warn(f"Could not write {uc_path}: {e}")
