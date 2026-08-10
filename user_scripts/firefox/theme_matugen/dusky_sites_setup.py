@@ -68,6 +68,29 @@ def ensure_css_import(path: Path, import_line: str) -> None:
         lines.insert(0, f"{import_line}\n")
     atomic_write_text(path, "".join(lines))
 
+def ensure_symlink(link: Path, target: Path) -> None:
+    """Create or replace a symlink link -> target (absolute). No-op if already correct."""
+    target_abs = target.expanduser()
+    try:
+        target_abs = target_abs.resolve() if target_abs.exists() else target_abs.absolute()
+    except OSError:
+        target_abs = target_abs.absolute()
+    try:
+        if link.is_symlink():
+            try:
+                if link.resolve() == target_abs or os.readlink(link) == str(target_abs):
+                    return
+            except OSError:
+                pass
+            link.unlink()
+        elif link.is_file():
+            link.unlink()
+        elif link.exists():
+            return  # do not clobber directories
+        link.symlink_to(target_abs)
+    except OSError as e:
+        print_warn(f"Could not link {link} -> {target_abs}: {e}")
+
 def remove_css_import(path: Path, import_line: str) -> None:
     """Remove import_line from path if present."""
     if not path.is_file():
@@ -614,19 +637,24 @@ def setup_user_chrome(home: Path, source_xpi: Path | None = None) -> None:
                 ensure_css_import(chrome_dir / "userChrome.css", '@import url("dusky_menu.css");')
 
                 # about: documents -> userContent.css
+                # Palette must stay LIVE (symlink), not a setup-time snapshot.
+                # Chrome UI gets colors via browser.theme.update(); about: pages
+                # only re-read userContent on startup, so a symlink to matugen's
+                # generated file is enough — restart picks up new colors without
+                # re-running this setup script. (Same idea as chrome/colors.css.)
                 about_css = chrome_dir / "dusky_about.css"
                 matugen_gen_css = home / ".config" / "matugen" / "generated" / "dusky_sites.css"
-                matugen_vars_css = matugen_gen_css.read_text(encoding="utf-8") if matugen_gen_css.is_file() else ""
+                ensure_symlink(chrome_dir / "dusky_palette.css", matugen_gen_css)
 
                 template_about = home / ".config" / "dusky_sites" / "about.css"
                 base_about = template_about.read_text(encoding="utf-8") if template_about.is_file() else ""
 
-                if matugen_vars_css.strip():
-                    embedded_matugen = f"@-moz-document url-prefix(\"about:\") {{\n{matugen_vars_css.strip()}\n}}\n\n"
-                else:
-                    embedded_matugen = ""
-
-                about_content = f"/* Embedded Matugen Palette for Dynamic userContent Reloads */\n{embedded_matugen}{base_about}"
+                about_content = (
+                    "/* Live Matugen palette via dusky_palette.css symlink.\n"
+                    " * userContent is loaded at browser start — no setup re-run needed. */\n"
+                    '@import url("dusky_palette.css");\n\n'
+                    f"{base_about}"
+                )
                 atomic_write_text(about_css, about_content)
 
                 user_content = chrome_dir / "userContent.css"
@@ -832,13 +860,16 @@ def restore_user_chrome(profile: Path) -> None:
     remove_css_import(chrome_dir / "userChrome.css", '@import url("dusky_menu.css");')
 
 def restore_user_content(profile: Path) -> None:
-    """Remove dusky_about.css and its @import from userContent.css."""
+    """Remove dusky_about.css, palette symlink, and @import from userContent.css."""
     chrome_dir = profile / "chrome"
     if not chrome_dir.is_dir():
         return
     about_css = chrome_dir / "dusky_about.css"
     if _remove_file(about_css):
         print_success(f"Removed {about_css}")
+    palette_link = chrome_dir / "dusky_palette.css"
+    if _remove_file(palette_link):
+        print_success(f"Removed {palette_link}")
     remove_css_import(chrome_dir / "userContent.css", '@import url("dusky_about.css");')
 
 def uninstall_manifests(home: Path) -> int:
