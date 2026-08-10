@@ -454,7 +454,10 @@
         // storage.local is the cold-start fallback so the first paint after a
         // restart does not have to wait for the daemon.
         const t = session.theme || local[K_THEME] || null;
-        if (t && t.colors) adoptTheme(t, false);
+        if (t && t.colors) {
+            adoptTheme(t, false);
+            if (state.config.browserThemeEnabled) queueBrowserTheme();
+        }
         if (typeof session.enabled === 'boolean') state.enabled = session.enabled;
 
         await ensureWatchdog();
@@ -803,7 +806,8 @@
         const cfgChanged = Object.keys(patch).some((k) => state.config[k] !== patch[k]);
         if (cfgChanged) { state.config = mergeConfig(state.config, patch); writeConfig(false); }
 
-        if (!adoptTheme(data, true)) { log('palette unchanged - suppressed'); return; }
+        const themeAdopted = adoptTheme(data, true);
+        if (!themeAdopted && state.isApplied) { log('palette unchanged - suppressed'); return; }
 
         if (state.config.browserThemeEnabled) queueBrowserTheme();
         if (state.config.webThemeEnabled) broadcast(); else broadcastRollback();
