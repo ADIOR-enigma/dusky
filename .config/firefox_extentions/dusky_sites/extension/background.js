@@ -1,5 +1,5 @@
 /* =============================================================================
- * Dusky Sites — Background Engine v5.0
+ * Dusky Sites — Background Engine v5.1
  * Firefox 153+ / Gecko / WebExtension MV3 non-persistent event page.
  *
  * ARCHITECTURE
@@ -17,8 +17,9 @@
  *       loses the wake-up that spawned us.
  *   I2  All mutable runtime state is rehydratable from storage.session; the page
  *       may be torn down between any two ticks.
- *   I3  Exactly one native port may exist. Every teardown path detaches its
- *       listeners so dead closures cannot resurrect a superseded port.
+ *   I3  Exactly one native port may exist. Listener closures are gated on a
+ *       monotonic generation counter, so dead closures from a superseded port
+ *       are inert by construction and can never null a live port.
  *   I4  browser.theme.update() is called only when the serialized payload hash
  *       changes. Redundant calls repaint every window and cause tab-strip flicker.
  *   I5  Per-tab delivery is latest-wins through a single coalescing slot, so an
@@ -52,7 +53,8 @@
     const LIMITS = {
         OUTBOX: 64,                  // queued host frames while disconnected
         DOMAIN_CACHE: 256,
-        DOMAIN_TTL_MS: 600000,
+        DOMAIN_TTL_MS: 600000,       // positive domain-fix entries
+        DOMAIN_NEG_TTL_MS: 60000,    // negative entries: retry within a minute (B4)
         CSS_CACHE: 128,
         PAINT_CACHE: 48,             // storage.local first-paint entries
         PAINT_ENTRY_BYTES: 40960,
@@ -97,7 +99,7 @@
     }
 
     /** Insertion-ordered LRU on top of Map. Bounded => no unbounded heap growth
-     *  in a long-lived browser session (the audited domainFixCache grew forever). */
+     *  in a long-lived browser session. */
     class Lru {
         constructor(max) { this.max = max; this.m = new Map(); }
         get(k) {
@@ -235,7 +237,7 @@
     const srgbToLinear = (v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
 
     /** CIE L* (0..100). Material You defines "is this tone light" at L* > 50,
-     *  which is perceptually correct where the audited 0.299/0.587/0.114 YIQ
+     *  which is perceptually correct where a 0.299/0.587/0.114 YIQ
      *  approximation mislabels saturated mid-tones. */
     function lstar(c) {
         const y = 0.2126 * srgbToLinear(c.r) + 0.7152 * srgbToLinear(c.g) + 0.0722 * srgbToLinear(c.b);
@@ -257,10 +259,10 @@
         userChromeEnabled: true,
         userContentEnabled: true,
         fontSize: 13,
-        fastPaint: true,               // NEW: pre-paint from cache at document_start
-        contentColorScheme: 'dark',    // NEW: auto | light | dark | system
-        watchdogMinutes: 0.5,          // NEW: event-page revival cadence
-        debug: false,                  // NEW: console gate
+        fastPaint: true,               // pre-paint from cache at document_start
+        contentColorScheme: 'dark',    // auto | light | dark | system
+        watchdogMinutes: 0.5,          // event-page revival cadence
+        debug: false,                  // console gate
         paletteTemplate: {
             background: '--background',
             backgroundLight: '--surface',
@@ -394,7 +396,6 @@
     function readUserDefaults() {
         try {
             if (typeof globalThis.USER_CONFIG === 'object' && globalThis.USER_CONFIG) return globalThis.USER_CONFIG;
-            if (typeof USER_CONFIG === 'object' && USER_CONFIG) return USER_CONFIG;
         } catch (_) { /* not defined */ }
         return null;
     }
@@ -408,7 +409,7 @@
         config: { ...DEFAULT_CONFIG },
         theme: null,        // { colors, websites, disabledSites, timestamp }
         rev: '0',           // fingerprint of the active palette+rules revision
-        enabled: true,      // user "stop" switch (was shouldConnect)
+        enabled: true,      // user "stop" switch
         port: null,
         portReady: false,
         connectedAt: 0,
@@ -417,13 +418,19 @@
         nextAttemptAt: 0,
         retryTimer: null,
         pingTimer: null,
+        handshakeTimer: null,   // B2: tracked so success/teardown can cancel it
         lastError: null,
         appliedThemeHash: null,
         isApplied: false
     };
 
-    const cssCache = new Lru(LIMITS.CSS_CACHE);      // rev|host|flags -> {css,hash,scan}
-    const domainCache = new Lru(LIMITS.DOMAIN_CACHE); // host -> {css,isDarkSite,at}
+    /** B1: generation counter. Incremented on every connect() AND every
+     *  teardown() of the live port; every listener closure captures its own
+     *  generation and no-ops the instant it is stale. */
+    let portGen = 0;
+
+    const cssCache = new Lru(LIMITS.CSS_CACHE);       // rev|host|flags -> {css,hash,scan}
+    const domainCache = new Lru(LIMITS.DOMAIN_CACHE); // host -> {css,isDarkSite,neg,at}
     const domainInflight = new Map();                 // host -> Promise
     const tabSlots = new Map();                       // tabId -> {timer,payload}
 
@@ -481,14 +488,14 @@
         if (!p) return false;
         if (BLOCKED_PROTOCOLS.has(p.protocol)) return false;
         if (RESTRICTED_HOSTS.has(p.hostname)) return false;
-        return p.protocol === 'http:' || p.protocol === 'https:' || p.protocol === 'ftp:';
+        return p.protocol === 'http:' || p.protocol === 'https:';   // B5: ftp: is gone from Gecko
     }
 
     function hostOf(url) { const p = urlOf(url); return p ? p.hostname.toLowerCase() : ''; }
 
     /**
      * Domain matcher with an explicit specificity score so ordering is
-     * deterministic (the audited version tie-broke on Map iteration order).
+     * deterministic.
      *   exact host .............. 1000 + len
      *   registrable suffix ...... 500 + len
      *   single-label heuristic .. len
@@ -538,24 +545,26 @@
             return;
         }
 
+        // B1: this port's generation. Every closure below is gated on it, so a
+        // listener firing after teardown/reconnect is a guaranteed no-op.
+        const gen = ++portGen;
+        const live = () => portGen === gen && state.port === port;
+
         state.port = port;
         state.portReady = false;
         state.connectedAt = nowMs();
         state.lastRxAt = nowMs();
 
-        // Bound listeners are captured so teardown() can detach them (invariant I3).
-        const onMsg = (m) => { if (state.port === port) onHostMessage(m); };
-        const onGone = () => { if (state.port === port) onHostDisconnect(port); };
-        port._duskyOnMsg = onMsg;
-        port._duskyOnGone = onGone;
-        port.onMessage.addListener(onMsg);
-        port.onDisconnect.addListener(onGone);
+        port.onMessage.addListener((m) => { if (live()) onHostMessage(m); });
+        port.onDisconnect.addListener(() => { if (live()) onHostDisconnect(port); });
 
         // Handshake: a native manifest can exist while the interpreter is broken.
         // The pipe then stays "open" and every send is silently voided, so we
         // demand proof of life before reporting connected:true to the UI.
-        setTimeout(() => {
-            if (state.port === port && !state.portReady) {
+        // B2: tracked timer - cancelled on first RX and in teardown().
+        state.handshakeTimer = setTimeout(() => {
+            state.handshakeTimer = null;
+            if (live() && !state.portReady) {
                 warn('handshake timeout');
                 state.lastError = 'handshake timeout';
                 teardown(port);
@@ -570,27 +579,27 @@
         rawSend({ type: 'FETCH_NOW' });
         flushOutbox();
         armIdlePing();
-        log('port opened');
+        log('port opened (gen', gen, ')');
     }
 
     function teardown(port) {
         if (!port) return;
-        try { port.onMessage.removeListener(port._duskyOnMsg); } catch (_) { }
-        try { port.onDisconnect.removeListener(port._duskyOnGone); } catch (_) { }
         try { port.disconnect(); } catch (_) { }
-        port._duskyOnMsg = null;
-        port._duskyOnGone = null;
         if (state.port === port) {
             state.port = null;
             state.portReady = false;
+            portGen++;                       // B1: invalidate every closure of this port
+            clearTimer('pingTimer');
+            clearTimer('handshakeTimer');    // B2
+            rejectAllRpc('port closed');
+            chunks.clear();
         }
-        clearTimer('pingTimer');
-        rejectAllRpc('port closed');
-        chunks.clear();
     }
 
     function onHostDisconnect(port) {
-        const err = (port.error && port.error.message) || browser.runtime.lastError && browser.runtime.lastError.message || 'host closed the pipe';
+        const err = (port.error && port.error.message) ||
+            (browser.runtime.lastError && browser.runtime.lastError.message) ||
+            'host closed the pipe';
         state.lastError = err;
         const lived = nowMs() - state.connectedAt;
         teardown(port);
@@ -628,15 +637,17 @@
             if (!state.port) return;
             if (nowMs() - state.lastRxAt < T.IDLE_PING_MS) { armIdlePing(); return; }
             const port = state.port;
+            const gen = portGen;
             rawSend({ type: 'PING', at: nowMs() });
             setTimeout(() => {
-                if (state.port === port && nowMs() - state.lastRxAt > T.IDLE_PING_MS + T.PING_GRACE_MS) {
+                if (portGen !== gen || state.port !== port) return;   // B1 gate
+                if (nowMs() - state.lastRxAt > T.IDLE_PING_MS + T.PING_GRACE_MS) {
                     warn('native host unresponsive - recycling port');
                     state.lastError = 'host unresponsive';
                     teardown(port);
                     state.attempt = 0;
                     scheduleReconnect();
-                } else if (state.port === port) {
+                } else {
                     armIdlePing();
                 }
             }, T.PING_GRACE_MS);
@@ -754,6 +765,7 @@
             state.portReady = true;
             state.attempt = 0;
             state.lastError = null;
+            clearTimer('handshakeTimer');   // B2: proof of life arrived
             flushOutbox();
             notifyUI({ type: 'HOST_STATUS', connected: true });
             log('handshake complete');
@@ -781,12 +793,15 @@
     async function onPaletteUpdate(data) {
         if (!data || !data.colors || typeof data.colors !== 'object') return;
 
-        // The host is authoritative for these two switches.
+        // The host is authoritative for these two switches. B3: persist locally
+        // WITHOUT pushing back - echoing SET_CONFIG + FETCH_NOW to the daemon
+        // after every palette burst is a pointless round-trip (and a livelock
+        // hazard if a future host revs the timestamp on every FETCH_NOW).
         const patch = {};
         if (typeof data.webThemeEnabled === 'boolean') patch.webThemeEnabled = data.webThemeEnabled;
         if (typeof data.forceUnthemedWebsites === 'boolean') patch.forceUnthemedWebsites = data.forceUnthemedWebsites;
         const cfgChanged = Object.keys(patch).some((k) => state.config[k] !== patch[k]);
-        if (cfgChanged) { state.config = mergeConfig(state.config, patch); writeConfig(); }
+        if (cfgChanged) { state.config = mergeConfig(state.config, patch); writeConfig(false); }
 
         if (!adoptTheme(data, true)) { log('palette unchanged - suppressed'); return; }
 
@@ -833,6 +848,7 @@
         domainCache.set(host, {
             css: typeof msg.css === 'string' ? msg.css.slice(0, LIMITS.SITE_CSS_BYTES) : '',
             isDarkSite: !!msg.isDarkSite,
+            neg: false,
             at: nowMs()
         });
         refreshTabsForHost(host);
@@ -1059,7 +1075,10 @@
             body = site;
         } else if (forced) {
             const fix = domainCache.get(hostname);
-            const fresh = fix && (nowMs() - fix.at) < LIMITS.DOMAIN_TTL_MS;
+            // B4: negative entries (RPC timeout / recycled port) expire fast so a
+            // healthy reconnect repopulates the authoritative fix within a minute.
+            const ttl = fix && fix.neg ? LIMITS.DOMAIN_NEG_TTL_MS : LIMITS.DOMAIN_TTL_MS;
+            const fresh = fix && (nowMs() - fix.at) < ttl;
             if (!fresh) {
                 requestDomainFix(hostname);          // async; result re-broadcasts
                 body = FALLBACK_CSS;
@@ -1090,9 +1109,9 @@
         const p = request({ type: 'GET_DOMAIN_FIX', domain: hostname }, 'DOMAIN_FIX_RESPONSE', hostname)
             .then((msg) => { cacheDomainFix(msg); })
             .catch(() => {
-                // Negative-cache so a dead/legacy host does not get re-asked on
-                // every tab activation for the rest of the session.
-                domainCache.set(hostname, { css: '', isDarkSite: false, at: nowMs() });
+                // Negative-cache with the SHORT TTL (B4) so a dead/legacy host is
+                // not re-asked on every tab activation, yet recovery is fast.
+                domainCache.set(hostname, { css: '', isDarkSite: false, neg: true, at: nowMs() });
             })
             .finally(() => { domainInflight.delete(hostname); });
         domainInflight.set(hostname, p);
@@ -1259,10 +1278,10 @@
     const EXT_ORIGIN = browser.runtime.getURL('');
 
     /** Privileged commands (they make the daemon write to the profile directory)
-     *  must originate from an extension page. The audited check
-     *  sender.url.includes(runtime.id) is satisfied by
-     *  https://evil.example/?dusky_sites@dusky.com - a real privilege-escalation
-     *  path from any content script the attacker can influence. */
+     *  must originate from an extension page. A substring check on runtime.id is
+     *  satisfied by https://evil.example/?dusky_sites@dusky.com - a real
+     *  privilege-escalation path. Prefix-match the moz-extension origin AND
+     *  require sender.tab to be absent (popup/options context). */
     const isPrivileged = (sender) =>
         typeof sender.url === 'string' && sender.url.startsWith(EXT_ORIGIN) && !sender.tab;
 
@@ -1412,10 +1431,9 @@
     browser.tabs.onRemoved.addListener(dropTab);
 
     /** Defensive event binding. Several MV3 events exist in the Chromium schema
-     *  but not in Gecko (runtime.onSuspend, tabs.onReplaced); touching
-     *  .addListener on an undefined event throws during script evaluation and
-     *  would take the ENTIRE background script down. This is API-surface
-     *  probing, not a legacy shim. */
+     *  but not in Gecko (and vice versa); touching .addListener on an undefined
+     *  event throws during script evaluation and would take the ENTIRE
+     *  background script down. This is API-surface probing, not a legacy shim. */
     function on(ns, event, handler) {
         try {
             const e = ns && ns[event];

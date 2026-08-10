@@ -1,5 +1,5 @@
 /* =============================================================================
- * Dusky Sites — Content Runtime v5.0
+ * Dusky Sites — Content Runtime v5.1
  * Firefox 153+ / Gecko / injected at document_start into every frame.
  *
  * RESPONSIBILITIES (deliberately minimal - the page main thread is not ours)
@@ -38,6 +38,7 @@
     let sheet = null;        // CSSStyleSheet (constructed) when adoption works
     let styleEl = null;      // <style> fallback
     let observer = null;
+    let observedHead = null; // the <head> node the observer is currently bound to
     let scanState = null;
     let useAdopted = null;   // tri-state: null = not probed yet
     let disposed = false;
@@ -149,6 +150,14 @@
 
     /* ─────────────────────────────────────────────────────────────────────
      * 3. Re-attachment guard (only needed on the <style> path)
+     *
+     *    v5.1: childList-only, multi-target. subtree observation of the whole
+     *    document made Gecko queue a mutation record batch for EVERY DOM change
+     *    on the page; on virtual-DOM apps that is thousands of no-op callback
+     *    entries per second. Only two things can hurt us and both are direct
+     *    childList events:
+     *      - our <style> is removed from its parent  -> <head> observer fires
+     *      - the whole <head> is swapped out          -> <html> observer fires
      *    Bounded: a page that fights us wins after MAX_FIGHTS instead of
      *    burning a core in an infinite mutation loop.
      * ────────────────────────────────────────────────────────────────── */
@@ -158,39 +167,51 @@
     let repairScheduled = false;
 
     function startObserver() {
-        if (observer || useAdopted) return;
-        observer = new MutationObserver(() => {
-            if (repairScheduled || !styleEl || styleEl.isConnected) return;
-            repairScheduled = true;
-            // Coalesce to one repair per frame; mutation callbacks fire in bursts.
-            requestAnimationFrame(() => {
-                repairScheduled = false;
-                if (disposed || !styleEl || styleEl.isConnected) return;
-                const now = Date.now();
-                if (now - fightWindow > 5000) { fightWindow = now; fights = 0; }
-                if (++fights > MAX_FIGHTS) { stopObserver(); return; }
-                const host = document.head || document.documentElement;
-                if (host) host.appendChild(styleEl);
-            });
-        });
-        // documentElement (not head): frameworks that swap document.head wholesale
-        // would otherwise orphan an observer bound to the detached node.
-        observer.observe(document.documentElement, { childList: true, subtree: true });
+        if (useAdopted || disposed) return;
+        if (!observer) observer = new MutationObserver(onDomMutated);
+        else observer.disconnect();
+        // <html> childList catches <head> insertion/replacement; NOT subtree.
+        if (document.documentElement) observer.observe(document.documentElement, { childList: true });
+        observedHead = document.head || null;
+        if (observedHead) observer.observe(observedHead, { childList: true });
     }
 
-    function stopObserver() { if (observer) { observer.disconnect(); observer = null; } }
+    function onDomMutated() {
+        if (repairScheduled || disposed || !styleEl) return;
+        const headNow = document.head || null;
+        const headSwapped = headNow !== observedHead;
+        const detached = !styleEl.isConnected;
+        // Migrate into <head> the moment it materialises (style may have been
+        // parked on documentElement at document_start on streamed documents).
+        const misplaced = !!(headNow && styleEl.parentNode !== headNow);
+        if (!headSwapped && !detached && !misplaced) return;
+        repairScheduled = true;
+        // Coalesce to one repair per frame; mutation callbacks fire in bursts.
+        requestAnimationFrame(() => {
+            repairScheduled = false;
+            if (disposed || !styleEl) return;
+            const now = Date.now();
+            if (now - fightWindow > 5000) { fightWindow = now; fights = 0; }
+            if (++fights > MAX_FIGHTS) { stopObserver(); return; }
+            const host = document.head || document.documentElement;
+            if (host && (!styleEl.isConnected || styleEl.parentNode !== host)) host.appendChild(styleEl);
+            startObserver();   // re-arm against the (possibly brand-new) head
+        });
+    }
+
+    function stopObserver() {
+        if (observer) { observer.disconnect(); observer = null; }
+        observedHead = null;
+    }
 
     /* ─────────────────────────────────────────────────────────────────────
      * 4. CSSOM-derived overrides (scan mode)
      *
-     *    The audited implementation appended a probe <div> and called
-     *    getComputedStyle() once per declared colour, which forces a style
-     *    recalculation per rule: on a Gmail-class app (30k+ rules) that is tens
-     *    of thousands of synchronous reflows on the page's main thread.
-     *
-     *    Here: pure arithmetic colour parsing, no DOM node, no computed style,
-     *    time-sliced against the idle deadline, hard-capped, and each stylesheet
-     *    is visited at most once (WeakSet) so SPA re-scans are incremental.
+     *    Pure arithmetic colour parsing, no DOM node, no computed style,
+     *    time-sliced against the idle deadline, hard-capped, and each
+     *    stylesheet is visited at most once (WeakSet) so SPA re-scans are
+     *    incremental. Zero forced layout flushes by construction: nothing in
+     *    this section reads a layout- or style-dependent property.
      * ────────────────────────────────────────────────────────────────── */
     const NAMED = { white: 255, black: 0, silver: 192, gray: 128, grey: 128 };
     const CAPS = { sheets: 60, rules: 6000, out: 120000, depth: 6, slice: 6 };
