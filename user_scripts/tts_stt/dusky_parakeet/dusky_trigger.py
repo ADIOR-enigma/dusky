@@ -1,207 +1,225 @@
 #!/usr/bin/env python3
-# Dusky Trigger v8.1 BLEEDING EDGE - Secure O_NONBLOCK FIFO, Strict TOCTOU Mitigation
+"""Authoritative SOCK_SEQPACKET control client for Dusky STT."""
 
 import argparse
-import os
-import sys
-import sysconfig
-import time
-import subprocess
 import json
-import stat
+import os
 from pathlib import Path
-import shutil
+import socket
+import stat
+import subprocess
+import sys
+import time
+from typing import Any
 
-if sys.version_info < (3, 14, 6):
-    print(f"Need 3.14.6+", file=sys.stderr)
-    sys.exit(1)
-if sysconfig.get_config_var("Py_GIL_DISABLED") == 1:
-    print("Need GIL", file=sys.stderr)
-    sys.exit(1)
 
-def get_runtime_dir() -> Path:
-    base = os.environ.get("XDG_RUNTIME_DIR")
-    if base:
-        p = Path(base) / "dusky_stt"
-        p.mkdir(mode=0o700, parents=True, exist_ok=True)
-        try:
-            p.chmod(0o700)
-        except Exception:
-            pass
-        return p
-    return Path("/tmp/dusky_stt")
+MIN_PYTHON = (3, 14, 6)
+MAX_PACKET = 64 * 1024
+SERVICE = "dusky_stt.service"
 
-RUNTIME_DIR = get_runtime_dir()
-FIFO_PATH = RUNTIME_DIR / "fifo"
-PID_FILE = RUNTIME_DIR / "pid"
-READY_FILE = RUNTIME_DIR / "ready"
-RECORD_PID_FILE = RUNTIME_DIR / "recording"
-APP_DIR = Path.home() / "contained_apps" / "uv" / "dusky_stt_v2"
+if sys.version_info < MIN_PYTHON:
+    raise SystemExit("Dusky STT requires CPython 3.14.6 or newer")
+if sys.implementation.name != "cpython" or not sys._is_gil_enabled():
+    raise SystemExit("Dusky STT requires the GIL-enabled CPython 3.14 ABI")
 
-def is_running() -> bool:
-    if not PID_FILE.exists():
-        return False
+type JsonObject = dict[str, Any]
+
+
+def runtime_directory() -> Path:
+    raw = os.environ.get("XDG_RUNTIME_DIR")
+    if not raw:
+        raise RuntimeError("XDG_RUNTIME_DIR is required")
+    base = Path(raw)
+    metadata = os.lstat(base)
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or metadata.st_uid != os.getuid()
+    ):
+        raise RuntimeError("XDG_RUNTIME_DIR has an invalid owner or type")
+    return base / "dusky-stt"
+
+
+def control_path() -> Path:
+    return runtime_directory() / "control.sock"
+
+
+def run_systemctl(*arguments: str, check: bool = False) -> subprocess.CompletedProcess[str]:
+    completed = subprocess.run(
+        ["systemctl", "--user", *arguments],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+    if check and completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        raise RuntimeError(f"systemctl {' '.join(arguments)} failed: {detail}")
+    return completed
+
+
+def socket_is_secure(path: Path) -> bool:
     try:
-        pid = int(PID_FILE.read_text().strip())
-        os.kill(pid, 0)
-        return True
-    except Exception:
+        parent = os.lstat(path.parent)
+        metadata = os.lstat(path)
+    except FileNotFoundError:
         return False
+    if (
+        not stat.S_ISDIR(parent.st_mode)
+        or stat.S_ISLNK(parent.st_mode)
+        or parent.st_uid != os.getuid()
+        or stat.S_IMODE(parent.st_mode) != 0o700
+    ):
+        raise RuntimeError("control socket directory is not private")
+    if not stat.S_ISSOCK(metadata.st_mode):
+        raise RuntimeError(f"control path is not a socket: {path}")
+    if metadata.st_uid != os.getuid():
+        raise RuntimeError("control socket is owned by another user")
+    if stat.S_IMODE(metadata.st_mode) != 0o600:
+        raise RuntimeError("control socket must have mode 0600")
+    return True
 
-def start_daemon() -> bool:
-    if not shutil.which("systemctl"):
-        print("Error: systemd is required to orchestrate the backend environment environment variables.", file=sys.stderr)
-        return False
-    
-    subprocess.run(["systemctl", "--user", "start", "dusky_stt.service"], capture_output=True)
-    
-    for _ in range(50):
-        if READY_FILE.exists() and is_running():
-            return True
+
+def wait_for_socket(timeout: float = 20.0) -> None:
+    deadline = time.monotonic() + timeout
+    path = control_path()
+    while time.monotonic() < deadline:
+        if socket_is_secure(path):
+            return
+        if run_systemctl("is-failed", "--quiet", SERVICE).returncode == 0:
+            break
         time.sleep(0.1)
-    return False
+    status = run_systemctl("status", SERVICE, "--no-pager", "--full")
+    detail = status.stdout[-4000:] or status.stderr[-1000:]
+    raise TimeoutError(f"Dusky control socket did not appear\n{detail}")
 
-def send_fifo(cmd: str) -> bool:
+
+def ensure_service() -> None:
+    if run_systemctl("is-active", "--quiet", SERVICE).returncode != 0:
+        run_systemctl("start", SERVICE, check=True)
+    wait_for_socket()
+
+
+def request(payload: JsonObject, *, start_service: bool = True) -> JsonObject:
+    if start_service:
+        ensure_service()
+    path = control_path()
+    if not socket_is_secure(path):
+        raise RuntimeError("Dusky control socket is unavailable")
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if len(encoded) > MAX_PACKET:
+        raise ValueError("control request is too large")
+
+    connection = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
+    connection.settimeout(10)
     try:
-        # Enforce strict verification via lstat to verify there are no malicious symlink intercepts
-        try:
-            st = os.lstat(FIFO_PATH)
-            if stat.S_ISLNK(st.st_mode):
-                print("Security Error: FIFO path has been hijacked by a symbolic link.", file=sys.stderr)
-                return False
-        except FileNotFoundError:
-            return False
+        connection.connect(str(path))
+        sent = connection.send(encoded)
+        if sent != len(encoded):
+            raise OSError(f"short control request send: {sent}/{len(encoded)}")
+        packet, _ancillary, flags, _address = connection.recvmsg(MAX_PACKET)
+        if flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC):
+            raise RuntimeError("truncated control response")
+    finally:
+        connection.close()
+    if not packet:
+        raise RuntimeError("daemon closed the control connection without a response")
+    response = json.loads(packet.decode("utf-8"))
+    if not isinstance(response, dict):
+        raise RuntimeError("daemon returned an invalid response")
+    return response
 
-        # Open O_RDWR | O_NONBLOCK to protect the interface from hanging if the daemon side cycles
-        fd = os.open(FIFO_PATH, os.O_RDWR | os.O_NONBLOCK)
-        try:
-            os.write(fd, (cmd + "\n").encode())
-        finally:
-            os.close(fd)
-        return True
-    except Exception as e:
-        print(f"FIFO transmission barrier: {e}", file=sys.stderr)
-        return False
 
-def secure_write_file_atomic(path: Path, content: str):
-    """FIXED: Uses absolute O_NOFOLLOW file handles to eliminate the temporary directory TOCTOU window"""
-    try:
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-        fd = os.open(path, flags, 0o600)
-        with os.fdopen(fd, 'w') as f:
-            f.write(content)
-    except FileExistsError:
-        path.unlink(missing_ok=True)
-        secure_write_file_atomic(path, content)
-    except Exception as e:
-        print(f"Secure file transaction failed at {path}: {e}", file=sys.stderr)
+def print_response(response: JsonObject, *, as_json: bool) -> int:
+    if as_json:
+        print(json.dumps(response, ensure_ascii=False, sort_keys=True))
+        return 0 if response.get("ok") else 1
+    if not response.get("ok"):
+        print(f"Dusky STT: {response.get('error', 'request failed')}", file=sys.stderr)
+        return 1
+    for key in (
+        "state",
+        "daemon_pid",
+        "daemon_rss_kib",
+        "worker_pid",
+        "worker_inflight",
+        "backend",
+        "model",
+        "quantization",
+        "file",
+        "session_id",
+    ):
+        if key in response:
+            print(f"{key}: {response[key]}")
+    return 0
 
-def main():
-    parser = argparse.ArgumentParser(description="Dusky Trigger CLI Interface v8.1")
-    parser.add_argument("--kill", action="store_true")
-    parser.add_argument("--status", action="store_true")
-    parser.add_argument("--logs", action="store_true")
-    parser.add_argument("--file", type=str, help="Transcribe local target media file")
-    parser.add_argument("--restart", action="store_true")
-    parser.add_argument("--realtime", action="store_true", help="Enforce instantaneous streaming output fields")
-    parser.add_argument("--push", action="store_true", help="Enforce structural standard processing block blocks")
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Control Dusky STT")
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument("--start", action="store_true", help="start recording")
+    action.add_argument("--stop", action="store_true", help="stop and finalize recording")
+    action.add_argument("--status", action="store_true", help="show daemon state")
+    action.add_argument("--file", type=Path, help="transcribe a media file")
+    action.add_argument("--restart", action="store_true", help="restart the user service")
+    action.add_argument("--kill", action="store_true", help="stop the user service")
+    action.add_argument("--logs", action="store_true", help="follow the service journal")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--realtime", action="store_true", help="type stable words with wtype")
+    mode.add_argument("--push", action="store_true", help="capture and type once at the end")
+    parser.add_argument("--json", action="store_true", help="emit a machine-readable response")
     args = parser.parse_args()
 
     if args.logs:
-        if shutil.which("journalctl"):
-            os.system("journalctl --user -u dusky_stt -f -n 100")
-        return
-
-    if args.status:
-        if is_running():
-            print(f"Daemon Context Operational [PID {PID_FILE.read_text().strip()}]")
-            print(f"Secure Runtime Location: {RUNTIME_DIR}")
-            print(f"Communication Pipeline: Interfaced={FIFO_PATH.exists()} System-Ready={READY_FILE.exists()}")
-            td = Path.home() / "Transcripts" / "DuskySTT"
-            if td.exists():
-                recent = sorted(td.glob("*.txt"), key=lambda p: p.stat().st_mtime, reverse=True)[:5]
-                print("Latest Operational Outputs:")
-                for p in recent:
-                    print(f"  {p.name} ({p.stat().st_size} Bytes)")
-        else:
-            print("Dusky Service Status: Inactive")
-        return
-
-    if args.kill:
-        if shutil.which("systemctl"):
-            subprocess.run(["systemctl", "--user", "stop", "dusky_stt.service"], capture_output=True)
-        if PID_FILE.exists():
-            try:
-                os.kill(int(PID_FILE.read_text()), 15)
-            except Exception:
-                pass
-        for p in [PID_FILE, FIFO_PATH, READY_FILE, RECORD_PID_FILE]:
-            try:
-                Path(p).unlink(missing_ok=True)
-            except Exception:
-                pass
-        print("Backend structures unmapped successfully.")
-        return
-
+        os.execvp(
+            "journalctl",
+            ["journalctl", "--user", "-u", SERVICE, "-n", "100", "-f", "-o", "short-precise"],
+        )
     if args.restart:
-        if shutil.which("systemctl"):
-            subprocess.run(["systemctl", "--user", "restart", "dusky_stt.service"])
-            print("Systemd instance cycled.")
-        return
-
-    if args.file:
-        fpath = Path(args.file).expanduser().resolve()
-        if not fpath.exists():
-            print(f"Target media path does not exist: {fpath}", file=sys.stderr)
-            sys.exit(1)
-        if not is_running():
-            print("Initializing backend worker structure...")
-            if not start_daemon():
-                sys.exit(1)
-        if send_fifo(f"FILE:{fpath}"):
-            print(f"Successfully staged mapping for: {fpath.name}")
-            if shutil.which("notify-send"):
-                subprocess.run(["notify-send", "-a", "Dusky STT", "File ingest scheduled", f"{fpath.name}"])
+        run_systemctl("restart", SERVICE, check=True)
+        wait_for_socket()
+        return print_response(request({"command": "status"}, start_service=False), as_json=args.json)
+    if args.kill:
+        run_systemctl("stop", SERVICE, check=True)
+        if args.json:
+            print('{"ok":true,"state":"stopped"}')
         else:
-            sys.exit(1)
-        return
+            print("Dusky STT service stopped")
+        return 0
+    if args.status:
+        try:
+            response = request({"command": "status"}, start_service=False)
+        except (OSError, RuntimeError, TimeoutError):
+            active = run_systemctl("is-active", SERVICE)
+            state = active.stdout.strip() or "inactive"
+            response = {"ok": active.returncode == 0, "state": state}
+        return print_response(response, as_json=args.json)
+    if args.file is not None:
+        source = args.file.expanduser().resolve()
+        if not source.is_file():
+            print(f"File not found: {source}", file=sys.stderr)
+            return 2
+        return print_response(
+            request({"command": "file", "path": str(source)}),
+            as_json=args.json,
+        )
 
-    is_realtime_mode = True
-    try:
-        cfg_path = APP_DIR / "install_config.json"
-        if cfg_path.exists():
-            cfg = json.loads(cfg_path.read_text())
-            is_realtime_mode = cfg.get("realtime", True)
-    except Exception:
-        pass
-        
-    if args.realtime:
-        is_realtime_mode = True
-    if args.push:
-        is_realtime_mode = False
-
-    if RECORD_PID_FILE.exists():
-        print("Halting open capture sequence...")
-        if send_fifo("STOP"):
-            RECORD_PID_FILE.unlink(missing_ok=True)
-            if shutil.which("notify-send"):
-                subprocess.run(["notify-send", "-a", "Dusky STT", "-t", "2000", "Finalizing chunk aggregations...", "Computing ASR Matrix"], check=False)
+    realtime = not args.push
+    if args.start:
+        command = "start"
+    elif args.stop:
+        command = "stop"
     else:
-        if not is_running():
-            print("Waking daemon layer...")
-            if not start_daemon():
-                print("Failed to authenticate systemd initialization parameters.", file=sys.stderr)
-                sys.exit(1)
-                
-        cmd = "START_REALTIME" if is_realtime_mode else "START"
-        if send_fifo(cmd):
-            secure_write_file_atomic(RECORD_PID_FILE, "recording")
-            mode_str = "Streaming Suffix Engine" if is_realtime_mode else "Push-to-Talk standard"
-            print(f"Capture window open [{mode_str}] - Focus target input element.")
-            if shutil.which("notify-send"):
-                subprocess.run(["notify-send", "-a", "Dusky STT", "-t", "2500", f"{mode_str}", "Pipeline active. Execute trigger again to truncate capture window."], check=False)
-        else:
-            print("IPC handshake block over FIFO.", file=sys.stderr)
+        command = "toggle"
+    return print_response(
+        request({"command": command, "realtime": realtime}),
+        as_json=args.json,
+    )
+
 
 if __name__ == "__main__":
-    main()
+    try:
+        raise SystemExit(main())
+    except (OSError, RuntimeError, TimeoutError, json.JSONDecodeError) as exc:
+        print(f"Dusky STT control error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
