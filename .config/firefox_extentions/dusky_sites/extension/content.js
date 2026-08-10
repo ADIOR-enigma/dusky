@@ -1,192 +1,410 @@
-/* ═══════════════════════════════════════════
-   Dusky Sites Content Script v3.1
-   ═══════════════════════════════════════════ */
+/* =============================================================================
+ * Dusky Sites — Content Runtime v5.0
+ * Firefox 153+ / Gecko / injected at document_start into every frame.
+ *
+ * RESPONSIBILITIES (deliberately minimal - the page main thread is not ours)
+ *   1. Paint the last-known stylesheet before the first frame is composited.
+ *   2. Adopt the authoritative stylesheet pushed by background.js.
+ *   3. Keep it attached against hostile/rewriting DOMs, with a circuit breaker.
+ *   4. Optionally derive per-site overrides from the page's own CSSOM - budgeted,
+ *      idle-scheduled, and WITHOUT a single forced style recalculation.
+ *
+ * NON-GOALS
+ *   No colour maths on the palette (background.js ships a finished stylesheet).
+ *   No string building per update (we replaceSync one pre-hashed blob).
+ * ===========================================================================*/
 
 'use strict';
 
-// ─── State ───
-let constructedSheet = null;
-let styleEl = null;
-let lastHash = null;
-let observer = null;
+(function duskySitesContent() {
+    'use strict';
 
-const UNSAFE_CSS_VALUE = /url\s*\(|expression\s*\(|@import|-moz-binding/i;
-const supportsConstructed = typeof CSSStyleSheet !== 'undefined' && 'adoptedStyleSheets' in Document.prototype;
+    // Xray expando: visible to this extension's content scripts only, never to
+    // the page. Guards against double injection (all_frames + SPA re-injection).
+    if (window.__duskySitesV5) return;
+    window.__duskySitesV5 = true;
 
-function buildDynamicFallbackRules() {
-    let dynamicRules = [];
-    const colorTester = document.createElement('div');
-    colorTester.style.display = 'none';
-    (document.body || document.documentElement).appendChild(colorTester);
+    const XHTML_NS = 'http://www.w3.org/1999/xhtml';
+    const STYLE_ID = 'dusky-sites-theme';
+    const PAINT_KEY = 'paintCache';
+    const IS_TOP = (function () { try { return window.top === window; } catch (_) { return false; } })();
 
-    function parseColor(val) {
-        if (!val || val === 'transparent' || val === 'inherit' || val === 'initial') return null;
-        colorTester.style.color = val;
-        const comp = window.getComputedStyle(colorTester).color;
-        const match = comp.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
-        if (!match) return null;
-        const r = parseInt(match[1]), g = parseInt(match[2]), b = parseInt(match[3]);
-        return {
-            r, g, b,
-            lum: (0.299 * r + 0.587 * g + 0.114 * b) / 255
-        };
+    /* ─────────────────────────────────────────────────────────────────────
+     * 0. State
+     * ────────────────────────────────────────────────────────────────── */
+    let baseCss = '';        // authoritative sheet from background.js
+    let derivedCss = '';     // CSSOM-derived per-site overrides (scan mode)
+    let appliedHash = null;  // hash of what is actually attached
+    let sheet = null;        // CSSStyleSheet (constructed) when adoption works
+    let styleEl = null;      // <style> fallback
+    let observer = null;
+    let scanState = null;
+    let useAdopted = null;   // tri-state: null = not probed yet
+    let disposed = false;
+
+    /* ─────────────────────────────────────────────────────────────────────
+     * 1. Primitives
+     * ────────────────────────────────────────────────────────────────── */
+    function hash32(str) {
+        let h = 0x811c9dc5;
+        for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+        return h.toString(36);
     }
 
-    try {
-        for (const sheet of document.styleSheets) {
-            try {
-                if (!sheet.cssRules) continue;
-                for (const rule of sheet.cssRules) {
-                    if (rule.type !== CSSRule.STYLE_RULE || !rule.style) continue;
-                    const st = rule.style;
-                    let overrides = '';
+    const idle = (fn, timeout) =>
+        (typeof requestIdleCallback === 'function')
+            ? requestIdleCallback(fn, { timeout: timeout || 2000 })
+            : setTimeout(() => fn({ timeRemaining: () => 8, didTimeout: true }), 32);
 
-                    const sel = rule.selectorText ? rule.selectorText.toLowerCase() : '';
-                    if (sel.includes('input') || sel.includes('search') || sel.includes('glfyf')) {
-                        // Skip input elements so search pills remain seamless
-                        continue;
-                    }
-
-                    const bg = parseColor(st.backgroundColor);
-                    if (bg && bg.lum > 0.45) {
-                        overrides += '  background-color: var(--background, var(--surface, #181a1b)) !important;\n';
-                    }
-
-                    const fg = parseColor(st.color);
-                    if (fg && fg.lum < 0.5) {
-                        overrides += '  color: var(--on_background, var(--on_surface, #e0e0e0)) !important;\n';
-                    }
-
-                    if (overrides) {
-                        dynamicRules.push(`${rule.selectorText} {\n${overrides}}`);
-                    }
-                }
-            } catch (e) {
-                // Ignore cross-origin CORS stylesheet errors
-            }
-        }
-    } catch (e) {}
-
-    colorTester.remove();
-    return dynamicRules.join('\n');
-}
-
-// ─── Theme Application ───
-function applyTheme(data, force = false) {
-    if (!data?.colors || !Object.keys(data.colors).length) {
-        removeTheme();
-        return;
-    }
-
-    if (!force && data.timestamp === lastHash) return;
-    lastHash = data.timestamp;
-
-    let css = ':root {\n';
-    for (const [k, v] of Object.entries(data.colors)) {
-        if (/^--[\w-]+$/.test(k) && typeof v === 'string' && !/[;{}]/.test(v) && !UNSAFE_CSS_VALUE.test(v)) {
-            css += `  ${k}: ${v} !important;\n`;
-        }
-    }
-    css += '}\n';
-
-    if (data.websiteCss) css += data.websiteCss + '\n';
-    if (data.isUnthemedFallback) {
-        const dynamicRules = buildDynamicFallbackRules();
-        if (dynamicRules) css += dynamicRules + '\n';
-    }
-
-    if (supportsConstructed) {
+    /* ─────────────────────────────────────────────────────────────────────
+     * 2. Stylesheet transport
+     *
+     *    Constructed stylesheets are preferred: they are invisible to the page's
+     *    DOM (so React/Vue reconcilers and "remove unknown <style>" guards can
+     *    never strip them), they need no MutationObserver, and replaceSync on an
+     *    already-adopted sheet is a single style-set invalidation instead of an
+     *    element insertion + full stylesheet reparse.
+     *
+     *    Adoption from a content-script sandbox is feature-probed once at
+     *    runtime rather than assumed from an 'adoptedStyleSheets' in Document
+     *    check, because the constructor lives in a different global here.
+     * ────────────────────────────────────────────────────────────────── */
+    function probeAdopted() {
+        if (useAdopted !== null) return useAdopted;
+        useAdopted = false;
         try {
-            if (!constructedSheet) {
-                constructedSheet = new CSSStyleSheet();
+            if (!('adoptedStyleSheets' in Document.prototype)) return useAdopted;
+            const probe = new CSSStyleSheet();
+            probe.replaceSync(':root{--dusky-probe:1}');
+            const before = document.adoptedStyleSheets || [];
+            document.adoptedStyleSheets = [...before, probe];
+            const ok = (document.adoptedStyleSheets || []).includes(probe);
+            document.adoptedStyleSheets = (document.adoptedStyleSheets || []).filter((s) => s !== probe);
+            useAdopted = ok;
+        } catch (_) { useAdopted = false; }
+        return useAdopted;
+    }
+
+    function attachAdopted(css) {
+        try {
+            if (!sheet) sheet = new CSSStyleSheet();
+            sheet.replaceSync(css);
+            const list = document.adoptedStyleSheets || [];
+            if (!list.includes(sheet)) document.adoptedStyleSheets = [...list, sheet];
+            return true;
+        } catch (e) { return false; }
+    }
+
+    function attachElement(css) {
+        // createElementNS: in an XML/SVG document createElement() produces an
+        // element in the document's namespace, which is NOT an HTML <style> and
+        // is therefore inert. Namespacing explicitly keeps XHTML/SVG documents working.
+        if (!styleEl || !styleEl.isConnected) {
+            styleEl = document.createElementNS(XHTML_NS, 'style');
+            styleEl.id = STYLE_ID;
+            styleEl.setAttribute('type', 'text/css');
+        }
+        if (styleEl.textContent !== css) styleEl.textContent = css;
+        const host = document.head || document.documentElement;
+        if (!host) return false;
+        // Last child of head => wins every author-origin tie at equal specificity.
+        if (styleEl.parentNode !== host || styleEl !== host.lastChild) host.appendChild(styleEl);
+        startObserver();
+        return true;
+    }
+
+    function render() {
+        if (disposed) return;
+        if (!baseCss) return;
+        const css = derivedCss ? baseCss + '\n' + derivedCss : baseCss;
+        const h = hash32(css);
+        if (h === appliedHash && isAttached()) return;   // idempotent
+        appliedHash = h;
+        if (probeAdopted() && attachAdopted(css)) { stopObserver(); return; }
+        attachElement(css);
+    }
+
+    function isAttached() {
+        if (useAdopted && sheet) { try { return (document.adoptedStyleSheets || []).includes(sheet); } catch (_) { return false; } }
+        return !!(styleEl && styleEl.isConnected);
+    }
+
+    function clearTheme() {
+        stopObserver();
+        cancelScan();
+        appliedHash = null;
+        baseCss = '';
+        derivedCss = '';
+        if (sheet) {
+            try { document.adoptedStyleSheets = (document.adoptedStyleSheets || []).filter((s) => s !== sheet); } catch (_) { }
+            sheet = null;
+        }
+        if (styleEl) { try { styleEl.remove(); } catch (_) { } styleEl = null; }
+        // Belt and braces: an earlier build's node may still be in the DOM.
+        try {
+            const stale = document.querySelectorAll('#' + STYLE_ID + ', #mf-theme');
+            for (const n of stale) n.remove();
+        } catch (_) { }
+    }
+
+    /* ─────────────────────────────────────────────────────────────────────
+     * 3. Re-attachment guard (only needed on the <style> path)
+     *    Bounded: a page that fights us wins after MAX_FIGHTS instead of
+     *    burning a core in an infinite mutation loop.
+     * ────────────────────────────────────────────────────────────────── */
+    const MAX_FIGHTS = 24;
+    let fights = 0;
+    let fightWindow = 0;
+    let repairScheduled = false;
+
+    function startObserver() {
+        if (observer || useAdopted) return;
+        observer = new MutationObserver(() => {
+            if (repairScheduled || !styleEl || styleEl.isConnected) return;
+            repairScheduled = true;
+            // Coalesce to one repair per frame; mutation callbacks fire in bursts.
+            requestAnimationFrame(() => {
+                repairScheduled = false;
+                if (disposed || !styleEl || styleEl.isConnected) return;
+                const now = Date.now();
+                if (now - fightWindow > 5000) { fightWindow = now; fights = 0; }
+                if (++fights > MAX_FIGHTS) { stopObserver(); return; }
+                const host = document.head || document.documentElement;
+                if (host) host.appendChild(styleEl);
+            });
+        });
+        // documentElement (not head): frameworks that swap document.head wholesale
+        // would otherwise orphan an observer bound to the detached node.
+        observer.observe(document.documentElement, { childList: true, subtree: true });
+    }
+
+    function stopObserver() { if (observer) { observer.disconnect(); observer = null; } }
+
+    /* ─────────────────────────────────────────────────────────────────────
+     * 4. CSSOM-derived overrides (scan mode)
+     *
+     *    The audited implementation appended a probe <div> and called
+     *    getComputedStyle() once per declared colour, which forces a style
+     *    recalculation per rule: on a Gmail-class app (30k+ rules) that is tens
+     *    of thousands of synchronous reflows on the page's main thread.
+     *
+     *    Here: pure arithmetic colour parsing, no DOM node, no computed style,
+     *    time-sliced against the idle deadline, hard-capped, and each stylesheet
+     *    is visited at most once (WeakSet) so SPA re-scans are incremental.
+     * ────────────────────────────────────────────────────────────────── */
+    const NAMED = { white: 255, black: 0, silver: 192, gray: 128, grey: 128 };
+    const CAPS = { sheets: 60, rules: 6000, out: 120000, depth: 6, slice: 6 };
+    const SKIP_SEL = /(^|[\s,>+~])(input|textarea|select)|\[type=|search|::(before|after|placeholder|selection|backdrop)|:root|(^|,)\s*html\b/i;
+
+    function quickLuma(v) {
+        // Returns 0..1 perceived luminance, or -1 when the token is not a static
+        // colour (var(), gradients, currentColor, keywords we must not guess at).
+        if (typeof v !== 'string') return -1;
+        const s = v.trim().toLowerCase();
+        if (!s || s.length > 48) return -1;
+        if (s.charCodeAt(0) === 35) {
+            const x = s.slice(1);
+            if (!/^[0-9a-f]{3,8}$/.test(x)) return -1;
+            let r, g, b;
+            if (x.length === 3 || x.length === 4) {
+                r = parseInt(x[0] + x[0], 16); g = parseInt(x[1] + x[1], 16); b = parseInt(x[2] + x[2], 16);
+                if (x.length === 4 && parseInt(x[3] + x[3], 16) < 26) return -1;
+            } else if (x.length === 6 || x.length === 8) {
+                r = parseInt(x.slice(0, 2), 16); g = parseInt(x.slice(2, 4), 16); b = parseInt(x.slice(4, 6), 16);
+                if (x.length === 8 && parseInt(x.slice(6, 8), 16) < 26) return -1;
+            } else return -1;
+            return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+        }
+        const m = s.match(/^rgba?\s*\(([^()]*)\)$/);
+        if (m) {
+            const p = m[1].replace(/\//g, ' ').split(/[\s,]+/).filter(Boolean);
+            if (p.length < 3) return -1;
+            const conv = (t) => t.endsWith('%') ? parseFloat(t) * 2.55 : parseFloat(t);
+            const r = conv(p[0]), g = conv(p[1]), b = conv(p[2]);
+            if (!Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b)) return -1;
+            if (p.length > 3) {
+                const a = p[3].endsWith('%') ? parseFloat(p[3]) / 100 : parseFloat(p[3]);
+                if (Number.isFinite(a) && a < 0.1) return -1;     // effectively transparent
             }
-            constructedSheet.replaceSync(css);
-            if (document.adoptedStyleSheets && !document.adoptedStyleSheets.includes(constructedSheet)) {
-                document.adoptedStyleSheets = [...document.adoptedStyleSheets, constructedSheet];
+            return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+        }
+        const h = s.match(/^hsla?\s*\(([^()]*)\)$/);
+        if (h) {
+            const p = h[1].replace(/\//g, ' ').split(/[\s,]+/).filter(Boolean);
+            const l = parseFloat(p[2]);
+            return Number.isFinite(l) ? l / 100 : -1;              // L is a good enough proxy here
+        }
+        if (Object.prototype.hasOwnProperty.call(NAMED, s)) return NAMED[s] / 255;
+        return -1;
+    }
+
+    function collectSheets() {
+        const list = [];
+        let sheets;
+        try { sheets = document.styleSheets; } catch (_) { return list; }
+        for (let i = 0; i < sheets.length && list.length < CAPS.sheets; i++) {
+            const s = sheets[i];
+            try {
+                if (!s || s.disabled) continue;
+                if (s.ownerNode && s.ownerNode.id === STYLE_ID) continue;   // never scan ourselves
+                if (!s.cssRules) continue;                                   // throws on cross-origin
+                if (scanState.seen.has(s)) continue;
+                list.push(s);
+            } catch (_) { /* SecurityError on opaque cross-origin sheet */ }
+        }
+        return list;
+    }
+
+    function walk(rules, depth, out, budget) {
+        for (let i = 0; i < rules.length; i++) {
+            if (budget.rules-- <= 0 || out.length > CAPS.out) return;
+            const rule = rules[i];
+            if (!rule) continue;
+
+            // Duck-typing rather than CSSRule.type: the constants were frozen, so
+            // every modern grouping rule (@layer, @container, @scope, @starting-style)
+            // reports type 0. Anything exposing .cssRules is a grouping rule; anything
+            // exposing .selectorText + .style is a style rule. CSS nesting means a
+            // single rule can legitimately be both.
+            const kids = rule.cssRules;
+            if (kids && kids.length && depth < CAPS.depth && typeof rule.keyText !== 'string') {
+                walk(kids, depth + 1, out, budget);
             }
-        } catch {
-            // Fallback to DOM style tag on constructed stylesheet error
+
+            const sel = rule.selectorText;
+            const st = rule.style;
+            if (typeof sel !== 'string' || !st) continue;          // @font-face, @keyframes frames, @page ...
+            if (!sel || sel.length > 400 || SKIP_SEL.test(sel)) continue;
+
+            let body = '';
+            const bg = quickLuma(st.backgroundColor);
+            if (bg > 0.45) body += 'background-color:var(--background,var(--surface,#181a1b))!important;';
+            const fg = quickLuma(st.color);
+            if (fg >= 0 && fg < 0.5) body += 'color:var(--on_background,var(--on_surface,#e0e0e0))!important;';
+            const bc = quickLuma(st.borderColor);
+            if (bc > 0.6) body += 'border-color:var(--outline_variant,rgba(255,255,255,.10))!important;';
+            if (body) out.push(sel + '{' + body + '}');
         }
     }
 
-    if (!styleEl) {
-        styleEl = document.createElement('style');
-        styleEl.id = 'mf-theme';
-    }
-    styleEl.textContent = css;
-
-    const apply = () => {
-        const target = document.head || document.documentElement;
-        if (target && !styleEl.parentNode) {
-            target.appendChild(styleEl);
+    function cancelScan() {
+        if (scanState && scanState.handle) {
+            if (typeof cancelIdleCallback === 'function') { try { cancelIdleCallback(scanState.handle); } catch (_) { } }
+            clearTimeout(scanState.handle);
         }
-    };
-
-    if (document.documentElement) apply();
-    else requestAnimationFrame(apply);
-
-    startObserver();
-}
-
-function removeTheme() {
-    stopObserver();
-    lastHash = null;
-
-    if (constructedSheet && document.adoptedStyleSheets) {
-        document.adoptedStyleSheets = document.adoptedStyleSheets.filter(s => s !== constructedSheet);
+        scanState = null;
     }
-    constructedSheet = null;
 
-    const targetStyle = styleEl;
-    styleEl = null;
-
-    if (targetStyle) {
-        targetStyle.remove();
+    function scheduleScan(reason) {
+        if (disposed) return;
+        if (!scanState) scanState = { seen: new WeakSet(), out: [], handle: 0, runs: 0 };
+        if (scanState.handle) return;
+        if (scanState.runs > 8) return;                     // SPA guard: bounded total work
+        scanState.handle = idle((deadline) => {
+            scanState.handle = 0;
+            scanState.runs++;
+            runScanSlice(deadline);
+        }, reason === 'load' ? 1500 : 4000);
     }
-    const elements = document.querySelectorAll('#mf-theme');
-    elements.forEach(el => el.remove());
-}
 
-// ─── Persistence Observer (Fallback only) ───
-function startObserver() {
-    if (observer || supportsConstructed) return;
-    observer = new MutationObserver(() => {
-        if (styleEl && !styleEl.parentNode) {
-            const target = document.head || document.documentElement;
-            if (target) target.appendChild(styleEl);
+    function runScanSlice(deadline) {
+        if (disposed || !scanState) return;
+        const sheets = collectSheets();
+        if (!sheets.length) return;
+        const budget = { rules: CAPS.rules };
+        const start = performance.now();
+        for (const s of sheets) {
+            scanState.seen.add(s);
+            try { walk(s.cssRules, 0, scanState.out, budget); } catch (_) { }
+            const spent = performance.now() - start;
+            const left = deadline && deadline.timeRemaining ? deadline.timeRemaining() : 0;
+            if (budget.rules <= 0 || spent > CAPS.slice || (left <= 1 && !(deadline && deadline.didTimeout))) break;
         }
+        if (scanState.out.length) {
+            const next = '@media screen{' + scanState.out.join('') + '}';
+            if (next !== derivedCss) { derivedCss = next; render(); }
+        }
+        // Any sheets still unvisited (lazy-loaded chunks) get the next slice.
+        if (collectSheets().length) scheduleScan('continue');
+    }
+
+    /* ─────────────────────────────────────────────────────────────────────
+     * 5. Transport with background.js
+     * ────────────────────────────────────────────────────────────────── */
+    function applyPayload(data) {
+        if (!data || typeof data.css !== 'string' || !data.css) { clearTheme(); return; }
+        if (data.hash && data.hash === appliedHash && isAttached() && !derivedCss) return;
+        baseCss = data.css;
+        render();
+        if (data.scan) scheduleScan('payload'); else { cancelScan(); if (derivedCss) { derivedCss = ''; render(); } }
+    }
+
+    /** Pre-paint from the parent-process storage cache. This is a direct IPC that
+     *  does NOT require the (possibly suspended) event page to be resurrected, so
+     *  it typically resolves inside the same task as document_start - eliminating
+     *  the white flash that a background round-trip cannot avoid. */
+    function fastPaint() {
+        if (!IS_TOP) return Promise.resolve();
+        let host = '';
+        try { host = location.hostname.toLowerCase(); } catch (_) { }
+        if (!host) return Promise.resolve();
+        return browser.storage.local.get(PAINT_KEY).then((res) => {
+            if (baseCss) return;                     // authoritative payload already won the race
+            const entry = res && res[PAINT_KEY] && res[PAINT_KEY][host];
+            if (!entry || typeof entry.css !== 'string') return;
+            baseCss = entry.css;
+            render();
+            if (entry.scan) scheduleScan('fastpaint');
+        }).catch(() => { });
+    }
+
+    let syncAttempt = 0;
+    function sync() {
+        if (disposed) return;
+        browser.runtime.sendMessage({ type: 'GET_THEME_DATA' }).then((res) => {
+            syncAttempt = 0;
+            if (!res) return;
+            if (!res.data || (res.status && res.status.manuallyStopped)) clearTheme();
+            else applyPayload(res.data);
+        }).catch(() => {
+            // The event page may be cold-starting; back off with jitter so N frames
+            // of a heavy page do not stampede the same wake-up.
+            if (++syncAttempt > 6) return;
+            const delay = Math.min(250 * Math.pow(2, syncAttempt), 8000) * (0.6 + Math.random() * 0.8);
+            setTimeout(sync, delay);
+        });
+    }
+
+    browser.runtime.onMessage.addListener((msg, sender) => {
+        if (!msg || sender.id !== browser.runtime.id) return;
+        if (msg.type === 'MATUGEN_UPDATE') applyPayload(msg.data);
+        else if (msg.type === 'MATUGEN_ROLLBACK') clearTheme();
+        else if (msg.type === 'MATUGEN_RESCAN') { if (scanState) { scanState.runs = 0; } scheduleScan('force'); }
     });
-    const target = document.head || document.documentElement;
-    if (target) observer.observe(target, { childList: true });
-}
 
-function stopObserver() {
-    if (observer) {
-        observer.disconnect();
-        observer = null;
-    }
-}
+    /* ─────────────────────────────────────────────────────────────────────
+     * 6. Document lifecycle
+     * ────────────────────────────────────────────────────────────────── */
+    window.addEventListener('pageshow', (e) => {
+        // bfcache restore: the DOM is intact but the palette may have moved on.
+        if (e.persisted) { disposed = false; sync(); }
+    }, true);
 
-// ─── Init ───
-function initTheme(retries = 3) {
-    browser.runtime.sendMessage({ type: 'GET_THEME_DATA' }).then(res => {
-        if (res?.status?.manuallyStopped || !res?.data) {
-            removeTheme();
-        } else {
-            applyTheme(res.data, true);
-        }
-    }).catch(() => {
-        if (retries > 0) setTimeout(() => initTheme(retries - 1), 800);
-    });
-}
-initTheme();
+    window.addEventListener('pagehide', (e) => {
+        // Stop all work immediately; if the page is going into bfcache we must
+        // leave zero live observers/timers behind or Gecko evicts the entry.
+        stopObserver();
+        cancelScan();
+        if (!e.persisted) disposed = true;
+    }, true);
 
-// ─── Message Listener ───
-browser.runtime.onMessage.addListener((msg, sender) => {
-    if (sender.id !== browser.runtime.id) return;
-    if (msg.type === 'MATUGEN_UPDATE') {
-        applyTheme(msg.data, msg.data?.force);
-    } else if (msg.type === 'MATUGEN_ROLLBACK') {
-        removeTheme();
-    }
-});
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden && scanState && !scanState.handle && scanState.runs <= 8) scheduleScan('visible');
+    }, true);
+
+    // Late-loading CSS (route chunks, print sheets, third-party widgets) only
+    // becomes visible in document.styleSheets after load.
+    window.addEventListener('load', () => { if (derivedCss || (scanState && scanState.runs)) scheduleScan('load'); }, { once: true, capture: true });
+
+    fastPaint().then(sync);
+})();
