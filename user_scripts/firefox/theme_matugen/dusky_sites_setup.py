@@ -53,6 +53,31 @@ def atomic_copy_file(src: Path, dst: Path) -> None:
     shutil.copy2(src, tmp)
     tmp.replace(dst)
 
+def ensure_css_import(path: Path, import_line: str) -> None:
+    """Ensure import_line exists at the top of path, respecting @charset if present."""
+    if not path.is_file():
+        atomic_write_text(path, f"{import_line}\n")
+        return
+    content = path.read_text(encoding="utf-8")
+    if import_line in content:
+        return
+    lines = content.splitlines(keepends=True)
+    if lines and lines[0].startswith('@charset'):
+        lines.insert(1, f"{import_line}\n")
+    else:
+        lines.insert(0, f"{import_line}\n")
+    atomic_write_text(path, "".join(lines))
+
+def remove_css_import(path: Path, import_line: str) -> None:
+    """Remove import_line from path if present."""
+    if not path.is_file():
+        return
+    content = path.read_text(encoding="utf-8")
+    if import_line not in content:
+        return
+    new_content = content.replace(f"{import_line}\n", "").replace(import_line, "")
+    atomic_write_text(path, new_content)
+
 def ensure_firefox_prefs(user_js: Path) -> bool:
     try:
         content = user_js.read_text(encoding="utf-8") if user_js.is_file() else ""
@@ -583,17 +608,30 @@ def setup_user_chrome(home: Path, source_xpi: Path | None = None) -> None:
             chrome_dir = profile / "chrome"
             try:
                 chrome_dir.mkdir(parents=True, exist_ok=True)
+                # Browser chrome (menus, toolbars, panels) -> userChrome.css
                 menu_css = chrome_dir / "dusky_menu.css"
                 atomic_write_text(menu_css, MENU_CSS_CONTENT)
+                ensure_css_import(chrome_dir / "userChrome.css", '@import url("dusky_menu.css");')
 
-                user_chrome = chrome_dir / "userChrome.css"
-                import_line = '@import url("dusky_menu.css");'
-                if user_chrome.is_file():
-                    existing = user_chrome.read_text(encoding="utf-8")
-                    if import_line not in existing:
-                        atomic_write_text(user_chrome, f"{import_line}\n\n{existing}")
+                # about: documents -> userContent.css
+                about_css = chrome_dir / "dusky_about.css"
+                matugen_gen_css = home / ".config" / "matugen" / "generated" / "dusky_sites.css"
+                matugen_vars_css = matugen_gen_css.read_text(encoding="utf-8") if matugen_gen_css.is_file() else ""
+
+                template_about = home / ".config" / "dusky_sites" / "about.css"
+                base_about = template_about.read_text(encoding="utf-8") if template_about.is_file() else ""
+
+                if matugen_vars_css.strip():
+                    embedded_matugen = f"@-moz-document url-prefix(\"about:\") {{\n{matugen_vars_css.strip()}\n}}\n\n"
                 else:
-                    atomic_write_text(user_chrome, f"{import_line}\n")
+                    embedded_matugen = ""
+
+                about_content = f"/* Embedded Matugen Palette for Dynamic userContent Reloads */\n{embedded_matugen}{base_about}"
+                atomic_write_text(about_css, about_content)
+
+                user_content = chrome_dir / "userContent.css"
+                ensure_css_import(user_content, '@import url("dusky_about.css");')
+
                 installed_profiles += 1
             except OSError as e:
                 print_warn(f"Could not write chrome CSS in {profile}: {e}")
@@ -789,31 +827,19 @@ def restore_user_chrome(profile: Path) -> None:
     if not chrome_dir.is_dir():
         return
     menu_css = chrome_dir / "dusky_menu.css"
-    import_line = '@import url("dusky_menu.css");'
     if _remove_file(menu_css):
         print_success(f"Removed {menu_css}")
+    remove_css_import(chrome_dir / "userChrome.css", '@import url("dusky_menu.css");')
 
-    user_chrome = chrome_dir / "userChrome.css"
-    if user_chrome.is_file():
-        try:
-            lines = user_chrome.read_text(encoding="utf-8").splitlines()
-        except OSError as e:
-            print_warn(f"Could not read {user_chrome}: {e}")
-            return
-        kept = [ln for ln in lines if ln.strip() != import_line]
-        # trim blank lines left at the top by the removed import
-        while kept and kept[0].strip() == "":
-            kept.pop(0)
-        new_text = "\n".join(kept).rstrip() + "\n"
-        if new_text.strip():
-            try:
-                atomic_write_text(user_chrome, new_text)
-                print_success(f"Restored {user_chrome}")
-            except OSError as e:
-                print_warn(f"Could not write {user_chrome}: {e}")
-        else:
-            _remove_file(user_chrome)
-            print_success(f"Removed empty {user_chrome}")
+def restore_user_content(profile: Path) -> None:
+    """Remove dusky_about.css and its @import from userContent.css."""
+    chrome_dir = profile / "chrome"
+    if not chrome_dir.is_dir():
+        return
+    about_css = chrome_dir / "dusky_about.css"
+    if _remove_file(about_css):
+        print_success(f"Removed {about_css}")
+    remove_css_import(chrome_dir / "userContent.css", '@import url("dusky_about.css");')
 
 def uninstall_manifests(home: Path) -> int:
     """Remove native messaging manifests that belong to this extension."""
@@ -869,6 +895,7 @@ def uninstall_profile_artifacts(home: Path) -> int:
                 print_success(f"Removed {data_dir}")
             unpatch_extensions_json(profile)
             restore_user_chrome(profile)
+            restore_user_content(profile)
             restore_profile_prefs(profile)
     return profiles
 

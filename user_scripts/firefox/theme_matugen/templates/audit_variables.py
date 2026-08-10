@@ -335,6 +335,8 @@ def audit() -> int:
     for p in valid_profiles:
         dusky_menu: Path = p / "chrome" / "dusky_menu.css"
         user_chrome: Path = p / "chrome" / "userChrome.css"
+        dusky_about: Path = p / "chrome" / "dusky_about.css"
+        user_content: Path = p / "chrome" / "userContent.css"
         user_js: Path = p / "user.js"
 
         user_js_text: str = ""
@@ -349,33 +351,52 @@ def audit() -> int:
         user_chrome_text: str = ""
         if user_chrome.is_file():
             user_chrome_text = user_chrome.read_text(encoding='utf-8', errors='ignore')
-        import_ok: bool = bool(re.search(
+        chrome_import_ok: bool = bool(re.search(
             r'^\s*@import\s+(?:url\(\s*["\']?dusky_menu\.css["\']?\s*\)|["\']dusky_menu\.css["\'])\s*;\s*$',
             user_chrome_text,
             re.MULTILINE,
         ))
 
-        file_ok: bool = dusky_menu.is_file()
+        user_content_text: str = ""
+        if user_content.is_file():
+            user_content_text = user_content.read_text(encoding='utf-8', errors='ignore')
+        content_import_ok: bool = bool(re.search(
+            r'^\s*@import\s+(?:url\(\s*["\']?dusky_about\.css["\']?\s*\)|["\']dusky_about\.css["\'])\s*;\s*$',
+            user_content_text,
+            re.MULTILINE,
+        ))
+
+        menu_file_ok: bool = dusky_menu.is_file()
+        about_file_ok: bool = dusky_about.is_file()
 
         selectors_ok: bool = False
-        if file_ok:
+        if menu_file_ok:
             css_text: str = dusky_menu.read_text(encoding='utf-8', errors='ignore')
             missing_sel: list[str] = [s for s in required_selectors if s not in css_text]
             selectors_ok = len(missing_sel) == 0
 
+        about_rules_ok: bool = False
+        if about_file_ok:
+            about_text: str = dusky_about.read_text(encoding='utf-8', errors='ignore')
+            about_rules_ok = "--in-content-page-background" in about_text
+
         p_pref: str = f"{C_GREEN}Enabled{C_RESET}" if pref_ok else f"{C_RED}Missing{C_RESET}"
-        p_file: str = f"{C_GREEN}Present{C_RESET}" if file_ok else f"{C_RED}Missing{C_RESET}"
-        p_imp: str = f"{C_GREEN}Linked{C_RESET}" if import_ok else f"{C_RED}Missing{C_RESET}"
+        p_menu_imp: str = f"{C_GREEN}Linked{C_RESET}" if chrome_import_ok else f"{C_RED}Missing{C_RESET}"
+        p_about_imp: str = f"{C_GREEN}Linked{C_RESET}" if content_import_ok else f"{C_RED}Missing{C_RESET}"
+        p_menu_file: str = f"{C_GREEN}Present{C_RESET}" if menu_file_ok else f"{C_RED}Missing{C_RESET}"
+        p_about_file: str = f"{C_GREEN}Present{C_RESET}" if about_file_ok else f"{C_RED}Missing{C_RESET}"
         p_sel: str = f"{C_GREEN}All {len(required_selectors)} Rules Present{C_RESET}" if selectors_ok else f"{C_RED}Incomplete{C_RESET}"
+        p_about_rules: str = f"{C_GREEN}In-Content Rules Present{C_RESET}" if about_rules_ok else f"{C_RED}Incomplete{C_RESET}"
 
         print(f"   {C_GREEN}├─ [{p.name}]{C_RESET}")
         print(f"   │    user.js Pref:        {p_pref}")
-        print(f"   │    dusky_menu.css File: {p_file}")
-        print(f"   │    userChrome Import:   {p_imp}")
-        print(f"   │    Rule Selectors:      {p_sel}")
+        print(f"   │    dusky_menu.css:      {p_menu_file} (Chrome Import: {p_menu_imp})")
+        print(f"   │    dusky_about.css:     {p_about_file} (Content Import: {p_about_imp})")
+        print(f"   │    Chrome Rules:        {p_sel}")
+        print(f"   │    About Page Rules:    {p_about_rules}")
 
         audited_profiles_count += 1
-        if not (pref_ok and import_ok and file_ok and selectors_ok):
+        if not (pref_ok and chrome_import_ok and content_import_ok and menu_file_ok and about_file_ok and selectors_ok and about_rules_ok):
             profile_audits_passed = False
 
     if profile_audits_passed and audited_profiles_count > 0:
