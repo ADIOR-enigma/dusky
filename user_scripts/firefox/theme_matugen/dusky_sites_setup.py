@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Dusky Sites Setup Script (Arch Linux / Python 3.12+ / Firefox 115+)
+Dusky Sites Setup Script (Arch Linux / Python 3.12+ / Firefox 153+)
 ======================================================================
 Provisions XDG configuration directories, installs native messaging host
 to ~/.local/share/dusky-sites/dusky_sites_host.py, parses profiles.ini,
