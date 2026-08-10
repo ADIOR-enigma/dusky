@@ -902,6 +902,14 @@ class ProfileManager:
 # ==========================================
 # 5. ROUTER & EVENT LOOP
 # ==========================================
+# questionary returns the choice *title* when its value is None (documented
+# behavior), so every action/cancel choice must carry an explicit value.
+# These two labels can never collide with a profile name (names are
+# [a-zA-Z0-9_-] only).
+CANCEL_VALUE = "↩ Cancel / Go Back"
+DONE_VALUE = "↩ Done"
+
+
 def build_profile_choices(profiles: ProfileList, active_profile: str | None = None, lock_active: bool = False) -> list[questionary.Choice]:
     choices = []
     for p in profiles:
@@ -909,7 +917,7 @@ def build_profile_choices(profiles: ProfileList, active_profile: str | None = No
             choices.append(questionary.Choice(f"{p} (Active - Locked)", value=p, disabled="Cannot delete active profile"))
         else:
             choices.append(questionary.Choice(p, value=p))
-    choices.append(questionary.Choice("↩ Cancel / Go Back", value=None))
+    choices.append(questionary.Choice(CANCEL_VALUE, value=CANCEL_VALUE))
     return choices
 
 def interactive_tui(manager: ProfileManager) -> None:
@@ -966,7 +974,7 @@ def interactive_tui(manager: ProfileManager) -> None:
                         style=questionary.Style([('pointer', 'fg:ansimagenta bold')])
                     ).ask()
                     
-                    if target:
+                    if target and target != CANCEL_VALUE:
                         if manager.switch(target):
                             # A successful switch is the natural end of the task: return to the shell.
                             break
@@ -982,7 +990,7 @@ def interactive_tui(manager: ProfileManager) -> None:
                         style=questionary.Style([('pointer', 'fg:ansimagenta bold')])
                     ).ask()
                     
-                    if target:
+                    if target and target != CANCEL_VALUE:
                         manager.check_profile(target)
                         questionary.press_any_key_to_continue("\nPress any key to return...").ask()
                 case "create":
@@ -998,7 +1006,7 @@ def interactive_tui(manager: ProfileManager) -> None:
                         style=questionary.Style([('pointer', 'fg:ansimagenta bold')])
                     ).ask()
                     
-                    if target: 
+                    if target and target != CANCEL_VALUE: 
                         manager.delete(target)
                         questionary.press_any_key_to_continue("\nPress any key to return...").ask()
                 case "rename":
@@ -1008,7 +1016,7 @@ def interactive_tui(manager: ProfileManager) -> None:
                         style=questionary.Style([('pointer', 'fg:ansimagenta bold')])
                     ).ask()
                     
-                    if target:
+                    if target and target != CANCEL_VALUE:
                         new_name = questionary.text(
                             "Enter new name for profile (leave blank to cancel):",
                             validate=lambda v: v.strip() == "" or manager.is_valid_name(v.strip())
@@ -1024,18 +1032,18 @@ def interactive_tui(manager: ProfileManager) -> None:
                         style=questionary.Style([('pointer', 'fg:ansimagenta bold')])
                     ).ask()
                     
-                    if target:
+                    if target and target != CANCEL_VALUE:
                         while True:
                             move_action = questionary.select(
                                 f"Move '{target}' where?",
                                 choices=[
                                     questionary.Choice("▲ Move Up", value="up"),
                                     questionary.Choice("▼ Move Down", value="down"),
-                                    questionary.Choice("↩ Done", value=None)
+                                    questionary.Choice(DONE_VALUE, value=DONE_VALUE)
                                 ],
                                 style=questionary.Style([('pointer', 'fg:ansimagenta bold')])
                             ).ask()
-                            if move_action is None:
+                            if move_action is None or move_action == DONE_VALUE:
                                 break
                             if manager.reorder(target, move_action):
                                 # Live feedback: repaint so the new position is visible
