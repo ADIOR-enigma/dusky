@@ -1787,8 +1787,8 @@ CLEANUP_UNIT_TEMPLATE: Final = """[Unit]
 Description=Dusky deferred Btrfs cleanup of {display}
 Documentation=man:btrfs-subvolume(8) man:dusky(8)
 DefaultDependencies=yes
-After=local-fs.target
-Wants=local-fs.target
+After=local-fs.target systemd-udev-settle.service
+Wants=local-fs.target systemd-udev-settle.service
 # Ordering against a unit that may not exist is a no-op in systemd, so this is
 # safe on a restored root that predates Dusky.  Where it does exist, the
 # journal must be resolved before anything is reclaimed.
@@ -1807,9 +1807,9 @@ IOSchedulingClass=idle
 CPUSchedulingPolicy=idle
 TimeoutStartSec=infinity
 ProtectSystem=false
-PrivateMounts=yes
 ExecStartPre=/usr/bin/mkdir -p {mnt}
-ExecStartPre=/usr/bin/mount -t btrfs -o subvolid=5,nodev,nosuid,noexec,noatime -U {fs_uuid} {mnt}
+ExecStartPre=/usr/bin/mount -t btrfs -o subvolid=5,nodev,nosuid,noexec,noatime /dev/disk/by-uuid/{fs_uuid_plain} {mnt}
+ExecStartPre=/usr/bin/mountpoint -q {mnt}
 # 1. Refuse to delete the filesystem default subvolume: doing so bricks the
 #    boot even though nothing has it mounted (btrfs-subvolume(8) set-default).
 ExecStartPre=/usr/bin/test {subvolid} != {default_subvolid}
