@@ -38,6 +38,10 @@ SCHEMA = {i: [] for i in range(len(TABS))}
 
 # --- DETAILED EXTENDED HELP DICTIONARIES ---
 CORE_USER_DEFS = {
+    "app-dev.lizardbyte.app.Sunshine.service": (
+        "Sunshine (Moonlight Streaming)",
+        "Self-hosted game stream host for Moonlight. Streams your desktop and games to Moonlight clients. Runs as a user service and is enabled to start automatically with your graphical session (graphical-session.target). Use systemctl --user disable to stop it launching at login, or disable/enable right here.",
+    ),
     "hyprsunset.service": (
         "Night Light (Blue Light Filter)",
         "Manages hyprsunset, a Wayland-native blue light filter. Turning this on will adjust the color temperature of your display to reduce eye strain at night.",
