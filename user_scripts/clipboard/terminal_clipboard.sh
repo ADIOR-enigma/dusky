@@ -104,7 +104,6 @@ readonly LABEL_HELP=' 💡 Help '
 readonly PROMPT_NORMAL='  '
 readonly PROMPT_VIM=" $MARK_VIM q:quit /:search > "
 readonly PROMPT_SEARCH=" $MARK_SEARCH > "
-readonly HEADER_MAIN=' F1 help · Alt-M vim · Alt-A pin · Alt-D delete · Alt-W wipe '
 readonly HEADER_WIPE=' ⚠  Alt-W again within 5s to WIPE THE ENTIRE HISTORY '
 
 # Keys owned by vim normal mode. Declared in exactly ONE place so the
@@ -1237,11 +1236,11 @@ cmd_confirm_wipe() {
     fi
     if (( armed )); then
         rm -f -- "$f" 2>/dev/null
-        printf 'execute-silent(%s --wipe)+reload-sync(%s --list)+clear-multi+change-header(%s)' \
-               "$SELF_REF" "$SELF_REF" "$HEADER_MAIN"
+        printf 'execute-silent(%s --wipe)+reload-sync(%s --list)+clear-multi+change-border-label(%s)' \
+               "$SELF_REF" "$SELF_REF" "$CLIPFZF_BORDER_MAIN"
     else
         [[ -n $SESSION_DIR ]] && printf '%s\n' "$now" >"$f" 2>/dev/null
-        printf 'change-header(%s)+bell' "$HEADER_WIPE"
+        printf 'change-border-label(%s)+bell' "$HEADER_WIPE"
     fi
 }
 
@@ -1550,13 +1549,16 @@ show_menu() {
         [[ $p_state == false ]] && mode_label=RAM
     fi
 
+    local border_main=" [$mode_label] F1 help · Alt-M vim · Alt-A pin · Alt-D del · Alt-W wipe "
+    export CLIPFZF_BORDER_MAIN="$border_main"
+
     # Every command string below is pure ASCII and free of fzf's action-argument
     # metacharacters; the script path travels in $CLIPFZF_SELF instead.
     local -a args=(
         --multi --ansi --no-sort --exact --cycle --layout=reverse --scheme=history
         --margin=0 --padding=0 --highlight-line --no-scrollbar
-        --border=rounded --border-label=" 📋 Clipboard [$mode_label] " --border-label-pos=3
-        --info=hidden --header="$HEADER_MAIN" --header-first
+        --border=rounded --border-label="$border_main" --border-label-pos=3
+        --info=hidden
         --pointer='▌' --marker='┃'
         --delimiter="$SEP" --with-nth=1 --nth=1
         --track --id-nth=3
