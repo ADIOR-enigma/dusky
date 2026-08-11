@@ -125,7 +125,10 @@ class MetricPill(Gtk.EventBox):
             self._val_lbl.set_label("--")
         else:
             text = str(data.get("text", "")).replace("\\n", " ").replace("\n", " ").strip()
-            self._val_lbl.set_markup(text)
+            try:
+                self._val_lbl.set_markup(text)
+            except Exception:
+                self._val_lbl.set_text(text)
 
 class CompactSliderRow(Gtk.Box):
     def __init__(self, icon_text: str, css_class: str, min_value: float, max_value: float, step: float, fetch_cb: Any, submit_cb: Any, refresh_pool: RefreshPool, *, post_submit_refresh_grace_seconds: float = 0.0) -> None:

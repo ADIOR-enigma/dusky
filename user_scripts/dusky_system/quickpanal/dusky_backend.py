@@ -93,6 +93,8 @@ _CGROUP_MEMORY_CURRENT: Final = _resolve_cgroup_file("memory.current")
 _CGROUP_MEMORY_HIGH: Final = _resolve_cgroup_file("memory.high")
 
 def _should_pageout() -> bool:
+    if not _CGROUP_MEMORY_HIGH or not _CGROUP_MEMORY_CURRENT:
+        return False
     try:
         with open(_CGROUP_MEMORY_HIGH) as f:
             high = f.read().strip()
@@ -101,7 +103,7 @@ def _should_pageout() -> bool:
         with open(_CGROUP_MEMORY_CURRENT) as f:
             current = int(f.read().strip())
         return current > int(high) * 80 // 100
-    except Exception:
+    except (OSError, ValueError):
         return False
 
 def _reclaim_idle_memory() -> None:
@@ -187,12 +189,14 @@ def run_command(args: Sequence[CommandArg], *, timeout: float, capture_stdout: b
     except subprocess.TimeoutExpired:
         try: os.killpg(proc.pid, signal.SIGKILL)
         except OSError: pass
-        proc.communicate()
+        try: proc.communicate(timeout=1.0)
+        except Exception: pass
         return None
     except Exception:
         try: os.killpg(proc.pid, signal.SIGKILL)
         except OSError: pass
-        proc.communicate()
+        try: proc.communicate(timeout=1.0)
+        except Exception: pass
         return None
 
 def execute_cmd(cmd: str) -> None:
@@ -500,11 +504,8 @@ def fetch_notifications() -> list[NotificationData]:
 def atomic_write_json(path: Path, data: Any) -> None:
     """Safely write JSON data using atomic file replacement to prevent race conditions."""
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = path.with_suffix(".tmp")
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(data, f)
-        os.replace(tmp_path, path)
+        content = json.dumps(data, indent=2) + "\n"
+        atomic_write_text(path, content, durable=False)
     except Exception as e:
         LOG.error(f"Failed atomic json write to {path}: {e}")
 
@@ -977,7 +978,7 @@ class HyprsunsetController:
     def _mark_applied(self, target: int) -> None:
         self._ready.set()
         self._current_target = float(target)
-        write_hyprsunset_state(float(target))
+        self._state_writer.submit(float(target))
 
     def _wait_until_applied(self, target: int, timeout: float) -> bool:
         deadline = time.monotonic() + timeout

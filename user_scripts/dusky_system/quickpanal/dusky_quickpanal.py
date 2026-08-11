@@ -43,12 +43,18 @@ except (ImportError, ValueError) as exc:
 # Import from our custom modules
 from dusky_backend import (
     APP_ID, HOME, execute_cmd, run_command, fetch_json_output, _reclaim_idle_memory,
-    LatestValueWorker, RefreshPool, HyprsunsetController, LOG,
+    LatestValueWorker, RefreshPool, HyprsunsetController, LOG, start_thread,
     HAS_VOLUME, HAS_BRIGHTNESS, HAS_LOCAL_BRIGHTNESS, HAS_SUNSET, DDC_MANAGER,
     get_volume, apply_volume, get_brightness, apply_local_brightness, 
     get_hyprsunset_state, is_hyprsunset_service_enabled, _RE_MAKO_BADGE, _RE_UPDATES_TOTAL,
     BRIGHTNESS_POST_SUBMIT_REFRESH_GRACE_SECONDS, SUNSET_STATE_WRITE_DEBOUNCE_SECONDS
 )
+
+WINDOW_CLASS = "dusky_quickpanal.py"
+try:
+    GLib.set_prgname(WINDOW_CLASS)
+except Exception:
+    pass
 
 from dusky_ui import (
     CSS, _add_css_class, _remove_css_class,
@@ -60,6 +66,10 @@ try:
     _grab_lib_path = os.path.expanduser("~/user_scripts/dusky_system/click_away_to_dismiss/libwaylandgrab.so")
     LIBGRAB = ctypes.CDLL(_grab_lib_path)
     CB_TYPE = ctypes.CFUNCTYPE(None)
+    LIBGRAB.init_wayland_grab.argtypes = (ctypes.c_void_p, CB_TYPE)
+    LIBGRAB.init_wayland_grab.restype = None
+    LIBGRAB.destroy_wayland_grab.argtypes = ()
+    LIBGRAB.destroy_wayland_grab.restype = None
 except OSError:
     LIBGRAB = None
 
@@ -610,7 +620,7 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
             _add_css_class(button, "applying")
 
             # 3. Spawn a temporary, on-demand thread that dies when finished
-            threading.Thread(target=self._run_power_cmd_worker, args=(cmd, current_rev), daemon=True).start()
+            start_thread("power-profile", self._run_power_cmd_worker, cmd, current_rev)
 
     def _run_power_cmd_worker(self, cmd: str, revision: int):
         try:
@@ -769,7 +779,7 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
 
 class QuickPanalApp(Gtk.Application):
     def __init__(self):
-        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.FLAGS_NONE)
+        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
         self.window, self.pool, self._volume_worker, self._local_brightness_worker, self._sunset_controller = None, None, None, None, None
 
     def submit_volume(self, value: float):
