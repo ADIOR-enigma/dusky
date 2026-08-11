@@ -687,49 +687,208 @@ cache_image() {
     return 1
 }
 
+#------------------------------------------------------------------------------
+# display_image IMG
+#------------------------------------------------------------------------------
+# WHY EVERY CAPABILITY HANDSHAKE IS FORBIDDEN HERE
+#   fzf runs the preview command with stdout on a PIPE (it reads the bytes and
+#   repaints them into the pane), so isatty(1) is false. Consequences, all
+#   verified against upstream docs rather than assumed:
+#
+#   * chafa(1): "-f, --format ... one of [iterm, kitty, sixels, symbols]. The
+#     default is iterm, kitty or sixels IF THE CONNECTED TERMINAL SUPPORTS one
+#     of these, falling back to symbols otherwise."  With a piped stdout chafa
+#     cannot confirm the terminal, so auto-detection degrades to `symbols`.
+#     Reproduced upstream from file managers (lf #2574: "chafa also fails to
+#     detect sixel support from the terminal and falls back to symbols").
+#   * `-f auto` IS NOT A VALID FORMAT — the enum has no `auto` member, and the
+#     sixel member is spelled `sixels` (plural). v4.0 passed `-f auto`, so chafa
+#     exited non-zero before emitting one byte and `2>/dev/null || return 1`
+#     swallowed the diagnostic. THAT is the blank pane in foot.
+#   * chafa 1.16+ `--probe=[auto|on|off]` with `--probe-mode=[any|ctty|stdio]`;
+#     `ctty` is documented as probing /dev/tty "useful when chafa is part of a
+#     pipeline". In an fzf preview that reads the DA/XTSMGRAPHICS reply out of
+#     the terminal behind fzf's back and corrupts fzf's own input stream. We
+#     pin `--probe off`: deterministic, and nothing can race fzf for /dev/tty.
+#   * `--polite` was NOT the problem: chafa(1) says it merely "inhibits escape
+#     sequences that on rare occasions may confuse the terminal", and it has
+#     defaulted to OFF since 1.14. We still force it ON, because smcup/rmcup and
+#     cursor-visibility games are exactly what must not leak out of a preview.
+#   * `kitten icat --scale-up=no` is malformed: `--scale-up` is a bool-set FLAG,
+#     not a valued option, so icat aborted on the command line. That is why the
+#     kitty path rendered nothing either — independent of --unicode-placeholder.
+#
+# SO: decide the protocol from the environment, then emit exactly one hard-coded
+# protocol, then degrade through a static chain. Never negotiate, never query.
+#------------------------------------------------------------------------------
 display_image() {
-    local img="$1" cols="${FZF_PREVIEW_COLUMNS:-40}" rows="${FZF_PREVIEW_LINES:-20}"
-    local backend="${CLIPFZF_IMAGE_BACKEND:-auto}" rc fmt
-    [[ -f $img ]] || { printf '\e[31mImage not found\e[0m\n'; return 1; }
-    (( rows = rows > 8 ? rows - 6 : 2 ))
+    local img="$1"
+    local cols="${FZF_PREVIEW_COLUMNS:-40}" rows="${FZF_PREVIEW_LINES:-20}"
+    local top="${FZF_PREVIEW_TOP:-0}" left="${FZF_PREVIEW_LEFT:-0}"
+    local want="${CLIPFZF_IMAGE_BACKEND:-auto}"
+    local term="${TERM:-}" tprog="${TERM_PROGRAM:-}"
+    local family='' proto pad comm stat pid depth=0 off
+    local -a chain=() cmd=()
+
+    [[ -f $img && -s $img ]] || { printf '\e[31mImage not available\e[0m\n'; return 1; }
+
+    # Both call sites in cmd_preview print exactly 4 lines (title, blank, file
+    # description, blank) before calling us, so an absolutely-placed image must
+    # start that far down the pane. Overridable for anyone re-using the function.
+    off="${CLIPFZF_IMAGE_ROW_OFFSET:-4}"
+    is_uint "$off"  || off=4
+    is_uint "$top"  || top=0
+    is_uint "$left" || left=0
+    (( rows = rows - off - 2 ))            # 2 lines of bottom slack
+    (( rows < 2 )) && rows=2
     (( cols = cols > 4 ? cols - 4 : 2 ))
 
-    if [[ $backend == auto ]]; then
-        if   is_kitty && have kitten; then backend=kitty
-        elif have chafa;              then backend=chafa
-        else                               backend=none
+    #--- 1. terminal family — environment markers only, zero escape sequences --
+    if [[ $want == auto ]]; then
+        if   [[ -n ${KITTY_WINDOW_ID:-}${KITTY_PID:-} || $term == *kitty* ]]; then family=kitty
+        elif [[ $tprog == ghostty || -n ${GHOSTTY_RESOURCES_DIR:-}${GHOSTTY_BIN_DIR:-} \
+                || $term == *ghostty* ]];                                     then family=ghostty
+        elif [[ $tprog == WezTerm || -n ${WEZTERM_PANE:-}${WEZTERM_EXECUTABLE:-} ]]; then family=wezterm
+        elif [[ $term == foot* || $tprog == foot ]];                          then family=foot
+        elif [[ -n ${KONSOLE_VERSION:-}${KONSOLE_DBUS_SESSION:-} ]];          then family=konsole
+        elif [[ $tprog == iTerm.app || ${LC_TERMINAL:-} == iTerm2 ]];         then family=iterm
+        elif [[ -n ${ALACRITTY_WINDOW_ID:-}${ALACRITTY_SOCKET:-} || $term == alacritty* ]]; then family=alacritty
+        elif [[ ${TERMINAL_NAME:-} == contour || -n ${CONTOUR_VERSION:-} ]];  then family=contour
+        elif [[ $tprog == vscode ]];                                          then family=vscode
+        elif [[ $tprog == mintty || $term == mintty* ]];                      then family=mintty
+        elif [[ -n ${WT_SESSION:-} ]];                                        then family=wt
+        elif [[ $term == *sixel* || $term == mlterm* || $term == yaft* ]];    then family=sixelterm
         fi
+
+        # TERM lies constantly (TERM=xterm-256color is epidemic, and fzf's
+        # preview child inherits it verbatim). When no marker matched, identify
+        # the real emulator from /proc: it is ALWAYS an ancestor of the preview
+        # process (preview sh -> fzf -> this script -> emulator). Pure reads,
+        # zero forks, zero escape sequences — the only query-free ground truth.
+        if [[ -z $family ]]; then
+            pid="$PPID"
+            while is_uint "$pid" && (( pid > 1 && depth++ < 12 )); do
+                [[ -r /proc/$pid/comm ]] || break
+                IFS= read -r comm < "/proc/$pid/comm" || break
+                case $comm in
+                    kitty)               family=kitty ;;
+                    ghostty)             family=ghostty ;;
+                    wezterm-gui|wezterm) family=wezterm ;;
+                    foot|footclient)     family=foot ;;
+                    konsole)             family=konsole ;;
+                    alacritty)           family=alacritty ;;
+                    contour)             family=contour ;;
+                    mlterm|yaft)         family=sixelterm ;;
+                esac
+                [[ -n $family ]] && break
+                [[ -r /proc/$pid/stat ]] || break
+                IFS= read -r stat < "/proc/$pid/stat" || break
+                stat="${stat##*) }"; stat="${stat#* }"; stat="${stat%% *}"
+                is_uint "$stat" || break
+                pid="$stat"
+            done
+        fi
+
+        case $family in
+            kitty)                     want=icat   ;;  # kitten, absolute place
+            ghostty)                   want=kitty  ;;  # kitty proto; NO sixel,
+                                                       # NO iterm (ghostty#3054)
+            wezterm|iterm)             want=iterm  ;;  # iTerm2 inline images
+            foot|konsole|contour|alacritty|vscode|mintty|wt|sixelterm)
+                                       want=sixels ;;
+            *)                         want=symbols ;;  # universal ANSI art
+        esac
     fi
 
-    case $backend in
-        kitty)
-            # Canonical recipe from fzf's own bin/fzf-preview.sh:
-            #   * --unicode-placeholder anchors the image to text cells so fzf
-            #     positions it inside the preview pane. v3.0 used an absolute
-            #     --place=...@0x1, which addresses the *terminal*, not the
-            #     pane, and therefore painted over the item list on any layout
-            #     other than a full-width top preview.
-            #   * icat's last line is a bare reset with no newline, which makes
-            #     fzf draw a spurious scroll indicator: drop it and re-attach
-            #     the reset to the previous line.
-            kitten icat --clear --transfer-mode=memory --unicode-placeholder \
-                   --stdin=no --scale-up=no --place="${cols}x${rows}@0x0" -- "$img" 2>/dev/null |
-            gawk '{ if (NR > 2) print p2; p2 = p1; p1 = $0 }
-                  END { if (NR >= 2) printf "%s\033[m\n", p2 }'
-            rc=${PIPESTATUS[0]}
-            return "$rc" ;;
-        chafa|sixel|symbols|kitty-chafa)
-            fmt=auto
-            [[ $backend == sixel ]]   && fmt=sixel
-            [[ $backend == symbols ]] && fmt=symbols
-            chafa -f "$fmt" --animate=off --polite=on --size="${cols}x${rows}" -- "$img" 2>/dev/null || return 1
-            printf '\n'      # terminate the graphics block for fzf's renderer
-            return 0 ;;
-        none|*)
-            printf '\e[33mNo image backend. Install chafa, or run inside kitty.\e[0m\n'
-            printf '\e[2mOverride with CLIPFZF_IMAGE_BACKEND=kitty|sixel|symbols|none\e[0m\n'
-            return 1 ;;
+    #--- 2. normalise the override vocabulary ---------------------------------
+    case $want in
+        icat|kitty-icat)              want=icat ;;
+        placeholder|icat-placeholder) want=placeholder ;;
+        kitty|kitty-chafa)            want=kitty ;;
+        iterm|iterm2)                 want=iterm ;;
+        sixel|sixels)                 want=sixels ;;
+        symbols|ansi|blocks|chafa)    want=symbols ;;
+        none|off|disabled)            want=none ;;
+        *)                            want=symbols ;;
     esac
+
+    # Absolute cell placement is meaningless inside a multiplexer pane, so route
+    # icat through chafa's relative kitty output, which honours --passthrough.
+    [[ -n ${TMUX:-}${STY:-} && ( $want == icat || $want == placeholder ) ]] && want=kitty
+
+    #--- 3. static degradation chain ------------------------------------------
+    case $want in
+        icat)        chain=(icat kitty symbols) ;;
+        placeholder) chain=(placeholder kitty symbols) ;;
+        kitty)       chain=(kitty symbols) ;;
+        iterm)       chain=(iterm symbols) ;;
+        sixels)      chain=(sixels symbols) ;;
+        symbols)     chain=(symbols) ;;
+        none)        chain=() ;;
+    esac
+
+    printf -v pad '%*s' "$rows" ''
+    pad="${pad// /$'\n'}"                   # exactly $rows newlines, fork-free
+
+    for proto in "${chain[@]}"; do
+        case $proto in
+            icat|placeholder)
+                have kitten || continue
+                # Retire images from the previous render. Sent unconditionally
+                # because cmd_preview's kitty_purge is gated on is_kitty(),
+                # which is false in every other kitty-protocol terminal.
+                printf '\e_Ga=d,d=A\e\\'
+                # NOTE: no --scale-up. It is a bool-set flag; `--scale-up=no`
+                # made icat reject the command line outright in v4.0.
+                cmd=(kitten icat --clear --stdin=no --transfer-mode=memory)
+                if [[ $proto == placeholder ]]; then
+                    # fzf's own bin/fzf-preview.sh recipe: the image is anchored
+                    # to text cells fzf itself positions. Requires the pane to
+                    # NOT re-wrap them, so it is opt-in — this script ships
+                    # `wrap-word` in PREVIEW_LAYOUT by default, which shreds the
+                    # placeholder row/column diacritics.
+                    cmd+=(--unicode-placeholder --place="${cols}x${rows}@0x0")
+                else
+                    # Absolute placement, but computed from the documented
+                    # FZF_PREVIEW_TOP / FZF_PREVIEW_LEFT exports instead of the
+                    # hard-coded @0x1 of v2.5 — correct for every layout, and
+                    # immune to preview-pane word wrapping.
+                    cmd+=(--place="${cols}x${rows}@${left}x$((top + off))")
+                fi
+                "${cmd[@]}" -- "$img" 2>/dev/null || continue
+                # --place leaves the cursor untouched, so reserve the rows by
+                # hand or fzf believes the preview is empty.
+                [[ $proto == icat ]] && printf '%s' "$pad"
+                return 0 ;;
+
+            kitty|iterm|sixels|symbols)
+                have chafa || continue
+                # Format is HARD-CODED. --probe off: never touch /dev/tty from
+                # inside a preview. --relative off: rows separated by newlines
+                # so fzf can count them (chafa(1) recommends this for pagers).
+                cmd=(chafa --format "$proto" --size "${cols}x${rows}"
+                     --animate off --polite on --probe off --relative off)
+                if   [[ -n ${TMUX:-} ]]; then cmd+=(--passthrough tmux)
+                elif [[ -n ${STY:-} ]];  then cmd+=(--passthrough screen)
+                fi
+                case $proto in
+                    kitty)   printf '\e_Ga=d,d=A\e\\' ;;
+                    symbols) case ${COLORTERM:-} in
+                                 truecolor|24bit) cmd+=(--colors full) ;;
+                                 *)               cmd+=(--colors 256)  ;;
+                             esac ;;
+                esac
+                "${cmd[@]}" -- "$img" 2>/dev/null || continue
+                printf '\n'          # close the graphics block for fzf
+                return 0 ;;
+        esac
+    done
+
+    [[ $want == none ]] && return 0
+    printf '\e[33mNo usable image backend (install chafa).\e[0m\n'
+    printf '\e[2mDetected: %s · tried: %s\e[0m\n' "${family:-unknown}" "${chain[*]:-none}"
+    printf '\e[2mOverride: CLIPFZF_IMAGE_BACKEND=icat|placeholder|kitty|iterm|sixels|symbols|none\e[0m\n'
+    return 1
 }
 
 #==============================================================================
