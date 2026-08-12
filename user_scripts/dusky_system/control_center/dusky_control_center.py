@@ -106,10 +106,10 @@ CSS_FILENAME: Final[str] = "dusky_style.css"
 SCRIPT_DIR: Final[Path] = Path(__file__).resolve().parent
 
 # UI Layout Constants
-WINDOW_DEFAULT_WIDTH: Final[int] = 1180
-WINDOW_DEFAULT_HEIGHT: Final[int] = 780
-SIDEBAR_MIN_WIDTH: Final[int] = 180
-SIDEBAR_MAX_WIDTH: Final[int] = 180
+WINDOW_DEFAULT_WIDTH: Final[int] = 630
+WINDOW_DEFAULT_HEIGHT: Final[int] = 800
+SIDEBAR_MIN_WIDTH: Final[int] = 175
+SIDEBAR_MAX_WIDTH: Final[int] = 175
 SIDEBAR_WIDTH_FRACTION: Final[float] = 0.25
 
 # Page Identifiers
@@ -564,7 +564,7 @@ class DuskyControlCenter(Adw.Application):
         """Construct and present the main application window."""
         self._window = Adw.Window(application=self, title=APP_TITLE)
         self._window.set_default_size(WINDOW_DEFAULT_WIDTH, WINDOW_DEFAULT_HEIGHT)
-        self._window.set_size_request(760, 600)
+        self._window.set_size_request(520, 460)
         self._window.connect("close-request", self._on_close_request)
 
         key_ctrl = Gtk.EventControllerKey()
@@ -1247,13 +1247,8 @@ class DuskyControlCenter(Adw.Application):
         header.add_css_class("sidebar-header")
         header.set_show_end_title_buttons(False)
 
-        title_box = Gtk.Box(spacing=8)
-        icon = Gtk.Image.new_from_icon_name(ICON_SYSTEM)
-        icon.add_css_class("sidebar-header-icon")
         title = Gtk.Label(label="Dusky", css_classes=["title"])
-        title_box.append(icon)
-        title_box.append(title)
-        header.set_title_widget(title_box)
+        header.set_title_widget(title)
 
         self._search_btn = Gtk.ToggleButton(icon_name=ICON_SEARCH)
         self._search_btn.set_tooltip_text("Search (Ctrl+F)")
@@ -1467,9 +1462,10 @@ class DuskyControlCenter(Adw.Application):
         flow = Gtk.FlowBox()
         flow.set_valign(Gtk.Align.START)
         flow.set_selection_mode(Gtk.SelectionMode.NONE)
-        flow.set_column_spacing(12)
-        flow.set_row_spacing(12)
-        flow.set_min_children_per_line(2)
+        flow.set_homogeneous(True)
+        flow.set_column_spacing(10)
+        flow.set_row_spacing(10)
+        flow.set_min_children_per_line(3)
         flow.set_max_children_per_line(3)
 
         def append_grid_item(grid_item: ConfigItem) -> None:

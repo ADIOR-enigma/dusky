@@ -66,8 +66,8 @@ MIN_STEP_VALUE: Final[float] = 1e-9
 SLIDER_DEBOUNCE_MS: Final[int] = 150
 SUBPROCESS_TIMEOUT_SHORT: Final[int] = 2
 SUBPROCESS_TIMEOUT_LONG: Final[int] = 5
-ICON_PIXEL_SIZE: Final[int] = 28
-LABEL_MAX_WIDTH_CHARS: Final[int] = 16
+ICON_PIXEL_SIZE: Final[int] = 20
+LABEL_MAX_WIDTH_CHARS: Final[int] = 12
 
 # Bumped to 12 to prevent thread starvation on map storms
 EXECUTOR_MAX_WORKERS: Final[int] = 12
@@ -1900,6 +1900,8 @@ class SliderRow(SliderMonitorMixin, BaseActionRow):
         context: RowContext | None = None,
     ) -> None:
         super().__init__(properties, on_change, context)
+        self.set_title("")
+        self.set_subtitle("")
 
         self.min_val = _safe_float(properties.get("min"), 0.0)
         self.max_val = _safe_float(properties.get("max"), 100.0)
@@ -1923,11 +1925,24 @@ class SliderRow(SliderMonitorMixin, BaseActionRow):
 
         self.slider = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=adj)
         self.slider.set_valign(Gtk.Align.CENTER)
-        self.slider.set_hexpand(False)
+        self.slider.set_hexpand(True)
         self.slider.set_draw_value(False)
-        self.slider.set_size_request(250, -1)
+        self.slider.set_margin_start(4)
+        self.slider.set_margin_end(4)
         self.slider.connect("value-changed", self._on_value_changed)
+
         self.add_suffix(self.slider)
+
+        if main_box := self.get_first_child():
+            child = main_box.get_first_child()
+            while child:
+                if isinstance(child, Gtk.Box):
+                    first_inner = child.get_first_child()
+                    if isinstance(first_inner, Gtk.Label):
+                        child.set_visible(False)
+                    elif first_inner != self.icon_widget:
+                        child.set_hexpand(True)
+                child = child.get_next_sibling()
 
         self._start_value_monitor()
 
