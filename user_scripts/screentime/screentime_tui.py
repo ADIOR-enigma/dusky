@@ -11,18 +11,32 @@ Ultra-fast, lightweight screentime visualization engine featuring:
 5. Robust ANSI sequence buffer parser for Arrow keys & Vim controls
 6. Smart Yesterday fallback to most recent recorded date
 7. Dynamic Matugen color integration (~/.config/matugen/generated/dusky_tui.json)
+
+FIXES (Kitty freeze / threading.excepthook on 1..5):
+- Live auto_refresh is OFF. Rich's _RefreshThread has no try/except; any render
+  error killed the thread, FileProxy-wrapped stderr made threading.excepthook
+  itself fail, and live.update() without refresh=True then never redrew.
+- redirect_stdout/stderr disabled so exception hooks and the TTY stay intact.
+- Main-thread-only live.update(..., refresh=True) with a hard try/except.
+- No O_NONBLOCK on stdin (VMIN=0/VTIME=0 + select). Mixing O_NONBLOCK with
+  VMIN=1 races Rich/Kitty and can raise in the refresh thread.
+- Period keys never tear down Live or touch termios.
+- Streaming ANSI parser + input buffer so split CSI / leftover bytes can't
+  poison the next key.
+- Cached JSON + Hyprland window so a tab switch does zero I/O.
 """
 
-import os
-import sys
-import json
-import time
-import select
-import termios
-import tty
+from __future__ import annotations
+
 import fcntl
-import traceback
+import json
+import os
+import select
 import subprocess
+import sys
+import termios
+import threading
+import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -35,14 +49,16 @@ if str(SCRIPT_DIR) not in sys.path:
 try:
     from desktop_resolver import DesktopResolver
 except ImportError:
-    from python.desktop_resolver import AppInfo, DesktopResolver
+    try:
+        from python.desktop_resolver import AppInfo, DesktopResolver
+    except ImportError:
+        DesktopResolver = None  # type: ignore[misc, assignment]
 
 from rich.console import Console
 from rich.live import Live
-from rich.table import Table
 from rich.panel import Panel
+from rich.table import Table
 from rich.text import Text
-from rich.style import Style
 
 DATA_FILE = Path("~/.local/share/dusky/screentime/screentime_data.json").expanduser()
 THEME_FILE = Path("~/.config/matugen/generated/dusky_tui.json").expanduser()
@@ -59,7 +75,25 @@ DEFAULT_COLORS: dict[str, str] = {
     "cursor_bg": "#1c2528",
 }
 
+PERIOD_KEYS: dict[str, str] = {
+    "period_today": "today",
+    "period_yesterday": "yesterday",
+    "period_week": "week",
+    "period_month": "month",
+    "period_all": "all",
+}
 
+# Mouse / cursor control (written only when Live does not own the TTY)
+_MOUSE_ON = "\x1b[?1000h\x1b[?1006h"
+_MOUSE_OFF = "\x1b[?1000l\x1b[?1006l"
+_CURSOR_HIDE = "\x1b[?25l"
+_CURSOR_SHOW = "\x1b[?25h"
+_CLEAR_HOME = "\x1b[2J\x1b[3J\x1b[H"
+
+
+# =============================================================================
+# LOGGING / THEME / DATA
+# =============================================================================
 def log_error(err_msg: str) -> None:
     try:
         LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -69,6 +103,35 @@ def log_error(err_msg: str) -> None:
         pass
 
 
+def _thread_excepthook(args: threading.ExceptHookArgs) -> None:
+    """Never print thread crashes onto the Live TTY (that is the freeze)."""
+    try:
+        tb = "".join(
+            traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback)
+        )
+        name = getattr(args.thread, "name", "?")
+        log_error(f"threading.excepthook in {name}: {args.exc_type} {args.exc_value}\n{tb}")
+    except Exception:
+        pass
+
+
+threading.excepthook = _thread_excepthook
+
+
+def _safe_color(value: Any, fallback: str) -> str:
+    if not isinstance(value, str):
+        return fallback
+    v = value.strip()
+    if not v or "[" in v or "]" in v or "\n" in v or "\x1b" in v:
+        return fallback
+    if v.startswith("#"):
+        hexpart = v[1:]
+        if len(hexpart) in (3, 6, 8) and all(c in "0123456789abcdefABCDEF" for c in hexpart):
+            return v
+        return fallback
+    return v
+
+
 def load_theme_colors() -> dict[str, str]:
     colors = DEFAULT_COLORS.copy()
     if THEME_FILE.exists():
@@ -76,7 +139,12 @@ def load_theme_colors() -> dict[str, str]:
             with open(THEME_FILE, "r", encoding="utf-8") as f:
                 user_colors = json.load(f)
                 if isinstance(user_colors, dict):
-                    colors.update(user_colors)
+                    for key, fallback in DEFAULT_COLORS.items():
+                        if key in user_colors:
+                            colors[key] = _safe_color(user_colors[key], fallback)
+                    for key, val in user_colors.items():
+                        if key not in colors:
+                            colors[key] = _safe_color(val, DEFAULT_COLORS["fg"])
         except Exception as e:
             log_error(f"load_theme_colors error: {e}")
     return colors
@@ -107,18 +175,21 @@ def get_active_hypr_window() -> tuple[str, str]:
     if not sock_path and xdg_runtime:
         base_dir = Path(xdg_runtime) / "hypr"
         if base_dir.exists():
-            for sdir in base_dir.iterdir():
-                sp = sdir / ".socket.sock"
-                if sp.exists():
-                    sock_path = sp
-                    break
+            try:
+                for sdir in base_dir.iterdir():
+                    sp = sdir / ".socket.sock"
+                    if sp.exists():
+                        sock_path = sp
+                        break
+            except Exception:
+                sock_path = None
 
     if sock_path:
         try:
             import socket
 
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-                s.settimeout(0.3)
+                s.settimeout(0.05)
                 s.connect(str(sock_path))
                 s.sendall(b"j/activewindow")
                 resp = s.recv(4096).decode("utf-8", errors="ignore")
@@ -290,7 +361,6 @@ def render_fzf_preview(app_class: str, range_key: str = "today") -> None:
 
     accent = colors.get("accent", "#82d3e2")
     success = colors.get("success", "#bbc5ea")
-    warning = colors.get("warning", "#b1cbd0")
     fg = colors.get("fg", "#dee3e5")
 
     console.print(f"\n\033[1;38;5;81m:: \033[1;37m{name}\033[0m  \033[1;38;5;203m({cat})\033[0m")
@@ -339,7 +409,7 @@ def run_fzf_explorer(range_key: str = "today") -> None:
         share = (dur / total_time * 100.0) if total_time > 0 else 0.0
         name = info.get("name", cls)
         cat = simplify_category(info.get("category", "Application"))
-        
+
         disp = f"\033[1;38;5;81m{name:<26}\033[0m \033[38;5;238m│\033[0m \033[1;38;5;114m{format_duration(dur):<10}\033[0m \033[38;5;238m│\033[0m \033[1;38;5;220m{share:5.1f}%\033[0m \033[38;5;238m│\033[0m \033[38;5;246m{cat:<12}\033[0m \033[38;5;238m│\033[0m {cls}"
         lines.append(disp)
 
@@ -378,20 +448,56 @@ def run_fzf_explorer(range_key: str = "today") -> None:
     try:
         proc = subprocess.run(fzf_cmd, input=input_data, capture_output=True)
         if proc.returncode == 0 and proc.stdout:
-            selected_line = proc.stdout.decode("utf-8").strip()
+            _ = proc.stdout.decode("utf-8").strip()
     except Exception as e:
         log_error(f"fzf error: {e}")
 
 
 # =============================================================================
-# LIVE RICH TERMINAL DASHBOARD MODE WITH SINGLE-INSTANCE LIFECYCLE
+# LIVE RICH TERMINAL DASHBOARD
 # =============================================================================
 def render_dashboard_layout(
-    range_key: str, colors: dict[str, str], scroll_offset: int, cursor_idx: int, console_height: int
+    range_key: str,
+    colors: dict[str, str],
+    scroll_offset: int,
+    cursor_idx: int,
+    console_height: int,
+    raw_data: dict[str, dict[str, Any]] | None = None,
+    active_window: tuple[str, str] | None = None,
 ) -> tuple[Panel, int, int, int]:
-    raw_data = load_screentime_data()
+    try:
+        return _render_dashboard_layout_impl(
+            range_key, colors, scroll_offset, cursor_idx, console_height, raw_data, active_window
+        )
+    except Exception as e:
+        log_error(f"render_dashboard_layout error: {e}\n{traceback.format_exc()}")
+        err = Panel(
+            Text(f"Render error (see log). Period={range_key}: {e}", style="bold red"),
+            border_style="red",
+            expand=True,
+            height=max(8, console_height or 24),
+        )
+        return err, scroll_offset, cursor_idx, 0
+
+
+def _render_dashboard_layout_impl(
+    range_key: str,
+    colors: dict[str, str],
+    scroll_offset: int,
+    cursor_idx: int,
+    console_height: int,
+    raw_data: dict[str, dict[str, Any]] | None,
+    active_window: tuple[str, str] | None,
+) -> tuple[Panel, int, int, int]:
+    if raw_data is None:
+        raw_data = load_screentime_data()
     agg, total_time, r_name = aggregate_by_range(raw_data, range_key)
-    active_cls, active_title = get_active_hypr_window()
+    if active_window is None:
+        active_cls, active_title = get_active_hypr_window()
+    else:
+        active_cls, active_title = active_window
+
+    console_height = max(8, int(console_height or 24))
 
     accent = colors.get("accent", "#82d3e2")
     success = colors.get("success", "#bbc5ea")
@@ -400,8 +506,24 @@ def render_dashboard_layout(
     muted = colors.get("muted", "#3f484a")
     cursor_bg = colors.get("cursor_bg", "#1c2528")
 
-    # Clean Header Status Bar
-    header_text = Text()
+    # Period tab indicator bar
+    period_tabs = Text(overflow="ellipsis", no_wrap=True)
+    period_tabs.append("  ", style=f"dim {muted}")
+    tab_defs = [
+        ("1", "today", "Today"),
+        ("2", "yesterday", "Yesterday"),
+        ("3", "week", "7 Days"),
+        ("4", "month", "30 Days"),
+        ("5", "all", "All Time"),
+    ]
+    for key_num, key_id, label in tab_defs:
+        if key_id == range_key:
+            period_tabs.append(f" {key_num}:{label} ", style=f"bold {accent} on {cursor_bg}")
+        else:
+            period_tabs.append(f" {key_num}:{label} ", style=f"dim {fg}")
+        period_tabs.append(" ", style=f"dim {muted}")
+
+    header_text = Text(overflow="ellipsis", no_wrap=True)
     header_text.append(" 󱎫 Dusky Screentime ", style=f"bold {accent}")
     header_text.append(f"({r_name})", style=f"bold {warning}")
     header_text.append("  Total: ", style=f"{fg}")
@@ -416,7 +538,6 @@ def render_dashboard_layout(
         header_text.append("   ▶ ACTIVE: ", style=f"dim {muted}")
         header_text.append("idle", style=f"dim {muted}")
 
-    # Table Setup
     table = Table(box=None, expand=True, show_header=True, header_style=f"bold {accent}")
     table.add_column("", width=2, justify="center", no_wrap=True)
     table.add_column("Application & Category", ratio=3, no_wrap=True)
@@ -433,7 +554,7 @@ def render_dashboard_layout(
     else:
         max_dur = 1
 
-    visible_rows = max(3, console_height - 6)
+    visible_rows = max(3, console_height - 7)
     max_scroll = max(0, total_apps - visible_rows)
 
     if total_apps > 0:
@@ -485,7 +606,7 @@ def render_dashboard_layout(
             app_cell.append(f"  ({cat})", style=f"dim {success}")
         elif is_cursor:
             app_cell.append(f"{app_name}", style=f"bold {fg}")
-            app_cell.append(f"  ({cat})", style=f"bold {accent}")
+            app_cell.append(f"  ({cat})", style=f"dim {warning}")
         else:
             app_cell.append(f"{app_name}", style=f"bold {fg}" if global_idx == 0 else f"{fg}")
             app_cell.append(f"  ({cat})", style=f"dim {warning}")
@@ -516,22 +637,27 @@ def render_dashboard_layout(
         for _ in range(visible_rows - rows_rendered):
             table.add_row("", "", "", "", "", "")
 
-    footer_text = Text()
+    footer_text = Text(overflow="ellipsis", no_wrap=True)
     footer_text.append(" Controls: ", style=f"bold {muted}")
     footer_text.append("[1-5] Period   [j/k/↑/↓] Move   [Ctrl-D/Ctrl-U] Page   ", style=f"{fg}")
     footer_text.append("[Enter] Details   [F] FZF   [Q] Quit", style=f"bold {accent}")
 
     layout_group = Table.grid(expand=True)
+    layout_group.add_row(period_tabs)
     layout_group.add_row(header_text)
     layout_group.add_row(table)
     layout_group.add_row(footer_text)
 
     if total_apps > visible_rows:
-        subtitle_str = f"[bold {accent}]Item {cursor_idx + 1} of {total_apps}[/] [dim]({scroll_offset + 1}–{min(scroll_offset + visible_rows, total_apps)} visible | j/k/Wheel to scroll)[/dim]"
+        subtitle_str = (
+            f"[bold {accent}]Item {cursor_idx + 1} of {total_apps}[/] "
+            f"[dim]({scroll_offset + 1}–{min(scroll_offset + visible_rows, total_apps)} visible | j/k/Wheel to scroll)[/dim]"
+        )
     elif total_apps > 0:
         subtitle_str = f"[bold {accent}]Item {cursor_idx + 1} of {total_apps}[/] [dim](Live Dashboard)[/dim]"
     else:
-        subtitle_str = f"[bold {warning}]No screentime data recorded for {r_name}[/bold {warning}]"
+        safe_name = str(r_name).replace("[", "").replace("]", "")
+        subtitle_str = f"[bold {warning}]No screentime data recorded for {safe_name}[/]"
 
     panel = Panel(
         layout_group,
@@ -543,77 +669,148 @@ def render_dashboard_layout(
     return panel, scroll_offset, cursor_idx, max_scroll
 
 
-def set_terminal_no_echo(fd: int) -> tuple[list[Any], int]:
+# =============================================================================
+# TERMINAL / INPUT
+# =============================================================================
+def set_terminal_cbreak(fd: int) -> list[Any]:
+    """Enter non-canonical, no-echo mode WITHOUT O_NONBLOCK.
+
+    VMIN=0 / VTIME=0 makes os.read() return immediately with whatever is
+    queued. Combined with select() this is the race-free pattern. The old
+    VMIN=1 + O_NONBLOCK mix is undefined on many ttys (including Kitty) and
+    is what blew up Rich's refresh thread via unexpected EAGAIN / short reads.
+    """
     old_settings = termios.tcgetattr(fd)
     new_settings = termios.tcgetattr(fd)
 
-    new_settings[3] = new_settings[3] & ~(termios.ECHO | termios.ECHOE | termios.ECHOK | termios.ECHONL | termios.ICANON)
-    new_settings[6][termios.VMIN] = 1
+    # iflag: no software flow control, no CR→NL (so Ctrl-S / Enter stay raw)
+    new_settings[0] &= ~(termios.IXON | termios.IXOFF | termios.ICRNL | termios.INLCR)
+    # lflag: no echo, non-canonical. Keep ISIG off so we handle Ctrl-C ourselves.
+    new_settings[3] &= ~(
+        termios.ECHO
+        | termios.ECHOE
+        | termios.ECHOK
+        | termios.ECHONL
+        | termios.ICANON
+        | termios.IEXTEN
+        | termios.ISIG
+    )
+    new_settings[6][termios.VMIN] = 0
     new_settings[6][termios.VTIME] = 0
 
-    termios.tcsetattr(fd, termios.TCSANOW, new_settings)
-
-    old_flags = fcntl.fcntl(fd, fcntl.F_GETFL)
-    fcntl.fcntl(fd, fcntl.F_SETFL, old_flags | os.O_NONBLOCK)
-
-    return old_settings, old_flags
+    termios.tcsetattr(fd, termios.TCSAFLUSH, new_settings)
+    return old_settings
 
 
-def restore_terminal(fd: int, old_settings: list[Any], old_flags: int) -> None:
+def restore_terminal(fd: int, old_settings: list[Any], old_flags: int | None = None) -> None:
     try:
-        sys.stdout.write("\x1b[?1000l\x1b[?1006l\x1b[?25h\x1b[2J\x1b[H")
+        sys.stdout.write(_MOUSE_OFF + _CURSOR_SHOW + _CLEAR_HOME)
         sys.stdout.flush()
     except Exception:
         pass
+    if old_flags is not None:
+        try:
+            fcntl.fcntl(fd, fcntl.F_SETFL, old_flags)
+        except Exception:
+            pass
     try:
-        fcntl.fcntl(fd, fcntl.F_SETFL, old_flags)
-    except Exception:
-        pass
-    try:
-        termios.tcsetattr(fd, termios.TCSANOW, old_settings)
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
     except Exception:
         pass
 
 
-def parse_input_sequence(chunk: bytes) -> tuple[str | None, int]:
-    if not chunk:
+def _write_tty(data: str) -> None:
+    try:
+        sys.stdout.write(data)
+        sys.stdout.flush()
+    except Exception:
+        pass
+
+
+def parse_input_sequence(buf: bytes) -> tuple[str | None, int]:
+    """Parse one command from the front of *buf*.
+
+    Returns (command_or_None, bytes_consumed).
+    consumed == 0 means the sequence is incomplete — wait for more bytes.
+    Never consumes past the current command, so a burst like b'15j' is
+    processed as three separate keys.
+    """
+    if not buf:
         return None, 0
 
-    if chunk.startswith(b"\x1b"):
-        if b"[<" in chunk:
-            try:
-                m_str = chunk.decode("utf-8", errors="ignore")
-                if "[<" in m_str:
-                    m_packet = m_str[m_str.find("[<") + 2 :]
-                    parts = m_packet.rstrip("mM").split(";")
-                    if parts and parts[0].isdigit():
-                        b_code = int(parts[0])
-                        if b_code == 64:
-                            return "scroll_up", len(chunk)
-                        elif b_code == 65:
-                            return "scroll_down", len(chunk)
-            except Exception:
-                pass
-            return None, len(chunk)
+    # ----- Escape / CSI / mouse / SS3 -----
+    if buf[0] == 0x1B:
+        if len(buf) == 1:
+            return None, 0
 
-        if chunk.startswith((b"\x1b[A", b"\x1bOA", b"\x1b[1;2A", b"\x1b[1;5A")):
-            return "up", 3 if chunk.startswith(b"\x1b[A") else len(chunk)
-        elif chunk.startswith((b"\x1b[B", b"\x1bOB", b"\x1b[1;2B", b"\x1b[1;5B")):
-            return "down", 3 if chunk.startswith(b"\x1b[B") else len(chunk)
-        elif chunk.startswith(b"\x1b[5~"):
-            return "page_up", 4
-        elif chunk.startswith(b"\x1b[6~"):
-            return "page_down", 4
-        elif chunk.startswith((b"\x1b[H", b"\x1b[1~")):
-            return "home", len(chunk)
-        elif chunk.startswith((b"\x1b[F", b"\x1b[4~")):
-            return "end", len(chunk)
+        # SGR mouse: ESC [ < btn ; x ; y M/m
+        if buf.startswith(b"\x1b[<"):
+            for i in range(3, len(buf)):
+                if buf[i] in (ord("M"), ord("m")):
+                    try:
+                        body = buf[3:i].decode("ascii", errors="ignore")
+                        parts = body.split(";")
+                        if parts and parts[0].isdigit():
+                            b_code = int(parts[0])
+                            if b_code == 64:
+                                return "scroll_up", i + 1
+                            if b_code == 65:
+                                return "scroll_down", i + 1
+                    except Exception:
+                        pass
+                    return None, i + 1
+            return (None, 0) if len(buf) < 64 else (None, 1)
 
-        return None, len(chunk)
+        # CSI: ESC [
+        if buf[1] == ord("["):
+            if len(buf) < 3:
+                return None, 0
+            # Walk to the final byte (0x40–0x7E) per ECMA-48
+            for i in range(2, len(buf)):
+                if 0x40 <= buf[i] <= 0x7E:
+                    final = chr(buf[i])
+                    inner = buf[2:i].decode("ascii", errors="ignore")
+                    num = inner.split(";")[0] if inner else ""
+                    if final == "A":
+                        return "up", i + 1
+                    if final == "B":
+                        return "down", i + 1
+                    if final == "H":
+                        return "home", i + 1
+                    if final == "F":
+                        return "end", i + 1
+                    if final == "~":
+                        if num == "5":
+                            return "page_up", i + 1
+                        if num == "6":
+                            return "page_down", i + 1
+                        if num in {"1", "7"}:
+                            return "home", i + 1
+                        if num in {"4", "8"}:
+                            return "end", i + 1
+                    return None, i + 1
+            return (None, 0) if len(buf) < 32 else (None, 1)
 
-    ch_byte = chunk[:1]
-    match ch_byte:
-        case b"q" | b"\x03":
+        # SS3: ESC O A  (application cursor keys)
+        if buf[1] == ord("O"):
+            if len(buf) < 3:
+                return None, 0
+            if buf[2] == ord("A"):
+                return "up", 3
+            if buf[2] == ord("B"):
+                return "down", 3
+            if buf[2] == ord("H"):
+                return "home", 3
+            if buf[2] == ord("F"):
+                return "end", 3
+            return None, 3
+
+        # ESC + regular key (Alt+key) — consume both, ignore
+        return None, 2
+
+    ch = buf[:1]
+    match ch:
+        case b"q" | b"Q" | b"\x03":
             return "quit", 1
         case b"\r" | b"\n":
             return "details", 1
@@ -651,134 +848,237 @@ def parse_input_sequence(chunk: bytes) -> tuple[str | None, int]:
             return None, 1
 
 
+class _DashCache:
+    """In-memory snapshot so 1..5 never blocks on disk or Hyprland."""
+
+    __slots__ = ("raw_data", "raw_ts", "active", "active_ts", "colors", "colors_ts")
+
+    def __init__(self) -> None:
+        self.raw_data: dict[str, dict[str, Any]] = {}
+        self.raw_ts: float = 0.0
+        self.active: tuple[str, str] = ("", "")
+        self.active_ts: float = 0.0
+        self.colors: dict[str, str] = DEFAULT_COLORS.copy()
+        self.colors_ts: float = 0.0
+
+    def reload(self, force: bool = False, now: float | None = None) -> None:
+        import time as _time
+
+        t = now if now is not None else _time.monotonic()
+        if force or (t - self.raw_ts) >= 2.0:
+            try:
+                self.raw_data = load_screentime_data()
+            except Exception as e:
+                log_error(f"cache raw_data: {e}")
+            self.raw_ts = t
+        if force or (t - self.active_ts) >= 1.0:
+            try:
+                self.active = get_active_hypr_window()
+            except Exception as e:
+                log_error(f"cache active: {e}")
+            self.active_ts = t
+        if force or (t - self.colors_ts) >= 5.0:
+            try:
+                self.colors = load_theme_colors()
+            except Exception as e:
+                log_error(f"cache colors: {e}")
+            self.colors_ts = t
+
+
+def _pause_live(live: Live, fd: int, old_settings: list[Any]) -> None:
+    """Leave alt-screen + cbreak so a child (fzf / input) can own the TTY."""
+    try:
+        live.stop()
+    except Exception as e:
+        log_error(f"live.stop: {e}")
+    _write_tty(_MOUSE_OFF + _CURSOR_SHOW + _CLEAR_HOME)
+    try:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+    except Exception as e:
+        log_error(f"pause termios restore: {e}")
+
+
+def _resume_live(live: Live, fd: int) -> None:
+    try:
+        set_terminal_cbreak(fd)
+    except Exception as e:
+        log_error(f"resume cbreak: {e}")
+    _write_tty(_MOUSE_ON + _CURSOR_HIDE)
+    try:
+        live.start(refresh=True)
+    except Exception as e:
+        log_error(f"live.start: {e}")
+
+
 def run_live_dashboard() -> None:
-    console = Console()
-    colors = load_theme_colors()
+    console = Console(
+        force_terminal=True,
+        color_system="truecolor",
+        highlight=False,
+        soft_wrap=False,
+    )
+
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        console.print("[bold red]screentime_tui requires a real TTY.[/bold red]")
+        return
+
+    fd = sys.stdin.fileno()
+    old_settings = set_terminal_cbreak(fd)
+
+    # Enable SGR mouse wheel reporting once, before Live takes the alt screen.
+    _write_tty(_CLEAR_HOME + _MOUSE_ON + _CURSOR_HIDE)
+
+    cache = _DashCache()
+    cache.reload(force=True)
+
     range_key = "today"
     scroll_offset = 0
     cursor_idx = 0
 
-    fd = sys.stdin.fileno()
+    def build_panel() -> Panel:
+        nonlocal scroll_offset, cursor_idx
+        panel, scroll_offset, cursor_idx, _max_scroll = render_dashboard_layout(
+            range_key,
+            cache.colors,
+            scroll_offset,
+            cursor_idx,
+            console.height,
+            raw_data=cache.raw_data,
+            active_window=cache.active,
+        )
+        return panel
 
-    # Configure TTY mode ONCE at launch
-    old_settings, old_flags = set_terminal_no_echo(fd)
-
-    # Clear screen & enable SGR Mouse Wheel Reporting ONCE
-    sys.stdout.write("\x1b[2J\x1b[3J\x1b[H\x1b[?1000h\x1b[?1006h")
-    sys.stdout.flush()
+    def push_frame(live: Live) -> None:
+        try:
+            live.update(build_panel(), refresh=True)
+        except Exception as e:
+            log_error(f"live.update/refresh: {e}\n{traceback.format_exc()}")
 
     try:
-        panel, scroll_offset, cursor_idx, max_scroll = render_dashboard_layout(
-            range_key, colors, scroll_offset, cursor_idx, console.height
-        )
+        panel = build_panel()
 
-        # Single Live context instance - NO RECREATION IN A LOOP
-        with Live(panel, console=console, refresh_per_second=4, screen=True) as live:
-            while True:
-                r, _, _ = select.select([fd], [], [], 0.25)
-                if r:
+        # Single Live instance. NO refresh thread. NO FileProxy.
+        # The main loop is the only writer — this is what makes 1..5 crash-free.
+        with Live(
+            panel,
+            console=console,
+            screen=True,
+            auto_refresh=False,
+            redirect_stdout=False,
+            redirect_stderr=False,
+            transient=True,
+            vertical_overflow="crop",
+        ) as live:
+            input_buf = bytearray()
+            running = True
+
+            while running:
+                try:
+                    ready, _, _ = select.select([fd], [], [], 0.25)
+                except InterruptedError:
+                    ready = []
+
+                got_keys = False
+                if ready:
                     try:
-                        chunk = os.read(fd, 1024)
-                    except OSError:
+                        chunk = os.read(fd, 4096)
+                    except BlockingIOError:
+                        chunk = b""
+                    except OSError as e:
+                        log_error(f"os.read: {e}")
                         chunk = b""
 
                     if chunk:
-                        cmd, _ = parse_input_sequence(chunk)
-                        match cmd:
-                            case "quit":
-                                break
-                            case "up":
-                                cursor_idx = max(0, cursor_idx - 1)
-                            case "down":
-                                cursor_idx = cursor_idx + 1
-                            case "scroll_up":
-                                cursor_idx = max(0, cursor_idx - 3)
-                            case "scroll_down":
-                                cursor_idx = cursor_idx + 3
-                            case "page_up":
-                                cursor_idx = max(0, cursor_idx - 10)
-                            case "page_down":
-                                cursor_idx = cursor_idx + 10
-                            case "half_page_up":
-                                cursor_idx = max(0, cursor_idx - 15)
-                            case "half_page_down":
-                                cursor_idx = cursor_idx + 15
-                            case "home":
-                                cursor_idx = 0
-                            case "end":
-                                cursor_idx = 999999
-                            case "period_today":
-                                range_key = "today"
-                                cursor_idx = 0
-                                scroll_offset = 0
-                            case "period_yesterday":
-                                range_key = "yesterday"
-                                cursor_idx = 0
-                                scroll_offset = 0
-                            case "period_week":
-                                range_key = "week"
-                                cursor_idx = 0
-                                scroll_offset = 0
-                            case "period_month":
-                                range_key = "month"
-                                cursor_idx = 0
-                                scroll_offset = 0
-                            case "period_all":
-                                range_key = "all"
-                                cursor_idx = 0
-                                scroll_offset = 0
-                            case "details":
-                                raw_data = load_screentime_data()
-                                agg, _, _ = aggregate_by_range(raw_data, range_key)
-                                sorted_apps = sorted(agg.items(), key=lambda x: x[1]["duration"], reverse=True)
-                                if sorted_apps and cursor_idx < len(sorted_apps):
-                                    target_app = sorted_apps[cursor_idx][0]
-                                    
-                                    live.stop()
-                                    termios.tcsetattr(fd, termios.TCSANOW, old_settings)
-                                    sys.stdout.write("\x1b[?1000l\x1b[?1006l\x1b[2J\x1b[H")
-                                    sys.stdout.flush()
+                        input_buf.extend(chunk)
+                        got_keys = True
 
+                # Drain every complete command before painting once.
+                while input_buf:
+                    cmd, consumed = parse_input_sequence(bytes(input_buf))
+                    if consumed <= 0:
+                        # Incomplete ESC — drop if it sits too long, else wait.
+                        if input_buf[0] == 0x1B and len(input_buf) > 48:
+                            del input_buf[0]
+                            continue
+                        break
+                    del input_buf[:consumed]
+
+                    match cmd:
+                        case "quit":
+                            running = False
+                            break
+                        case "up":
+                            cursor_idx = max(0, cursor_idx - 1)
+                        case "down":
+                            cursor_idx += 1
+                        case "scroll_up":
+                            cursor_idx = max(0, cursor_idx - 3)
+                        case "scroll_down":
+                            cursor_idx += 3
+                        case "page_up":
+                            cursor_idx = max(0, cursor_idx - 10)
+                        case "page_down":
+                            cursor_idx += 10
+                        case "half_page_up":
+                            cursor_idx = max(0, cursor_idx - 15)
+                        case "half_page_down":
+                            cursor_idx += 15
+                        case "home":
+                            cursor_idx = 0
+                        case "end":
+                            cursor_idx = 10**9
+                        case "period_today" | "period_yesterday" | "period_week" | "period_month" | "period_all":
+                            # Pure in-memory state flip. No Live restart. No termios.
+                            range_key = PERIOD_KEYS[cmd]
+                            cursor_idx = 0
+                            scroll_offset = 0
+                        case "details":
+                            agg, _, _ = aggregate_by_range(cache.raw_data, range_key)
+                            sorted_apps = sorted(agg.items(), key=lambda x: x[1]["duration"], reverse=True)
+                            if sorted_apps and 0 <= cursor_idx < len(sorted_apps):
+                                target_app = sorted_apps[cursor_idx][0]
+                                _pause_live(live, fd, old_settings)
+                                try:
                                     render_fzf_preview(target_app, range_key)
                                     print("\n[Press Enter to return to Dashboard...]")
-                                    input()
-
-                                    set_terminal_no_echo(fd)
-                                    sys.stdout.write("\x1b[2J\x1b[3J\x1b[H\x1b[?1000h\x1b[?1006h")
-                                    sys.stdout.flush()
-                                    live.start()
-
-                            case "fzf":
-                                live.stop()
-                                termios.tcsetattr(fd, termios.TCSANOW, old_settings)
-                                sys.stdout.write("\x1b[?1000l\x1b[?1006l\x1b[2J\x1b[H")
-                                sys.stdout.flush()
-
+                                    try:
+                                        input()
+                                    except EOFError:
+                                        pass
+                                finally:
+                                    _resume_live(live, fd)
+                                    cache.reload(force=True)
+                        case "fzf":
+                            _pause_live(live, fd, old_settings)
+                            try:
                                 run_fzf_explorer(range_key)
+                            finally:
+                                _resume_live(live, fd)
+                                cache.reload(force=True)
+                        case "refresh":
+                            cache.reload(force=True)
+                        case _:
+                            pass
 
-                                set_terminal_no_echo(fd)
-                                sys.stdout.write("\x1b[2J\x1b[3J\x1b[H\x1b[?1000h\x1b[?1006h")
-                                sys.stdout.flush()
-                                live.start()
+                if not running:
+                    break
 
-                            case "refresh":
-                                colors = load_theme_colors()
-                            case _:
-                                pass
+                # Idle tick: refresh cached live data. Key path: skip I/O.
+                if not got_keys:
+                    cache.reload(force=False)
 
-                # Re-render dashboard layout & update Live display instantly without tearing down Live
-                panel, scroll_offset, cursor_idx, max_scroll = render_dashboard_layout(
-                    range_key, colors, scroll_offset, cursor_idx, console.height
-                )
-                live.update(panel)
+                push_frame(live)
 
     except KeyboardInterrupt:
         pass
     except Exception as e:
         log_error(f"run_live_dashboard unhandled exception: {e}\n{traceback.format_exc()}")
     finally:
-        restore_terminal(fd, old_settings, old_flags)
-        console.print("[bold green]✔ Screentime Dashboard closed cleanly.[/bold green]")
+        restore_terminal(fd, old_settings)
+        try:
+            console.print("[bold green]✔ Screentime Dashboard closed cleanly.[/bold green]")
+        except Exception:
+            pass
 
 
 # =============================================================================
