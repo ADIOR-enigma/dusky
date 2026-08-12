@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ===============================================================================
-DUSKY SCREENTIME: DESKTOP ENTRY RESOLVER
+DUSKY SCREENTIME: DESKTOP ENTRY RESOLVER (Python 3.14 Bleeding-Edge)
 ===============================================================================
 Scans and parses system and user `.desktop` entries line-by-line without any
 subprocesses or regex bottlenecks, matching the exact behavior of Rofi
@@ -13,10 +13,25 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Any
+
+KNOWN_TERMINALS: set[str] = {
+    "kitty",
+    "alacritty",
+    "wezterm",
+    "foot",
+    "ghostty",
+    "konsole",
+    "gnome-terminal",
+    "urxvt",
+    "st",
+    "rio",
+    "termite",
+    "xterm",
+}
 
 
-@dataclass
+@dataclass(slots=True, frozen=True)
 class AppInfo:
     name: str
     category: str
@@ -29,15 +44,15 @@ class DesktopResolver:
     High-performance caching resolver for XDG application desktop entries.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         # Lookup tables mapped by lowercase key to AppInfo
-        self._by_wmclass: Dict[str, AppInfo] = {}
-        self._by_stem: Dict[str, AppInfo] = {}
-        self._by_name: Dict[str, AppInfo] = {}
-        self._by_exec: Dict[str, AppInfo] = {}
+        self._by_wmclass: dict[str, AppInfo] = {}
+        self._by_stem: dict[str, AppInfo] = {}
+        self._by_name: dict[str, AppInfo] = {}
+        self._by_exec: dict[str, AppInfo] = {}
 
         # Cache for previously resolved window_classes during runtime
-        self._resolved_cache: Dict[str, AppInfo] = {}
+        self._resolved_cache: dict[str, AppInfo] = {}
         self.reload()
 
     def reload(self) -> None:
@@ -50,15 +65,26 @@ class DesktopResolver:
         self._by_exec.clear()
         self._resolved_cache.clear()
 
-        search_dirs = [
-            Path(os.path.expanduser("~/.local/share/applications")),
-            Path("/usr/share/applications"),
-            Path("/usr/local/share/applications"),
-            Path("/var/lib/flatpak/exports/share/applications"),
-            Path(
-                os.path.expanduser("~/.local/share/flatpak/exports/share/applications")
-            ),
+        search_dirs: list[Path] = [
+            Path("~/.local/share/applications").expanduser(),
         ]
+
+        xdg_dirs = os.environ.get(
+            "XDG_DATA_DIRS", "/usr/local/share/:/usr/share/"
+        )
+        for d in xdg_dirs.split(":"):
+            if d.strip():
+                p = Path(d.strip()) / "applications"
+                if p not in search_dirs:
+                    search_dirs.append(p)
+
+        extra_dirs = [
+            Path("/var/lib/flatpak/exports/share/applications"),
+            Path("~/.local/share/flatpak/exports/share/applications").expanduser(),
+        ]
+        for p in extra_dirs:
+            if p not in search_dirs:
+                search_dirs.append(p)
 
         for d in search_dirs:
             if not d.exists() or not d.is_dir():
@@ -73,25 +99,23 @@ class DesktopResolver:
         wm_class = ""
         exec_cmd = ""
         categories = ""
+        no_display = False
         in_desktop_entry = False
 
         try:
             with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-                for line in f:
-                    line = line.strip()
+                for raw_line in f:
+                    line = raw_line.strip()
                     if not line or line.startswith("#"):
                         continue
                     if line.startswith("["):
-                        if line == "[Desktop Entry]":
-                            in_desktop_entry = True
-                        else:
-                            in_desktop_entry = False
+                        in_desktop_entry = (line == "[Desktop Entry]")
                         continue
 
                     if not in_desktop_entry:
                         continue
 
-                    # Native prefix matching without regex
+                    # Exact key prefix matching (prevent locale keys like Name[de]= from overriding Name=)
                     if line.startswith("Name=") and not name:
                         name = line[5:].strip()
                     elif line.startswith("GenericName=") and not generic_name:
@@ -104,10 +128,12 @@ class DesktopResolver:
                         exec_cmd = line[5:].strip()
                     elif line.startswith("Categories=") and not categories:
                         categories = line[11:].strip()
+                    elif line.lower().startswith("nodisplay=true") or line.lower().startswith("hidden=true"):
+                        no_display = True
         except Exception:
             return
 
-        if not name:
+        if not name or no_display:
             return
 
         # Clean up XML/Pango entities if present
@@ -119,39 +145,35 @@ class DesktopResolver:
         # Determine best category description
         category_desc = generic_name
         if not category_desc and categories:
-            # Pick first meaningful category from standard XDG categories
             cats = [c.strip() for c in categories.split(";") if c.strip()]
             for c in cats:
-                if c not in (
-                    "Application",
-                    "X-GNOME-Utilities",
-                    "GTK",
-                    "Qt",
-                    "KDE",
-                    "GNOME",
-                ):
-                    # Format e.g. AudioVideo -> Audio & Video
-                    if c == "AudioVideo":
+                match c:
+                    case "Application" | "X-GNOME-Utilities" | "GTK" | "Qt" | "KDE" | "GNOME":
+                        continue
+                    case "AudioVideo":
                         category_desc = "Audio & Video"
-                    elif c == "Network":
+                    case "Network":
                         category_desc = "Internet"
-                    elif c == "Development":
+                    case "Development":
                         category_desc = "Development"
-                    elif c == "Utility":
+                    case "Utility":
                         category_desc = "Utilities"
-                    elif c == "System":
+                    case "System":
                         category_desc = "System"
-                    elif c == "Game":
+                    case "Game":
                         category_desc = "Gaming"
-                    elif c == "Graphics":
+                    case "Graphics":
                         category_desc = "Graphics"
-                    elif c == "Office":
+                    case "Office":
                         category_desc = "Office"
-                    else:
+                    case "TerminalEmulator":
+                        category_desc = "Terminal & Shell"
+                    case _:
                         category_desc = c
-                    break
+                break
             if not category_desc and cats:
                 category_desc = cats[0]
+
         if not category_desc:
             category_desc = "Application"
 
@@ -179,10 +201,10 @@ class DesktopResolver:
         # Index by exact Name
         self._by_name[name.lower()] = info
 
-        # Index by Exec command
+        # Index by Exec command (handle quotes and path basenames cleanly)
         if exec_cmd:
-            # Strip %u, %F, etc. and take executable basename
-            clean_exec = exec_cmd.split()[0].split("/")[-1].lower()
+            raw_exec = exec_cmd.strip('"\'').split()[0].strip('"\'')
+            clean_exec = raw_exec.split("/")[-1].lower()
             if clean_exec and clean_exec not in self._by_exec:
                 self._by_exec[clean_exec] = info
 
@@ -204,6 +226,23 @@ class DesktopResolver:
             return self._resolved_cache[cache_key]
 
         wc_lower = window_class.lower()
+
+        # Terminal heuristic prioritization
+        if wc_lower in KNOWN_TERMINALS:
+            title_clean = (
+                window_title.split(" - ")[-1] if " - " in window_title else window_title
+            ).strip()
+            term_name = window_class.replace("-", " ").replace("_", " ").title()
+            res = AppInfo(
+                name=f"{term_name} ({title_clean})"
+                if title_clean and title_clean.lower() != wc_lower
+                else f"{term_name} Terminal",
+                category="Terminal & Shell",
+                icon="utilities-terminal",
+                window_class=window_class,
+            )
+            self._resolved_cache[cache_key] = res
+            return res
 
         # 1. Check StartupWMClass exact match
         if wc_lower in self._by_wmclass:
@@ -252,40 +291,22 @@ class DesktopResolver:
             self._resolved_cache[cache_key] = res
             return res
 
-        # 6. Fallback heuristics for common un-indexed window classes
-        if wc_lower in (
-            "kitty",
-            "alacritty",
-            "wezterm",
-            "foot",
-            "ghostty",
-            "konsole",
-            "gnome-terminal",
-            "urxvt",
-        ):
-            # Check if terminal title shows active application
-            title_clean = (
-                window_title.split(" - ")[-1] if " - " in window_title else window_title
-            )
-            res = AppInfo(
-                name=f"{window_class.capitalize()} ({title_clean})"
-                if title_clean and title_clean != window_class
-                else f"{window_class.capitalize()} Terminal",
-                category="Terminal & Shell",
-                icon="utilities-terminal",
-                window_class=window_class,
-            )
-            self._resolved_cache[cache_key] = res
-            return res
+        # 6. Fallback heuristics for un-indexed window classes (including reverse-DNS)
+        clean_name = window_class
+        if "." in window_class:
+            parts = [p for p in window_class.split(".") if p]
+            if len(parts) > 1:
+                clean_name = parts[-1]
+                if clean_name.lower() in ("desktop", "client", "app", "ui") and len(parts) > 2:
+                    clean_name = f"{parts[-2]} {parts[-1]}"
 
-        # Clean up window_class formatting into human title
         clean_name = (
-            window_class.replace("-", " ")
+            clean_name.replace("-", " ")
             .replace("_", " ")
-            .replace(".", " ")
             .strip()
             .title()
         )
+
         res = AppInfo(
             name=clean_name or window_class,
             category="Application",
@@ -302,17 +323,18 @@ if __name__ == "__main__":
         sys.argv[1:]
         if len(sys.argv) > 1
         else [
-            "firefox",
-            "code",
-            "steam",
-            "kitty",
-            "org.kde.kdenlive",
-            "codium-url-handler",
+            ("firefox", ""),
+            ("code", ""),
+            ("steam", ""),
+            ("kitty", "nvim desktop_resolver.py"),
+            ("org.kde.kdenlive", ""),
+            ("codium-url-handler", ""),
         ]
     )
     print("\033[1;34m::\033[0m \033[1mDusky Screentime Desktop Resolver Test\033[0m\n")
-    for cls in test_classes:
-        info = resolver.resolve(cls)
+    for item in test_classes:
+        cls, title = item if isinstance(item, tuple) else (item, "")
+        info = resolver.resolve(cls, title)
         print(
-            f"Class: \033[96m{cls:<22}\033[0m => Name: \033[92m{info.name:<25}\033[0m | Category: \033[93m{info.category:<18}\033[0m | Icon: {info.icon}"
+            f"Class: \033[96m{cls:<22}\033[0m Title: \033[90m{title:<25}\033[0m => Name: \033[92m{info.name:<25}\033[0m | Category: \033[93m{info.category:<18}\033[0m | Icon: {info.icon}"
         )

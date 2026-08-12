@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ===============================================================================
-DUSKY SCREENTIME: BACKGROUND DAEMON
+DUSKY SCREENTIME: BACKGROUND DAEMON (Python 3.14 Bleeding-Edge)
 ===============================================================================
 Zero-fork, high-performance Wayland screentime tracking daemon.
 Connects directly to Hyprland UNIX domain sockets to monitor active windows,
@@ -18,7 +18,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 # Ensure local imports work regardless of working directory
 SCRIPT_DIR = Path(__file__).parent.resolve()
@@ -28,33 +28,45 @@ if str(SCRIPT_DIR) not in sys.path:
 try:
     from desktop_resolver import AppInfo, DesktopResolver
 except ImportError:
-    # If imported from another path
     from python.desktop_resolver import AppInfo, DesktopResolver
 
 
-DATA_DIR = Path(os.path.expanduser("~/.local/share/dusky/screentime"))
+DATA_DIR = Path("~/.local/share/dusky/screentime").expanduser()
 DATA_FILE = DATA_DIR / "screentime_data.json"
-CONFIG_DIR = Path(os.path.expanduser("~/.config/dusky/settings/screentime"))
+CONFIG_DIR = Path("~/.config/dusky/settings/screentime").expanduser()
 CONFIG_FILE = CONFIG_DIR / "screentime.json"
 
-DEFAULT_CONFIG = {
+DEFAULT_CONFIG: dict[str, Any] = {
     "enabled": True,
     "save_interval_seconds": 5,
     "idle_threshold_seconds": 300,
     "ignore_classes": ["hyprlock", "swaylock", "gdm", "sddm"],
 }
 
+LOCKSCREEN_NAMES: set[str] = {
+    "hyprlock",
+    "swaylock",
+    "swaylock-effects",
+    "i3lock",
+    "gtklock",
+    "waylock",
+}
+
 
 class ScreentimeDaemon:
-    def __init__(self):
-        self.running = False
-        self.config = DEFAULT_CONFIG.copy()
-        self.data: Dict[str, Dict[str, Any]] = {}
-        self.resolver = DesktopResolver()
-        self.last_save_time = time.time()
-        self.last_active_time = time.time()
-        self.last_window_key = ""
-        self.lock = threading.Lock()
+    def __init__(self) -> None:
+        self.running: bool = False
+        self.config: dict[str, Any] = DEFAULT_CONFIG.copy()
+        self.data: dict[str, dict[str, Any]] = {}
+        self.resolver: DesktopResolver = DesktopResolver()
+        self.last_save_time: float = time.time()
+        self.last_active_time: float = time.time()
+        self.last_window_key: str = ""
+        self.last_window_title: str = ""
+        self.lock: threading.Lock = threading.Lock()
+        self._cached_socket_path: Path | None = None
+        self._socket_check_time: float = 0.0
+        self._dbus_bus: Any | None = None
 
         self._ensure_directories()
         self._load_config()
@@ -106,16 +118,59 @@ class ScreentimeDaemon:
             except Exception as e:
                 print(f"[!] Error saving data: {e}", file=sys.stderr)
 
-    def _hypr_query_socket(self, cmd: str) -> Optional[str]:
+    def _discover_socket_path(self) -> Path | None:
+        """
+        Discover active Hyprland `.socket.sock` path dynamically.
+        """
+        now = time.time()
+        if self._cached_socket_path and self._cached_socket_path.exists():
+            return self._cached_socket_path
+
+        # Only re-scan every 2.0 seconds to prevent unnecessary I/O
+        if now - self._socket_check_time < 2.0:
+            return None
+        self._socket_check_time = now
+
+        xdg_runtime = os.environ.get("XDG_RUNTIME_DIR")
+        sig = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
+
+        if xdg_runtime and sig:
+            p = Path(xdg_runtime) / "hypr" / sig / ".socket.sock"
+            if p.exists():
+                self._cached_socket_path = p
+                return p
+
+        base_dirs: list[Path] = []
+        if xdg_runtime:
+            base_dirs.append(Path(xdg_runtime) / "hypr")
+        base_dirs.append(Path("/tmp/hypr"))
+
+        candidates: list[tuple[float, Path]] = []
+        for bd in base_dirs:
+            if bd.exists() and bd.is_dir():
+                for sdir in bd.iterdir():
+                    if sdir.is_dir():
+                        sock = sdir / ".socket.sock"
+                        if sock.exists():
+                            try:
+                                mtime = sock.stat().st_mtime
+                                candidates.append((mtime, sock))
+                            except OSError:
+                                pass
+
+        if candidates:
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            self._cached_socket_path = candidates[0][1]
+            return self._cached_socket_path
+
+        return None
+
+    def _hypr_query_socket(self, cmd: str) -> str | None:
         """
         Send a query to the Hyprland UNIX socket (`.socket.sock`) with zero subprocess forks.
         """
-        xdg_runtime = os.environ.get("XDG_RUNTIME_DIR")
-        sig = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
-        if not xdg_runtime or not sig:
-            return None
-        socket_path = Path(xdg_runtime) / "hypr" / sig / ".socket.sock"
-        if not socket_path.exists():
+        socket_path = self._discover_socket_path()
+        if not socket_path:
             return None
 
         try:
@@ -131,9 +186,10 @@ class ScreentimeDaemon:
                     response.extend(chunk)
                 return response.decode("utf-8", errors="ignore")
         except Exception:
+            self._cached_socket_path = None
             return None
 
-    def get_active_window(self) -> Optional[Dict[str, Any]]:
+    def get_active_window(self) -> dict[str, Any] | None:
         """
         Retrieve active window metadata (`class`, `title`, `pid`) via socket.
         """
@@ -158,7 +214,6 @@ class ScreentimeDaemon:
         try:
             monitors = json.loads(raw)
             if isinstance(monitors, list) and monitors:
-                # If any monitor is on (`dpmsStatus` true or missing), return False
                 for m in monitors:
                     if m.get("dpmsStatus", True):
                         return False
@@ -170,31 +225,49 @@ class ScreentimeDaemon:
     def is_locked(self) -> bool:
         """
         Check if lockscreen process (`hyprlock` or `swaylock`) is active.
-        We check via `/proc` quickly without spawning `ps` or `pgrep`.
+        Optimized procfs scanning.
         """
         try:
-            for pdir in os.listdir("/proc"):
-                if not pdir.isdigit():
-                    continue
-                try:
-                    with open(f"/proc/{pdir}/comm", "r", encoding="utf-8") as f:
-                        comm = f.read().strip()
-                        if comm in (
-                            "hyprlock",
-                            "swaylock",
-                            "swaylock-effects",
-                            "i3lock",
-                        ):
-                            return True
-                except Exception:
-                    continue
+            with os.scandir("/proc") as it:
+                for entry in it:
+                    if entry.name.isdigit() and entry.is_dir():
+                        try:
+                            with open(f"/proc/{entry.name}/comm", "r", encoding="utf-8") as f:
+                                comm = f.read().strip()
+                                if comm in LOCKSCREEN_NAMES:
+                                    return True
+                        except OSError:
+                            continue
         except Exception:
             pass
         return False
 
-    def _record_tick(self, win: Dict[str, Any]) -> None:
+    def is_dbus_idle(self) -> bool:
+        """
+        Query systemd logind for session idle status with bus instance caching.
+        """
+        try:
+            import dbus
+
+            if self._dbus_bus is None:
+                self._dbus_bus = dbus.SystemBus()
+
+            logind = self._dbus_bus.get_object("org.freedesktop.login1", "/org/freedesktop/login1")
+            sessions = logind.ListSessions(dbus_interface="org.freedesktop.login1.Manager")
+            for s_info in sessions:
+                s_path = s_info[4]
+                sess_obj = self._dbus_bus.get_object("org.freedesktop.login1", s_path)
+                props = dbus.Interface(sess_obj, "org.freedesktop.DBus.Properties")
+                idle_hint = props.Get("org.freedesktop.login1.Session", "IdleHint")
+                if idle_hint:
+                    return True
+        except Exception:
+            self._dbus_bus = None
+        return False
+
+    def _record_tick(self, win: dict[str, Any]) -> None:
         cls = win.get("class", "").strip()
-        if not cls or cls.lower() in self.config["ignore_classes"]:
+        if not cls or cls.lower() in self.config.get("ignore_classes", []):
             return
 
         title = win.get("title", "").strip() or cls
@@ -204,7 +277,6 @@ class ScreentimeDaemon:
             if today not in self.data:
                 self.data[today] = {}
 
-            # Resolve app metadata
             info = self.resolver.resolve(cls, title)
 
             if cls not in self.data[today]:
@@ -219,9 +291,7 @@ class ScreentimeDaemon:
                     "titles": {},
                 }
             else:
-                # Update existing record
                 rec = self.data[today][cls]
-                # Keep resolved metadata fresh
                 rec["name"] = info.name
                 rec["category"] = info.category
                 rec["icon"] = info.icon
@@ -229,16 +299,19 @@ class ScreentimeDaemon:
 
             rec = self.data[today][cls]
             rec["duration"] += 1
+
             if title:
-                # Limit stored unique titles per app to 50 to prevent unbounded growth
                 if title not in rec["titles"] and len(rec["titles"]) >= 50:
                     title = "Other / Miscellaneous"
                 rec["titles"][title] = rec["titles"].get(title, 0) + 1
 
-            # Check if this is a new focus session
+            # Check for new focus session
             if cls != self.last_window_key:
                 rec["sessions"] = rec.get("sessions", 0) + 1
                 self.last_window_key = cls
+                self.last_window_title = title
+            elif title != self.last_window_title:
+                self.last_window_title = title
 
     def run(self) -> None:
         self.running = True
@@ -248,12 +321,25 @@ class ScreentimeDaemon:
             start_t = time.time()
 
             if self.config.get("enabled", True):
-                # Check for idle/lock states
-                if not self.is_locked() and not self.is_dpms_off():
+                locked = self.is_locked()
+                dpms_off = self.is_dpms_off()
+                dbus_idle = self.is_dbus_idle()
+
+                if not locked and not dpms_off and not dbus_idle:
                     win = self.get_active_window()
                     if win and win.get("class"):
-                        self._record_tick(win)
-                        self.last_active_time = time.time()
+                        current_title = win.get("title", "").strip()
+                        current_class = win.get("class", "").strip()
+
+                        # Update last active time when active window or title changes
+                        if current_class != self.last_window_key or current_title != self.last_window_title:
+                            self.last_active_time = time.time()
+
+                        idle_thresh = self.config.get("idle_threshold_seconds", 300)
+                        if time.time() - self.last_active_time <= idle_thresh:
+                            self._record_tick(win)
+                        else:
+                            self.last_window_key = ""
                     else:
                         self.last_window_key = ""
                 else:
@@ -270,7 +356,7 @@ class ScreentimeDaemon:
             if elapsed < 1.0:
                 time.sleep(1.0 - elapsed)
 
-    def stop(self, *args) -> None:
+    def stop(self, *args: Any) -> None:
         print("[*] Stopping Dusky Screentime Daemon...")
         self.running = False
         self._save_data_atomic()

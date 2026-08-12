@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
 ===============================================================================
-DUSKY SCREENTIME: MATUGEN THEMED TEXTUAL TUI
+DUSKY SCREENTIME: MATUGEN THEMED TEXTUAL TUI (Python 3.14 Bleeding-Edge)
 ===============================================================================
 Clean, simple screentime dashboard.
 Features:
 - Application names resolved via `.desktop` files (matching Rofi behavior)
 - Dynamic Matugen color integration (~/.config/matugen/generated/dusky_tui.json)
 - Simple period switching (Today, Yesterday, Week, Month, All Time)
-- Clean layout without visual noise or search bars
-- Modal inspection of window title breakdown
+- Interactive scrolling & cursor navigation
+- Modal inspection of window title breakdown (`Enter` on any row)
+- Sleek fuzzy search app jump (`Ctrl+F` or `/`)
 """
 
 import asyncio
@@ -18,7 +19,7 @@ import os
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
 if str(SCRIPT_DIR) not in sys.path:
@@ -40,10 +41,8 @@ from textual.screen import ModalScreen
 from textual.theme import Theme
 from textual.widgets import Button, DataTable, Footer, Header, Input, Label, OptionList
 
-DATA_FILE = Path(
-    os.path.expanduser("~/.local/share/dusky/screentime/screentime_data.json")
-)
-THEME_FILE = Path(os.path.expanduser("~/.config/matugen/generated/dusky_tui.json"))
+DATA_FILE = Path("~/.local/share/dusky/screentime/screentime_data.json").expanduser()
+THEME_FILE = Path("~/.config/matugen/generated/dusky_tui.json").expanduser()
 
 
 def format_duration(seconds: int) -> str:
@@ -67,7 +66,86 @@ def make_bar(percent: float, width: int = 18) -> str:
     return "█" * filled + "░" * empty
 
 
-class SearchAppModal(ModalScreen):
+class AppDetailModal(ModalScreen[None]):
+    """
+    Detailed modal popup inspecting an app's window title breakdown, total duration, sessions, and share.
+    """
+
+    BINDINGS = [
+        Binding("escape", "dismiss", "Close"),
+        Binding("q", "dismiss", "Close"),
+        Binding("enter", "dismiss", "Close"),
+    ]
+
+    def __init__(
+        self,
+        app_class: str,
+        app_info: dict[str, Any],
+        total_screentime: int,
+        colors: dict[str, str],
+    ) -> None:
+        super().__init__()
+        self.app_class = app_class
+        self.app_info = app_info
+        self.total_screentime = total_screentime
+        self.theme_colors = colors
+
+    def compose(self) -> ComposeResult:
+        name = self.app_info.get("name", self.app_class)
+        cat = self.app_info.get("category", "Application")
+        dur = self.app_info.get("duration", 0)
+        sessions = self.app_info.get("sessions", 1)
+        share = (
+            (dur / self.total_screentime * 100.0)
+            if self.total_screentime > 0
+            else 0.0
+        )
+
+        accent_clr = self.theme_colors.get("accent", "#b2d189")
+        success_clr = self.theme_colors.get("success", "#a0d0cb")
+        fg_clr = self.theme_colors.get("fg", "#e2e3d8")
+
+        with Container(id="detail-backdrop"):
+            with Vertical(id="detail-box"):
+                yield Label(
+                    f"[bold {accent_clr}]{name}[/] [dim]({cat})[/]", id="detail-title"
+                )
+                yield Label(
+                    f"Total Time: [bold {success_clr}]{format_duration(dur)}[/]  |  Share: [bold {accent_clr}]{share:.1f}%[/]  |  Focus Sessions: [bold {fg_clr}]{sessions}[/]",
+                    id="detail-subtitle",
+                )
+                yield Label(
+                    "[bold]Window Title Breakdown:[/bold]", id="detail-section-title"
+                )
+                table = DataTable(id="detail-table")
+                table.cursor_type = "row"
+                table.add_column("Duration", key="dur", width=14)
+                table.add_column("Window Title / Document", key="title", width=None)
+
+                titles_sorted = sorted(
+                    self.app_info.get("titles", {}).items(),
+                    key=lambda x: x[1],
+                    reverse=True,
+                )
+                if titles_sorted:
+                    for t_title, t_dur in titles_sorted:
+                        table.add_row(format_duration(t_dur), t_title)
+                else:
+                    table.add_row("-", "No detailed window titles recorded")
+
+                yield table
+                with Horizontal(id="detail-footer"):
+                    yield Button("Close (Esc/Enter)", id="btn-detail-close")
+
+    def on_mount(self) -> None:
+        self.query_one("#detail-table", DataTable).focus()
+
+    @on(Button.Pressed, "#btn-detail-close")
+    def on_close(self) -> None:
+        self.dismiss(None)
+
+
+class SearchAppModal(ModalScreen[int | None]):
     """
     Sleek fuzzy search popup to quickly find and jump to an application in the table.
     """
@@ -80,12 +158,12 @@ class SearchAppModal(ModalScreen):
     ]
 
     def __init__(
-        self, apps_list: List[Tuple[str, Dict[str, Any]]], colors: Dict[str, str]
-    ):
+        self, apps_list: list[tuple[str, dict[str, Any]]], colors: dict[str, str]
+    ) -> None:
         super().__init__()
         self.apps_list = apps_list
         self.theme_colors = colors
-        self.filtered_indices: List[int] = []
+        self.filtered_indices: list[int] = []
 
     def compose(self) -> ComposeResult:
         with Container(id="search-backdrop"):
@@ -105,7 +183,7 @@ class SearchAppModal(ModalScreen):
         self.query_one("#search-input", Input).focus()
         self._filter_options("")
 
-    def on_key(self, event) -> None:
+    def on_key(self, event: Any) -> None:
         if event.key == "escape":
             event.stop()
             self.dismiss(None)
@@ -159,35 +237,7 @@ class SearchAppModal(ModalScreen):
         self.dismiss(None)
 
 
-class CleanDataTable(DataTable):
-    """DataTable where cursor is locked to the active application. Ignores keyboard and mouse navigation."""
-
-    def on_mouse_down(self, event) -> None:
-        event.stop()
-
-    def on_mouse_move(self, event) -> None:
-        event.stop()
-
-    def on_click(self, event) -> None:
-        event.stop()
-
-    def on_key(self, event) -> None:
-        if event.key in (
-            "up",
-            "down",
-            "left",
-            "right",
-            "pageup",
-            "pagedown",
-            "home",
-            "end",
-            "enter",
-            "d",
-        ):
-            event.stop()
-
-
-class ScreentimeTUI(App):
+class ScreentimeTUI(App[None]):
     """
     Simple, humanized Screentime TUI.
     """
@@ -238,7 +288,7 @@ class ScreentimeTUI(App):
     }
 
     DataTable > .datatable--cursor {
-        background: $success 20%;
+        background: $success 25%;
         color: $foreground;
         text-style: bold;
     }
@@ -249,7 +299,7 @@ class ScreentimeTUI(App):
         text-style: bold;
     }
 
-    #search-backdrop {
+    #search-backdrop, #detail-backdrop {
         align: center middle;
         background: rgba(0, 0, 0, 0.75);
     }
@@ -262,10 +312,35 @@ class ScreentimeTUI(App):
         padding: 1 2;
     }
 
-    #search-title {
+    #detail-box {
+        width: 96;
+        height: 28;
+        background: $background;
+        border: heavy $primary;
+        padding: 1 2;
+    }
+
+    #search-title, #detail-title {
         text-align: center;
         width: 100%;
         margin-bottom: 1;
+    }
+
+    #detail-subtitle {
+        text-align: center;
+        width: 100%;
+        margin-bottom: 1;
+    }
+
+    #detail-section-title {
+        margin-top: 1;
+        margin-bottom: 1;
+    }
+
+    #detail-table {
+        height: 1fr;
+        background: $surface;
+        border: solid $secondary;
     }
 
     #search-input {
@@ -281,13 +356,13 @@ class ScreentimeTUI(App):
         border: solid $secondary;
     }
 
-    #search-footer {
+    #search-footer, #detail-footer {
         height: 3;
         align: center middle;
         margin-top: 1;
     }
 
-    #btn-search-close {
+    #btn-search-close, #btn-detail-close {
         background: $primary;
         color: $background;
         border: none;
@@ -300,6 +375,7 @@ class ScreentimeTUI(App):
         Binding("q", "quit", "Quit", show=True),
         Binding("ctrl+f", "search_apps", "Search", show=True),
         Binding("/", "search_apps", "Search", show=False),
+        Binding("enter", "inspect_app", "Details", show=True),
         Binding("1", "select_range('today')", "Today", show=True),
         Binding("2", "select_range('yesterday')", "Yesterday", show=True),
         Binding("3", "select_range('week')", "Week", show=True),
@@ -309,15 +385,15 @@ class ScreentimeTUI(App):
 
     current_range = reactive("today")
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
-        self.resolver = DesktopResolver()
-        self.raw_data: Dict[str, Dict[str, Any]] = {}
-        self.active_class = ""
-        self.active_title = ""
-        self.aggregated_apps: Dict[str, Dict[str, Any]] = {}
+        self.resolver: DesktopResolver = DesktopResolver()
+        self.raw_data: dict[str, dict[str, Any]] = {}
+        self.active_class: str = ""
+        self.active_title: str = ""
+        self.aggregated_apps: dict[str, dict[str, Any]] = {}
 
-        self.theme_colors = {
+        self.theme_colors: dict[str, str] = {
             "bg": "#12140e",
             "fg": "#e2e3d8",
             "accent": "#b2d189",
@@ -336,7 +412,7 @@ class ScreentimeTUI(App):
             yield Label("", id="lbl-stats")
 
         with Container(id="table-wrapper"):
-            yield CleanDataTable(id="app-table")
+            yield DataTable(id="app-table")
 
         yield Footer()
 
@@ -359,7 +435,6 @@ class ScreentimeTUI(App):
         )
         self.register_theme(custom_theme)
         self.theme = theme_name
-        self.stylesheet.add_source(self.BASE_CSS)
 
     async def watch_theme_file(self) -> None:
         if not THEME_FILE.exists():
@@ -370,7 +445,7 @@ class ScreentimeTUI(App):
             if current_mtime > self.last_theme_mtime:
                 self.last_theme_mtime = current_mtime
 
-                def _load_json() -> Dict[str, Any]:
+                def _load_json() -> dict[str, Any]:
                     with open(THEME_FILE, "r", encoding="utf-8") as f:
                         return json.load(f)
 
@@ -407,6 +482,7 @@ class ScreentimeTUI(App):
 
         self._load_data()
         self._update_display(reset_cursor=True)
+        table.focus()
 
         self.set_interval(1.0, self._tick_refresh)
         self.set_interval(0.5, self.watch_theme_file)
@@ -428,50 +504,66 @@ class ScreentimeTUI(App):
     def _get_live_active_class(self) -> None:
         xdg_runtime = os.environ.get("XDG_RUNTIME_DIR")
         sig = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
-        if xdg_runtime and sig:
-            sock_path = Path(xdg_runtime) / "hypr" / sig / ".socket.sock"
-            if sock_path.exists():
-                try:
-                    import socket as _socket
 
-                    with _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM) as s:
-                        s.settimeout(0.3)
-                        s.connect(str(sock_path))
-                        s.sendall(b"j/activewindow")
-                        resp = s.recv(4096).decode("utf-8", errors="ignore")
-                        data = json.loads(resp)
-                        self.active_class = data.get("class", "").strip()
-                        self.active_title = data.get("title", "").strip()
-                        return
-                except Exception:
-                    pass
+        sock_path = None
+        if xdg_runtime and sig:
+            p = Path(xdg_runtime) / "hypr" / sig / ".socket.sock"
+            if p.exists():
+                sock_path = p
+
+        if not sock_path and xdg_runtime:
+            base_dir = Path(xdg_runtime) / "hypr"
+            if base_dir.exists():
+                for sdir in base_dir.iterdir():
+                    sp = sdir / ".socket.sock"
+                    if sp.exists():
+                        sock_path = sp
+                        break
+
+        if sock_path:
+            try:
+                import socket as _socket
+
+                with _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM) as s:
+                    s.settimeout(0.3)
+                    s.connect(str(sock_path))
+                    s.sendall(b"j/activewindow")
+                    resp = s.recv(4096).decode("utf-8", errors="ignore")
+                    data = json.loads(resp)
+                    self.active_class = data.get("class", "").strip()
+                    self.active_title = data.get("title", "").strip()
+                    return
+            except Exception:
+                pass
+
         self.active_class = ""
         self.active_title = ""
 
-    def _aggregate_by_range(self) -> Tuple[Dict[str, Dict[str, Any]], int]:
+    def _aggregate_by_range(self) -> tuple[dict[str, dict[str, Any]], int]:
         today_date = datetime.now()
         today_str = today_date.strftime("%Y-%m-%d")
         yesterday_str = (today_date - timedelta(days=1)).strftime("%Y-%m-%d")
 
-        target_days: List[str] = []
-        if self.current_range == "today":
-            target_days = [today_str]
-        elif self.current_range == "yesterday":
-            target_days = [yesterday_str]
-        elif self.current_range == "week":
-            for d in range(7):
-                target_days.append(
+        target_days: list[str] = []
+        match self.current_range:
+            case "today":
+                target_days = [today_str]
+            case "yesterday":
+                target_days = [yesterday_str]
+            case "week":
+                target_days = [
                     (today_date - timedelta(days=d)).strftime("%Y-%m-%d")
-                )
-        elif self.current_range == "month":
-            for d in range(30):
-                target_days.append(
+                    for d in range(7)
+                ]
+            case "month":
+                target_days = [
                     (today_date - timedelta(days=d)).strftime("%Y-%m-%d")
-                )
-        else:
-            target_days = list(self.raw_data.keys())
+                    for d in range(30)
+                ]
+            case _:
+                target_days = list(self.raw_data.keys())
 
-        agg: Dict[str, Dict[str, Any]] = {}
+        agg: dict[str, dict[str, Any]] = {}
         total_time = 0
 
         for day in target_days:
@@ -503,9 +595,7 @@ class ScreentimeTUI(App):
 
     def _update_display(self, reset_cursor: bool = False) -> None:
         table = self.query_one("#app-table", DataTable)
-        current_cursor = (
-            table.cursor_coordinate if not reset_cursor else Coordinate(0, 0)
-        )
+        saved_row = table.cursor_coordinate.row if table.row_count > 0 and not reset_cursor else 0
 
         self.aggregated_apps, total_time = self._aggregate_by_range()
 
@@ -539,7 +629,6 @@ class ScreentimeTUI(App):
         table.clear(columns=False)
         max_dur = sorted_apps[0][1]["duration"] if sorted_apps else 1
 
-        active_row_idx = None
         for idx, (cls, info) in enumerate(sorted_apps):
             dur = info["duration"]
             share = (dur / total_time * 100.0) if total_time > 0 else 0.0
@@ -548,7 +637,6 @@ class ScreentimeTUI(App):
                 cls.lower() == self.active_class.lower() and self.active_class != ""
             )
             if is_active:
-                active_row_idx = idx
                 status_txt = Text("▶ ACTIVE", style=f"bold reverse {success_clr}")
             else:
                 status_txt = Text("  idle", style=f"dim {muted_clr}")
@@ -586,16 +674,16 @@ class ScreentimeTUI(App):
             table.add_row(status_txt, app_txt, dur_txt, share_txt, bar_txt, key=cls)
 
         total_count = len(sorted_apps)
-        if active_row_idx is not None:
-            table.show_cursor = True
+        if total_count > 0:
+            target_row = max(0, min(saved_row, total_count - 1))
             try:
-                table.move_cursor(row=active_row_idx, column=0)
+                table.move_cursor(row=target_row, column=0)
             except Exception:
                 pass
-            curr_idx = active_row_idx + 1
+            curr_idx = target_row + 1
         else:
-            table.show_cursor = False
             curr_idx = 0
+
         table.border_subtitle = (
             f" {curr_idx}/{total_count} " if total_count > 0 else " 0/0 "
         )
@@ -611,7 +699,7 @@ class ScreentimeTUI(App):
         if not sorted_apps:
             return
 
-        def _on_search_result(row_idx: Optional[int]) -> None:
+        def _on_search_result(row_idx: int | None) -> None:
             if row_idx is not None:
                 table = self.query_one("#app-table", DataTable)
                 try:
@@ -622,6 +710,26 @@ class ScreentimeTUI(App):
         self.push_screen(
             SearchAppModal(sorted_apps, self.theme_colors), _on_search_result
         )
+
+    def action_inspect_app(self) -> None:
+        table = self.query_one("#app-table", DataTable)
+        if table.row_count == 0 or table.cursor_coordinate.row < 0:
+            return
+
+        sorted_apps = sorted(
+            self.aggregated_apps.items(), key=lambda x: x[1]["duration"], reverse=True
+        )
+        row_idx = table.cursor_coordinate.row
+        if row_idx < len(sorted_apps):
+            cls, info = sorted_apps[row_idx]
+            _, total_time = self._aggregate_by_range()
+            self.push_screen(
+                AppDetailModal(cls, info, total_time, self.theme_colors)
+            )
+
+    @on(DataTable.RowSelected, "#app-table")
+    def on_row_selected(self, event: DataTable.RowSelected) -> None:
+        self.action_inspect_app()
 
 
 if __name__ == "__main__":
