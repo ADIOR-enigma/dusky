@@ -668,7 +668,6 @@ class IOMonitorApp(App):
     def tick(self):
         dirty, wb = SysStatParser.get_ram_buffers()
         ram_txt = Text.from_markup(
-            f"[bold {FG}]SYSTEM MEMORY[/]  [{BG}]│[/]  "
             f"[{FG}]Dirty Pages (Wait):[/] [bold {ACCENT}]{dirty:>6.1f} MB[/]  [{BG}]│[/]  "
             f"[{FG}]Writeback (Active):[/] [bold {ERROR}]{wb:>6.1f} MB[/]"
         )
