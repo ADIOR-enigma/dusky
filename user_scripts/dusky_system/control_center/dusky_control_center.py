@@ -833,6 +833,7 @@ class DuskyControlCenter(Adw.Application):
 
         toolbar = Adw.ToolbarView()
         header = Adw.HeaderBar()
+        header.set_show_end_title_buttons(False)
         header.pack_start(self._create_sidebar_toggle_button())
         toolbar.add_top_bar(header)
 
@@ -1405,6 +1406,7 @@ class DuskyControlCenter(Adw.Application):
 
         toolbar = Adw.ToolbarView()
         header = Adw.HeaderBar()
+        header.set_show_end_title_buttons(False)
 
         if len(path) == 1:
             header.pack_start(self._create_sidebar_toggle_button())
