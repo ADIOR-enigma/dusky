@@ -1,0 +1,390 @@
+"""Command line interface for Dusky Keylogger.
+
+Subcommands:
+    daemon      Run the always-on logging daemon (used by systemd)
+    stats       Print keystroke statistics for today / week / month / all
+    dashboard   Open the live Textual dashboard
+    status      Show daemon + database status
+    devices     List discovered keyboards (diagnostics)
+    events      Print recent key events
+    text        Print everything typed as readable text (saved to /tmp)
+    seed        Generate demo data for testing (clearly labeled)
+"""
+
+import argparse
+import asyncio
+import json
+import random
+import sys
+from datetime import datetime, timedelta
+from pathlib import Path
+
+from rich import box
+from rich.console import Console
+from rich.table import Table
+
+from . import __version__
+from . import keycodes as kc
+from .daemon import Daemon, default_data_dir
+from .listener import KeyListener, KeyPress
+from .stats import daily_series, period_range, summarize
+from .storage import EventRow, KeyStore, row_from_press
+
+console = Console()
+
+
+def _get_store(args: argparse.Namespace) -> KeyStore:
+    data_dir = getattr(args, "data_dir", None)
+    store = KeyStore(Path(data_dir) / "keys.db" if data_dir else default_data_dir() / "keys.db")
+    if not store.path.exists():
+        store.init_db()
+    return store
+
+
+def cmd_daemon(args: argparse.Namespace) -> int:
+    async def _run() -> int:
+        daemon = Daemon(data_dir=args.data_dir)
+        await daemon.run()
+        return 0
+
+    try:
+        return asyncio.run(_run())
+    except KeyboardInterrupt:
+        return 0
+
+
+def _render_stats(store: KeyStore, period: str, top: int) -> None:
+    stats = summarize(store, period, limit_keys=top)
+    start_s = stats.start.strftime("%Y-%m-%d %H:%M")
+    end_s = stats.end.strftime("%Y-%m-%d %H:%M")
+    console.print(
+        f"[bold cyan]Dusky Keylogger[/] -- {period} stats ({start_s} -> {end_s})"
+    )
+
+    table = Table(box=box.SIMPLE_HEAVY)
+    table.add_column("Metric", style="bold")
+    table.add_column("Value", justify="right")
+
+    rows = [
+        ("Total keystrokes", f"{stats.total_keys:,}"),
+        ("Printable characters", f"{stats.printable:,}"),
+        ("Backspace", f"{stats.backspace:,}"),
+        ("Delete", f"{stats.delete:,}"),
+        ("Enter", f"{stats.enter:,}"),
+        ("Tab", f"{stats.tab:,}"),
+        ("Escape", f"{stats.escape:,}"),
+        ("Modifiers", f"{stats.modifiers:,}"),
+        ("Navigation keys", f"{stats.navigation:,}"),
+        ("Function keys", f"{stats.function:,}"),
+        ("Other keys", f"{stats.other:,}"),
+        ("Active minutes", f"{stats.active_minutes:,}"),
+        ("Keys / minute", f"{stats.keys_per_minute:.1f}"),
+        ("Words / minute (est.)", f"{stats.words_per_minute:.1f}"),
+        ("Backspace ratio", f"{stats.backspace_ratio * 100:.1f}%"),
+    ]
+    for label, value in rows:
+        table.add_row(label, value)
+    console.print(table)
+
+    if stats.top_keys:
+        keys_table = Table(title="Most used keys", box=box.SIMPLE)
+        keys_table.add_column("Key", style="bold")
+        keys_table.add_column("Count", justify="right")
+        for name, count in stats.top_keys:
+            keys_table.add_row(name, f"{count:,}")
+        console.print(keys_table)
+
+    if stats.top_chars:
+        chars_table = Table(title="Most typed characters", box=box.SIMPLE)
+        chars_table.add_column("Char", style="bold")
+        chars_table.add_column("Count", justify="right")
+        for char, count in stats.top_chars:
+            display = char if char != " " else "(space)"
+            chars_table.add_row(display, f"{count:,}")
+        console.print(chars_table)
+
+    day_table = Table(title="Daily totals (last 14 days)", box=box.SIMPLE)
+    day_table.add_column("Date", style="bold")
+    day_table.add_column("Keys", justify="right")
+    for day, count in daily_series(store, 14):
+        day_table.add_row(day, f"{count:,}")
+    console.print(day_table)
+
+
+def cmd_stats(args: argparse.Namespace) -> int:
+    store = _get_store(args)
+    if args.json:
+        stats = summarize(store, args.period, limit_keys=args.top)
+        print(
+            json.dumps(
+                {
+                    "period": stats.period,
+                    "total_keys": stats.total_keys,
+                    "printable": stats.printable,
+                    "backspace": stats.backspace,
+                    "delete": stats.delete,
+                    "enter": stats.enter,
+                    "tab": stats.tab,
+                    "escape": stats.escape,
+                    "modifiers": stats.modifiers,
+                    "navigation": stats.navigation,
+                    "function": stats.function,
+                    "other": stats.other,
+                    "active_minutes": stats.active_minutes,
+                    "keys_per_minute": round(stats.keys_per_minute, 2),
+                    "words_per_minute": round(stats.words_per_minute, 2),
+                    "backspace_ratio": round(stats.backspace_ratio, 4),
+                    "top_keys": stats.top_keys,
+                    "top_chars": stats.top_chars,
+                },
+                indent=2,
+            )
+        )
+        return 0
+    _render_stats(store, args.period, args.top)
+    return 0
+
+
+def cmd_dashboard(args: argparse.Namespace) -> int:
+    from .dashboard import main as dashboard_main
+
+    store = _get_store(args)
+    dashboard_main(store.path)
+    return 0
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    store = _get_store(args)
+    db_path = store.path
+    total = store.total() if db_path.exists() else 0
+    first, last = store.first_last_ts() if db_path.exists() else (None, None)
+
+    console.print("[bold cyan]Dusky Keylogger -- status[/]")
+    status = Table(box=box.SIMPLE_HEAVY)
+    status.add_column("Item", style="bold")
+    status.add_column("Value")
+    status.add_row("Version", __version__)
+    status.add_row("Database", str(db_path))
+    status.add_row("Total events", f"{total:,}")
+    if first is not None and last is not None:
+        status.add_row(
+            "First event",
+            datetime.fromtimestamp(first / 1000).strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        status.add_row(
+            "Last event",
+            datetime.fromtimestamp(last / 1000).strftime("%Y-%m-%d %H:%M:%S"),
+        )
+    console.print(status)
+
+    try:
+        import subprocess
+
+        active = subprocess.run(
+            ["systemctl", "is-active", "dusky_keylogger"],
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        enabled = subprocess.run(
+            ["systemctl", "is-enabled", "dusky_keylogger"],
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        console.print(f"Service: [bold]{active}[/] (enabled: {enabled})")
+    except OSError:
+        pass
+    return 0
+
+
+def cmd_devices(_args: argparse.Namespace) -> int:
+    listener = KeyListener()
+    devices = listener._find_keyboards()
+    if not devices:
+        console.print("[yellow]No keyboards found.[/]")
+        return 1
+    table = Table(title="Discovered keyboards", box=box.SIMPLE_HEAVY)
+    table.add_column("Device", style="bold")
+    table.add_column("Path")
+    for device in devices:
+        table.add_row(device.name, device.path)
+        device.close()
+    console.print(table)
+    return 0
+
+
+def cmd_events(args: argparse.Namespace) -> int:
+    store = _get_store(args)
+    rows = store.recent(args.limit)
+    if not rows:
+        console.print("[yellow]No events recorded yet.[/]")
+        return 0
+    table = Table(title=f"Recent {len(rows)} events", box=box.SIMPLE_HEAVY)
+    for col in ("Time", "Key", "Char", "Kind", "Device"):
+        table.add_column(col)
+    for row in rows:
+        dt = datetime.fromtimestamp(row.ts_ms / 1000).strftime("%Y-%m-%d %H:%M:%S")
+        table.add_row(dt, row.key_name, row.char or "", row.kind, row.device)
+    console.print(table)
+    return 0
+
+
+def cmd_text(args: argparse.Namespace) -> int:
+    """Stitch everything typed in a period into readable text.
+
+    Read-only: derives the transcript from the event store and writes it
+    to a file in /tmp (wiped on reboot) so it never accumulates in the
+    persistent database. Printable chars are kept in order; backspace is
+    marked as ⌫, Enter as a newline, Tab as a tab.
+    """
+    store = _get_store(args)
+    start, end = period_range(args.period)
+    parts: list[str] = []
+    for row in store.iter_between(start, end):
+        if row.kind == kc.KIND_PRINTABLE and row.char:
+            parts.append(row.char)
+        elif row.kind == kc.KIND_BACKSPACE:
+            parts.append("\u232b")  # ⌫
+        elif row.kind == kc.KIND_ENTER:
+            parts.append("\n")
+        elif row.kind == kc.KIND_TAB:
+            parts.append("\t")
+    text = "".join(parts)
+    if args.out:
+        out_path = Path(args.out)
+    else:
+        day = datetime.now().strftime("%Y-%m-%d")
+        out_path = Path(f"/tmp/dusky-typed-{args.period}-{day}.txt")
+    out_path.write_text(text, encoding="utf-8")
+    console.print(
+        f"[green]Typed transcript ({args.period}) — {len(text):,} chars → {out_path}[/]"
+    )
+    print(text)
+    return 0
+
+
+def _synthetic_press(keycode: int, ts_us: int) -> KeyPress:
+    return KeyPress(
+        keycode=keycode,
+        key_name=kc.key_name(keycode),
+        char=kc.char_for(keycode, False, False),
+        kind=kc.classify_key(keycode),
+        device="Test Keyboard",
+        ts_us=ts_us,
+    )
+
+
+def cmd_seed(args: argparse.Namespace) -> int:
+    store = _get_store(args)
+    store.init_db()
+    now = datetime.now()
+    random.seed(args.seed)
+    keys_pool = [
+        (kc.KEY_A, 8),
+        (kc.KEY_B, 2),
+        (kc.KEY_LEFTSHIFT, 6),
+        (kc.KEY_BACKSPACE, 3),
+        (kc.KEY_SPACE, 7),
+        (kc.KEY_ENTER, 2),
+        (kc.KEY_LEFTCTRL, 4),
+        (kc.KEY_TAB, 1),
+        (kc.KEY_COMMA, 2),
+        (kc.KEY_DELETE, 1),
+        (kc.KEY_HOME, 1),
+        (kc.KEY_ESC, 1),
+        (kc.KEY_CAPSLOCK, 1),
+        (kc.KEY_LEFTMETA, 2),
+        (kc.KEY_F11, 1),
+        (kc.KEY_KP5, 1),
+    ]
+    weights = [w for _, w in keys_pool]
+    codes = [c for c, _ in keys_pool]
+    rows: list[EventRow] = []
+    for day_offset in range(args.days):
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(
+            days=day_offset
+        )
+        events_today = random.randint(200, 1200)
+        for _ in range(events_today):
+            ts = day_start + timedelta(
+                seconds=random.randint(0, 16 * 3600),
+                microseconds=random.randint(0, 999_000),
+            )
+            keycode = random.choices(codes, weights=weights)[0]
+            ts_us = int(ts.timestamp() * 1_000_000)
+            press = _synthetic_press(keycode, ts_us)
+            rows.append(row_from_press(press))
+    inserted = store.insert_many(rows)
+    console.print(
+        f"[green]Seeded {inserted:,} demo events across {args.days} day(s).[/]\n"
+        "[dim]These are synthetic test records. Remove them with: "
+        "rm ~/.local/share/dusky-keylogger/keys.db*[/]"
+    )
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="dusky",
+        description="Dusky Keylogger -- always-on keystroke statistics daemon",
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {__version__}"
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_daemon = sub.add_parser("daemon", help="Run the logging daemon (foreground)")
+    p_daemon.add_argument("--data-dir", default=None, help="Override data directory")
+    p_daemon.set_defaults(func=cmd_daemon)
+
+    p_stats = sub.add_parser("stats", help="Print statistics")
+    p_stats.add_argument(
+        "--period", choices=["today", "week", "month", "all"], default="today"
+    )
+    p_stats.add_argument("--top", type=int, default=12, help="Top N keys/chars")
+    p_stats.add_argument("--json", action="store_true", help="Machine-readable output")
+    p_stats.add_argument("--data-dir", default=None)
+    p_stats.set_defaults(func=cmd_stats)
+
+    p_dash = sub.add_parser("dashboard", help="Open the live dashboard (TUI)")
+    p_dash.add_argument("--data-dir", default=None)
+    p_dash.set_defaults(func=cmd_dashboard)
+
+    p_status = sub.add_parser("status", help="Show daemon and database status")
+    p_status.add_argument("--data-dir", default=None)
+    p_status.set_defaults(func=cmd_status)
+
+    p_dev = sub.add_parser("devices", help="List discovered keyboard devices")
+    p_dev.set_defaults(func=cmd_devices)
+
+    p_events = sub.add_parser("events", help="Print recent key events")
+    p_events.add_argument("--limit", type=int, default=25)
+    p_events.add_argument("--data-dir", default=None)
+    p_events.set_defaults(func=cmd_events)
+
+    p_text = sub.add_parser("text", help="Print everything typed as readable text")
+    p_text.add_argument(
+        "--period", choices=["today", "week", "month", "all"], default="today"
+    )
+    p_text.add_argument(
+        "--out", default=None, help="Output path (default /tmp/dusky-typed-<period>-<date>.txt)"
+    )
+    p_text.add_argument("--data-dir", default=None)
+    p_text.set_defaults(func=cmd_text)
+
+    p_seed = sub.add_parser("seed", help="Generate demo data (testing only)")
+    p_seed.add_argument("--days", type=int, default=14)
+    p_seed.add_argument("--seed", type=int, default=42)
+    p_seed.add_argument("--data-dir", default=None)
+    p_seed.set_defaults(func=cmd_seed)
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

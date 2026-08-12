@@ -151,6 +151,10 @@ CORE_SYSTEM_DEFS = {
         "Old Kernel Modules Cleanup",
         "Oneshot boot service provided by kernel-modules-hook. Automatically cleans up orphaned kernel module directories in /usr/lib/modules after a kernel update.",
     ),
+    "dusky_keylogger.service": (
+        "Dusky Keystroke Statistics Daemon",
+        "Always-on keystroke statistics daemon. Captures raw key presses via evdev (no Wayland/X11), classifies them (Shift/Caps/NumLock, shortcut chords), and stores them with kernel timestamps in SQLite at ~/.local/share/dusky-keylogger/keys.db (mode 0600). Powers the `dusky stats` / `dusky dashboard` analytics. Stop/disable it here to pause logging.",
+    ),
 }
 
 import concurrent.futures

@@ -1,0 +1,427 @@
+#!/usr/bin/env python3
+"""Dusky Keylogger installer.
+
+Automates setup on Arch Linux (systemd):
+
+  1. Auto-escalates to root via sudo when run without privileges.
+  2. Adds the invoking user to the input group if they are missing
+     (required to read /dev/input/event*).
+  3. Creates an isolated venv at ~/contained_apps/uv/dusky_key_logger/
+     (prefers uv with CPython 3.14, else venv+pip on the same interpreter)
+     and installs the package with its dependencies from pyproject.toml.
+  4. Renders and installs dusky_keylogger.service so the daemon can run
+     in the background and be turned on/off with systemctl.
+
+No usernames are hardcoded -- the invoking user is resolved via
+SUDO_USER / pwd at runtime.
+
+Usage:
+    python3 install.py                 # install everything
+    python3 install.py --enable        # install + enable + start service
+    python3 install.py --uninstall     # stop, disable, remove service + venv
+    python3 install.py --uninstall --purge   # ...also delete data
+    python3 install.py --status        # inspect current state (no root needed)
+    python3 install.py --dry-run       # show what would happen (no root)
+"""
+
+import argparse
+import getpass
+import os
+import pwd
+import shlex
+import shutil
+import sqlite3
+import string
+import subprocess
+import sys
+from pathlib import Path
+
+INSTALL_DIR = Path(__file__).resolve().parent
+SERVICE_NAME = "dusky_keylogger"
+SERVICE_FILE = Path("/etc/systemd/system") / f"{SERVICE_NAME}.service"
+SERVICE_TEMPLATE = INSTALL_DIR / "systemd" / "dusky_keylogger.service.in"
+
+C_RED = "\033[1;31m"
+C_GREEN = "\033[1;32m"
+C_YELLOW = "\033[1;33m"
+C_CYAN = "\033[1;36m"
+C_DIM = "\033[2m"
+C_RESET = "\033[0m"
+
+REQUIRED_PYTHON = (3, 14)
+
+
+def log(msg: str) -> None:
+    print(msg)
+
+
+def ok(msg: str) -> None:
+    print(f"{C_GREEN}[ OK ]{C_RESET} {msg}")
+
+
+def warn(msg: str) -> None:
+    print(f"{C_YELLOW}[WARN]{C_RESET} {msg}")
+
+
+def step(msg: str) -> None:
+    print(f"{C_CYAN}[....]{C_RESET} {msg}")
+
+
+def fail(msg: str) -> None:
+    print(f"{C_RED}[FAIL]{C_RESET} {msg}")
+    sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+
+
+def run(
+    cmd: list[str], check: bool = True, capture: bool = False
+) -> subprocess.CompletedProcess:
+    proc = subprocess.run(cmd, capture_output=capture, text=True)
+    if check and proc.returncode != 0:
+        fail(
+            f"Command failed ({proc.returncode}): "
+            f"{' '.join(shlex.quote(c) for c in cmd)}\n{proc.stderr}"
+        )
+    return proc
+
+
+def original_user() -> tuple[str, str]:
+    """Return (username, home_dir) of the user who invoked the installer."""
+    user = os.environ.get("SUDO_USER") or getpass.getuser()
+    try:
+        home = pwd.getpwnam(user).pw_dir
+    except KeyError:
+        home = str(Path.home())
+    return user, home
+
+
+def venv_dir(home: str) -> Path:
+    return Path(home) / "contained_apps" / "uv" / "dusky_key_logger"
+
+
+def user_in_group(user: str, group: str) -> bool:
+    proc = run(["id", "-nG", user], capture=True)
+    return group in proc.stdout.split()
+
+
+def system_python() -> str:
+    return shutil.which("python3") or "python3"
+
+
+def python_version(exe: str = sys.executable) -> tuple[int, int] | None:
+    try:
+        proc = subprocess.run(
+            [
+                exe,
+                "-c",
+                "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        major, minor = proc.stdout.strip().split(".", 1)[:2]
+        return int(major), int(minor)
+    except Exception:
+        return None
+
+
+def version_str(ver: tuple[int, int] | None) -> str:
+    return ".".join(map(str, ver)) if ver else "unknown"
+
+
+def has_uv() -> bool:
+    return shutil.which("uv") is not None
+
+
+# ---------------------------------------------------------------------------
+# status (no root required)
+# ---------------------------------------------------------------------------
+
+
+def cmd_status(_args: argparse.Namespace) -> int:
+    user, home = original_user()
+    print(f"{C_CYAN}-- Dusky Keylogger status --{C_RESET}")
+    ver = python_version()
+    print(f"System Python:  {C_GREEN}{version_str(ver)}{C_RESET}")
+    print(
+        f"uv:             {'yes' if has_uv() else 'no (venv+pip fallback will be used)'}"
+    )
+    member = user_in_group(user, "input")
+    print(
+        f"Input group:    {C_GREEN if member else C_RED}"
+        f"{'member' if member else 'NOT a member'}{C_RESET} "
+        f"(user {user})"
+    )
+    print(f"Install dir:    {INSTALL_DIR}")
+    venv = venv_dir(home)
+    if venv.exists():
+        vver = python_version(str(venv / "bin" / "python"))
+        print(
+            f"Venv:           {C_GREEN}present (Python {version_str(vver)}){C_RESET} ({venv})"
+        )
+    else:
+        print(f"Venv:           {C_YELLOW}not created yet{C_RESET} ({venv})")
+    if SERVICE_FILE.exists():
+        print(f"Service file:   {C_GREEN}installed{C_RESET} ({SERVICE_FILE})")
+    else:
+        print(f"Service file:   {C_YELLOW}not installed{C_RESET}")
+
+    data_dir = Path(home) / ".local" / "share" / "dusky-keylogger"
+    db = data_dir / "keys.db"
+    if db.exists():
+        try:
+            conn = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
+            total = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+            conn.close()
+        except Exception:
+            total = "?"
+        print(f"Database:       {db} -- {total:,} events")
+    else:
+        print(f"Database:       {C_YELLOW}no data yet{C_RESET}")
+
+    for svc, flag in (("is-active", "active"), ("is-enabled", "enabled")):
+        proc = subprocess.run(
+            ["systemctl", svc, SERVICE_NAME], capture_output=True, text=True
+        )
+        print(f"Service {flag}: {C_GREEN}{proc.stdout.strip()}{C_RESET}")
+
+    print("\nNext steps:")
+    print("  python3 install.py --enable   -> build everything and start the daemon")
+    print("  systemctl status dusky_keylogger")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# dry-run
+# ---------------------------------------------------------------------------
+
+
+def cmd_dry_run(_args: argparse.Namespace) -> int:
+    user, home = original_user()
+    print(f"{C_CYAN}-- Dry run: what would happen --{C_RESET}")
+    print("  1. Re-execute this script with sudo (auto-escalation).")
+    if user_in_group(user, "input"):
+        print(
+            f"  2. {C_DIM}user {user} already in 'input' group -- nothing to do.{C_RESET}"
+        )
+    else:
+        print(f"  2. Add user '{user}' to the 'input' group (usermod -aG input).")
+    print(f"  3. Create venv at {venv_dir(home)} (uv --python 3.14, else venv+pip).")
+    print("  4. Install package + deps from pyproject.toml (evdev, textual).")
+    print(f"  5. Install systemd service {SERVICE_FILE}.")
+    if _args.enable:
+        print("  6. systemctl enable --now dusky_keylogger")
+    print("\nNo changes were made.")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# uninstall
+# ---------------------------------------------------------------------------
+
+
+def cmd_uninstall(args: argparse.Namespace) -> int:
+    user, home = original_user()
+    step("Stopping and disabling service...")
+    run(["systemctl", "stop", SERVICE_NAME], check=False)
+    run(["systemctl", "disable", SERVICE_NAME], check=False)
+    if SERVICE_FILE.exists():
+        SERVICE_FILE.unlink()
+        run(["systemctl", "daemon-reload"])
+        ok(f"Removed {SERVICE_FILE}")
+    venv = venv_dir(home)
+    if venv.exists():
+        shutil.rmtree(venv)
+        ok(f"Removed venv ({venv})")
+    if args.purge:
+        data_dir = Path(home) / ".local" / "share" / "dusky-keylogger"
+        config_dir = Path(home) / ".config" / "dusky-keylogger"
+        for path in (data_dir, config_dir):
+            if path.exists():
+                shutil.rmtree(path)
+                ok(f"Removed {path}")
+    print(f"{C_GREEN}Done. The 'input' group membership was left untouched.{C_RESET}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# install (run as root)
+# ---------------------------------------------------------------------------
+
+
+def build_venv(user: str, home: str) -> str:
+    venv = venv_dir(home)
+    venv.parent.mkdir(parents=True, exist_ok=True)
+    step(f"Creating virtual environment at {venv}...")
+    if not venv.exists():
+        created = False
+        if has_uv():
+            proc = subprocess.run(
+                ["uv", "venv", str(venv), "--python", "3.14"],
+                capture_output=True,
+                text=True,
+            )
+            created = proc.returncode == 0
+            if not created:
+                warn(f"uv venv --python 3.14 failed:\n{proc.stderr.strip()}")
+        if not created:
+            ver = python_version(system_python())
+            if not ver or ver < REQUIRED_PYTHON:
+                fail(
+                    f"CPython >= {'.'.join(map(str, REQUIRED_PYTHON))} required "
+                    f"(found {ver}). Install python or uv."
+                )
+            run([system_python(), "-m", "venv", str(venv)])
+    venv_py = venv / "bin" / "python"
+    vver = python_version(str(venv_py))
+    if not vver or vver < REQUIRED_PYTHON:
+        fail(f"Venv Python is {vver}, need >= {REQUIRED_PYTHON}")
+    ok(f"Venv ready: {venv} (Python {version_str(vver)})")
+
+    step("Installing Dusky Keylogger + dependencies from pyproject.toml...")
+    if has_uv():
+        run(["uv", "pip", "install", "--python", str(venv_py), "-e", str(INSTALL_DIR)])
+    else:
+        run([str(venv_py), "-m", "pip", "install", "--upgrade", "pip"])
+        run([str(venv_py), "-m", "pip", "install", "-e", str(INSTALL_DIR)])
+    ok("Package installed")
+
+    run(["chown", "-R", f"{user}:{user}", str(venv)], check=False)
+    return str(venv_py)
+
+
+def install_service(venv_py: str, user: str, home: str) -> None:
+    if not SERVICE_TEMPLATE.exists():
+        fail(f"Service template missing: {SERVICE_TEMPLATE}")
+    data_dir = f"{home}/.local/share/dusky-keylogger"
+    template = string.Template(SERVICE_TEMPLATE.read_text(encoding="utf-8"))
+    rendered = template.substitute(
+        USER=user,
+        HOME=home,
+        INSTALL_DIR=str(INSTALL_DIR),
+        VENV_PYTHON=venv_py,
+        DATA_DIR=data_dir,
+    )
+    step(f"Installing {SERVICE_FILE}...")
+    tmp = SERVICE_FILE.with_suffix(".service.tmp")
+    tmp.write_text(rendered, encoding="utf-8")
+    tmp.rename(SERVICE_FILE)
+    os.chmod(SERVICE_FILE, 0o644)
+    run(["systemctl", "daemon-reload"])
+    ok("Service file installed")
+
+
+def cmd_install(args: argparse.Namespace) -> int:
+    if os.geteuid() != 0:
+        print(
+            f"{C_CYAN}[ESCALATE]{C_RESET} Not running as root -- re-executing with sudo..."
+        )
+        sudo = shutil.which("sudo")
+        if not sudo:
+            fail("sudo not found.")
+        argv = [sudo, sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]]
+        os.execv(sudo, argv)
+
+    user, home = original_user()
+    print(f"{C_CYAN}-- Dusky Keylogger installer (root) --{C_RESET}")
+    print(f"Installing for user: {C_GREEN}{user}{C_RESET} (home: {home})")
+
+    ver = python_version(system_python())
+    if not ver or ver < REQUIRED_PYTHON:
+        if not has_uv():
+            fail(
+                f"Python >= {'.'.join(map(str, REQUIRED_PYTHON))} required "
+                f"(found {ver}). Install python>=3.14 or uv."
+            )
+        warn(
+            f"System Python is {ver}; uv will provision CPython 3.14 for the venv."
+        )
+    else:
+        ok(f"Python {'.'.join(map(str, ver))}")
+
+    if user_in_group(user, "input"):
+        ok(f"User '{user}' is already in the 'input' group")
+    else:
+        step(f"Adding user '{user}' to the 'input' group...")
+        run(["usermod", "-aG", "input", user])
+        warn(
+            f"User '{user}' added to 'input' group -- a LOGOUT/LOGIN is required "
+            "for the change to take effect (or reboot)."
+        )
+
+    data_dir = Path(home) / ".local" / "share" / "dusky-keylogger"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    os.chmod(data_dir, 0o700)
+    run(["chown", "-R", f"{user}:{user}", str(data_dir)], check=False)
+
+    venv_py = build_venv(user, home)
+    install_service(venv_py, user, home)
+
+    if args.enable:
+        step("Enabling and starting service...")
+        run(["systemctl", "enable", "--now", SERVICE_NAME])
+        ok("Service enabled and started")
+
+    print(f"\n{C_GREEN}Installation complete!{C_RESET}")
+    print("  Control the daemon:")
+    print(
+        f"    sudo systemctl {'restart' if args.enable else 'start'} {SERVICE_NAME}"
+    )
+    print(f"    sudo systemctl stop {SERVICE_NAME}")
+    print(
+        f"    sudo systemctl {'disable' if args.enable else 'enable --now'} {SERVICE_NAME}"
+    )
+    print("  View analytics:")
+    print(f"    {venv_dir(home) / 'bin' / 'python'} -m dusky_keylogger dashboard")
+    print(
+        f"    {venv_dir(home) / 'bin' / 'python'} -m dusky_keylogger stats --period week"
+    )
+    if args.enable and not user_in_group(user, "input"):
+        warn(
+            "A logout/login (or reboot) is needed before the daemon can read /dev/input."
+        )
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# entry
+# ---------------------------------------------------------------------------
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Install Dusky Keylogger")
+    parser.add_argument(
+        "--enable", action="store_true", help="Also enable + start the systemd service"
+    )
+    parser.add_argument(
+        "--uninstall", action="store_true", help="Remove service + venv"
+    )
+    parser.add_argument(
+        "--purge", action="store_true", help="With --uninstall: also delete data"
+    )
+    parser.add_argument(
+        "--status", action="store_true", help="Show current state (no root needed)"
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Show the plan without changing anything"
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    if args.status:
+        return cmd_status(args)
+    if args.dry_run:
+        return cmd_dry_run(args)
+    if args.uninstall:
+        return cmd_uninstall(args)
+    return cmd_install(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
