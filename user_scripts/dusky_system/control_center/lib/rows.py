@@ -1132,6 +1132,8 @@ class ButtonRow(BaseActionRow):
         super().__init__(properties, on_press, context)
 
         multi_buttons = properties.get("buttons")
+        if multi_buttons and isinstance(multi_buttons, dict):
+            multi_buttons = [multi_buttons]
 
         if multi_buttons and isinstance(multi_buttons, list):
             box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
@@ -1140,11 +1142,22 @@ class ButtonRow(BaseActionRow):
 
             for btn_cfg in multi_buttons:
                 b = Gtk.Button()
-                if icon_name := btn_cfg.get("icon"):
+                icon_name = btn_cfg.get("icon")
+                btn_text = btn_cfg.get("button_text")
+                show_label = btn_cfg.get("show_label")
+
+                if icon_name and show_label is True and btn_text and str(btn_text).strip() not in ("", "None"):
+                    btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                    btn_box.append(Gtk.Image.new_from_icon_name(icon_name))
+                    btn_box.append(Gtk.Label(label=str(btn_text)))
+                    b.set_child(btn_box)
+                    b.set_tooltip_text(str(btn_text))
+                elif icon_name:
                     b.set_child(Gtk.Image.new_from_icon_name(icon_name))
-                    b.set_tooltip_text(str(btn_cfg.get("button_text", "Action")))
+                    if btn_text:
+                        b.set_tooltip_text(str(btn_text))
                 else:
-                    b.set_label(str(btn_cfg.get("button_text", "Action")))
+                    b.set_label(str(btn_text or "Action"))
 
                 b.connect("clicked", self._on_multi_clicked, btn_cfg)
                 if s := btn_cfg.get("style"):
@@ -1155,7 +1168,24 @@ class ButtonRow(BaseActionRow):
                 box.append(b)
             self.add_suffix(box)
         else:
-            self.btn = Gtk.Button(label=str(properties.get("button_text", "Run")))
+            icon_name = properties.get("button_icon") or properties.get("icon")
+            b_label = str(properties.get("button_text", "Run"))
+            show_label = properties.get("show_label")
+
+            self.btn = Gtk.Button()
+            if icon_name and show_label is False:
+                self.btn.set_child(Gtk.Image.new_from_icon_name(icon_name))
+                self.btn.set_tooltip_text(b_label)
+            elif icon_name and b_label and b_label != "Run":
+                btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                btn_box.append(Gtk.Image.new_from_icon_name(icon_name))
+                btn_box.append(Gtk.Label(label=b_label))
+                self.btn.set_child(btn_box)
+            elif icon_name:
+                self.btn.set_child(Gtk.Image.new_from_icon_name(icon_name))
+            else:
+                self.btn.set_label(b_label)
+
             self.btn.set_valign(Gtk.Align.CENTER)
             self.btn.add_css_class("run-btn")
 
