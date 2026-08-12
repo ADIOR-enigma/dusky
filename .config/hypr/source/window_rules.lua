@@ -519,6 +519,15 @@ hl.window_rule({
   no_blur = false,
 })
 
+--- Dusky Screentime TUI ---
+hl.window_rule({
+  name = "dusky_screentime_tui",
+  match = { class = "^(dusky_screentime_tui|screentime_tui\\.py)$" },
+  float = true,
+  size = {"(monitor_w*0.95)", "(monitor_h*0.95)"},
+  center = true,
+})
+
 --- Foot Terminal Blur ---
 hl.window_rule({
   name = "foot_blur",
