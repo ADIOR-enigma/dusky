@@ -476,9 +476,13 @@ class NotificationsPanel(Gtk.Box):
         self.listbox.queue_resize()
         win = self.get_toplevel()
         if win and isinstance(win, Gtk.Window):
-            win.resize(320, 1)
-            if hasattr(win, 'request_reposition'):
-                win.request_reposition()
+            def _idle_resize_reposition() -> bool:
+                if win.get_visible():
+                    win.resize(320, 1)
+                    if hasattr(win, 'request_reposition'):
+                        win.request_reposition()
+                return GLib.SOURCE_REMOVE
+            GLib.idle_add(_idle_resize_reposition)
 
     def _on_stack_toggled(self, app_name: str, expanded: bool) -> None:
         if expanded:

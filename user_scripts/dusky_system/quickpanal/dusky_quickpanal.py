@@ -130,7 +130,6 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
         self.connect('unmap', self._on_unmap)
         self.connect('key-press-event', self._on_key_pressed)
         self.connect('size-allocate', self._on_size_allocate)
-        self.connect('focus-out-event', self._on_focus_out_event)
         self._grab_cb = CB_TYPE(self._on_grab_cleared) if LIBGRAB else None
         main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
         main_box.set_margin_start(12)
@@ -600,9 +599,11 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
 
     def _on_map(self, *args: Any) -> None:
         if LIBGRAB and self.get_visible() and self._grab_cb and (not self._grab_active):
-            if (ptr_val := gi_object_c_pointer(self)) is not None:
-                self._grab_active = True
-                LIBGRAB.init_wayland_grab(ptr_val, self._grab_cb)
+            self._grab_active = True
+            ptr_val = hash(self)
+            if ptr_val < 0:
+                ptr_val += 1 << (ctypes.sizeof(ctypes.c_void_p) * 8)
+            LIBGRAB.init_wayland_grab(ctypes.c_void_p(ptr_val), self._grab_cb)
 
     def _on_unmap(self, *args: Any) -> None:
         if LIBGRAB and self._grab_active:
@@ -615,15 +616,7 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
         self.hide()
         execute_cmd(cmd)
 
-    def _on_focus_out_event(self, *args: Any) -> bool:
-        if is_pointer_inside_window(self):
-            return False
-        self.hide()
-        return False
-
     def _on_grab_cleared(self) -> None:
-        if is_pointer_inside_window(self):
-            return
         def safe_hide() -> bool:
             self.hide()
             return GLib.SOURCE_REMOVE
@@ -688,7 +681,7 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
             target_x = int(mon_x + mon_w - win_w - 20)
             target_y = int(mon_y + mon_h - win_h - 20)
             win_target = f"address:{win['address']}" if win.get('address') else 'class:dusky_quickpanal.py'
-            run_command(['hyprctl', 'dispatch', 'movewindowpixel', f'exact {target_x} {target_y},{win_target}'], timeout=0.8)
+            run_command(['hyprctl', 'dispatch', f'hl.dsp.window.move({{ window = "{win_target}", x = {target_x}, y = {target_y} }})'], timeout=1.0, capture_stdout=True)
         except Exception as e:
             LOG.debug(f'Reposition dispatch error: {e}')
 
