@@ -532,6 +532,10 @@ EXAMPLES:
             from python.engines.lua import HyprlandLuaEngine
             return HyprlandLuaEngine(config_path=config_path)
 
+        elif e_type == "autostart":
+            from python.engines.autostart_engine import AutostartLuaEngine
+            return AutostartLuaEngine(config_path=config_path)
+
         elif e_type == "trackpad":
             from python.engines.trackpad import TrackpadLuaEngine
             return TrackpadLuaEngine(config_path=config_path)
