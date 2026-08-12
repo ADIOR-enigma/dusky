@@ -1283,7 +1283,8 @@ class ButtonRow(BaseActionRow):
         self._trigger_action(self.on_action)
 
     def _on_multi_clicked(self, _b: Gtk.Button, cfg: dict[str, Any]) -> None:
-        if act := cfg.get("on_press"):
+        act = cfg.get("on_press") or self.on_action
+        if act:
             self._trigger_action(act)
 
     def _trigger_action(self, act: Any) -> None:

@@ -476,7 +476,7 @@ icon = "folder-new-symbolic"
 icon = "folder-new-symbolic"
 button_text = "Setup"
 style = "suggested"
-[pages.layout.items.layout.items.on_press]
+[pages.layout.items.layout.items.properties.buttons.on_press]
 type = "exec"
 command = "kitty --class dusky_backup_manager.py --hold $HOME/user_scripts/git/dusky_backup_manager.py --new"
 terminal = false
@@ -716,7 +716,7 @@ icon = "network-server-symbolic"
 icon = "network-server-symbolic"
 button_text = "Setup"
 style = "suggested"
-[pages.layout.items.on_press]
+[pages.layout.items.properties.buttons.on_press]
 type = "exec"
 command = "kitty --class 250_ftp_arch.sh --hold sh -c \"$HOME/user_scripts/arch_setup_scripts/scripts/250_ftp_arch.sh\""
 terminal = false
@@ -833,7 +833,7 @@ icon = "network-vpn-symbolic"
 icon = "network-vpn-symbolic"
 button_text = "Setup"
 style = "suggested"
-[pages.layout.items.on_press]
+[pages.layout.items.properties.buttons.on_press]
 type = "exec"
 command = "kitty --class tailscale_setup --hold sh -c \"$HOME/user_scripts/networking/01_tailscale_setup.sh\""
 terminal = false
@@ -848,7 +848,7 @@ icon = "system-lock-screen-symbolic"
 icon = "system-lock-screen-symbolic"
 button_text = "Setup"
 style = "suggested"
-[pages.layout.items.on_press]
+[pages.layout.items.properties.buttons.on_press]
 type = "exec"
 command = "kitty --class 02_openssh_setup.py --hold sh -c $HOME/user_scripts/networking/02_openssh_setup.py"
 terminal = false
@@ -879,7 +879,7 @@ icon = "preferences-desktop-remote-desktop-symbolic"
 icon = "preferences-desktop-remote-desktop-symbolic"
 button_text = "Setup"
 style = "suggested"
-[pages.layout.items.on_press]
+[pages.layout.items.properties.buttons.on_press]
 type = "exec"
 command = "kitty --class vnc_setup.py --hold sh -c \"python3 $HOME/user_scripts/networking/vnc/vnc_setup.py\""
 terminal = false
@@ -1028,7 +1028,7 @@ icon = "security-medium-symbolic"
 icon = "security-medium-symbolic"
 button_text = "Setup"
 style = "suggested"
-[pages.layout.items.layout.items.on_press]
+[pages.layout.items.layout.items.properties.buttons.on_press]
 type = "exec"
 command = "kitty --class dusky_wg_setup --hold sh -c '$HOME/user_scripts/networking/dusky_wireguard_setup.sh'"
 terminal = false
@@ -1062,7 +1062,7 @@ icon = "network-wireless-hotspot-symbolic"
 icon = "network-wireless-hotspot-symbolic"
 button_text = "Setup"
 style = "suggested"
-[pages.layout.items.on_press]
+[pages.layout.items.properties.buttons.on_press]
 type = "exec"
 command = "kitty --class airmon_ng_gpu.py --hold sh -c \"$HOME/user_scripts/networking/airmon_ng_gpu.py\""
 terminal = false
@@ -1648,7 +1648,7 @@ button_text = "Open"
 style = "suggested"
 [pages.layout.items.layout.items.properties.buttons.on_press]
 type = "exec"
-command = "waypaper"
+command = "waypaper 2>/dev/null || hyprpaper 2>/dev/null || swww-daemon 2>/dev/null || true"
 
 [[pages.layout.items.layout.items]]
 type = "button"
@@ -1764,7 +1764,7 @@ icon = "document-edit-symbolic"
 button_text = "Dconf"
 [pages.layout.items.properties.buttons.on_press]
 type = "exec"
-command = "dconf-editor"
+command = "dconf-editor 2>/dev/null || nwg-look 2>/dev/null || true"
 
 [[pages.layout.items.properties.buttons]]
 icon = "utilities-terminal-symbolic"
@@ -1846,7 +1846,7 @@ icon = "preferences-system-symbolic"
 icon = "preferences-system-symbolic"
 button_text = "Setup"
 style = "suggested"
-[pages.layout.items.layout.items.on_press]
+[pages.layout.items.layout.items.properties.buttons.on_press]
 type = "exec"
 command = "kitty --class 205_zram_configuration.sh --hold sh -c \"$HOME/user_scripts/arch_setup_scripts/scripts/205_zram_configuration.sh\""
 terminal = false
@@ -3218,7 +3218,7 @@ icon = "network-vpn-symbolic"
 icon = "network-vpn-symbolic"
 button_text = "Setup"
 style = "suggested"
-[pages.layout.items.on_press]
+[pages.layout.items.properties.buttons.on_press]
 type = "exec"
 command = "kitty --class 085_warp.py --hold sh -c \"$HOME/user_scripts/arch_setup_scripts/scripts/085_warp.py\""
 terminal = false
@@ -3234,7 +3234,7 @@ style = "destructive"
 icon = "system-run-symbolic"
 button_text = "Setup"
 style = "suggested"
-[pages.layout.items.on_press]
+[pages.layout.items.properties.buttons.on_press]
 type = "exec"
 command = "kitty --class 335_preload_config.sh --hold sh -c \"$HOME/user_scripts/arch_setup_scripts/scripts/335_preload_config.sh\""
 terminal = false
@@ -3249,7 +3249,7 @@ icon = "system-users-symbolic"
 icon = "system-users-symbolic"
 button_text = "Setup"
 style = "suggested"
-[pages.layout.items.on_press]
+[pages.layout.items.properties.buttons.on_press]
 type = "exec"
 command = "kitty --class 465_sddm_setup.sh --hold sh -c \"$HOME/user_scripts/arch_setup_scripts/scripts/465_sddm_setup.sh\""
 terminal = false
@@ -3579,7 +3579,7 @@ icon = "applications-internet-symbolic"
 icon = "applications-internet-symbolic"
 button_text = "Setup"
 style = "suggested"
-[pages.layout.items.on_press]
+[pages.layout.items.properties.buttons.on_press]
 type = "exec"
 command = "kitty --class 470_vesktop_matugen.sh --hold sh -c \"$HOME/user_scripts/arch_setup_scripts/scripts/470_vesktop_matugen.sh\""
 terminal = false
