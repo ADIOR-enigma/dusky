@@ -2520,7 +2520,7 @@ Tooltip {
                         )
 
                     elif item.value:
-                        txt.append(" ◉ ON  ", style=f"bold {self.theme_colors['bg']} on {self.theme_colors['success']}")
+                        txt.append(" ◉ ON ", style=f"bold {self.theme_colors['bg']} on {self.theme_colors['success']}")
                     else:
                         txt.append(" ◯ OFF ", style=f"{self.theme_colors['muted']} on {self.theme_colors['bg']}")
 
