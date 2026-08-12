@@ -1,737 +1,731 @@
 #!/usr/bin/env python3
 """
 ===============================================================================
-DUSKY SCREENTIME: MATUGEN THEMED TEXTUAL TUI (Python 3.14 Bleeding-Edge)
+DUSKY SCREENTIME: MATUGEN THEMED RICH & FZF DASHBOARD (Python 3.14)
 ===============================================================================
-Clean, simple screentime dashboard.
-Features:
-- Application names resolved via `.desktop` files (matching Rofi behavior)
-- Dynamic Matugen color integration (~/.config/matugen/generated/dusky_tui.json)
-- Simple period switching (Today, Yesterday, Week, Month, All Time)
-- Interactive scrolling & cursor navigation
-- Modal inspection of window title breakdown (`Enter` on any row)
-- Sleek fuzzy search app jump (`Ctrl+F` or `/`)
+Ultra-fast, lightweight screentime visualization engine featuring:
+1. Full-bleed Live Rich Terminal Dashboard with locked bottom footer
+2. Fail-safe ZeroDivisionError & schema guards across all calculations
+3. Crisp highlight background bounded strictly within table borders
+4. Atomic os.read ANSI decoder for 100% rock-solid Up/Down arrow & Vim keys
+5. Isolated SGR Mouse wheel handler preventing drag/click page jumps
+6. Smart Yesterday fallback to most recent recorded date
+7. Guaranteed terminal restoration on exit (zero freeze/hang guarantee)
 """
 
-import asyncio
-import json
 import os
 import sys
+import json
+import time
+import select
+import termios
+import tty
+import fcntl
+import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+# Ensure local imports work
 SCRIPT_DIR = Path(__file__).parent.resolve()
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 try:
-    from desktop_resolver import AppInfo, DesktopResolver
+    from desktop_resolver import DesktopResolver
 except ImportError:
     from python.desktop_resolver import AppInfo, DesktopResolver
 
+from rich.console import Console
+from rich.live import Live
+from rich.table import Table
+from rich.panel import Panel
 from rich.text import Text
-from textual import on
-from textual.app import App, ComposeResult
-from textual.binding import Binding
-from textual.containers import Container, Horizontal, Vertical
-from textual.coordinate import Coordinate
-from textual.reactive import reactive
-from textual.screen import ModalScreen
-from textual.theme import Theme
-from textual.widgets import Button, DataTable, Footer, Header, Input, Label, OptionList
+from rich.style import Style
 
 DATA_FILE = Path("~/.local/share/dusky/screentime/screentime_data.json").expanduser()
 THEME_FILE = Path("~/.config/matugen/generated/dusky_tui.json").expanduser()
 
+DEFAULT_COLORS: dict[str, str] = {
+    "bg": "#0e1416",
+    "fg": "#dee3e5",
+    "accent": "#82d3e2",
+    "error": "#ffb4ab",
+    "warning": "#b1cbd0",
+    "success": "#bbc5ea",
+    "muted": "#3f484a",
+    "cursor_bg": "#1c2528",
+}
+
+
+def load_theme_colors() -> dict[str, str]:
+    colors = DEFAULT_COLORS.copy()
+    if THEME_FILE.exists():
+        try:
+            with open(THEME_FILE, "r", encoding="utf-8") as f:
+                user_colors = json.load(f)
+                if isinstance(user_colors, dict):
+                    colors.update(user_colors)
+        except Exception:
+            pass
+    return colors
+
+
+def load_screentime_data() -> dict[str, dict[str, Any]]:
+    if DATA_FILE.exists():
+        try:
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+        except Exception:
+            pass
+    return {}
+
+
+def get_active_hypr_window() -> tuple[str, str]:
+    xdg_runtime = os.environ.get("XDG_RUNTIME_DIR")
+    sig = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
+
+    sock_path = None
+    if xdg_runtime and sig:
+        p = Path(xdg_runtime) / "hypr" / sig / ".socket.sock"
+        if p.exists():
+            sock_path = p
+
+    if not sock_path and xdg_runtime:
+        base_dir = Path(xdg_runtime) / "hypr"
+        if base_dir.exists():
+            for sdir in base_dir.iterdir():
+                sp = sdir / ".socket.sock"
+                if sp.exists():
+                    sock_path = sp
+                    break
+
+    if sock_path:
+        try:
+            import socket
+
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                s.settimeout(0.3)
+                s.connect(str(sock_path))
+                s.sendall(b"j/activewindow")
+                resp = s.recv(4096).decode("utf-8", errors="ignore")
+                data = json.loads(resp)
+                if isinstance(data, dict):
+                    return str(data.get("class", "")).strip(), str(data.get("title", "")).strip()
+        except Exception:
+            pass
+
+    return "", ""
+
+
+def simplify_category(cat: str) -> str:
+    if not isinstance(cat, str):
+        return "System"
+    match cat:
+        case "Terminal & Shell" | "TerminalEmulator":
+            return "Terminal"
+        case "Web Browser":
+            return "Browser"
+        case "Audio & Video" | "AudioVideo" | "Multimedia player":
+            return "Media"
+        case "Agentic Platform":
+            return "AI"
+        case "Development":
+            return "Dev"
+        case "Utilities" | "System" | "System Controls" | "System Settings":
+            return "System"
+        case "Virtual machine viewer/manager" | "Virtual Machine":
+            return "VM"
+        case _:
+            if len(cat) > 15:
+                return f"{cat[:12]}..."
+            return cat
+
 
 def format_duration(seconds: int) -> str:
-    if seconds <= 0:
+    if not isinstance(seconds, (int, float)) or seconds <= 0:
         return "0s"
+    seconds = int(seconds)
     h = seconds // 3600
     m = (seconds % 3600) // 60
     s = seconds % 60
-    if h > 0:
-        return f"{h}h {m:02d}m {s:02d}s"
-    elif m > 0:
-        return f"{m}m {s:02d}s"
-    else:
-        return f"{s}s"
+    match (h > 0, m > 0):
+        case (True, _):
+            return f"{h}h {m:02d}m {s:02d}s"
+        case (False, True):
+            return f"{m}m {s:02d}s"
+        case _:
+            return f"{s}s"
 
 
-def make_bar(percent: float, width: int = 18) -> str:
+def make_bar_text(percent: float, colors: dict[str, str], is_active: bool, is_cursor: bool, width: int = 16) -> Text:
+    percent = max(0.0, min(100.0, float(percent)))
     filled = int(round((percent / 100.0) * width))
     filled = max(0, min(width, filled))
     empty = width - filled
-    return "█" * filled + "░" * empty
 
-
-class AppDetailModal(ModalScreen[None]):
-    """
-    Detailed modal popup inspecting an app's window title breakdown, total duration, sessions, and share.
-    """
-
-    BINDINGS = [
-        Binding("escape", "dismiss", "Close"),
-        Binding("q", "dismiss", "Close"),
-        Binding("enter", "dismiss", "Close"),
-    ]
-
-    def __init__(
-        self,
-        app_class: str,
-        app_info: dict[str, Any],
-        total_screentime: int,
-        colors: dict[str, str],
-    ) -> None:
-        super().__init__()
-        self.app_class = app_class
-        self.app_info = app_info
-        self.total_screentime = total_screentime
-        self.theme_colors = colors
-
-    def compose(self) -> ComposeResult:
-        name = self.app_info.get("name", self.app_class)
-        cat = self.app_info.get("category", "Application")
-        dur = self.app_info.get("duration", 0)
-        sessions = self.app_info.get("sessions", 1)
-        share = (
-            (dur / self.total_screentime * 100.0)
-            if self.total_screentime > 0
-            else 0.0
-        )
-
-        accent_clr = self.theme_colors.get("accent", "#b2d189")
-        success_clr = self.theme_colors.get("success", "#a0d0cb")
-        fg_clr = self.theme_colors.get("fg", "#e2e3d8")
-
-        with Container(id="detail-backdrop"):
-            with Vertical(id="detail-box"):
-                yield Label(
-                    f"[bold {accent_clr}]{name}[/] [dim]({cat})[/]", id="detail-title"
-                )
-                yield Label(
-                    f"Total Time: [bold {success_clr}]{format_duration(dur)}[/]  |  Share: [bold {accent_clr}]{share:.1f}%[/]  |  Focus Sessions: [bold {fg_clr}]{sessions}[/]",
-                    id="detail-subtitle",
-                )
-                yield Label(
-                    "[bold]Window Title Breakdown:[/bold]", id="detail-section-title"
-                )
-                table = DataTable(id="detail-table")
-                table.cursor_type = "row"
-                table.add_column("Duration", key="dur", width=14)
-                table.add_column("Window Title / Document", key="title", width=None)
-
-                titles_sorted = sorted(
-                    self.app_info.get("titles", {}).items(),
-                    key=lambda x: x[1],
-                    reverse=True,
-                )
-                if titles_sorted:
-                    for t_title, t_dur in titles_sorted:
-                        table.add_row(format_duration(t_dur), t_title)
-                else:
-                    table.add_row("-", "No detailed window titles recorded")
-
-                yield table
-                with Horizontal(id="detail-footer"):
-                    yield Button("Close (Esc/Enter)", id="btn-detail-close")
-
-    def on_mount(self) -> None:
-        self.query_one("#detail-table", DataTable).focus()
-
-    @on(Button.Pressed, "#btn-detail-close")
-    def on_close(self) -> None:
-        self.dismiss(None)
-
-
-class SearchAppModal(ModalScreen[int | None]):
-    """
-    Sleek fuzzy search popup to quickly find and jump to an application in the table.
-    """
-
-    BINDINGS = [
-        Binding("escape", "dismiss", "Close"),
-        Binding("q", "dismiss", "Close"),
-        Binding("down", "cursor_down", "Down"),
-        Binding("up", "cursor_up", "Up"),
-    ]
-
-    def __init__(
-        self, apps_list: list[tuple[str, dict[str, Any]]], colors: dict[str, str]
-    ) -> None:
-        super().__init__()
-        self.apps_list = apps_list
-        self.theme_colors = colors
-        self.filtered_indices: list[int] = []
-
-    def compose(self) -> ComposeResult:
-        with Container(id="search-backdrop"):
-            with Vertical(id="search-box"):
-                yield Label(
-                    f"[bold {self.theme_colors.get('accent', '#b2d189')}]Search & Jump to Application (Esc to close)[/]",
-                    id="search-title",
-                )
-                yield Input(
-                    placeholder="Type app name or category...", id="search-input"
-                )
-                yield OptionList(id="search-options")
-                with Horizontal(id="search-footer"):
-                    yield Button("Cancel (Esc)", id="btn-search-close")
-
-    def on_mount(self) -> None:
-        self.query_one("#search-input", Input).focus()
-        self._filter_options("")
-
-    def on_key(self, event: Any) -> None:
-        if event.key == "escape":
-            event.stop()
-            self.dismiss(None)
-
-    @on(Input.Changed, "#search-input")
-    def on_input_changed(self, event: Input.Changed) -> None:
-        self._filter_options(event.value)
-
-    def _filter_options(self, query: str) -> None:
-        ol = self.query_one("#search-options", OptionList)
-        ol.clear_options()
-        self.filtered_indices = []
-
-        q = query.lower().strip()
-        from textual.widgets.option_list import Option
-
-        for orig_idx, (cls, info) in enumerate(self.apps_list):
-            name = info.get("name", cls)
-            cat = info.get("category", "Application")
-            dur = format_duration(info.get("duration", 0))
-
-            if not q or q in name.lower() or q in cls.lower() or q in cat.lower():
-                txt = Text()
-                txt.append(
-                    f"{name} ", style=f"bold {self.theme_colors.get('fg', '#e2e3d8')}"
-                )
-                txt.append(
-                    f"— {dur}",
-                    style=f"bold {self.theme_colors.get('success', '#a0d0cb')}",
-                )
-                ol.add_option(Option(txt, id=f"opt_{orig_idx}"))
-                self.filtered_indices.append(orig_idx)
-
-    @on(OptionList.OptionSelected, "#search-options")
-    def on_option_selected(self, event: OptionList.OptionSelected) -> None:
-        if event.option_index is not None and event.option_index < len(
-            self.filtered_indices
-        ):
-            self.dismiss(self.filtered_indices[event.option_index])
-
-    @on(Input.Submitted, "#search-input")
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        ol = self.query_one("#search-options", OptionList)
-        if ol.highlighted is not None and ol.highlighted < len(self.filtered_indices):
-            self.dismiss(self.filtered_indices[ol.highlighted])
-        elif self.filtered_indices:
-            self.dismiss(self.filtered_indices[0])
-
-    @on(Button.Pressed, "#btn-search-close")
-    def on_cancel(self) -> None:
-        self.dismiss(None)
-
-
-class ScreentimeTUI(App[None]):
-    """
-    Simple, humanized Screentime TUI.
-    """
-
-    BASE_CSS = """
-    Screen {
-        background: $surface;
-        color: $foreground;
-    }
-
-    #top-header {
-        height: 3;
-        padding: 0 2;
-        margin: 1 2 1 2;
-        background: $surface;
-        border: solid $secondary;
-        align: left middle;
-    }
-
-    #lbl-total-time {
-        width: 1fr;
-        content-align: left middle;
-    }
-
-    #lbl-stats {
-        width: auto;
-        content-align: right middle;
-    }
-
-    #table-wrapper {
-        height: auto;
-        max-height: 1fr;
-        padding: 0 2 1 2;
-    }
-
-    DataTable {
-        height: auto;
-        max-height: 1fr;
-        background: $background;
-        color: $foreground;
-        border: solid $secondary;
-    }
-
-    DataTable > .datatable--header {
-        background: $surface;
-        color: $primary;
-        text-style: bold;
-    }
-
-    DataTable > .datatable--cursor {
-        background: $success 25%;
-        color: $foreground;
-        text-style: bold;
-    }
-
-    DataTable > .datatable--highlight {
-        background: $success 20%;
-        color: $foreground;
-        text-style: bold;
-    }
-
-    #search-backdrop, #detail-backdrop {
-        align: center middle;
-        background: rgba(0, 0, 0, 0.75);
-    }
-
-    #search-box {
-        width: 84;
-        height: 24;
-        background: $background;
-        border: heavy $primary;
-        padding: 1 2;
-    }
-
-    #detail-box {
-        width: 96;
-        height: 28;
-        background: $background;
-        border: heavy $primary;
-        padding: 1 2;
-    }
-
-    #search-title, #detail-title {
-        text-align: center;
-        width: 100%;
-        margin-bottom: 1;
-    }
-
-    #detail-subtitle {
-        text-align: center;
-        width: 100%;
-        margin-bottom: 1;
-    }
-
-    #detail-section-title {
-        margin-top: 1;
-        margin-bottom: 1;
-    }
-
-    #detail-table {
-        height: 1fr;
-        background: $surface;
-        border: solid $secondary;
-    }
-
-    #search-input {
-        margin-bottom: 1;
-        background: $surface;
-        color: $foreground;
-        border: solid $secondary;
-    }
-
-    #search-options {
-        height: 1fr;
-        background: $background;
-        border: solid $secondary;
-    }
-
-    #search-footer, #detail-footer {
-        height: 3;
-        align: center middle;
-        margin-top: 1;
-    }
-
-    #btn-search-close, #btn-detail-close {
-        background: $primary;
-        color: $background;
-        border: none;
-    }
-    """
-
-    ENABLE_COMMAND_PALETTE = False
-
-    BINDINGS = [
-        Binding("q", "quit", "Quit", show=True),
-        Binding("ctrl+f", "search_apps", "Search", show=True),
-        Binding("/", "search_apps", "Search", show=False),
-        Binding("enter", "inspect_app", "Details", show=True),
-        Binding("1", "select_range('today')", "Today", show=True),
-        Binding("2", "select_range('yesterday')", "Yesterday", show=True),
-        Binding("3", "select_range('week')", "Week", show=True),
-        Binding("4", "select_range('month')", "Month", show=True),
-        Binding("5", "select_range('all')", "All Time", show=True),
-    ]
-
-    current_range = reactive("today")
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.resolver: DesktopResolver = DesktopResolver()
-        self.raw_data: dict[str, dict[str, Any]] = {}
-        self.active_class: str = ""
-        self.active_title: str = ""
-        self.aggregated_apps: dict[str, dict[str, Any]] = {}
-
-        self.theme_colors: dict[str, str] = {
-            "bg": "#12140e",
-            "fg": "#e2e3d8",
-            "accent": "#b2d189",
-            "error": "#ffb4ab",
-            "warning": "#c0cbac",
-            "success": "#a0d0cb",
-            "muted": "#44483d",
-        }
-        self.last_theme_mtime: float = 0.0
-
-    def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
-
-        with Horizontal(id="top-header"):
-            yield Label("", id="lbl-total-time")
-            yield Label("", id="lbl-stats")
-
-        with Container(id="table-wrapper"):
-            yield DataTable(id="app-table")
-
-        yield Footer()
-
-    def apply_matugen_theme(self) -> None:
-        self._theme_toggle = not getattr(self, "_theme_toggle", False)
-        theme_name = "matugen_live_A" if self._theme_toggle else "matugen_live_B"
-
-        custom_theme = Theme(
-            name=theme_name,
-            primary=self.theme_colors.get("accent", "#b2d189"),
-            secondary=self.theme_colors.get("muted", "#44483d"),
-            background=self.theme_colors.get("bg", "#12140e"),
-            surface=self.theme_colors.get("bg", "#12140e"),
-            warning=self.theme_colors.get("warning", "#c0cbac"),
-            error=self.theme_colors.get("error", "#ffb4ab"),
-            success=self.theme_colors.get("success", "#a0d0cb"),
-            variables={
-                "foreground": self.theme_colors.get("fg", "#e2e3d8"),
-            },
-        )
-        self.register_theme(custom_theme)
-        self.theme = theme_name
-
-    async def watch_theme_file(self) -> None:
-        if not THEME_FILE.exists():
-            return
-        try:
-            stat_info = await asyncio.to_thread(THEME_FILE.stat)
-            current_mtime = stat_info.st_mtime
-            if current_mtime > self.last_theme_mtime:
-                self.last_theme_mtime = current_mtime
-
-                def _load_json() -> dict[str, Any]:
-                    with open(THEME_FILE, "r", encoding="utf-8") as f:
-                        return json.load(f)
-
-                try:
-                    new_theme = await asyncio.to_thread(_load_json)
-                    self.theme_colors.update(new_theme)
-                    self.apply_matugen_theme()
-                    self._update_display(reset_cursor=False)
-                except Exception:
-                    pass
-        except OSError:
-            pass
-
-    def on_mount(self) -> None:
-        self.title = "Dusky Screentime"
-
-        if THEME_FILE.exists():
-            try:
-                with open(THEME_FILE, "r", encoding="utf-8") as f:
-                    self.theme_colors.update(json.load(f))
-                self.last_theme_mtime = THEME_FILE.stat().st_mtime
-            except Exception:
-                pass
-
-        self.apply_matugen_theme()
-
-        table = self.query_one("#app-table", DataTable)
-        table.cursor_type = "row"
-        table.add_column("Status", key="status", width=12)
-        table.add_column("Application", key="app", width=None)
-        table.add_column("Time", key="duration", width=16)
-        table.add_column("Share", key="share", width=12)
-        table.add_column("Bar", key="bar", width=22)
-
-        self._load_data()
-        self._update_display(reset_cursor=True)
-        table.focus()
-
-        self.set_interval(1.0, self._tick_refresh)
-        self.set_interval(0.5, self.watch_theme_file)
-
-    def _tick_refresh(self) -> None:
-        self._load_data()
-        self._update_display(reset_cursor=False)
-
-    def _load_data(self) -> None:
-        if DATA_FILE.exists():
-            try:
-                with open(DATA_FILE, "r", encoding="utf-8") as f:
-                    self.raw_data = json.load(f)
-            except Exception:
-                pass
-
-        self._get_live_active_class()
-
-    def _get_live_active_class(self) -> None:
-        xdg_runtime = os.environ.get("XDG_RUNTIME_DIR")
-        sig = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
-
-        sock_path = None
-        if xdg_runtime and sig:
-            p = Path(xdg_runtime) / "hypr" / sig / ".socket.sock"
-            if p.exists():
-                sock_path = p
-
-        if not sock_path and xdg_runtime:
-            base_dir = Path(xdg_runtime) / "hypr"
-            if base_dir.exists():
-                for sdir in base_dir.iterdir():
-                    sp = sdir / ".socket.sock"
-                    if sp.exists():
-                        sock_path = sp
-                        break
-
-        if sock_path:
-            try:
-                import socket as _socket
-
-                with _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM) as s:
-                    s.settimeout(0.3)
-                    s.connect(str(sock_path))
-                    s.sendall(b"j/activewindow")
-                    resp = s.recv(4096).decode("utf-8", errors="ignore")
-                    data = json.loads(resp)
-                    self.active_class = data.get("class", "").strip()
-                    self.active_title = data.get("title", "").strip()
-                    return
-            except Exception:
-                pass
-
-        self.active_class = ""
-        self.active_title = ""
-
-    def _aggregate_by_range(self) -> tuple[dict[str, dict[str, Any]], int]:
-        today_date = datetime.now()
-        today_str = today_date.strftime("%Y-%m-%d")
-        yesterday_str = (today_date - timedelta(days=1)).strftime("%Y-%m-%d")
-
-        target_days: list[str] = []
-        match self.current_range:
-            case "today":
-                target_days = [today_str]
-            case "yesterday":
+    accent = colors.get("accent", "#82d3e2")
+    success = colors.get("success", "#bbc5ea")
+    muted = colors.get("muted", "#3f484a")
+
+    txt = Text()
+    bar_color = success if is_active else accent
+    txt.append("━" * filled, style=f"bold {bar_color}")
+    txt.append("─" * empty, style=f"dim {muted}")
+    return txt
+
+
+def aggregate_by_range(
+    raw_data: dict[str, dict[str, Any]], range_key: str
+) -> tuple[dict[str, dict[str, Any]], int, str]:
+    today_date = datetime.now()
+    today_str = today_date.strftime("%Y-%m-%d")
+    yesterday_str = (today_date - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    target_days: list[str] = []
+    display_label = ""
+
+    match range_key:
+        case "today":
+            target_days = [today_str]
+            display_label = "Today"
+        case "yesterday":
+            if yesterday_str in raw_data:
                 target_days = [yesterday_str]
-            case "week":
-                target_days = [
-                    (today_date - timedelta(days=d)).strftime("%Y-%m-%d")
-                    for d in range(7)
-                ]
-            case "month":
-                target_days = [
-                    (today_date - timedelta(days=d)).strftime("%Y-%m-%d")
-                    for d in range(30)
-                ]
-            case _:
-                target_days = list(self.raw_data.keys())
+                display_label = "Yesterday"
+            else:
+                past_dates = sorted([d for d in raw_data.keys() if d < today_str], reverse=True)
+                if past_dates:
+                    target_days = [past_dates[0]]
+                    display_label = f"Yesterday ({past_dates[0]})"
+                else:
+                    target_days = [yesterday_str]
+                    display_label = "Yesterday"
+        case "week":
+            target_days = [
+                (today_date - timedelta(days=d)).strftime("%Y-%m-%d")
+                for d in range(7)
+            ]
+            display_label = "Past 7 Days"
+        case "month":
+            target_days = [
+                (today_date - timedelta(days=d)).strftime("%Y-%m-%d")
+                for d in range(30)
+            ]
+            display_label = "Past 30 Days"
+        case _:
+            target_days = list(raw_data.keys())
+            display_label = "All Time"
 
-        agg: dict[str, dict[str, Any]] = {}
-        total_time = 0
+    agg: dict[str, dict[str, Any]] = {}
+    total_time = 0
 
-        for day in target_days:
-            if day not in self.raw_data:
+    for day in target_days:
+        if day not in raw_data or not isinstance(raw_data[day], dict):
+            continue
+        for cls, info in raw_data[day].items():
+            if not isinstance(info, dict):
                 continue
-            for cls, info in self.raw_data[day].items():
-                dur = info.get("duration", 0)
-                if dur <= 0:
-                    continue
-                if cls not in agg:
-                    agg[cls] = {
-                        "name": info.get("name", cls),
-                        "category": info.get("category", "Application"),
-                        "icon": info.get("icon", ""),
-                        "duration": 0,
-                        "sessions": 0,
-                        "titles": {},
-                    }
-                agg[cls]["duration"] += dur
-                agg[cls]["sessions"] += info.get("sessions", 1)
-                total_time += dur
+            dur = info.get("duration", 0)
+            if not isinstance(dur, (int, float)) or dur <= 0:
+                continue
+            dur = int(dur)
+            if cls not in agg:
+                agg[cls] = {
+                    "name": str(info.get("name", cls)),
+                    "category": str(info.get("category", "Application")),
+                    "icon": str(info.get("icon", "")),
+                    "duration": 0,
+                    "sessions": 0,
+                    "titles": {},
+                }
+            agg[cls]["duration"] += dur
+            agg[cls]["sessions"] += int(info.get("sessions", 1))
+            total_time += dur
 
-                for t_title, t_dur in info.get("titles", {}).items():
-                    agg[cls]["titles"][t_title] = (
-                        agg[cls]["titles"].get(t_title, 0) + t_dur
-                    )
+            titles_dict = info.get("titles")
+            if isinstance(titles_dict, dict):
+                for t_title, t_dur in titles_dict.items():
+                    if isinstance(t_dur, (int, float)):
+                        agg[cls]["titles"][str(t_title)] = (
+                            agg[cls]["titles"].get(str(t_title), 0) + int(t_dur)
+                        )
 
-        return agg, total_time
+    return agg, total_time, display_label
 
-    def _update_display(self, reset_cursor: bool = False) -> None:
-        table = self.query_one("#app-table", DataTable)
-        saved_row = table.cursor_coordinate.row if table.row_count > 0 and not reset_cursor else 0
 
-        self.aggregated_apps, total_time = self._aggregate_by_range()
+# =============================================================================
+# COLOR-CODED FZF PREVIEW RENDERER
+# =============================================================================
+def render_fzf_preview(app_class: str, range_key: str = "today") -> None:
+    console = Console()
+    colors = load_theme_colors()
+    raw_data = load_screentime_data()
+    agg, total_time, _ = aggregate_by_range(raw_data, range_key)
 
-        range_names = {
-            "today": "Today",
-            "yesterday": "Yesterday",
-            "week": "Past 7 Days",
-            "month": "Past 30 Days",
-            "all": "All Time",
-        }
-        r_name = range_names.get(self.current_range, "Today")
+    if app_class not in agg:
+        console.print(f"[bold red]No screentime data found for class:[/] {app_class}")
+        return
 
-        accent_clr = self.theme_colors.get("accent", "#b2d189")
-        success_clr = self.theme_colors.get("success", "#a0d0cb")
-        warning_clr = self.theme_colors.get("warning", "#c0cbac")
-        fg_clr = self.theme_colors.get("fg", "#e2e3d8")
-        muted_clr = self.theme_colors.get("muted", "#44483d")
+    info = agg[app_class]
+    name = info.get("name", app_class)
+    cat = simplify_category(info.get("category", "Application"))
+    icon = info.get("icon", "")
+    dur = info.get("duration", 0)
+    sessions = info.get("sessions", 1)
+    share = (dur / total_time * 100.0) if total_time > 0 else 0.0
 
-        lbl_total_time = self.query_one("#lbl-total-time", Label)
-        lbl_total_time.update(
-            f"Total Time: [bold {success_clr}]{format_duration(total_time)}[/]  [dim {muted_clr}]({r_name})[/]"
-        )
+    accent = colors.get("accent", "#82d3e2")
+    success = colors.get("success", "#bbc5ea")
+    warning = colors.get("warning", "#b1cbd0")
+    fg = colors.get("fg", "#dee3e5")
 
-        lbl_stats = self.query_one("#lbl-stats", Label)
-        lbl_stats.update(f"Tracked: [bold {fg_clr}]{len(self.aggregated_apps)}[/] apps")
+    console.print(f"\n\033[1;38;5;81m:: \033[1;37m{name}\033[0m  \033[1;38;5;203m({cat})\033[0m")
+    console.print(f"\033[38;5;242mClass:\033[0m \033[1;37m{app_class}\033[0m \033[38;5;238m│\033[0m \033[38;5;242mIcon:\033[0m \033[38;5;114m{icon}\033[0m")
+    console.print("\033[38;5;238m────────────────────────────────────────────────────────\033[0m")
+    console.print(
+        f"Time: \033[1;38;5;114m{format_duration(dur)}\033[0m  \033[38;5;238m│\033[0m  Share: \033[1;38;5;220m{share:.1f}%\033[0m  \033[38;5;238m│\033[0m  Sessions: \033[1;38;5;81m{sessions}\033[0m"
+    )
+    console.print("\033[38;5;238m────────────────────────────────────────────────────────\033[0m")
+    console.print("\n\033[1;38;5;220m󰏖 Window Title & Document Breakdown:\033[0m\n")
 
-        sorted_apps = sorted(
-            self.aggregated_apps.items(), key=lambda x: x[1]["duration"], reverse=True
-        )
+    table = Table(box=None, show_header=True, header_style=f"bold {accent}", expand=True)
+    table.add_column("Duration", style=f"bold {success}", width=12, no_wrap=True)
+    table.add_column("Window Title / Document", style=f"{fg}", no_wrap=True)
 
-        table.clear(columns=False)
-        max_dur = sorted_apps[0][1]["duration"] if sorted_apps else 1
+    titles_sorted = sorted(
+        info.get("titles", {}).items(), key=lambda x: x[1], reverse=True
+    )
 
-        for idx, (cls, info) in enumerate(sorted_apps):
-            dur = info["duration"]
-            share = (dur / total_time * 100.0) if total_time > 0 else 0.0
+    if titles_sorted:
+        for t_title, t_dur in titles_sorted:
+            table.add_row(format_duration(t_dur), str(t_title))
+    else:
+        table.add_row("-", "No detailed window titles recorded")
 
-            is_active = (
-                cls.lower() == self.active_class.lower() and self.active_class != ""
-            )
-            if is_active:
-                status_txt = Text("▶ ACTIVE", style=f"bold reverse {success_clr}")
-            else:
-                status_txt = Text("  idle", style=f"dim {muted_clr}")
+    console.print(table)
 
-            app_name = info.get("name", cls)
-            app_cat = info.get("category", "Application")
 
-            app_txt = Text()
-            if is_active:
-                app_txt.append(app_name, style=f"bold underline {success_clr}")
-                app_txt.append(f"  ({app_cat})", style=f"bold {success_clr}")
-            else:
-                app_txt.append(
-                    app_name, style=f"bold {fg_clr}" if idx == 0 else f"{fg_clr}"
-                )
-                app_txt.append(f"  ({app_cat})", style=f"dim {warning_clr}")
+# =============================================================================
+# COLOR-CODED INTERACTIVE FZF EXPLORER MODE
+# =============================================================================
+def run_fzf_explorer(range_key: str = "today") -> None:
+    raw_data = load_screentime_data()
+    agg, total_time, _ = aggregate_by_range(raw_data, range_key)
+    colors = load_theme_colors()
 
-            dur_txt = Text(
-                format_duration(dur),
-                style=f"bold {success_clr}"
-                if is_active or idx == 0
-                else f"{success_clr}",
-            )
-            share_txt = Text(
-                f"{share:.1f}%",
-                style=f"bold {success_clr}" if is_active else f"{accent_clr}",
-            )
+    if not agg:
+        print("[!] No screentime data available for the selected period.")
+        return
 
-            bar_str = make_bar((dur / max_dur) * 100.0, width=20)
-            bar_clr = (
-                success_clr if is_active else (accent_clr if idx == 0 else warning_clr)
-            )
-            bar_txt = Text(bar_str, style=f"bold {bar_clr}")
+    sorted_apps = sorted(agg.items(), key=lambda x: x[1]["duration"], reverse=True)
 
-            table.add_row(status_txt, app_txt, dur_txt, share_txt, bar_txt, key=cls)
+    lines = []
+    for cls, info in sorted_apps:
+        dur = info["duration"]
+        share = (dur / total_time * 100.0) if total_time > 0 else 0.0
+        name = info.get("name", cls)
+        cat = simplify_category(info.get("category", "Application"))
+        
+        disp = f"\033[1;38;5;81m{name:<26}\033[0m \033[38;5;238m│\033[0m \033[1;38;5;114m{format_duration(dur):<10}\033[0m \033[38;5;238m│\033[0m \033[1;38;5;220m{share:5.1f}%\033[0m \033[38;5;238m│\033[0m \033[38;5;246m{cat:<12}\033[0m \033[38;5;238m│\033[0m {cls}"
+        lines.append(disp)
 
-        total_count = len(sorted_apps)
-        if total_count > 0:
-            target_row = max(0, min(saved_row, total_count - 1))
-            try:
-                table.move_cursor(row=target_row, column=0)
-            except Exception:
-                pass
-            curr_idx = target_row + 1
+    script_path = sys.argv[0]
+    preview_cmd = f'python3 "{script_path}" --preview {{5}} {range_key}'
+
+    visual_header = f" \033[1;37m{'APPLICATION':<26}\033[0m \033[38;5;238m│\033[0m \033[1;37m{'TIME':<10}\033[0m \033[38;5;238m│\033[0m \033[1;37m{'SHARE':<6}\033[0m \033[38;5;238m│\033[0m \033[1;37m{'CATEGORY':<12}\033[0m"
+
+    fzf_cmd = [
+        "fzf",
+        "--ansi",
+        "--delimiter=│",
+        "--with-nth=1,2,3,4",
+        "--no-hscroll",
+        "--highlight-line",
+        "--prompt= 󱎫 Screentime ❯ ",
+        "--pointer=❯ ",
+        "--marker=✔ ",
+        "--layout=reverse",
+        "--border=rounded",
+        "--border-label= 󱎫 Dusky Screentime Explorer [Alt+C: Copy Summary] ",
+        "--border-label-pos=3",
+        "--info=hidden",
+        f"--header={visual_header}",
+        "--header-first",
+        f"--color=bg+:{colors.get('muted', '#3f484a')},bg:{colors.get('bg', '#0e1416')},spinner:{colors.get('accent', '#82d3e2')}",
+        f"--color=fg:{colors.get('fg', '#dee3e5')},fg+:{colors.get('fg', '#dee3e5')},header:{colors.get('accent', '#82d3e2')},info:{colors.get('accent', '#82d3e2')}",
+        f"--color=pointer:{colors.get('success', '#bbc5ea')},marker:{colors.get('success', '#bbc5ea')},prompt:{colors.get('accent', '#82d3e2')}",
+        f"--color=hl:{colors.get('accent', '#82d3e2')},hl+:{colors.get('accent', '#82d3e2')},border:{colors.get('muted', '#3f484a')},label:{colors.get('accent', '#82d3e2')}",
+        f"--preview={preview_cmd}",
+        "--preview-window=right,50%,border-left,wrap",
+        "--bind=alt-c:execute-silent(echo {1} {2} | wl-copy)+change-prompt( 󱎫 Copied Summary! ❯ )",
+    ]
+
+    input_data = "\n".join(lines).encode("utf-8")
+    try:
+        proc = subprocess.run(fzf_cmd, input=input_data, capture_output=True)
+        if proc.returncode == 0 and proc.stdout:
+            selected_line = proc.stdout.decode("utf-8").strip()
+    except FileNotFoundError:
+        print("[!] Error: 'fzf' is not installed. Please install fzf via 'sudo pacman -S fzf'.")
+
+
+# =============================================================================
+# LIVE RICH TERMINAL DASHBOARD MODE WITH FAIL-SAFE DIVISIONS & GUARDS
+# =============================================================================
+def render_dashboard_layout(
+    range_key: str, colors: dict[str, str], scroll_offset: int, cursor_idx: int, console_height: int
+) -> tuple[Panel, int, int, int]:
+    raw_data = load_screentime_data()
+    agg, total_time, r_name = aggregate_by_range(raw_data, range_key)
+    active_cls, active_title = get_active_hypr_window()
+
+    accent = colors.get("accent", "#82d3e2")
+    success = colors.get("success", "#bbc5ea")
+    warning = colors.get("warning", "#b1cbd0")
+    fg = colors.get("fg", "#dee3e5")
+    muted = colors.get("muted", "#3f484a")
+    cursor_bg = colors.get("cursor_bg", "#1c2528")
+
+    # Header Status Bar
+    header_text = Text()
+    header_text.append(" 󱎫 Dusky Screentime ", style=f"bold {accent}")
+    header_text.append(f"({r_name})", style=f"bold {warning}")
+    header_text.append("  Total: ", style=f"{fg}")
+    header_text.append(f"{format_duration(total_time)}", style=f"bold {success}")
+    header_text.append("  Apps: ", style=f"{fg}")
+    header_text.append(f"{len(agg)}", style=f"bold {fg}")
+
+    if active_cls:
+        header_text.append("   ▶ ACTIVE: ", style=f"bold {success}")
+        header_text.append(f"{active_cls}", style=f"bold {success}")
+    else:
+        header_text.append("   ▶ ACTIVE: ", style=f"dim {muted}")
+        header_text.append("idle", style=f"dim {muted}")
+
+    # Table Setup
+    table = Table(box=None, expand=True, show_header=True, header_style=f"bold {accent}")
+    table.add_column("", width=2, justify="center", no_wrap=True)
+    table.add_column("Application & Category", ratio=3, no_wrap=True)
+    table.add_column("Time", width=12, justify="right", no_wrap=True)
+    table.add_column("Share", width=8, justify="right", no_wrap=True)
+    table.add_column("Usage Bar", ratio=2, no_wrap=True)
+    table.add_column("", width=1, justify="center", no_wrap=True)  # Slim Scrollbar Column
+
+    sorted_apps = sorted(agg.items(), key=lambda x: x[1]["duration"], reverse=True)
+    total_apps = len(sorted_apps)
+
+    # Fail-safe max_dur guard to prevent ZeroDivisionError
+    if sorted_apps and sorted_apps[0][1]["duration"] > 0:
+        max_dur = max(1, sorted_apps[0][1]["duration"])
+    else:
+        max_dur = 1
+
+    visible_rows = max(3, console_height - 6)
+    max_scroll = max(0, total_apps - visible_rows)
+
+    if total_apps > 0:
+        cursor_idx = max(0, min(cursor_idx, total_apps - 1))
+        if cursor_idx < scroll_offset:
+            scroll_offset = cursor_idx
+        elif cursor_idx >= scroll_offset + visible_rows:
+            scroll_offset = cursor_idx - visible_rows + 1
+    else:
+        cursor_idx = 0
+        scroll_offset = 0
+
+    scroll_offset = max(0, min(scroll_offset, max_scroll))
+    page_apps = sorted_apps[scroll_offset : scroll_offset + visible_rows]
+
+    # Calculate Scrollbar Thumb Position Safely
+    if total_apps > visible_rows:
+        thumb_h = max(1, int(round((visible_rows / total_apps) * visible_rows)))
+        max_thumb_top = max(0, visible_rows - thumb_h)
+        if max_scroll > 0:
+            thumb_top = int(round((scroll_offset / max_scroll) * max_thumb_top))
         else:
-            curr_idx = 0
+            thumb_top = 0
+    else:
+        thumb_h = visible_rows
+        thumb_top = 0
 
-        table.border_subtitle = (
-            f" {curr_idx}/{total_count} " if total_count > 0 else " 0/0 "
-        )
+    for idx_in_page, (cls, info) in enumerate(page_apps):
+        global_idx = scroll_offset + idx_in_page
+        dur = info["duration"]
+        share = (dur / total_time * 100.0) if total_time > 0 else 0.0
+        is_active = (cls.lower() == active_cls.lower() and active_cls != "")
+        is_cursor = (global_idx == cursor_idx)
 
-    def action_select_range(self, range_key: str) -> None:
-        self.current_range = range_key
-        self._update_display(reset_cursor=True)
+        if is_active:
+            status_cell = Text("●", style=f"bold {success}")
+        elif is_cursor:
+            status_cell = Text("▸", style=f"bold {accent}")
+        else:
+            status_cell = Text("·", style=f"dim {muted}")
 
-    def action_search_apps(self) -> None:
-        sorted_apps = sorted(
-            self.aggregated_apps.items(), key=lambda x: x[1]["duration"], reverse=True
-        )
-        if not sorted_apps:
-            return
+        app_name = info.get("name", cls)
+        cat = simplify_category(info.get("category", "Application"))
 
-        def _on_search_result(row_idx: int | None) -> None:
-            if row_idx is not None:
-                table = self.query_one("#app-table", DataTable)
-                try:
-                    table.move_cursor(row=row_idx, column=0)
-                except Exception:
-                    pass
+        bg_style = f"on {cursor_bg}" if is_cursor else ""
 
-        self.push_screen(
-            SearchAppModal(sorted_apps, self.theme_colors), _on_search_result
-        )
+        app_cell = Text()
+        if is_active:
+            app_cell.append(f"{app_name}", style=f"bold {success}")
+            app_cell.append(f"  ({cat})", style=f"dim {success}")
+        elif is_cursor:
+            app_cell.append(f"{app_name}", style=f"bold {fg}")
+            app_cell.append(f"  ({cat})", style=f"bold {accent}")
+        else:
+            app_cell.append(f"{app_name}", style=f"bold {fg}" if global_idx == 0 else f"{fg}")
+            app_cell.append(f"  ({cat})", style=f"dim {warning}")
 
-    def action_inspect_app(self) -> None:
-        table = self.query_one("#app-table", DataTable)
-        if table.row_count == 0 or table.cursor_coordinate.row < 0:
-            return
+        dur_cell = Text(format_duration(dur), style=f"bold {success}" if is_active or is_cursor or global_idx == 0 else f"{success}")
+        share_cell = Text(f"{share:.1f}%", style=f"bold {success}" if is_active else f"{accent}")
+        bar_cell = make_bar_text((dur / max_dur) * 100.0, colors, is_active, is_cursor, width=16)
 
-        sorted_apps = sorted(
-            self.aggregated_apps.items(), key=lambda x: x[1]["duration"], reverse=True
-        )
-        row_idx = table.cursor_coordinate.row
-        if row_idx < len(sorted_apps):
-            cls, info = sorted_apps[row_idx]
-            _, total_time = self._aggregate_by_range()
-            self.push_screen(
-                AppDetailModal(cls, info, total_time, self.theme_colors)
+        if total_apps > visible_rows:
+            if thumb_top <= idx_in_page < thumb_top + thumb_h:
+                scroll_cell = Text("┃", style=f"bold {accent}")
+            else:
+                scroll_cell = Text("│", style=f"dim {muted}")
+        else:
+            scroll_cell = Text("")
+
+        if bg_style:
+            status_cell.stylize(bg_style)
+            app_cell.stylize(bg_style)
+            dur_cell.stylize(bg_style)
+            share_cell.stylize(bg_style)
+            bar_cell.stylize(bg_style)
+
+        table.add_row(status_cell, app_cell, dur_cell, share_cell, bar_cell, scroll_cell)
+
+    rows_rendered = len(page_apps)
+    if rows_rendered < visible_rows:
+        for _ in range(visible_rows - rows_rendered):
+            table.add_row("", "", "", "", "", "")
+
+    footer_text = Text()
+    footer_text.append(" Controls: ", style=f"bold {muted}")
+    footer_text.append("[1-5] Period   [j/k/↑/↓] Move   [Ctrl-D/Ctrl-U] Page   ", style=f"{fg}")
+    footer_text.append("[Enter] Details   [F] FZF   [Q] Quit", style=f"bold {accent}")
+
+    layout_group = Table.grid(expand=True)
+    layout_group.add_row(header_text)
+    layout_group.add_row(table)
+    layout_group.add_row(footer_text)
+
+    if total_apps > visible_rows:
+        subtitle_str = f"[bold {accent}]Item {cursor_idx + 1} of {total_apps}[/] [dim]({scroll_offset + 1}–{min(scroll_offset + visible_rows, total_apps)} visible | j/k/Wheel to scroll)[/dim]"
+    elif total_apps > 0:
+        subtitle_str = f"[bold {accent}]Item {cursor_idx + 1} of {total_apps}[/] [dim](Live Dashboard)[/dim]"
+    else:
+        subtitle_str = f"[bold {warning}]No screentime data recorded for {r_name}[/bold {warning}]"
+
+    panel = Panel(
+        layout_group,
+        border_style=f"{accent}",
+        title="[bold]Dusky Screentime[/bold]",
+        subtitle=subtitle_str,
+        expand=True,
+        height=console_height,
+    )
+    return panel, scroll_offset, cursor_idx, max_scroll
+
+
+def run_live_dashboard() -> None:
+    console = Console()
+    colors = load_theme_colors()
+    range_key = "today"
+    scroll_offset = 0
+    cursor_idx = 0
+
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+
+    # Configure non-blocking reads on stdin descriptor
+    fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+    fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+
+    # Enable SGR Mouse Wheel Reporting ONLY
+    sys.stdout.write("\x1b[?1000h\x1b[?1006h")
+    sys.stdout.flush()
+
+    try:
+        while True:
+            tty.setcbreak(fd)
+            panel, scroll_offset, cursor_idx, max_scroll = render_dashboard_layout(
+                range_key, colors, scroll_offset, cursor_idx, console.height
             )
 
-    @on(DataTable.RowSelected, "#app-table")
-    def on_row_selected(self, event: DataTable.RowSelected) -> None:
-        self.action_inspect_app()
+            action = None
+            target_app = ""
+
+            with Live(panel, console=console, refresh_per_second=4, screen=True) as live:
+                while True:
+                    r, _, _ = select.select([fd], [], [], 0.25)
+                    if r:
+                        try:
+                            chunk = os.read(fd, 1024)
+                        except OSError:
+                            chunk = b""
+
+                        if not chunk:
+                            continue
+
+                        if chunk.startswith(b"\x1b"):
+                            if b"[<" in chunk:
+                                try:
+                                    m_str = chunk.decode("utf-8", errors="ignore")
+                                    if "[<" in m_str:
+                                        m_packet = m_str[m_str.find("[<") + 2 :]
+                                        parts = m_packet.rstrip("mM").split(";")
+                                        if parts and parts[0].isdigit():
+                                            b_code = int(parts[0])
+                                            if b_code == 64:
+                                                cursor_idx = max(0, cursor_idx - 3)
+                                            elif b_code == 65:
+                                                cursor_idx = cursor_idx + 3
+                                except Exception:
+                                    pass
+                            else:
+                                match chunk:
+                                    case b"\x1b[A" | b"\x1bOA" | b"\x1b[1;2A" | b"\x1b[1;5A":
+                                        cursor_idx = max(0, cursor_idx - 1)
+                                    case b"\x1b[B" | b"\x1bOB" | b"\x1b[1;2B" | b"\x1b[1;5B":
+                                        cursor_idx = cursor_idx + 1
+                                    case b"\x1b[5~":
+                                        cursor_idx = max(0, cursor_idx - 10)
+                                    case b"\x1b[6~":
+                                        cursor_idx = cursor_idx + 10
+                                    case b"\x1b[H" | b"\x1b[1~":
+                                        cursor_idx = 0
+                                    case b"\x1b[F" | b"\x1b[4~":
+                                        cursor_idx = 999999
+                                    case _:
+                                        pass
+                        else:
+                            ch_byte = chunk[:1]
+                            match ch_byte:
+                                case b"q" | b"\x03":
+                                    action = "quit"
+                                    break
+                                case b"\r" | b"\n":
+                                    raw_data = load_screentime_data()
+                                    agg, _, _ = aggregate_by_range(raw_data, range_key)
+                                    sorted_apps = sorted(agg.items(), key=lambda x: x[1]["duration"], reverse=True)
+                                    if sorted_apps and cursor_idx < len(sorted_apps):
+                                        target_app = sorted_apps[cursor_idx][0]
+                                        action = "details"
+                                        break
+                                case b"j" | b"s":
+                                    cursor_idx = cursor_idx + 1
+                                case b"k" | b"w":
+                                    cursor_idx = max(0, cursor_idx - 1)
+                                case b"\x04":
+                                    cursor_idx = cursor_idx + 10
+                                case b"\x15":
+                                    cursor_idx = max(0, cursor_idx - 10)
+                                case b"\x06":
+                                    cursor_idx = cursor_idx + 15
+                                case b"\x02":
+                                    cursor_idx = max(0, cursor_idx - 15)
+                                case b"g":
+                                    cursor_idx = 0
+                                case b"G":
+                                    cursor_idx = 999999
+                                case b"1":
+                                    range_key = "today"
+                                    cursor_idx = 0
+                                    scroll_offset = 0
+                                case b"2":
+                                    range_key = "yesterday"
+                                    cursor_idx = 0
+                                    scroll_offset = 0
+                                case b"3":
+                                    range_key = "week"
+                                    cursor_idx = 0
+                                    scroll_offset = 0
+                                case b"4":
+                                    range_key = "month"
+                                    cursor_idx = 0
+                                    scroll_offset = 0
+                                case b"5":
+                                    range_key = "all"
+                                    cursor_idx = 0
+                                    scroll_offset = 0
+                                case b"f" | b"/":
+                                    action = "fzf"
+                                    break
+                                case b"r":
+                                    colors = load_theme_colors()
+
+                    panel, scroll_offset, cursor_idx, max_scroll = render_dashboard_layout(
+                        range_key, colors, scroll_offset, cursor_idx, console.height
+                    )
+                    live.update(panel)
+
+            # Clean screen switching outside Live context
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+            sys.stdout.write("\x1b[?1000l\x1b[?1006l")
+            sys.stdout.flush()
+
+            if action == "quit":
+                break
+            elif action == "details" and target_app:
+                console.clear()
+                render_fzf_preview(target_app, range_key)
+                print("\n[Press Enter to return to Dashboard...]")
+                input()
+            elif action == "fzf":
+                run_fzf_explorer(range_key)
+
+            sys.stdout.write("\x1b[?1000h\x1b[?1006h")
+            sys.stdout.flush()
+
+    except KeyboardInterrupt:
+        pass
+    finally:
+        # ABSOLUTE TERMINAL RESTORATION GUARANTEE
+        try:
+            fcntl.fcntl(fd, fcntl.F_SETFL, fl)
+        except Exception:
+            pass
+        sys.stdout.write("\x1b[?1000l\x1b[?1006l")
+        sys.stdout.flush()
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        console.print("[bold green]✔ Screentime Dashboard closed cleanly.[/bold green]")
+
+
+# =============================================================================
+# CLI ENTRY POINT
+# =============================================================================
+def main() -> None:
+    if len(sys.argv) > 1:
+        cmd = sys.argv[1].lower()
+        match cmd:
+            case "--preview":
+                app_cls = sys.argv[2] if len(sys.argv) > 2 else ""
+                r_key = sys.argv[3] if len(sys.argv) > 3 else "today"
+                render_fzf_preview(app_cls, r_key)
+                return
+            case "--fzf" | "-i" | "fzf" | "explore":
+                r_key = sys.argv[2] if len(sys.argv) > 2 else "today"
+                run_fzf_explorer(r_key)
+                return
+            case "--help" | "-h":
+                print("Usage: screentime_tui.py [OPTIONS]")
+                print("  (no args)           Launch Python Rich Live Dashboard")
+                print("  --fzf, -i           Launch Interactive FZF Explorer")
+                print("  --preview CLS KEY   Render ANSI preview window for FZF")
+                return
+            case _:
+                pass
+
+    run_live_dashboard()
 
 
 if __name__ == "__main__":
-    app = ScreentimeTUI()
-    app.run()
+    main()
