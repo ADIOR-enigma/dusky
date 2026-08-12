@@ -253,7 +253,7 @@ main() {
 
     local script_path="${HOME}/user_scripts/hypr/input/keybinds_cheatsheet.py"
     local cheatsheet_cmd="kitty --class DuskyKeybindsCheatsheet --title \"Dusky Keybinds Cheatsheet\" -e python3.14 ${script_path}"
-    local cheatsheet_row="󰌌  <span weight=\"bold\" foreground=\"#a6e3a1\">[CHEATSHEET]</span> <span weight=\"bold\">Dusky Keybinds Cheatsheet</span>${DELIM}exec${DELIM}${cheatsheet_cmd}"
+    local cheatsheet_row="󰌌  <span background=\"#fab387\" foreground=\"#11111b\" weight=\"bold\"> CHEATSHEET </span> <span weight=\"bold\">Dusky Keybinds Cheatsheet</span>${DELIM}exec${DELIM}${cheatsheet_cmd}"
     records=("$cheatsheet_row" "${records[@]}")
 
     for record in "${records[@]}"; do
