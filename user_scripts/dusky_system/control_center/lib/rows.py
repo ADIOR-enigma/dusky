@@ -1168,23 +1168,22 @@ class ButtonRow(BaseActionRow):
                 box.append(b)
             self.add_suffix(box)
         else:
-            icon_name = properties.get("button_icon") or properties.get("icon")
             b_label = str(properties.get("button_text", "Run"))
+            button_icon = properties.get("button_icon")
             show_label = properties.get("show_label")
 
-            self.btn = Gtk.Button()
-            if icon_name and show_label is False:
-                self.btn.set_child(Gtk.Image.new_from_icon_name(icon_name))
+            if button_icon and show_label is False:
+                self.btn = Gtk.Button()
+                self.btn.set_child(Gtk.Image.new_from_icon_name(button_icon))
                 self.btn.set_tooltip_text(b_label)
-            elif icon_name and b_label and b_label != "Run":
+            elif button_icon and b_label:
+                self.btn = Gtk.Button()
                 btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-                btn_box.append(Gtk.Image.new_from_icon_name(icon_name))
+                btn_box.append(Gtk.Image.new_from_icon_name(button_icon))
                 btn_box.append(Gtk.Label(label=b_label))
                 self.btn.set_child(btn_box)
-            elif icon_name:
-                self.btn.set_child(Gtk.Image.new_from_icon_name(icon_name))
             else:
-                self.btn.set_label(b_label)
+                self.btn = Gtk.Button(label=b_label)
 
             self.btn.set_valign(Gtk.Align.CENTER)
             self.btn.add_css_class("run-btn")
