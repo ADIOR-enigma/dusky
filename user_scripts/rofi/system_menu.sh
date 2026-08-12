@@ -295,7 +295,7 @@ show_learn_menu() {
 
         case "$choice" in
             '󰌌  Keybindings (List)')
-                run_app "$SCRIPTS_DIR/rofi/keybindings.sh"
+                run_app "$SCRIPTS_DIR/hypr/input/rofi_keybinds/keybindings.sh"
                 ;;
             '󰣇  Arch Wiki')
                 run_app xdg-open "https://wiki.archlinux.org/"

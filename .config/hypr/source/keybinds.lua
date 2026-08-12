@@ -83,7 +83,7 @@ hl.bind(
 
 hl.bind(
     "CTRL + SHIFT + SPACE",
-    hl.dsp.exec_cmd("pkill rofi; " .. dusky_scripts .. "rofi/keybindings.sh"),
+    hl.dsp.exec_cmd("pkill rofi; " .. dusky_scripts .. "hypr/input/rofi_keybinds/keybindings.sh"),
     { description = "Show Keybinds" }
 )
 

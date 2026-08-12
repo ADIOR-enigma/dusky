@@ -23,6 +23,7 @@ readonly -a REQUIRED_COMMANDS=(
     gawk
     hyprctl
     jq
+    luajit
     mktemp
     rofi
     sort
@@ -217,88 +218,9 @@ get_binds() {
 build_rows() {
     local cache=$1
     local delim=$2
+    local categorizer="${HOME}/user_scripts/hypr/input/rofi_keybinds/categorize_binds.py"
 
-    get_binds "$delim" | gawk -F"$delim" -v delim="$delim" -v cache="$cache" '
-        BEGIN {
-            while ((getline < cache) > 0) {
-                split($0, parts, "\t")
-                if (parts[1] != "") {
-                    keymap[parts[1]] = parts[2]
-                }
-            }
-            close(cache)
-        }
-
-        function esc(text) {
-            gsub(/\r/, " ", text)
-            gsub(/\n/, " ", text)
-            gsub(/&/, "\\&amp;", text)
-            gsub(/</, "\\&lt;", text)
-            gsub(/>/, "\\&gt;", text)
-            return text
-        }
-
-        function icon_for(dispatcher) {
-            if (dispatcher ~ /^exec/)  return " "
-            if (dispatcher ~ /kill/)   return " "
-            if (dispatcher ~ /resize/) return "󰩨 "
-            if (dispatcher ~ /move/)   return "󰆾 "
-            if (dispatcher ~ /float/)  return " "
-            if (dispatcher ~ /full/)   return " "
-            if (dispatcher ~ /work/)   return " "
-            if (dispatcher ~ /pass/)   return " "
-            return " "
-        }
-
-        function mods_for(mask, out) {
-            out = ""
-            if (and(mask, 1))   out = out "SHIFT "
-            if (and(mask, 2))   out = out "CAPS "
-            if (and(mask, 4))   out = out "CTRL "
-            if (and(mask, 8))   out = out "ALT "
-            if (and(mask, 16))  out = out "MOD2 "
-            if (and(mask, 32))  out = out "MOD3 "
-            if (and(mask, 64))  out = out "SUPER "
-            if (and(mask, 128)) out = out "MOD5 "
-            sub(/[[:space:]]+$/, "", out)
-            return out
-        }
-
-        {
-            submap = $1
-            key = $2
-            keycode = int($3)
-            modmask = int($4)
-            description = $5
-            dispatcher = $6
-            argument = $7
-
-            if (key !~ /^mouse:/ && keycode > 0 && (keycode in keymap)) {
-                key = keymap[keycode]
-            } else if (key == "" && keycode > 0) {
-                key = sprintf("code:%d", keycode)
-            }
-
-            key = toupper(key)
-            mods = mods_for(modmask)
-
-            display_key = sprintf("<span alpha=\"65%%\">%s</span> <span weight=\"bold\">%s</span>", esc(sprintf("%-7s", mods)), esc(sprintf("%-10s", key)))
-
-            if (description != "") {
-                action = esc(description)
-            } else if (argument != "") {
-                action = sprintf("%s <span alpha=\"50%%\" style=\"italic\">(%s)</span>", esc(dispatcher), esc(argument))
-            } else {
-                action = esc(dispatcher)
-            }
-
-            if (submap != "" && submap != "global") {
-                action = sprintf("<span weight=\"bold\" foreground=\"#f38ba8\">[%s]</span> %s", esc(toupper(submap)), action)
-            }
-
-            printf "%s  %s  %s%s%s%s%s\n", icon_for(dispatcher), display_key, action, delim, dispatcher, delim, argument
-        }
-    '
+    get_binds "$delim" | "$categorizer" "$cache" "$delim"
 }
 
 main() {
@@ -308,7 +230,6 @@ main() {
     local selected_line
     local dispatcher
     local argument
-    local rest
     local record
     local -a records=()
     local -a menu_rows=()
@@ -322,10 +243,7 @@ main() {
         : > "$KEYMAP_CACHE"
     fi
 
-    if ! data=$(
-        build_rows "$KEYMAP_CACHE" "$DELIM" |
-        LC_ALL=C sort -u
-    ); then
+    if ! data=$(build_rows "$KEYMAP_CACHE" "$DELIM"); then
         die "Failed to query Hyprland binds."
     fi
 
@@ -350,17 +268,23 @@ main() {
     (( selected_index >= 0 && selected_index < ${#records[@]} )) || exit 0
 
     selected_line=${records[selected_index]}
-    argument=${selected_line##*$DELIM}
-    rest=${selected_line%$DELIM*}
-    if [[ $rest == *"$DELIM"* ]]; then
-        dispatcher=${rest##*$DELIM}
-    else
-        dispatcher=$rest
-        argument=""
-    fi
 
-    if [[ $dispatcher == "exec" || $dispatcher == "exec_cmd" ]]; then
+    local nl=$'\n'
+    local -a fields=()
+    mapfile -t fields <<< "${selected_line//$DELIM/$nl}"
+
+    dispatcher=${fields[1]:-}
+    argument=${fields[2]:-}
+    local description=${fields[3]:-}
+
+    local dispatch_helper="${HOME}/user_scripts/hypr/input/rofi_keybinds/dispatch_hypr_bind.lua"
+
+    if [[ $dispatcher == "header" ]]; then
+        exit 0
+    elif [[ $dispatcher == "exec" || $dispatcher == "exec_cmd" ]]; then
         eval "$argument" >/dev/null 2>&1 &
+    elif [[ -x $dispatch_helper ]]; then
+        "$dispatch_helper" "$description" "$dispatcher" "$argument" || die "Failed to dispatch keybinding: ${description:-$dispatcher}"
     elif [[ -n $argument ]]; then
         hyprctl dispatch "$dispatcher" "$argument" || die "Failed to dispatch: $dispatcher $argument"
     else
