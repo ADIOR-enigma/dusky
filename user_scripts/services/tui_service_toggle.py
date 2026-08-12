@@ -90,10 +90,7 @@ CORE_USER_DEFS = {
         "Dusky Screentime Tracking Daemon",
         "Wayland screentime tracking daemon. Connects to Hyprland UNIX socket to monitor active window durations and persist daily usage metrics.",
     ),
-    "dusky_tui.service": (
-        "Dusky TUI Pre-Warming Daemon",
-        "Background daemon that pre-loads Python modules, watches configuration files, and keeps schema AST states warm in memory for instant TUI launches.",
-    ),
+
     "dusky_notif_time.service": (
         "Notification Timestamp Daemon",
         "Background daemon that tracks exact arrival timestamps for Mako desktop notifications and caches them for QuickPanel and Rofi displays.",

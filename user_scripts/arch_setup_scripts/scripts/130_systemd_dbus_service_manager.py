@@ -63,8 +63,7 @@ USER_SERVICES: list[ServiceConfig] = [
     ServiceConfig("$HOME/user_scripts/way_layers/visualizer/dusky_visualizer.service", "disable"),
     # Dusky Screentime Tracker (Default: Disable)
     ServiceConfig("$HOME/user_scripts/screentime/dusky_screentime.service", "disable"),
-    # Dusky TUI Pre-warming Daemon (Default: Enable)
-    ServiceConfig("$HOME/user_scripts/dusky_tui/python/service/dusky_tui.service", "disable"),
+
     # Dusky Notification Time Tracker Daemon (Default: Disable)
     ServiceConfig("$HOME/user_scripts/dusky_system/quickpanal/service/notification_time_service/dusky_notif_time.service", "disable"),
 ]
