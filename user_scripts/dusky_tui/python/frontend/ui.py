@@ -2406,24 +2406,26 @@ Tooltip {
         else:
             txt.append("    ")
 
-        # Status dot.
+        # Status indicator.
         if item.type_ == "preset":
             if is_active_preset:
-                txt.append("●  ", style=self.theme_colors["success"])
+                txt.append("✦  ", style=self.theme_colors["success"])
             elif is_deviated_preset:
-                txt.append("●  ", style=self.theme_colors["warning"])
+                txt.append("✦  ", style=self.theme_colors["warning"])
             else:
-                txt.append("●  ", style=self.theme_colors["muted"])
+                txt.append("·  ", style=self.theme_colors["muted"])
 
         elif item.type_ in ("action", "menu"):
-            txt.append("●  ", style=self.theme_colors["muted"])
+            txt.append("·  ", style=self.theme_colors["muted"])
 
         else:
             if not self.auto_save and is_pending:
                 txt.append("[+] ", style=self.theme_colors["warning"])
             else:
-                dot_color = self.theme_colors["error"] if (is_modified and exists) else self.theme_colors["muted"]
-                txt.append("●  ", style=dot_color)
+                if is_modified and exists:
+                    txt.append("✦  ", style=self.theme_colors["warning"])
+                else:
+                    txt.append("·  ", style=self.theme_colors["muted"])
 
         # Label rendering.
         warning_marker = f"{_ICON_WARNING} " if item.warning_msg else ""
@@ -2433,6 +2435,8 @@ Tooltip {
                 label_style = f"{self.theme_colors['success']} bold"
             elif item.type_ == "preset" and is_deviated_preset:
                 label_style = f"{self.theme_colors['warning']} bold" if is_highlighted else f"{self.theme_colors['fg']}"
+            elif is_modified:
+                label_style = f"{self.theme_colors['warning']} bold" if is_highlighted else self.theme_colors["warning"]
             else:
                 label_style = f"{self.theme_colors['fg']} bold" if is_highlighted else self.theme_colors["fg"]
 
@@ -2515,14 +2519,14 @@ Tooltip {
 
                     elif not exists:
                         txt.append(
-                            f" {'◉ ON' if item.value else '◯ OFF'} ",
+                            f" {'◉' if item.value else '◯'} ",
                             style=f"{self.theme_colors['muted']} italic"
                         )
 
                     elif item.value:
-                        txt.append(" ◉ ON ", style=f"bold {self.theme_colors['bg']} on {self.theme_colors['success']}")
+                        txt.append(" ◉ ", style=f"bold {self.theme_colors['success']}")
                     else:
-                        txt.append(" ◯ OFF ", style=f"{self.theme_colors['muted']} on {self.theme_colors['bg']}")
+                        txt.append(" ◯ ", style=f"{self.theme_colors['muted']}")
 
                 case "string":
                     if val_str == "":
