@@ -431,16 +431,20 @@ def _extract_sata_wear_percentage(attrs: dict[int, dict[str, Any]]) -> int:
                     return max(0, 100 - v) if is_remaining else max(0, min(100, v))
     return 0
 
-def _extract_sata_tbw(attrs: dict[int, dict[str, Any]]) -> float:
+def _extract_sata_tbw(attrs: dict[int, dict[str, Any]], capacity_tb: float = 0.0) -> float:
     attr_241 = attrs.get(241) or {}
     raw_val = (attr_241.get("raw") or {}).get("value")
     if raw_val is not None:
         try:
             raw = int(raw_val)
             name = str(attr_241.get("name", "")).upper()
+            tbw_32mb = round(raw * 32 * 1024 * 1024 / 1e12, 2)
+            tbw_512b = round(raw * 512 / 1e12, 2)
             if "32MIB" in name or "32MB" in name:
-                return round(raw * 32 * 1024 * 1024 / 1e12, 2)
-            return round(raw * 512 / 1e12, 2)
+                return tbw_32mb
+            if tbw_512b < 0.1 and 0.1 <= tbw_32mb < 1000.0 and capacity_tb > 0.1:
+                return tbw_32mb
+            return tbw_512b
         except ValueError:
             pass
 
@@ -455,6 +459,8 @@ def _query_block_smart(device: str) -> SmartData | None:
     if not shutil.which("smartctl"):
         console.print("[red]smartctl not found. Please install smartmontools.[/]")
         return None
+
+    capacity_tb = get_device_capacity_tb(device)
 
     for args in (["smartctl", "-x", "--json", device], ["smartctl", "-x", "--json", "-d", "sat", device]):
         try:
@@ -489,7 +495,7 @@ def _query_block_smart(device: str) -> SmartData | None:
             poh_val = (attrs.get(9) or {}).get("raw", {}).get("value")
             smart["power_on_hours"] = int(poh_val) if poh_val is not None else 0
             smart["percentage_used"] = _extract_sata_wear_percentage(attrs)
-            smart["tbw_written"] = _extract_sata_tbw(attrs)
+            smart["tbw_written"] = _extract_sata_tbw(attrs, capacity_tb)
             
             usd_val = (attrs.get(174) or {}).get("raw", {}).get("value")
             smart["unsafe_shutdowns"] = int(usd_val) if usd_val is not None else 0
@@ -760,13 +766,24 @@ def _build_partition_table(layout: DiskLayout) -> Table:
         table.add_row(p.name, p.fs_type, p.mountpoint, "[bold magenta]Yes[/]" if p.is_luks else "No", luks_pt, fs_discard)
     return table
 
+def align_gap_to_erase_blocks(gap: SectorRange, sector_size: int = 512) -> tuple[int, int] | None:
+    start_sec, end_sec = gap
+    # 4 MiB Erase Block Alignment Safety (8192 512-byte sectors)
+    sector_align = max(1, (4 * 1024 * 1024) // sector_size)
+    aligned_start = math.ceil(start_sec / sector_align) * sector_align
+    aligned_end = ((end_sec + 1) // sector_align * sector_align) - 1
+    if aligned_end > aligned_start:
+        return (aligned_start, aligned_end)
+    return None
+
 def _build_discard_commands(layout: DiskLayout, force: bool = False) -> list[str]:
     commands: list[str] = []
     flag = "-f " if force else ""
     for gap in layout.unallocated_gaps:
-        offset = gap[0] * layout.sector_size
-        length = (gap[1] - gap[0] + 1) * layout.sector_size
-        commands.append(f"sudo blkdiscard {flag}--offset {offset} --length {length} {layout.device}")
+        if aligned := align_gap_to_erase_blocks(gap, layout.sector_size):
+            offset = aligned[0] * layout.sector_size
+            length = (aligned[1] - aligned[0] + 1) * layout.sector_size
+            commands.append(f"sudo blkdiscard {flag}--offset {offset} --length {length} {layout.device}")
     return commands
 
 def render_drive_diagnostics(layout: DiskLayout, smart: SmartData, scan_ratio: float | None, dry_run: bool = False, exec_discard: bool = False, is_mock: bool = False) -> None:
@@ -808,7 +825,7 @@ def render_drive_diagnostics(layout: DiskLayout, smart: SmartData, scan_ratio: f
         elif scan_ratio > 0 and not exec_discard:
             cmds = _build_discard_commands(layout, force=True)
             cmd_lines = "\n".join(f"  {c}" for c in cmds)
-            rec = Text.assemble("\n", "[bold yellow][!] DIAGNOSTIC ADVISORY:[/]\n", "This drive contains unallocated sectors holding obsolete host data mappings.\n", "The SSD controller cannot utilize these blocks for over-provisioning until they are discarded.\n\n", "[bold green][*] RECOMMENDED ACTION COMMANDS:[/]\n", f"{cmd_lines}\n\n", "[dim]Note: blkdiscard targeting explicit byte offsets is fully partition-safe.[/]")
+            rec = Text.assemble("\n", "[bold yellow][!] DIAGNOSTIC ADVISORY:[/]\n", "This drive contains unallocated sectors holding obsolete host data mappings.\n", "The SSD controller cannot utilize these blocks for over-provisioning until they are discarded.\n\n", "[bold green][*] RECOMMENDED ACTION COMMANDS (4MB Erase Block Aligned):[/]\n", f"{cmd_lines}\n\n", "[dim]Note: blkdiscard is automatically 4MB erase-block aligned for absolute partition safety.[/]")
             console.print(Panel(rec, title="[bold yellow]Wear-Leveling Correction Plan[/]", border_style="yellow", width=PANEL_WIDTH))
 
     # 2. Render Execution or Simulation Panels
@@ -818,13 +835,16 @@ def render_drive_diagnostics(layout: DiskLayout, smart: SmartData, scan_ratio: f
             for c in _build_discard_commands(layout, force=True): console.print(f"  [green]✔ MOCK SUCCESS: Executed {c}[/]")
         else:
             for gap in layout.unallocated_gaps:
-                off = gap[0] * layout.sector_size
-                ln = (gap[1] - gap[0] + 1) * layout.sector_size
-                try:
-                    subprocess.run(["blkdiscard", "-f", "--offset", str(off), "--length", str(ln), layout.device], check=True, capture_output=True, text=True)
-                    console.print(f"  [green]✔ Successfully trimmed {(ln / (1<<20)):.2f} MiB at byte offset {off}[/]")
-                except subprocess.CalledProcessError as e:
-                    console.print(f"  [red]✘ Failed to discard offset {off}: {e.stderr.strip()}[/]")
+                if aligned := align_gap_to_erase_blocks(gap, layout.sector_size):
+                    off = aligned[0] * layout.sector_size
+                    ln = (aligned[1] - aligned[0] + 1) * layout.sector_size
+                    try:
+                        subprocess.run(["blkdiscard", "-f", "--offset", str(off), "--length", str(ln), layout.device], check=True, capture_output=True, text=True)
+                        console.print(f"  [green]✔ Successfully trimmed {(ln / (1<<20)):.2f} MiB at 4MB-aligned byte offset {off}[/]")
+                    except subprocess.CalledProcessError as e:
+                        console.print(f"  [red]✘ Failed to discard offset {off}: {e.stderr.strip()}[/]")
+                else:
+                    console.print(f"  [dim yellow]Notice: Unallocated gap ({gap[0]}-{gap[1]}) is smaller than 4 MiB erase block boundary. Skipping discard for partition safety.[/]")
         console.print("\n[bold green][+] Wear-leveling map has been refreshed. Dynamic OP is fully active![/]")
 
     elif dry_run and layout.unallocated_gaps:
