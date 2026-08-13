@@ -112,7 +112,7 @@ class OptionTextCache:
         return txt
 
     def invalidate_uid(self, uid: str) -> None:
-        kill = [k for k in self._data if k[0] == uid]
+        kill = [k for k in self._data if k[0] == uid or (len(k) > 1 and k[1] in ("menu", "preset"))]
         for k in kill:
             del self._data[k]
 
@@ -2340,6 +2340,59 @@ Tooltip {
         for t_idx, i_idx, itm in self._preset_items:
             self._refresh_single_ui(t_idx, i_idx, itm)
 
+    def _get_parent_children_status(self, parent_item: ConfigItem, tab_idx: int | None = None) -> tuple[bool, bool]:
+        """
+        Recursively inspects all child items under `parent_item` to determine if:
+        - is_child_modified: Any descendant item value differs from its schema default.
+        - is_child_pending: Any descendant item value differs from its initial value.
+        """
+        parent_key = parent_item.key
+        parent_uid = self._get_item_uid(parent_item)
+        if not parent_key:
+            return False, False
+
+        if tab_idx is None:
+            tab_idx = self._current_tab_index()
+
+        items_in_tab = self.schema.get(tab_idx, [])
+
+        child_uids = set()
+        child_keys = set()
+        stack = [parent_key, parent_uid]
+        while stack:
+            curr = stack.pop()
+            for itm in items_in_tab:
+                p_ref = getattr(itm, "parent_ref", None)
+                if p_ref and p_ref == curr:
+                    child_uids.add(self._get_item_uid(itm))
+                    child_keys.add(itm.key)
+                    if getattr(itm, "is_parent", False) or getattr(itm, "type_", None) == "menu":
+                        stack.append(itm.key)
+                        stack.append(self._get_item_uid(itm))
+
+        if not child_uids:
+            return False, False
+
+        any_modified = False
+        any_pending = False
+
+        for itm in items_in_tab:
+            if (itm.key in child_keys or self._get_item_uid(itm) in child_uids) and itm.type_ not in ("menu", "action", "preset"):
+                v_ser = itm.serialize(itm.value)
+                d_ser = itm.serialize(itm.default)
+                init_val = itm.initial_value if getattr(itm, "initial_value", None) is not None else itm.value
+                i_ser = itm.serialize(init_val)
+
+                if v_ser != d_ser:
+                    any_modified = True
+                if v_ser != i_ser:
+                    any_pending = True
+
+                if any_modified and (any_pending or self.auto_save):
+                    break
+
+        return any_modified, any_pending
+
     # =========================================================================
     # OPTION RENDERING
     # =========================================================================
@@ -2350,17 +2403,24 @@ Tooltip {
         indent_prefix: str = ""
     ) -> Text:
         val_ser = item.serialize(item.value)
-        init_ser = item.serialize(item.initial_value)
+        init_val = item.initial_value if getattr(item, "initial_value", None) is not None else item.value
+        init_ser = item.serialize(init_val)
         def_ser = item.serialize(item.default)
         ratio_bucket = int(self._get_preset_match_ratio(item) * 10) if item.type_ == "preset" else -1
+
+        if item.is_parent or item.type_ == "menu":
+            is_modified, is_pending = self._get_parent_children_status(item)
+        else:
+            is_pending = (val_ser != init_ser)
+            is_modified = (val_ser != def_ser)
 
         cache_key = (
             item.uid,
             item.type_,
             val_ser,
             item.exists_in_target,
-            val_ser != init_ser,
-            val_ser != def_ser,
+            is_pending,
+            is_modified,
             is_highlighted,
             indent_prefix,
             item.expanded,
@@ -2378,8 +2438,6 @@ Tooltip {
         txt = Text()
 
         exists = item.exists_in_target
-        is_pending = (val_ser != init_ser)
-        is_modified = (val_ser != def_ser)
 
         CURSOR_CHAR = "▶"
         cursor = f"{CURSOR_CHAR} " if is_highlighted else "  "
@@ -2415,7 +2473,7 @@ Tooltip {
             else:
                 txt.append("·  ", style=self.theme_colors["muted"])
 
-        elif item.type_ in ("action", "menu"):
+        elif item.type_ == "action":
             txt.append("·  ", style=self.theme_colors["muted"])
 
         else:
@@ -4803,9 +4861,38 @@ Tooltip {
             return
 
         parsed = self._get_item_from_id(ol.last_highlighted_id)
+        if not parsed:
+            return
 
-        if parsed and str(parsed[2].value) != str(parsed[2].default):
-            self._safe_apply_value(parsed[0], parsed[1], parsed[2], parsed[2].default)
+        tab_idx, item_idx, item = parsed
+
+        if item.is_parent or item.type_ == "menu":
+            items_in_tab = self.schema.get(tab_idx, [])
+            child_keys = set()
+            stack = [item.key]
+            while stack:
+                curr = stack.pop()
+                for itm in items_in_tab:
+                    if getattr(itm, "parent_ref", None) == curr:
+                        child_keys.add(itm.key)
+                        if getattr(itm, "is_parent", False) or getattr(itm, "type_", None) == "menu":
+                            stack.append(itm.key)
+
+            transaction = []
+            for i_idx, itm in enumerate(items_in_tab):
+                if itm.key in child_keys and itm.type_ not in ("menu", "action", "preset"):
+                    if str(itm.value) != str(itm.default):
+                        transaction.append((tab_idx, i_idx, itm.value, itm.default))
+
+            if transaction:
+                self._apply_transaction(
+                    transaction,
+                    action_type="reset",
+                    success_msg=f"Reset settings under '{item.label}' to default."
+                )
+
+        elif str(item.value) != str(item.default):
+            self._safe_apply_value(tab_idx, item_idx, item, item.default)
 
     def action_reset_all(self) -> None:
         if self._modal_active():
