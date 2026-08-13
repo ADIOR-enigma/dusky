@@ -57,7 +57,7 @@ DESCRIPTION:
     both a rich interactive Terminal User Interface (TUI) and an automated CLI
     interface.
 
-KEY FEATURES & METHODOLOGIES (AUGUST 2026 STANDARDS):
+KEY FEATURES & METHODOLOGIES (AUGUST 2026 / KERNEL 7.1 STANDARDS):
 
 1. ZERO WRITE AMPLIFICATION & NAND PROTECTION:
    - Ext4: Uses `-E lazy_itable_init=1,lazy_journal_init=1,discard`. Disabling 
@@ -65,6 +65,14 @@ KEY FEATURES & METHODOLOGIES (AUGUST 2026 STANDARDS):
      zeros across the entire inode table on NAND flash drives, causing severe
      write amplification. Enabling lazy init defers zeroing to background 
      kernel allocation or discards block references.
+   - NTFS (Kernel 7.1 Native `ntfs.ko`): Formatted via `mkfs.ntfs -f -F` (fast 
+     format & force overwrite) creating clean NTFS volume structures with 
+     zero write amplification. Fully compatible with the rewritten, native 
+     Linux 7.1 in-kernel `ntfs` driver (`fs/ntfs/ntfs.ko`, built on iomap 
+     and folios by Namjae Jeon / Tuxera).
+     NOTE: On Arch Linux, if `ntfs-3g` is installed, `/sbin/mount.ntfs` is a 
+     symlink to the old FUSE daemon. To mount via the Kernel 7.1 native kernel 
+     driver, explicitly run `mount -t ntfs3 <dev> <mnt>` or remove the FUSE symlink.
    - TRIM / Discard: Automatically includes discard flags across supported 
      filesystems (BTRFS, EXT4, F2FS, exFAT, XFS) and LUKS mappings (`--allow-discards`).
    - Wiping: Uses `wipefs --all --force` to destroy magic signatures without
@@ -80,15 +88,15 @@ KEY FEATURES & METHODOLOGIES (AUGUST 2026 STANDARDS):
    - Cryptography: LUKS2 with Argon2id PBKDF via `cryptsetup` 2.8.7.
 
 3. DEPENDENCY AUTO-RESOLUTION:
-   - Automatically detects missing system packages (e.g. `python-rich`, `xfsprogs`)
+   - Automatically detects missing system packages (e.g. `python-rich`, `xfsprogs`, `ntfsprogs`)
      and offers non-interactive installation via `pacman`.
 
 EXAMPLES:
    - Interactive TUI:
        $ dusky_formater.py
 
-   - Quick Format USB Drive as exFAT non-interactively:
-       $ dusky_formater.py --device /dev/sda --fs exfat --label "MY_USB" -y
+   - Quick Format USB Drive as NTFS (Native Linux 7.1 kernel driver) non-interactively:
+       $ dusky_formater.py --device /dev/sda --fs ntfs --label "WIN_DATA" -y
 
    - Encrypt Drive with LUKS2 + Ext4:
        $ dusky_formater.py --device /dev/sda1 --encrypt --passphrase "secret" --fs ext4 -y
@@ -105,7 +113,7 @@ def parse_cli_args() -> tuple[Optional[argparse.Namespace], bool]:
     parser.add_argument("-h", "--help", action="store_true", help="Show this help message and exit.")
     parser.add_argument("--manual", action="store_true", help="Display full system architecture manual.")
     parser.add_argument("-d", "--device", type=str, help="Target block device path (e.g., /dev/sda or /dev/sda1)")
-    parser.add_argument("-f", "--fs", choices=["btrfs", "ext4", "f2fs", "exfat", "xfs", "fat32"], help="Target filesystem type")
+    parser.add_argument("-f", "--fs", choices=["btrfs", "ext4", "f2fs", "exfat", "xfs", "fat32", "ntfs"], help="Target filesystem type")
     parser.add_argument("-l", "--label", type=str, default="", help="Volume label")
     parser.add_argument("-p", "--partition", choices=["none", "gpt", "mbr"], default="none", help="Partition table scheme to write if device is a disk")
     parser.add_argument("-e", "--encrypt", action="store_true", help="Encrypt volume with LUKS2")
@@ -118,7 +126,7 @@ def parse_cli_args() -> tuple[Optional[argparse.Namespace], bool]:
     if args.help:
         print(f"Dusky Formatter v5.4.0 (Architect Edition - Bleeding Edge 2026)")
         print(parser.format_help())
-        print("\nSupported Filesystems: btrfs, ext4, f2fs, exfat, xfs, fat32")
+        print("\nSupported Filesystems: btrfs, ext4, f2fs, exfat, xfs, fat32, ntfs")
         print("Run with '--manual' for technical specifications and design rationale.")
         sys.exit(0)
 
@@ -172,6 +180,7 @@ def ensure_package_for_fs(fs_type: str) -> None:
         "f2fs": ("mkfs.f2fs", "f2fs-tools"),
         "exfat": ("mkfs.exfat", "exfatprogs"),
         "fat32": ("mkfs.fat", "dosfstools"),
+        "ntfs": ("mkfs.ntfs", "ntfsprogs"),
     }
     if fs_type in pkg_map:
         binary, pkg = pkg_map[fs_type]
@@ -464,6 +473,8 @@ def build_plan_from_cli(args: argparse.Namespace) -> FormatPlan:
         label = label[:15]
     elif args.fs == "xfs" and len(label) > 12:
         label = label[:12]
+    elif args.fs == "ntfs" and len(label) > 32:
+        label = label[:32]
 
     device_node = find_device_node(current_devices, args.device)
     dev_type = get_val(device_node, "type", "part")
@@ -568,7 +579,7 @@ def interactive_setup() -> FormatPlan:
                 console.print("[bold red]Passphrases do not match or are empty. Try again.[/]")
 
     console.print("\n[bold cyan]--- Filesystem Configuration ---[/]")
-    fs_options = ["btrfs", "ext4", "f2fs", "exfat", "xfs", "fat32"]
+    fs_options = ["btrfs", "ext4", "f2fs", "exfat", "xfs", "fat32", "ntfs"]
     fs_type = Prompt.ask("Select target filesystem", choices=fs_options, default="btrfs")
     
     ensure_package_for_fs(fs_type)
@@ -584,6 +595,8 @@ def interactive_setup() -> FormatPlan:
         label = label[:15]
     elif fs_type == "xfs" and len(label) > 12:
         label = label[:12]
+    elif fs_type == "ntfs" and len(label) > 32:
+        label = label[:32]
 
     plan: FormatPlan = {
         "device": target_device,
@@ -715,7 +728,14 @@ def build_execution_plan(plan: FormatPlan) -> tuple[list[ExecutionStep], str, Op
             mkfs_cmd = ["mkfs.xfs", "-f"]
             if label: mkfs_cmd.extend(["-L", label[:12]])
             mkfs_cmd.append(target_block)
-            
+
+        case "ntfs":
+            # ntfsprogs syntax: -f (fast format - zero write amplification), -F (force overwrite)
+            # Fully compatible with rewritten Linux 7.1 native ntfs.ko kernel driver (iomap/folios)
+            mkfs_cmd = ["mkfs.ntfs", "-f", "-F"]
+            if label: mkfs_cmd.extend(["-L", label[:32]])
+            mkfs_cmd.append(target_block)
+
         case "fat32":
             mkfs_cmd = ["mkfs.fat", "-F", "32", "-I"]
             if label: mkfs_cmd.extend(["-n", label])
