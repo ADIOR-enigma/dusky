@@ -1429,9 +1429,6 @@ cmd_preview() {
         pin)
             is_pin_hash "$id" || { printf '\e[31mInvalid pin id.\e[0m\n'; return 1; }
             pin_file="${PINS_DIR:?}/$id.pin"
-            printf '\e[1;33m━━━ %s PINNED ━━━\e[0m\n' "$ICON_PIN"
-            mtime=$(stat -c %Y -- "$pin_file" 2>/dev/null)
-            printf '\e[36m'; format_ts "$mtime"; printf '\e[0m\n\n'
             if [[ -f $pin_file && ! -L $pin_file ]]; then
                 render_text_preview "$pin_file" "$PREVIEW_TEXT_LIMIT" ||
                     printf '\n\e[31mFailed to render pin.\e[0m\n'
@@ -1440,22 +1437,20 @@ cmd_preview() {
             fi ;;
         img)
             is_uint "$id" || { printf '\e[31mInvalid image id.\e[0m\n'; return 1; }
-            printf '\e[1;36m━━━ %s IMAGE ━━━\e[0m\n\n' "$ICON_IMG"
             if cache_image "$id"; then
                 img="$REPLY"
                 info=$(describe_file "$img")
-                printf '%s\n\n' "${info:0:120}"
+                printf '\e[36m%s\e[0m\n\n' "${info:0:120}"
                 display_image "$img"
             else
                 printf '\n\e[31mFailed to decode image.\e[0m\n'
             fi ;;
         bin)
             is_uint "$id" || { printf '\e[31mInvalid binary id.\e[0m\n'; return 1; }
-            printf '\e[1;35m━━━ %s BINARY ━━━\e[0m\n\n' "$ICON_BIN"
             decode_entry_to_tmp "$id" "$CACHE_DIR" bin || { printf '\e[31mDecode failed.\e[0m\n'; return 1; }
             tmp="$REPLY"
             info=$(describe_file "$tmp")
-            printf '%s\n\n' "${info:0:120}"
+            printf '\e[36m%s\e[0m\n\n' "${info:0:120}"
             if mime_is_image "$(mime_from_file "$tmp")"; then
                 display_image "$tmp"
             else
@@ -1464,7 +1459,6 @@ cmd_preview() {
             remove_tmpfile "$tmp" ;;
         txt)
             is_uint "$id" || { printf '\e[31mInvalid text id.\e[0m\n'; return 1; }
-            printf '\e[1;32m━━━ TEXT ━━━\e[0m\n\n'
             decode_entry_to_tmp "$id" "$CACHE_DIR" txt || { printf '\e[31mDecode failed.\e[0m\n'; return 1; }
             tmp="$REPLY"
             render_text_preview "$tmp" "$PREVIEW_TEXT_LIMIT" ||
