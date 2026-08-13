@@ -632,19 +632,111 @@ guess_language() {
     return 0
 }
 
+get_target_preview_width() {
+    local fzf_width="${FZF_PREVIEW_COLUMNS:-0}" total_cols="${FZF_COLUMNS:-0}"
+    is_uint "$fzf_width" || fzf_width=0
+    is_uint "$total_cols" || total_cols=0
+
+    if (( fzf_width > 4 )); then
+        REPLY="$fzf_width"
+        return 0
+    fi
+
+    state_load
+    local layout="${STATE[PREVIEW_LAYOUT]:-}" calc=0
+
+    if [[ $layout =~ (left|right),([0-9]+)% ]] && (( total_cols > 10 )); then
+        local pct="${BASH_REMATCH[2]}"
+        (( calc = (total_cols * pct / 100) - 2 ))
+    elif [[ $layout =~ (up|down),([0-9]+)% ]] && (( total_cols > 10 )); then
+        (( calc = total_cols - 2 ))
+    fi
+
+    if (( calc > 4 )); then
+        REPLY="$calc"
+    else
+        REPLY=0
+    fi
+}
+
+ansi_fold_wrap() {
+    local target_w="${1:-80}"
+    gawk -v width="$target_w" '
+    BEGIN {
+        width = width + 0
+        if (width <= 0) width = 80
+    }
+    {
+        line = $0
+        len = length(line)
+        pos = 1
+        active_ansi = ""
+        curr_line = ""
+        curr_vis = 0
+        last_space_pos = 0
+        last_space_vis = 0
+        last_space_ansi = ""
+
+        while (pos <= len) {
+            if (substr(line, pos, 2) == "\033[") {
+                match(substr(line, pos), /^\033\[[0-9;]*[a-zA-Z]/)
+                if (RLENGTH > 0) {
+                    seq = substr(line, pos, RLENGTH)
+                    pos += RLENGTH
+                    if (seq == "\033[0m") active_ansi = ""
+                    else active_ansi = seq
+                    curr_line = curr_line seq
+                    continue
+                }
+            }
+
+            ch = substr(line, pos, 1)
+            pos++
+
+            if (ch == " ") {
+                last_space_pos = length(curr_line) + 1
+                last_space_vis = curr_vis + 1
+                last_space_ansi = active_ansi
+            }
+
+            curr_line = curr_line ch
+            curr_vis++
+
+            if (curr_vis >= width && pos <= len) {
+                if (last_space_pos > 0 && (curr_vis - last_space_vis) < 15) {
+                    head = substr(curr_line, 1, last_space_pos - 1)
+                    tail = substr(curr_line, last_space_pos + 1)
+                    print head "\033[0m"
+                    curr_line = last_space_ansi tail
+                    gsub(/\033\[[0-9;]*[a-zA-Z]/, "", tail)
+                    curr_vis = length(tail)
+                } else {
+                    print curr_line "\033[0m"
+                    curr_line = active_ansi
+                    curr_vis = 0
+                }
+                last_space_pos = 0
+                last_space_vis = 0
+            }
+        }
+        print curr_line
+    }'
+}
+
 render_text_preview() {
-    local path="$1" max="${2:-0}" status head='' width="${FZF_PREVIEW_COLUMNS:-0}"
-    is_uint "$width" || width=0
+    local path="$1" max="${2:-0}" status head='' width=0
+    get_target_preview_width
+    width="$REPLY"
 
     if have bat; then
         IFS= read -r -N 256 head < "$path" 2>/dev/null
         head="${head%%$'\n'*}"
         guess_language "$head"
-        if (( width > 4 )) && have fold; then
+        if (( width > 4 )) && have gawk; then
             safe_print_text_file "$path" "$max" |
-                fold -s -w "$((width - 1))" |
                 bat --style=plain --color=always --paging=never --wrap=never \
-                    --language="$REPLY" - 2>/dev/null
+                    --language="$REPLY" - 2>/dev/null |
+                ansi_fold_wrap "$((width - 2))"
         else
             safe_print_text_file "$path" "$max" |
                 bat --style=plain --color=always --paging=never --wrap=never \
@@ -653,7 +745,7 @@ render_text_preview() {
         status=${PIPESTATUS[0]}
     else
         if (( width > 4 )) && have fold; then
-            safe_print_text_file "$path" "$max" | fold -s -w "$((width - 1))"
+            safe_print_text_file "$path" "$max" | fold -s -w "$((width - 2))"
         else
             safe_print_text_file "$path" "$max"
         fi
