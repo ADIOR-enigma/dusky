@@ -105,13 +105,28 @@ AUTOSTART_DEFAULTS: dict[str, dict[str, Any]] = {
     # --- Environment Integration ---
     "autostart/systemd_env": {
         "pattern": r'systemctl\s+--user\s+import-environment',
-        "canonical": 'hl.exec_cmd("systemctl --user import-environment $(env | cut -d\'=\' -f 1)")',
-        "default": False
+        "canonical": 'hl.exec_cmd("systemctl --user import-environment WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE XDG_SESSION_DESKTOP CLIPHIST_DB_PATH")',
+        "default": True
     },
     "autostart/dbus_env": {
         "pattern": r'dbus-update-activation-environment',
         "canonical": 'hl.exec_cmd("dbus-update-activation-environment --systemd --all")',
-        "default": False
+        "default": True
+    },
+    "autostart/session_target": {
+        "pattern": r'systemctl\s+--user\s+start\s+hyprland-session\.target',
+        "canonical": 'hl.exec_cmd("systemctl --user start hyprland-session.target")',
+        "default": True
+    },
+    "autostart/shutdown_target": {
+        "pattern": r'systemctl\s+--user\s+stop\s+hyprland-session\.target',
+        "canonical": 'hl.exec_cmd("systemctl --user stop hyprland-session.target")',
+        "default": True
+    },
+    "autostart/choom_oom": {
+        "pattern": r'choom\s+-n\s+-250',
+        "canonical": 'hl.exec_cmd("sudo choom -n -250 -p $(pgrep -x Hyprland)")',
+        "default": True
     },
 
     # --- Dusky Glance Dashboards Autostart ---
