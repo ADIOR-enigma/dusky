@@ -1407,18 +1407,6 @@ hl.window_rule({
     center = true
 })
 
---- Ollama sidebar script ---
-hl.window_rule({
-    name = "ollama_terminal.sh",
-    match = { class = "^(ollama_terminal.sh)$" },
-    float = true,
-    -- size = {409, 710},
-    -- move = {50, "(monitor_h*0.5 - window_h*0.5)"},
-    size = {"(monitor_w*0.28)", "(monitor_h*0.88)"},
-    animation = "slide left",
-    rounding = 9,
-    move = {"(monitor_w*0.038)", "(monitor_h*0.5 - window_h*0.5)"}
-})
 
 --- dusky_service_toggle.sh script ---
 hl.window_rule({
@@ -1946,3 +1934,19 @@ hl.window_rule({
 -- =============================================================================
 -- END OF FILE
 -- =============================================================================
+
+--- Dusky LLM Side Panel Script ---
+hl.window_rule({
+    name = "dusky_llm_side_panal",
+    match = {
+        class = "^(dusky_llm_side_panal\\.py)$",
+    },
+    float = true,
+    animation = "slide left",
+    no_dim = true,
+    rounding = 16,
+    move = {"16", "(monitor_h-window_h)/2"},
+    border_size = 0,
+    workspace = "unset",
+    focus_on_activate = true
+})

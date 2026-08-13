@@ -2878,7 +2878,7 @@ icon = "system-search-symbolic"
 style = "suggested"
 [pages.layout.items.on_press]
 type = "exec"
-command = "kitty --class ollama_terminal.sh --title \"Ollama\" --hold sh -c \"$HOME/user_scripts/llm/ollama_terminal.sh\""
+command = "$HOME/user_scripts/llm/llm_side_panal/toggle_llm_side_panal.sh"
 
 [[pages.layout]]
 type = "section"

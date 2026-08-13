@@ -535,11 +535,11 @@ hl.bind(
     { description = "OCR Fullscreen" }
 )
 
--- ollama Sidebar
+-- Dusky LLM Side Panel
 hl.bind(
     "SUPER + ALT + O",
-    hl.dsp.exec_cmd(terminal .. " --class ollama_terminal.sh -e " .. dusky_scripts .. "llm/ollama_terminal.sh"),
-    { description = "AI LLM Ollama Chat" }
+    hl.dsp.exec_cmd(dusky_scripts .. "llm/llm_side_panal/toggle_llm_side_panal.sh"),
+    { description = "Dusky AI LLM Side Panel" }
 )
 
 -- Music Recognition
