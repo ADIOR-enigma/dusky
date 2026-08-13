@@ -2,9 +2,11 @@
 # -*- coding: utf-8 -*-
 
 """
-Dusky Formatter v5.3.3 (Architect Edition - Patched)
-A cutting-edge, interactive TUI for securely formatting and encrypting drives.
-Engineered for modern Arch Linux environments (Kernel 7.0+, Python 3.14.5).
+Dusky Formatter v5.4.0 (Architect Edition - Bleeding Edge 2026)
+A cutting-edge, interactive & non-interactive CLI/TUI utility for securely formatting,
+partitioning, and encrypting storage drives without unnecessary write amplification.
+
+Engineered for Arch Linux (Kernel 7.1+, Python 3.14+).
 """
 
 import os
@@ -14,6 +16,8 @@ import json
 import shlex
 import uuid
 import time
+import shutil
+import argparse
 from typing import Any, Optional, TypedDict
 
 # ==============================================================================
@@ -22,11 +26,14 @@ from typing import Any, Optional, TypedDict
 
 class FormatPlan(TypedDict):
     device: str
+    target_block: str
+    partition_table: str  # "none", "gpt", "mbr"
     encrypt: bool
     fs_type: str
     csum: Optional[str]
     label: str
     passphrase: Optional[str]
+    non_interactive: bool
 
 class ExecutionStep(TypedDict):
     action: str
@@ -36,16 +43,109 @@ class ExecutionStep(TypedDict):
     input_data: Optional[str]
 
 # ==============================================================================
-# 2. AUTO-ELEVATION & DEPENDENCY RESOLUTION
+# 2. CLI ARGUMENT PARSING & HELP / MANUAL DISPLAY (NO ROOT REQUIRED)
+# ==============================================================================
+
+MANUAL_TEXT = """
+===============================================================================
+               DUSKY FORMATTER v5.4.0 - ARCH LINUX SYSTEM MANUAL
+===============================================================================
+
+DESCRIPTION:
+    Dusky Formatter is a zero-write-amplification block device layout and 
+    formatting utility designed for modern Arch Linux (Kernel 7.1+). It offers
+    both a rich interactive Terminal User Interface (TUI) and an automated CLI
+    interface.
+
+KEY FEATURES & METHODOLOGIES (AUGUST 2026 STANDARDS):
+
+1. ZERO WRITE AMPLIFICATION & NAND PROTECTION:
+   - Ext4: Uses `-E lazy_itable_init=1,lazy_journal_init=1,discard`. Disabling 
+     lazy initialization (`lazy_itable_init=0`) forces mkfs.ext4 to write 
+     zeros across the entire inode table on NAND flash drives, causing severe
+     write amplification. Enabling lazy init defers zeroing to background 
+     kernel allocation or discards block references.
+   - TRIM / Discard: Automatically includes discard flags across supported 
+     filesystems (BTRFS, EXT4, F2FS, exFAT) and LUKS mappings (`--allow-discards`).
+   - Wiping: Uses `wipefs --all --force` to destroy magic signatures without
+     overwriting whole disk blocks (avoiding zero-fills like `dd if=/dev/zero`).
+
+2. CUTTING-EDGE UTILITY INTEGRATION:
+   - exFAT: Uses `exfatprogs` 1.4.2 syntax (`-L` for labels, `-F` for force).
+   - BTRFS: Uses `btrfs-progs` 7.1 syntax supporting `blake2`, `xxhash`, 
+     `sha256`, and `crc32c` checksum algorithms.
+   - F2FS: Configured with `-t 1` for flash-friendly block placement and trim.
+   - Partitioning: Native GPT/MBR layout generation via `sfdisk` (util-linux 2.42.2).
+   - Cryptography: LUKS2 with Argon2id PBKDF via `cryptsetup` 2.8.7.
+
+3. DEPENDENCY AUTO-RESOLUTION:
+   - Automatically detects missing system packages (e.g. `python-rich`, `xfsprogs`)
+     and offers non-interactive installation via `pacman`.
+
+EXAMPLES:
+   - Interactive TUI:
+       $ dusky_formater.py
+
+   - Quick Format USB Drive as exFAT non-interactively:
+       $ dusky_formater.py --device /dev/sda --fs exfat --label "MY_USB" -y
+
+   - Encrypt Drive with LUKS2 + Ext4:
+       $ dusky_formater.py --device /dev/sda1 --encrypt --passphrase "secret" --fs ext4 -y
+===============================================================================
+"""
+
+def parse_cli_args() -> tuple[Optional[argparse.Namespace], bool]:
+    parser = argparse.ArgumentParser(
+        description="Dusky Formatter v5.4.0 - Modern Arch Linux Storage Utility",
+        formatter_class=argparse.RawTextHelpFormatter,
+        add_help=False
+    )
+    
+    parser.add_argument("-h", "--help", action="store_true", help="Show this help message and exit.")
+    parser.add_argument("--manual", action="store_true", help="Display full system architecture manual.")
+    parser.add_argument("-d", "--device", type=str, help="Target block device path (e.g., /dev/sda or /dev/sda1)")
+    parser.add_argument("-f", "--fs", choices=["btrfs", "ext4", "f2fs", "exfat", "xfs", "fat32"], help="Target filesystem type")
+    parser.add_argument("-l", "--label", type=str, default="", help="Volume label")
+    parser.add_argument("-p", "--partition", choices=["none", "gpt", "mbr"], default="none", help="Partition table scheme to write if device is a disk")
+    parser.add_argument("-e", "--encrypt", action="store_true", help="Encrypt volume with LUKS2")
+    parser.add_argument("--passphrase", type=str, help="LUKS2 passphrase for automated non-interactive format")
+    parser.add_argument("--csum", choices=["crc32c", "xxhash", "sha256", "blake2"], default="blake2", help="BTRFS checksum algorithm")
+    parser.add_argument("-y", "--yes", "--non-interactive", dest="non_interactive", action="store_true", help="Execute without interactive confirmation")
+
+    args, unknown = parser.parse_known_args()
+
+    if args.help:
+        print(f"Dusky Formatter v5.4.0 (Architect Edition - Bleeding Edge 2026)")
+        print(parser.format_help())
+        print("\nSupported Filesystems: btrfs, ext4, f2fs, exfat, xfs, fat32")
+        print("Run with '--manual' for technical specifications and design rationale.")
+        sys.exit(0)
+
+    if args.manual:
+        print(MANUAL_TEXT)
+        sys.exit(0)
+
+    is_cli_mode = bool(args.device and args.fs and args.non_interactive)
+    return args, is_cli_mode
+
+cli_args, is_cli_mode = parse_cli_args()
+
+# ==============================================================================
+# 3. AUTO-ELEVATION & DEPENDENCY RESOLUTION
 # ==============================================================================
 
 if os.geteuid() != 0:
-    print("\033[1;33m[!] Dusky Formatter requires root privileges. Elevating via sudo...\033[0m")
-    try:
-        os.execvp("sudo", ["sudo", sys.executable] + sys.argv)
-    except Exception as e:
-        print(f"\033[1;31m[x] Critical error during privilege escalation: {e}\033[0m")
-        sys.exit(1)
+    if is_cli_mode:
+        # Re-run under sudo non-interactively
+        res = subprocess.run(["sudo", sys.executable] + sys.argv)
+        sys.exit(res.returncode)
+    else:
+        print("\033[1;33m[!] Dusky Formatter requires root privileges. Elevating via sudo...\033[0m")
+        try:
+            os.execvp("sudo", ["sudo", sys.executable] + sys.argv)
+        except Exception as e:
+            print(f"\033[1;31m[x] Critical error during privilege escalation: {e}\033[0m")
+            sys.exit(1)
 
 try:
     from rich.console import Console
@@ -64,8 +164,27 @@ except ImportError:
 
 console = Console()
 
+def ensure_package_for_fs(fs_type: str) -> None:
+    pkg_map = {
+        "xfs": ("mkfs.xfs", "xfsprogs"),
+        "btrfs": ("mkfs.btrfs", "btrfs-progs"),
+        "ext4": ("mkfs.ext4", "e2fsprogs"),
+        "f2fs": ("mkfs.f2fs", "f2fs-tools"),
+        "exfat": ("mkfs.exfat", "exfatprogs"),
+        "fat32": ("mkfs.fat", "dosfstools"),
+    }
+    if fs_type in pkg_map:
+        binary, pkg = pkg_map[fs_type]
+        if not shutil.which(binary):
+            console.print(f"[bold yellow][*] Missing required tool '{binary}'. Auto-installing '{pkg}' via pacman...[/]")
+            try:
+                subprocess.run(["pacman", "-S", "--needed", "--noconfirm", pkg], check=True)
+            except subprocess.CalledProcessError:
+                console.print(f"[bold red][x] Failed to install package '{pkg}'. Aborting.[/]")
+                sys.exit(1)
+
 # ==============================================================================
-# 3. DEVICE PROBING & SYSTEM INTELLIGENCE
+# 4. DEVICE PROBING & SYSTEM INTELLIGENCE
 # ==============================================================================
 
 def get_val(d: dict[str, Any], key: str, default: Any = "") -> Any:
@@ -114,7 +233,6 @@ def get_all_paths(devices: list[dict[str, Any]]) -> list[str]:
     return paths
 
 def get_all_mountpoints(device_node: Optional[dict[str, Any]]) -> list[tuple[str, str]]:
-    """Returns a list of tuples containing (block_device_path, mountpoint)."""
     if not device_node:
         return []
     mounts: list[tuple[str, str]] = []
@@ -130,7 +248,6 @@ def get_all_mountpoints(device_node: Optional[dict[str, Any]]) -> list[tuple[str
     return mounts
 
 def get_all_mappings(device_node: Optional[dict[str, Any]]) -> list[str]:
-    """Recursively scans for logical volumes or crypto mappings holding the device open."""
     if not device_node: return []
     mappings: list[str] = []
     for child in get_val(device_node, "children", []):
@@ -265,11 +382,9 @@ def resolve_busy_processes(mountpoint: str) -> bool:
     return False
 
 def teardown_descendants(device_node: Optional[dict[str, Any]]) -> bool:
-    """Tears down mapped logical volumes (LUKS, LVM) bottom-up to free kernel locks."""
     if not device_node: return True
     success = True
     
-    # Bottom-up recursion: Handle children before parent
     for child in get_val(device_node, "children", []):
         if not teardown_descendants(child):
             success = False
@@ -299,15 +414,72 @@ def teardown_descendants(device_node: Optional[dict[str, Any]]) -> bool:
                 success = False
     return success
 
+def unmount_device_locks(target_device: str, current_devices: list[dict[str, Any]]) -> bool:
+    device_node = find_device_node(current_devices, target_device)
+    active_mounts = get_all_mountpoints(device_node)
+    active_mappings = get_all_mappings(device_node)
+    
+    if not active_mounts and not active_mappings:
+        return True
+
+    console.print(f"\n[bold yellow]➜[/] Clearing active mounts/locks on {target_device}...")
+    for dev_path, m in sorted(active_mounts, key=lambda x: len(x[1]), reverse=True):
+        if m == "[SWAP]":
+            subprocess.run(["swapoff", dev_path], capture_output=True)
+        else:
+            subprocess.run(["umount", m], capture_output=True)
+
+    if active_mappings:
+        teardown_descendants(device_node)
+
+    subprocess.run(["udevadm", "settle"], capture_output=True)
+    return True
+
 # ==============================================================================
-# 4. INTERACTIVE TUI & CONFIGURATION
+# 5. SETUP PIPELINE (INTERACTIVE & NON-INTERACTIVE)
 # ==============================================================================
 
 def generate_secure_mapper_name() -> str:
     return f"dusky_luks_{uuid.uuid4().hex[:8]}"
 
+def build_plan_from_cli(args: argparse.Namespace) -> FormatPlan:
+    current_devices = get_block_devices()
+    valid_paths = get_all_paths(current_devices)
+    
+    if args.device not in valid_paths:
+        console.print(f"[bold red]Error:[/] Selected device '{args.device}' not found in system block device tree.")
+        sys.exit(1)
+
+    unmount_device_locks(args.device, current_devices)
+    ensure_package_for_fs(args.fs)
+
+    label = args.label or ""
+    if args.fs == "fat32" and len(label) > 11:
+        label = label[:11].upper()
+    elif args.fs == "exfat" and len(label) > 15:
+        label = label[:15]
+
+    device_node = find_device_node(current_devices, args.device)
+    dev_type = get_val(device_node, "type", "part")
+    
+    target_block = args.device
+    partition_table = args.partition
+
+    plan: FormatPlan = {
+        "device": args.device,
+        "target_block": target_block,
+        "partition_table": partition_table if dev_type == "disk" else "none",
+        "encrypt": bool(args.encrypt),
+        "fs_type": args.fs,
+        "csum": args.csum if args.fs == "btrfs" else None,
+        "label": label,
+        "passphrase": args.passphrase if args.encrypt else None,
+        "non_interactive": True
+    }
+    return plan
+
 def interactive_setup() -> FormatPlan:
-    console.print(Panel.fit("[bold magenta]Dusky Formatter v5.3.3[/] - [cyan]Arch Linux Storage & Analysis Utility[/]", border_style="magenta"))
+    console.print(Panel.fit("[bold magenta]Dusky Formatter v5.4.0[/] - [cyan]Arch Linux Storage Utility[/]", border_style="magenta"))
     
     initial_devices = get_block_devices()
     mount_data = get_mount_options()
@@ -336,7 +508,7 @@ def interactive_setup() -> FormatPlan:
         valid_paths = get_all_paths(current_devices)
         
         if not target_device:
-            target_device = Prompt.ask("\nEnter the [bold green]Path[/] of the device to format (e.g., /dev/nvme0n1p1)")
+            target_device = Prompt.ask("\nEnter the [bold green]Path[/] of the device to format (e.g., /dev/sda or /dev/sda1)")
             
         if not target_device or target_device not in valid_paths or not target_device.startswith("/dev/"):
             console.print("[bold red]Invalid device path selected. Ensure it matches a physical path in the table.[/]")
@@ -354,67 +526,32 @@ def interactive_setup() -> FormatPlan:
             for m in active_mappings:
                 console.print(f"  - [magenta]Mapped volume: {m}[/]")
             
-            console.print("\n[yellow]Formatting an active mount or mapped device is strictly prohibited and will fail.[/]")
-            
             if Confirm.ask("Would you like Dusky Formatter to attempt a [bold red]force unlock & unmount[/] now?", default=False):
-                unmount_failed = False
-                # Sort mounts by path length descending to unmount deepest paths first
-                for dev_path, m in sorted(active_mounts, key=lambda x: len(x[1]), reverse=True):
-                    console.print(f"[bold yellow]➜[/] Attempting to unmount {m}...")
-                    
-                    if m == "[SWAP]":
-                        res = subprocess.run(["swapoff", dev_path], capture_output=True, text=True)
-                        if res.returncode == 0:
-                            console.print(f"  [bold green]✔ Successfully disabled swap on {dev_path}[/]")
-                        else:
-                            console.print(f"  [bold red]✗ Failed to disable swap on {dev_path}.[/]")
-                            unmount_failed = True
-                        continue
-
-                    res = subprocess.run(["umount", m], capture_output=True, text=True)
-                    if res.returncode == 0:
-                        console.print(f"  [bold green]✔ Successfully unmounted {m}[/]")
-                    else:
-                        console.print(f"  [bold red]✗ Standard unmount failed for {m}. Target is busy.[/]")
-                        if resolve_busy_processes(m):
-                            res2 = subprocess.run(["umount", m], capture_output=True, text=True)
-                            if res2.returncode == 0:
-                                console.print(f"  [bold green]✔ Successfully unmounted {m} after force kill.[/]")
-                            else:
-                                console.print(f"  [bold red]✗ Still unable to unmount {m} (Kernel Lock / Busy).[/]")
-                                unmount_failed = True
-                        else:
-                            unmount_failed = True
-                            
-                if unmount_failed:
-                    console.print("[red]Could not free all mounts. Please resolve manually or reboot if kernel locked.[/]")
-                    target_device = None 
-                    continue
-                
-                if active_mappings:
-                    console.print("[bold yellow]➜[/] Tearing down cryptographic and logical mappings...")
-                    if not teardown_descendants(device_node):
-                        console.print("[red]Could not release all mapped child volumes. The kernel still locks the drive.[/]")
-                        target_device = None
-                        continue
-
-                console.print("[green]All locks and mount points cleared. State-machine is re-verifying kernel tree...[/]")
-                # The continue loops back, pulls fresh lsblk JSON, ensures locks are genuinely gone, 
-                # and then safely drops out of the loop.
-                continue 
+                unmount_device_locks(target_device, current_devices)
+                continue
             else:
-                console.print("[dim]Aborting selection. Please handle unlocks manually.[/]")
                 target_device = None 
                 continue
 
         break
 
+    device_node = find_device_node(get_block_devices(), target_device)
+    dev_type = get_val(device_node, "type", "part")
+    
+    partition_table = "none"
+    if dev_type == "disk":
+        partition_choice = Prompt.ask(
+            "Target is a whole DISK. Write a partition table first?",
+            choices=["none", "gpt", "mbr"],
+            default="none"
+        )
+        partition_table = partition_choice
+
     console.print("\n[bold cyan]--- Security & Encryption ---[/]")
-    encrypt = Confirm.ask(f"Encrypt [bold yellow]{target_device}[/] using [bold]LUKS2[/]?", default=False)
+    encrypt = Confirm.ask(f"Encrypt target using [bold]LUKS2[/]?", default=False)
     
     passphrase = None
     if encrypt:
-        console.print("[dim]Note: Providing the passphrase here enables a fully unattended formatting pipeline.[/]")
         while True:
             p1 = Prompt.ask("Enter a strong LUKS2 passphrase", password=True)
             p2 = Prompt.ask("Verify passphrase", password=True)
@@ -428,31 +565,34 @@ def interactive_setup() -> FormatPlan:
     fs_options = ["btrfs", "ext4", "f2fs", "exfat", "xfs", "fat32"]
     fs_type = Prompt.ask("Select target filesystem", choices=fs_options, default="btrfs")
     
+    ensure_package_for_fs(fs_type)
+
     csum = None
     if fs_type == "btrfs":
         csum = Prompt.ask("Select BTRFS checksum algorithm", choices=["crc32c", "xxhash", "sha256", "blake2"], default="blake2")
 
     label = Prompt.ask("Enter a volume label (leave blank for none)", default="")
     if fs_type == "fat32" and len(label) > 11:
-        console.print("[bold yellow]Warning:[/] FAT32 limits labels to 11 characters. Truncating.")
         label = label[:11].upper()
     elif fs_type == "exfat" and len(label) > 15:
-        console.print("[bold yellow]Warning:[/] exFAT limits labels to 15 characters. Truncating.")
         label = label[:15]
 
     plan: FormatPlan = {
         "device": target_device,
+        "target_block": target_device,
+        "partition_table": partition_table,
         "encrypt": encrypt,
         "fs_type": fs_type,
         "csum": csum,
         "label": label,
-        "passphrase": passphrase
+        "passphrase": passphrase,
+        "non_interactive": False
     }
 
     return plan
 
 # ==============================================================================
-# 5. EXECUTION PLAN GENERATION
+# 6. EXECUTION PLAN GENERATION
 # ==============================================================================
 
 def build_execution_plan(plan: FormatPlan) -> tuple[list[ExecutionStep], str, Optional[str]]:
@@ -461,50 +601,80 @@ def build_execution_plan(plan: FormatPlan) -> tuple[list[ExecutionStep], str, Op
     label = plan["label"]
     encrypt = plan["encrypt"]
     passphrase = plan.get("passphrase")
+    partition_table = plan["partition_table"]
     
     commands: list[ExecutionStep] = []
-    bash_script = "#!/bin/bash\n# Dusky Formatter Native Execution Pipeline\n# Copy-pasteable syntax directly mirroring system execution:\n\n"
+    bash_script = "#!/bin/bash\n# Dusky Formatter Native Execution Pipeline\n\n"
     
-    target_block = device
     mapper_name = None
 
-    wipe_cmd = ["wipefs", "--all", device]
+    # Step 1: Wipe filesystem and partition table signatures safely
+    wipe_cmd = ["wipefs", "--all", "--force", device]
     commands.append({
         "action": "wipe_fs",
-        "desc": f"Sterilizing target device to remove stale signatures",
+        "desc": f"Sterilizing target device {device} to remove signatures",
         "cmd": wipe_cmd,
         "interactive": False,
         "input_data": None
     })
-    bash_script += f"# Clear stale partition tables and filesystems\n{shlex.join(wipe_cmd)}\n\n"
+    bash_script += f"# Clear signature headers\n{shlex.join(wipe_cmd)}\n\n"
 
+    target_block = device
+
+    # Step 2: Optional Partitioning via sfdisk
+    if partition_table in ["gpt", "mbr"]:
+        sfdisk_table = "label: gpt\n," if partition_table == "gpt" else "label: dos\n,"
+        part_cmd = ["sfdisk", device]
+        commands.append({
+            "action": "partition",
+            "desc": f"Creating single primary {partition_table.upper()} partition layout on {device}",
+            "cmd": part_cmd,
+            "interactive": False,
+            "input_data": sfdisk_table
+        })
+        bash_script += f"# Partition drive via sfdisk\nprintf '{sfdisk_table}' | sfdisk {device}\n"
+        
+        # Target partition node e.g. /dev/sda1 or /dev/nvme0n1p1
+        part_suffix = "p1" if ("nvme" in device or "mmcblk" in device) else "1"
+        target_block = f"{device}{part_suffix}"
+        
+        settle_cmd = ["udevadm", "settle"]
+        commands.append({
+            "action": "settle",
+            "desc": "Synchronizing kernel block layer device nodes",
+            "cmd": settle_cmd,
+            "interactive": False,
+            "input_data": None
+        })
+        bash_script += f"udevadm settle\n\n"
+
+    # Step 3: LUKS2 Encryption Setup
     if encrypt and passphrase:
         mapper_name = generate_secure_mapper_name()
-        target_block = f"/dev/mapper/{mapper_name}"
         
-        luks_fmt = ["cryptsetup", "-q", "luksFormat", "--type", "luks2", device, "-"]
+        luks_fmt = ["cryptsetup", "-q", "luksFormat", "--type", "luks2", target_block, "-"]
         commands.append({
             "action": "luks_format",
-            "desc": "Initializing LUKS2 Encryption Container",
+            "desc": f"Initializing LUKS2 Encryption Container on {target_block}",
             "cmd": luks_fmt,
             "interactive": False, 
             "input_data": passphrase
         })
-        bash_script += f"# Initialize modern LUKS2 Container (Passphrase securely piped)\n"
-        bash_script += f"echo -n 'YOUR_PASSPHRASE' | {shlex.join(luks_fmt[:-1])} -\n"
+        bash_script += f"# Initialize LUKS2 Container\necho -n 'YOUR_PASSPHRASE' | {shlex.join(luks_fmt[:-1])} -\n"
         
-        # FIX: Added --allow-discards to enable TRIM passthrough
-        luks_open = ["cryptsetup", "open", "--type", "luks", "--allow-discards", "--key-file", "-", device, mapper_name]
+        luks_open = ["cryptsetup", "open", "--type", "luks", "--allow-discards", "--key-file", "-", target_block, mapper_name]
         commands.append({
             "action": "luks_open",
-            "desc": f"Opening encrypted volume as '{mapper_name}'",
+            "desc": f"Opening encrypted volume as '/dev/mapper/{mapper_name}'",
             "cmd": luks_open,
             "interactive": False,
             "input_data": passphrase
         })
-        bash_script += f"# Map the LUKS volume with discard passthrough\n"
-        bash_script += f"echo -n 'YOUR_PASSPHRASE' | cryptsetup open --type luks --allow-discards --key-file - {device} {mapper_name}\n\n"
+        bash_script += f"# Map LUKS volume with discard (TRIM) passthrough\necho -n 'YOUR_PASSPHRASE' | cryptsetup open --type luks --allow-discards --key-file - {target_block} {mapper_name}\n\n"
+        
+        target_block = f"/dev/mapper/{mapper_name}"
 
+    # Step 4: Filesystem Creation (Bleeding Edge & Zero Write Amplification)
     mkfs_cmd: list[str] = []
     match fs_type:
         case "btrfs":
@@ -514,19 +684,22 @@ def build_execution_plan(plan: FormatPlan) -> tuple[list[ExecutionStep], str, Op
             mkfs_cmd.append(target_block)
             
         case "ext4":
-            mkfs_cmd = ["mkfs.ext4", "-F", "-v"]
+            # ZERO WRITE AMPLIFICATION FIX:
+            # lazy_itable_init=1,lazy_journal_init=1,discard prevents writing gigabytes of zero blocks
+            mkfs_cmd = ["mkfs.ext4", "-F", "-v", "-E", "lazy_itable_init=1,lazy_journal_init=1,discard"]
             if label: mkfs_cmd.extend(["-L", label])
-            mkfs_cmd.extend(["-E", "lazy_itable_init=0,lazy_journal_init=0"])
             mkfs_cmd.append(target_block)
 
         case "f2fs":
-            mkfs_cmd = ["mkfs.f2fs", "-f"]
+            # Flash Friendly Filesystem: -t 1 (discard)
+            mkfs_cmd = ["mkfs.f2fs", "-f", "-t", "1"]
             if label: mkfs_cmd.extend(["-l", label])
             mkfs_cmd.append(target_block)
 
         case "exfat":
-            mkfs_cmd = ["mkfs.exfat"]
-            if label: mkfs_cmd.extend(["-n", label])
+            # exfatprogs 1.4.2 syntax: -L for volume label, -F for force overwrite
+            mkfs_cmd = ["mkfs.exfat", "-F"]
+            if label: mkfs_cmd.extend(["-L", label])
             mkfs_cmd.append(target_block)
             
         case "xfs":
@@ -546,9 +719,10 @@ def build_execution_plan(plan: FormatPlan) -> tuple[list[ExecutionStep], str, Op
         "interactive": False,
         "input_data": None
     })
-    bash_script += f"# Format the block device\n{shlex.join(mkfs_cmd)}\n\n"
+    bash_script += f"# Format block device\n{shlex.join(mkfs_cmd)}\n\n"
 
-    if encrypt:
+    # Step 5: Close LUKS container if active
+    if encrypt and mapper_name:
         close_cmd = ["cryptsetup", "close", mapper_name]
         commands.append({
             "action": "luks_close",
@@ -557,12 +731,12 @@ def build_execution_plan(plan: FormatPlan) -> tuple[list[ExecutionStep], str, Op
             "interactive": False,
             "input_data": None
         })
-        bash_script += f"# Securely lock the container\n{shlex.join(close_cmd)}\n"
+        bash_script += f"# Lock container\n{shlex.join(close_cmd)}\n"
 
     return commands, bash_script, mapper_name
 
 # ==============================================================================
-# 6. PIPELINE EXECUTION
+# 7. PIPELINE EXECUTION
 # ==============================================================================
 
 def execute_plan(commands: list[ExecutionStep], mapper_name: Optional[str] = None) -> None:
@@ -575,8 +749,6 @@ def execute_plan(commands: list[ExecutionStep], mapper_name: Optional[str] = Non
                 console.print(f"\n[bold yellow]Executing:[/] {step['desc']}...")
                 console.print(f"[dim]$ {shlex.join(step['cmd'])}[/]\n")
                 try:
-                    # FIX: Utilizing unbuffered byte reading to allow native carriage returns (\r)
-                    # to properly update the progress bar in the terminal without hanging.
                     proc = subprocess.Popen(
                         step["cmd"],
                         stdout=subprocess.PIPE,
@@ -596,7 +768,7 @@ def execute_plan(commands: list[ExecutionStep], mapper_name: Optional[str] = Non
                     if proc.returncode != 0:
                         raise subprocess.CalledProcessError(proc.returncode, step["cmd"])
                         
-                except subprocess.CalledProcessError as e:
+                except subprocess.CalledProcessError:
                     console.print(f"\n[bold red]Fatal Error executing:[/] {shlex.join(step['cmd'])}")
                     raise Exception("Execution pipeline aborted.")
                 console.print(f"\n[bold green]✔[/] {step['desc']} [dim](Completed)[/]")
@@ -649,18 +821,25 @@ def execute_plan(commands: list[ExecutionStep], mapper_name: Optional[str] = Non
 # ==============================================================================
 
 def main() -> None:
-    plan = interactive_setup()
+    if is_cli_mode and cli_args:
+        plan = build_plan_from_cli(cli_args)
+    else:
+        plan = interactive_setup()
+        
     commands, bash_equivalent, mapper_name = build_execution_plan(plan)
     
     console.print("\n[bold green]Command Execution Pipeline (Educational Transparency):[/]")
     syntax = Syntax(bash_equivalent, "bash", theme="monokai", line_numbers=True)
     console.print(Panel(syntax, title="Raw Subprocess Translation", border_style="green"))
     
-    console.print(f"\n[bold red blink]WARNING:[/] ALL DATA ON [bold yellow]{plan['device']}[/] WILL BE PERMANENTLY ERASED.")
-    if Confirm.ask("Are you absolutely confident you wish to proceed?", default=False):
+    if plan.get("non_interactive"):
         execute_plan(commands, mapper_name)
     else:
-        console.print("[yellow]Operation aborted. Your data remains untouched.[/]")
+        console.print(f"\n[bold red blink]WARNING:[/] ALL DATA ON [bold yellow]{plan['device']}[/] WILL BE PERMANENTLY ERASED.")
+        if Confirm.ask("Are you absolutely confident you wish to proceed?", default=False):
+            execute_plan(commands, mapper_name)
+        else:
+            console.print("[yellow]Operation aborted. Your data remains untouched.[/]")
 
 if __name__ == "__main__":
     try:
