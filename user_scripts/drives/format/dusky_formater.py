@@ -28,6 +28,7 @@ class FormatPlan(TypedDict):
     device: str
     target_block: str
     partition_table: str  # "none", "gpt", "mbr"
+    partition_size: str   # "100%", "50%", etc.
     encrypt: bool
     fs_type: str
     csum: Optional[str]
@@ -121,6 +122,7 @@ def parse_cli_args() -> tuple[Optional[argparse.Namespace], bool]:
     parser.add_argument("-f", "--fs", choices=SUPPORTED_FS, help="Target filesystem type")
     parser.add_argument("-l", "--label", type=str, default="", help="Volume label")
     parser.add_argument("-p", "--partition", choices=["none", "gpt", "mbr"], default="none", help="Partition table scheme to write if device is a disk")
+    parser.add_argument("--part-size", type=str, default="100%", help="Partition size allocation (e.g., 50% to reserve 50% as unallocated space)")
     parser.add_argument("-e", "--encrypt", action="store_true", help="Encrypt volume with LUKS2")
     parser.add_argument("--passphrase", type=str, help="LUKS2 passphrase for automated non-interactive format")
     parser.add_argument("--csum", choices=["crc32c", "xxhash", "sha256", "blake2"], default="blake2", help="BTRFS checksum algorithm")
@@ -612,6 +614,7 @@ def build_plan_from_cli(args: argparse.Namespace) -> FormatPlan:
         "device": args.device,
         "target_block": target_block,
         "partition_table": partition_table,
+        "partition_size": getattr(args, "part_size", "100%"),
         "encrypt": bool(args.encrypt),
         "fs_type": args.fs,
         "csum": args.csum if args.fs == "btrfs" else None,
@@ -682,13 +685,26 @@ def interactive_setup() -> FormatPlan:
     dev_type = get_val(device_node, "type", "part")
     
     partition_table = "none"
+    partition_size = "100%"
     if dev_type == "disk":
+        console.print(Panel(
+            "[bold cyan]Partition Table Schemes:[/]\n"
+            "  • [bold green]none[/]: Format raw block device directly (superfloppy mode, best for USB drives/flash media)\n"
+            "  • [bold yellow]gpt[/] : Modern GPT scheme (Recommended for UEFI boot drives or disks > 2TB)\n"
+            "  • [bold magenta]mbr[/] : Legacy DOS/MBR scheme (For old BIOS systems or legacy hardware compatibility)",
+            title="Partition Layout Options", border_style="cyan"
+        ))
         partition_choice = Prompt.ask(
-            "Target is a whole DISK. Write a partition table first?",
+            "Select Partition Table scheme to write",
             choices=["none", "gpt", "mbr"],
             default="none"
         )
         partition_table = partition_choice
+        if partition_table in ["gpt", "mbr"]:
+            partition_size = Prompt.ask(
+                "Enter partition size (e.g. 50% to reserve 50% as over-provisioned space, or 100% for full disk)",
+                default="100%"
+            )
 
     console.print("\n[bold cyan]--- Security & Encryption ---[/]")
     encrypt = Confirm.ask(f"Encrypt target using [bold]LUKS2[/]?", default=False)
@@ -727,6 +743,7 @@ def interactive_setup() -> FormatPlan:
         "device": target_device,
         "target_block": target_device,
         "partition_table": partition_table,
+        "partition_size": partition_size,
         "encrypt": encrypt,
         "fs_type": fs_type,
         "csum": csum,
@@ -748,13 +765,25 @@ def build_execution_plan(plan: FormatPlan) -> tuple[list[ExecutionStep], str, Op
     encrypt = plan["encrypt"]
     passphrase = plan.get("passphrase")
     partition_table = plan["partition_table"]
+    partition_size = plan.get("partition_size", "100%")
     
     commands: list[ExecutionStep] = []
     bash_script = "#!/bin/bash\n# Dusky Formatter Native Execution Pipeline\n\n"
     
     mapper_name = None
 
-    # Step 1: Wipe filesystem and partition table signatures safely
+    # Step 1: Low-level FTL discard (if blkdiscard available) & Wipe filesystem signatures
+    if shutil.which("blkdiscard") and not device.startswith("/dev/mapper/"):
+        blkdiscard_cmd = ["blkdiscard", "-f", device]
+        commands.append({
+            "action": "blkdiscard",
+            "desc": f"Attempting low-level FTL discard on {device} to unmap all LBAs",
+            "cmd": blkdiscard_cmd,
+            "interactive": False,
+            "input_data": None
+        })
+        bash_script += f"# Low-level FTL discard (resets LBA mappings if supported)\n{shlex.join(blkdiscard_cmd)} 2>/dev/null || true\n\n"
+
     wipe_cmd = ["wipefs", "--all", "--force", device]
     commands.append({
         "action": "wipe_fs",
@@ -769,11 +798,17 @@ def build_execution_plan(plan: FormatPlan) -> tuple[list[ExecutionStep], str, Op
 
     # Step 2: Partitioning via sfdisk (Universal Linux Device Partition Suffix Handling)
     if partition_table in ["gpt", "mbr"]:
-        sfdisk_table = "label: gpt\n,\n" if partition_table == "gpt" else "label: dos\n,\n"
+        if partition_size and partition_size != "100%":
+            sfdisk_table = f"label: gpt\nsize={partition_size}\n" if partition_table == "gpt" else f"label: dos\nsize={partition_size}\n"
+            desc_str = f"Creating {partition_size} primary {partition_table.upper()} partition layout on {device}"
+        else:
+            sfdisk_table = "label: gpt\n,\n" if partition_table == "gpt" else "label: dos\n,\n"
+            desc_str = f"Creating single primary {partition_table.upper()} partition layout on {device}"
+
         part_cmd = ["sfdisk", device]
         commands.append({
             "action": "partition",
-            "desc": f"Creating single primary {partition_table.upper()} partition layout on {device}",
+            "desc": desc_str,
             "cmd": part_cmd,
             "interactive": False,
             "input_data": sfdisk_table
@@ -929,7 +964,13 @@ def execute_plan(commands: list[ExecutionStep], mapper_name: Optional[str] = Non
                 except subprocess.CalledProcessError:
                     console.print(f"\n[bold red]Fatal Error executing:[/] {shlex.join(step['cmd'])}")
                     raise Exception("Execution pipeline aborted.")
-                console.print(f"\n[bold green]✔[/] {step['desc']} [dim](Completed)[/]")
+            elif step["action"] == "blkdiscard":
+                with console.status(f"[bold yellow]Executing:[/] {step['desc']}...", spinner="dots"):
+                    res = subprocess.run(step["cmd"], capture_output=True, text=True)
+                    if res.returncode == 0:
+                        console.print(f"[bold green]✔[/] {step['desc']} [dim](Completed)[/]")
+                    else:
+                        console.print(f"[dim yellow]Notice: Hardware BLKDISCARD not supported by USB controller ({res.stderr.strip() or 'Operation not supported'}). Proceeding with signature wiping...[/]")
             else:
                 with console.status(f"[bold yellow]Executing:[/] {step['desc']}...", spinner="dots"):
                     try:
