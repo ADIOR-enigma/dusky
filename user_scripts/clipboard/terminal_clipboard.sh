@@ -1643,28 +1643,44 @@ spawn_terminal() {
     exec "${cmd[@]}" env CLIPBOARD_FZF_EPHEMERAL=1 "$SELF"
 }
 
+hex_to_ansi() {
+    local hex="${1#\#}" bold="${2:-0}"
+    if [[ $hex =~ ^[0-9A-Fa-f]{6}$ ]]; then
+        local r g b b_str=''
+        (( bold )) && b_str='1;'
+        printf -v r '%d' "0x${hex:0:2}"
+        printf -v g '%d' "0x${hex:2:2}"
+        printf -v b '%d' "0x${hex:4:2}"
+        REPLY=$'\e['"${b_str}38;2;${r};${g};${b}m"
+    else
+        (( bold )) && REPLY=$'\e[1;33m' || REPLY=$'\e[0m'
+    fi
+}
+
 load_matugen_fzf_theme() {
     local theme_file="$HOME/.config/matugen/generated/dusky_tui.json"
-    [[ -f $theme_file && -r $theme_file ]] || return 0
+    MATUGEN_BG="#1d100a" MATUGEN_FG="#f8ddd2" MATUGEN_ACCENT="#ffb694"
+    MATUGEN_ERROR="#ffb4ab" MATUGEN_WARNING="#efbc94" MATUGEN_SUCCESS="#f0be79" MATUGEN_MUTED="#55433b"
 
-    local bg="#1d100a" fg="#f8ddd2" accent="#ffb694" error="#ffb4ab" warning="#efbc94" success="#f0be79" muted="#55433b"
-    local line key val
-    while read -r line; do
-        [[ $line =~ \"([^\"]+)\":[[:space:]]*\"([^\"]+)\" ]] || continue
-        key="${BASH_REMATCH[1]}"
-        val="${BASH_REMATCH[2]}"
-        case $key in
-            bg)      bg="$val" ;;
-            fg)      fg="$val" ;;
-            accent)  accent="$val" ;;
-            error)   error="$val" ;;
-            warning) warning="$val" ;;
-            success) success="$val" ;;
-            muted)   muted="$val" ;;
-        esac
-    done < "$theme_file"
+    if [[ -f $theme_file && -r $theme_file ]]; then
+        local line key val
+        while read -r line; do
+            [[ $line =~ \"([^\"]+)\":[[:space:]]*\"([^\"]+)\" ]] || continue
+            key="${BASH_REMATCH[1]}"
+            val="${BASH_REMATCH[2]}"
+            case $key in
+                bg)      MATUGEN_BG="$val" ;;
+                fg)      MATUGEN_FG="$val" ;;
+                accent)  MATUGEN_ACCENT="$val" ;;
+                error)   MATUGEN_ERROR="$val" ;;
+                warning) MATUGEN_WARNING="$val" ;;
+                success) MATUGEN_SUCCESS="$val" ;;
+                muted)   MATUGEN_MUTED="$val" ;;
+            esac
+        done < "$theme_file"
+    fi
 
-    export DUSKY_FZF_COLORS="bg+:${muted},bg:${bg},spinner:${accent},fg:${fg},fg+:${fg},header:${accent},info:${warning},pointer:${success},marker:${success},prompt:${accent},hl:${error},hl+:${error},border:${muted},label:${accent}"
+    export DUSKY_FZF_COLORS="bg+:${MATUGEN_MUTED},bg:${MATUGEN_BG},spinner:${MATUGEN_ACCENT},fg:${MATUGEN_FG},fg+:${MATUGEN_FG},header:${MATUGEN_ACCENT},info:${MATUGEN_WARNING},pointer:${MATUGEN_SUCCESS},marker:${MATUGEN_SUCCESS},prompt:${MATUGEN_ACCENT},hl:${MATUGEN_ERROR},hl+:${MATUGEN_ERROR},border:${MATUGEN_MUTED},label:${MATUGEN_ACCENT}"
     export FZF_DEFAULT_OPTS="--color=$DUSKY_FZF_COLORS --pointer='❯ ' --marker='✔ ' --info=inline-right"
 }
 
@@ -1683,7 +1699,13 @@ show_menu() {
         [[ $p_state == false ]] && mode_label=RAM
     fi
 
-    local border_main=" [$mode_label] F1 help · Alt-M vim · Alt-A pin · Alt-D del · Alt-W wipe "
+    local c_key c_desc c_sep c_mode c_rst=$'\e[0m'
+    hex_to_ansi "$MATUGEN_ACCENT" 1; c_key="$REPLY"
+    hex_to_ansi "$MATUGEN_FG" 0;     c_desc="$REPLY"
+    hex_to_ansi "$MATUGEN_MUTED" 0;  c_sep="$REPLY"
+    hex_to_ansi "$MATUGEN_WARNING" 1; c_mode="$REPLY"
+
+    local border_main=" ${c_mode}[$mode_label]${c_rst} ${c_key}F1${c_rst} ${c_desc}help${c_rst} ${c_sep}·${c_rst} ${c_key}Alt-M${c_rst} ${c_desc}vim${c_rst} ${c_sep}·${c_rst} ${c_key}Alt-V${c_rst} ${c_desc}view${c_rst} ${c_sep}·${c_rst} ${c_key}Alt-A${c_rst} ${c_desc}pin${c_rst} ${c_sep}·${c_rst} ${c_key}Alt-D${c_rst} ${c_desc}del${c_rst} ${c_sep}·${c_rst} ${c_key}Alt-W${c_rst} ${c_desc}wipe${c_rst} "
     export CLIPFZF_BORDER_MAIN="$border_main"
 
     # Every command string below is pure ASCII and free of fzf's action-argument
@@ -1691,7 +1713,7 @@ show_menu() {
     local -a args=(
         --multi --ansi --no-sort --exact --cycle --layout=reverse --scheme=history
         --margin=0 --padding=0 --highlight-line --no-scrollbar
-        --border=rounded --border-label="$border_main" --border-label-pos=3
+        --border=rounded --border-label="$border_main" --border-label-pos=bottom:3
         --info=hidden
         --pointer='▌' --marker='┃'
         --delimiter="$SEP" --with-nth=1 --nth=1
