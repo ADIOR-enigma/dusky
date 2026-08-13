@@ -122,7 +122,7 @@ def parse_cli_args() -> tuple[Optional[argparse.Namespace], bool]:
     parser.add_argument("-f", "--fs", choices=SUPPORTED_FS, help="Target filesystem type")
     parser.add_argument("-l", "--label", type=str, default="", help="Volume label")
     parser.add_argument("-p", "--partition", choices=["none", "gpt", "mbr"], default="none", help="Partition table scheme to write if device is a disk")
-    parser.add_argument("--part-size", type=str, default="100%", help="Partition size allocation (e.g., 50% to reserve 50% as unallocated space)")
+    parser.add_argument("--part-size", type=str, default="100%", help="Partition size allocation (e.g., 50%% to reserve 50%% as unallocated space)")
     parser.add_argument("-e", "--encrypt", action="store_true", help="Encrypt volume with LUKS2")
     parser.add_argument("--passphrase", type=str, help="LUKS2 passphrase for automated non-interactive format")
     parser.add_argument("--csum", choices=["crc32c", "xxhash", "sha256", "blake2"], default="blake2", help="BTRFS checksum algorithm")
