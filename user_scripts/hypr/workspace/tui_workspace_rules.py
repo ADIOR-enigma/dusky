@@ -562,20 +562,7 @@ SCHEMA = {
     # -------------------------------------------------------------------------
     # TAB 5: PRESETS
     # -------------------------------------------------------------------------
-    5: [
-        ConfigItem(
-            label="Factory Reset Everything",
-            key="preset_factory_reset",
-            scope="DEFAULT",
-            type_="preset",
-            default=None,
-            group="Actions",
-            preset_payload={
-                "__ALL_DEFAULTS__": True
-            },
-            extended_help="**Factory Reset**\n\nReverts all workspace, layout, and behavior rules back to their default state."
-        ),
-    ]
+    5: []
 }
 
 # =============================================================================

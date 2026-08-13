@@ -440,18 +440,6 @@ SCHEMA: dict[int, list[ConfigItem]] = {
             },
             extended_help="**Enable Everything**\n\nEnables all available template blocks inside config.toml."
         ),
-        ConfigItem(
-            label="Reset to Factory Defaults",
-            key="preset_reset_defaults",
-            scope="DEFAULT",
-            type_="preset",
-            default=None,
-            group="Presets",
-            preset_payload={
-                "__ALL_DEFAULTS__": True
-            },
-            extended_help="**Reset to Defaults**\n\nResets all template blocks back to their initial coded defaults."
-        ),
     ]
 }
 

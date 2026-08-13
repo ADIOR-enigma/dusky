@@ -404,19 +404,6 @@ ConfigItem(
             },
             extended_help="**Stable Replay Preset**\n\nConfigures the application for predictable Instant Replay usage by forcing Constant Bitrate (CBR) to strictly manage RAM consumption."
         ),
-        ConfigItem(
-            label="Reset",
-            key="preset_factory_reset",
-            scope="DEFAULT",
-            type_="preset",
-            default=None,
-            group="System",
-            confirm_message="Are you absolutely sure you want to purge all configuration data and factory reset?",
-            preset_payload={
-                "__ALL_DEFAULTS__": True
-            },
-            extended_help="**Nuclear Factory Reset**\n\nReverts every single configuration key across all tabs back to its programmed default state."
-        ),
     ]
 }
 

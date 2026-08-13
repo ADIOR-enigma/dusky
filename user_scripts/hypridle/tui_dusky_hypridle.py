@@ -137,18 +137,6 @@ SCHEMA = {
             },
             extended_help="**Presentation Mode**\n\nEffectively disables all idle timeouts. Useful when watching movies, presenting, or running long background tasks without audio playing."
         ),
-        ConfigItem(
-            label="Factory Reset Everything",
-            key="preset_factory_reset",
-            scope="DEFAULT",
-            type_="preset",
-            default=None,
-            group="Reset",
-            preset_payload={
-                "__ALL_DEFAULTS__": True
-            },
-            extended_help="**Factory Reset**\n\nReverts all idle timeouts back to their original configuration."
-        ),
     ]
 }
 

@@ -358,18 +358,6 @@ SCHEMA = {
             },
             extended_help="**Firm & Intentional**\n\nRequires long, deliberate swipes to trigger a workspace change. Highly resistant to accidental triggers."
         ),
-        ConfigItem(
-            label="Factory Reset Everything",
-            key="preset_factory_reset",
-            scope="DEFAULT",
-            type_="preset",
-            default=None,
-            group="Reset",
-            preset_payload={
-                "__ALL_DEFAULTS__": True
-            },
-            extended_help="**Factory Reset**\n\nReverts all settings across all tabs back to their default values."
-        ),
     ]
 }
 

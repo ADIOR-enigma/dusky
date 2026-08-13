@@ -589,19 +589,6 @@ SCHEMA = {
             group="Execution",
             extended_help="**Live Daemon Cycle**\n\nExecutes `theme_ctl.sh refresh` to re-compile all specific Matugen templates safely, then immediately invokes `makoctl reload` to push your new Glance parameters to the live Wayland surface without restarting Hyprland."
         ),
-        ConfigItem(
-            label="Reset",
-            key="preset_factory_reset",
-            scope="DEFAULT",          
-            type_="preset",
-            default=None,
-            group="Defaults",
-            confirm_message="Are you absolutely sure you want to perform a factory reset? All granular adjustments will be wiped.",
-            preset_payload={
-                "__ALL_DEFAULTS__": True
-            },
-            extended_help="**Sanity Reset**\n\nDid you break the Rofi shell execution hook or mess up the geometry? Triggering this profile restores every widget/alert parameter identically to the original Dusky default specifications."
-        ),
     ]
 }
 

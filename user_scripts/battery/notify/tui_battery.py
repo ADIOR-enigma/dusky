@@ -252,18 +252,6 @@ SCHEMA = {
             },
             extended_help="**Aggressive Power Management**\n\nRaises warnings earlier: warning at 25%, critical suspend at 12% with a shorter 30-second warning countdown."
         ),
-        ConfigItem(
-            label="Factory Reset Defaults",
-            key="preset_factory_reset",
-            scope="DEFAULT",
-            type_="preset",
-            default=None,
-            group="Reset",
-            preset_payload={
-                "__ALL_DEFAULTS__": True
-            },
-            extended_help="**Nuclear Factory Reset**\n\nReverts all variables inside the script back to their initial coded default states."
-        ),
     ]
 }
 

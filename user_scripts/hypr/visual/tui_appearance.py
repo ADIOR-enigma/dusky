@@ -86,16 +86,6 @@ SCHEMA = {
     # -------------------------------------------------------------------------
     0: [
         ConfigItem(
-            label="Reset Dusky Defaults",
-            key="preset_factory_reset",
-            scope="DEFAULT",
-            type_="preset",
-            default=None,
-            group="Reset",
-            preset_payload={"__ALL_DEFAULTS__": True},
-            extended_help="**Reset Dusky Defaults**\n\nReverts every single configuration item across all tabs back to its programmed default state."
-        ),
-        ConfigItem(
             label="Paper Texture",
             key="pre_paper_texture",
             scope="DEFAULT",

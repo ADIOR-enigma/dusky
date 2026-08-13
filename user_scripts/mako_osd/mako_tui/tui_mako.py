@@ -1271,18 +1271,6 @@ SCHEMA = {
             group="Execution",
             extended_help="**Hypr Rotate Test**\n\nFires a mock Display Rotated notification to preview your Hypr Rotate pill styling."
         ),
-        ConfigItem(
-            label="Reset",
-            key="preset_factory_reset",
-            scope="DEFAULT",          
-            type_="preset",
-            default=None,
-            group="Defaults",
-            preset_payload={
-                "__ALL_DEFAULTS__": True
-            },
-            extended_help="**Nuclear Reset**\n\nReverts every single configuration item across all tabs directly back to its originally programmed Matugen template state. Click Regenerate afterward to apply."
-        ),
     ]
 }
 

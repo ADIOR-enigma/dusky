@@ -138,17 +138,6 @@ SCHEMA = {
                 "render.cm_auto_hdr": False
             }
         ),
-        ConfigItem(
-            label="Factory Reset Defaults",
-            key="preset_factory_reset",
-            scope="DEFAULT",
-            type_="preset",
-            default=None,
-            group="System Maintenance",
-            preset_payload={
-                "__ALL_DEFAULTS__": True
-            }
-        ),
     ]
 }
 

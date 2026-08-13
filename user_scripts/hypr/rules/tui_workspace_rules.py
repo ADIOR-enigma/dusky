@@ -366,18 +366,6 @@ SCHEMA = {
             group="Profiles & Actions",
             extended_help="**Reload Environment**\n\nForces Hyprland to re-read all window rules and configuration files without terminating the session."
         ),
-        ConfigItem(
-            label="Factory Reset Everything",
-            key="preset_factory_reset",
-            scope="DEFAULT",
-            type_="preset",
-            default=None,
-            group="Profiles & Actions",
-            preset_payload={
-                "__ALL_DEFAULTS__": True
-            },
-            extended_help="**Factory Reset**\n\nReverts all workspace, layout, and behavior rules back to their default state."
-        ),
     ]
 }
 

@@ -444,18 +444,6 @@ SCHEMA = {
             },
             extended_help="Strips away power constraints and prioritizes raw computing power and screen brightness."
         ),
-        ConfigItem(
-            label="Factory Reset",
-            key="preset_factory_reset",
-            scope="DEFAULT",
-            type_="preset",
-            default=None,
-            group="Danger",
-            confirm_message="Are you sure you want to strip all local changes and comment out active parameters? This reverts to the hardware defaults.",
-            preset_payload={
-                "__ALL_DEFAULTS__": True
-            }
-        ),
     ]
 }
 
