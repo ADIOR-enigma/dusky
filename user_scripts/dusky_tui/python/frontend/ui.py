@@ -2399,7 +2399,7 @@ Tooltip {
             txt.append(indent_prefix, style=self.theme_colors["muted"])
 
         if item.is_parent:
-            exp_char = "[-] " if item.expanded else "[+] "
+            exp_char = "▼ " if item.expanded else "▶ "
             txt.append(exp_char, style=f"{self.theme_colors['accent']} bold")
         elif indent_prefix and len(indent_prefix) > 0 and indent_prefix != "    ":
             txt.append("    ")
@@ -2662,13 +2662,28 @@ Tooltip {
                     itm.group == "User Presets"
                     and (
                         itm.key.startswith("__user_preset_")
-                        or itm.key in ("__save_new_preset", "__import_new_preset")
+                        or itm.key in ("__save_new_preset", "__import_new_preset", "__reset_all_defaults")
                     )
                 )
             ]
 
+        reset_btn = ConfigItem(
+            label="󰁯 Reset to Defaults",
+            key="__reset_all_defaults",
+            scope="DEFAULT",
+            type_="preset",
+            default=None,
+            group="User Presets",
+            preset_payload={
+                "__ALL_DEFAULTS__": True
+            },
+            confirm_message="Are you sure you want to reset ALL settings to their initial factory defaults?",
+            extended_help="Resets all configuration options across all tabs back to their original factory defaults."
+        )
+        reset_btn.exists_in_target = True
+
         save_btn = ConfigItem(
-            label="[+] Save as Preset",
+            label="󰆓 Save as Preset",
             key="__save_new_preset",
             scope="DEFAULT",
             type_="action",
@@ -2679,7 +2694,7 @@ Tooltip {
         save_btn.exists_in_target = True
 
         import_btn = ConfigItem(
-            label="[+] Import Preset",
+            label="󰏔 Import Preset",
             key="__import_new_preset",
             scope="DEFAULT",
             type_="action",
@@ -2692,7 +2707,7 @@ Tooltip {
         )
         import_btn.exists_in_target = True
 
-        user_preset_items = [save_btn, import_btn]
+        user_preset_items = [reset_btn, save_btn, import_btn]
 
         for file_path in sorted(self.user_presets_dir.glob("*.json"), key=lambda p: p.stem.lower()):
             name = file_path.stem
