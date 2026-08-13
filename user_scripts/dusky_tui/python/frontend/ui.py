@@ -3158,6 +3158,9 @@ Tooltip {
         self._tab_populated.add(tab_idx)
         self._tab_dirty.discard(tab_idx)
 
+        if tab_idx == self._current_tab_index():
+            self._update_file_link()
+
         self.call_after_refresh(self._update_scroll_indicators)
 
     def _apply_deferred_tabs(
@@ -3542,6 +3545,28 @@ Tooltip {
         self.register_theme(custom_theme)
         self.theme = theme_name
 
+    def _update_file_link(self, item: ConfigItem | None = None) -> None:
+        try:
+            if item is None:
+                cur_tab = self._current_tab_index()
+                if cur_tab is not None and (ol := self.current_option_list):
+                    if ol.highlighted is not None and ol.highlighted < ol.option_count:
+                        opt = ol.get_option_at_index(ol.highlighted)
+                        if opt and opt.id:
+                            parsed = self._get_item_from_id(opt.id)
+                            if parsed:
+                                item = parsed[2]
+                    if item is None:
+                        items = self.schema.get(cur_tab, [])
+                        if items:
+                            item = items[0]
+
+            if item is not None:
+                engine = self._get_engine_for_item(item)
+                self.query_one("#file-link", FileLink).path = engine.target_path
+        except Exception:
+            pass
+
     # =========================================================================
     # TAB HANDLING
     # =========================================================================
@@ -3584,6 +3609,7 @@ Tooltip {
 
             self._update_scroll_indicators()
             self.check_tab_overflow()
+            self._update_file_link()
 
         except Exception:
             pass
@@ -3663,12 +3689,7 @@ Tooltip {
 
         if parsed:
             self._update_help_panel(parsed[2])
-
-            try:
-                engine = self._get_engine_for_item(parsed[2])
-                self.query_one("#file-link", FileLink).path = engine.target_path
-            except Exception:
-                pass
+            self._update_file_link(parsed[2])
 
         last_id = ol.last_highlighted_id
 
