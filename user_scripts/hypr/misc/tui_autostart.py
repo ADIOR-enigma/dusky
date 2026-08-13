@@ -25,11 +25,28 @@ ENABLE_USER_PRESETS = True
 USER_PRESETS_TAB = "Profiles"
 
 TAB_NOTICES = {
-    2: {
-        "level": "warning",
-        "position": "top",
-        "message": "**DISCLAIMER:** This tab configures core system autostart settings (`~/.config/hypr/source/autostart.lua`). Do not modify these options unless you know what you are doing!"
-    }
+    0: {
+        "level": "info",
+        "position": "bottom",
+        "message": "\uf05a **Note:** Changes require restart/relogin to take effect."
+    },
+    1: {
+        "level": "info",
+        "position": "bottom",
+        "message": "\uf05a **Note:** Changes require restart/relogin to take effect."
+    },
+    2: [
+        {
+            "level": "warning",
+            "position": "top",
+            "message": "\uf071 **DISCLAIMER:** This tab configures core system autostart settings (`~/.config/hypr/source/autostart.lua`). Do not modify these options unless you know what you are doing!"
+        },
+        {
+            "level": "info",
+            "position": "bottom",
+            "message": "\uf05a **Note:** Changes require restart/relogin to take effect."
+        }
+    ]
 }
 
 # =============================================================================
