@@ -142,23 +142,25 @@ def parse_cli_args() -> tuple[Optional[argparse.Namespace], bool]:
     is_cli_mode = bool(args.device and args.fs and args.non_interactive)
     return args, is_cli_mode
 
-cli_args, is_cli_mode = parse_cli_args()
-
-# ==============================================================================
-# 3. AUTO-ELEVATION & DEPENDENCY RESOLUTION
-# ==============================================================================
-
-if os.geteuid() != 0:
-    if is_cli_mode:
-        res = subprocess.run(["sudo", sys.executable] + sys.argv)
-        sys.exit(res.returncode)
-    else:
-        print("\033[1;33m[!] Dusky Formatter requires root privileges. Elevating via sudo...\033[0m")
-        try:
-            os.execvp("sudo", ["sudo", sys.executable] + sys.argv)
-        except Exception as e:
-            print(f"\033[1;31m[x] Critical error during privilege escalation: {e}\033[0m")
-            sys.exit(1)
+def ensure_root_privileges(is_cli_mode: bool) -> None:
+    if os.geteuid() != 0:
+        if not sys.stdin.isatty():
+            probe = subprocess.run(["sudo", "-n", "true"], capture_output=True)
+            if probe.returncode != 0:
+                print("\033[1;31m[x] Error: Root privileges required, but session is non-interactive and sudo requires a password.\033[0m")
+                print("Please run this command directly from your interactive terminal:\n")
+                print(f"  sudo {sys.executable} {' '.join(sys.argv)}\n")
+                sys.exit(1)
+        if is_cli_mode:
+            res = subprocess.run(["sudo", sys.executable] + sys.argv)
+            sys.exit(res.returncode)
+        else:
+            print("\033[1;33m[!] Dusky Formatter requires root privileges. Elevating via sudo...\033[0m")
+            try:
+                os.execvp("sudo", ["sudo", sys.executable] + sys.argv)
+            except Exception as e:
+                print(f"\033[1;31m[x] Critical error during privilege escalation: {e}\033[0m")
+                sys.exit(1)
 
 try:
     from rich.console import Console
@@ -343,39 +345,77 @@ def display_device_tree(devices: list[dict[str, Any]], table: Table, mount_data:
         if "children" in dev:
             display_device_tree(get_val(dev, "children", []), table, mount_data, level + 1)
 
-def resolve_busy_processes(mountpoint: str) -> bool:
+def resolve_busy_processes(mountpoint: str, non_interactive: bool = False) -> bool:
+    processes: list[dict[str, str]] = []
+    
+    # Attempt 1: lsof with machine-readable format -F pcu
     try:
-        res = subprocess.run(["lsof", "+f", "--", mountpoint], capture_output=True, text=True)
+        res = subprocess.run(["lsof", "-F", "pcu", "+f", "--", mountpoint], capture_output=True, text=True)
+        if res.returncode == 0 and res.stdout.strip():
+            current_p: dict[str, str] = {}
+            for line in res.stdout.strip().split("\n"):
+                if not line:
+                    continue
+                prefix, val = line[0], line[1:]
+                if prefix == 'p':
+                    if current_p and 'pid' in current_p:
+                        processes.append(current_p)
+                    current_p = {'pid': val, 'cmd': 'Unknown', 'user': 'Unknown'}
+                elif prefix == 'c' and current_p:
+                    current_p['cmd'] = val
+                elif prefix == 'u' and current_p:
+                    current_p['user'] = val
+            if current_p and 'pid' in current_p:
+                processes.append(current_p)
     except FileNotFoundError:
-        console.print("[dim yellow]Note: 'lsof' is not installed. Cannot scan for busy processes.[/]")
-        return False
+        pass
 
-    if res.returncode != 0 or not res.stdout.strip():
-        return False
+    # Attempt 2: Standard lsof if -F produced nothing
+    if not processes:
+        try:
+            res = subprocess.run(["lsof", "+f", "--", mountpoint], capture_output=True, text=True)
+            if res.returncode == 0 and res.stdout.strip():
+                lines = res.stdout.strip().split("\n")
+                if len(lines) > 1:
+                    for line in lines[1:]:
+                        parts = line.split()
+                        if len(parts) >= 3:
+                            pid = parts[1]
+                            if not any(p["pid"] == pid for p in processes):
+                                processes.append({
+                                    "cmd": parts[0],
+                                    "pid": pid,
+                                    "user": parts[2]
+                                })
+        except FileNotFoundError:
+            pass
 
-    lines = res.stdout.strip().split("\n")
-    if len(lines) <= 1:
-        return False
-
-    processes = []
-    for line in lines[1:]:
-        parts = line.split()
-        if len(parts) >= 3:
-            pid = parts[1]
-            if not any(p["pid"] == pid for p in processes):
-                processes.append({
-                    "cmd": parts[0],
-                    "pid": pid,
-                    "user": parts[2]
-                })
+    # Attempt 3: fuser fallback if lsof is not available or returned nothing
+    if not processes and shutil.which("fuser"):
+        try:
+            res = subprocess.run(["fuser", "-m", mountpoint], capture_output=True, text=True)
+            output = res.stdout.strip() or res.stderr.strip()
+            if output:
+                raw_pids = [p.strip().rstrip("ccefgkmM") for p in output.split() if p.strip().rstrip("ccefgkmM").isdigit()]
+                for pid in set(raw_pids):
+                    processes.append({"cmd": "process", "pid": pid, "user": "unknown"})
+        except Exception:
+            pass
 
     if not processes:
         return False
 
+    unique_processes = []
+    seen_pids = set()
+    for p in processes:
+        if p['pid'] not in seen_pids:
+            seen_pids.add(p['pid'])
+            unique_processes.append(p)
+    processes = unique_processes
+
     console.print(Panel(
         f"[bold red]⚠️  WARNING: FILESYSTEM IS BUSY ⚠️[/]\n\n"
-        f"The following processes are currently locking [bold white]{mountpoint}[/]\n"
-        "Force-closing them will result in unsaved data loss.",
+        f"The following processes are currently locking [bold white]{mountpoint}[/]:",
         title="Filesystem Locked", border_style="red"
     ))
 
@@ -390,14 +430,38 @@ def resolve_busy_processes(mountpoint: str) -> bool:
     console.print(table)
     console.print()
 
-    ans = Confirm.ask("Forcefully terminate all listed processes (SIGKILL) to free the drive?", default=False)
-    if ans:
+    action_taken = False
+    if non_interactive:
+        console.print("[bold yellow][*] Non-interactive mode: Automatically terminating locking processes...[/]")
         for p in processes:
-            console.print(f"Killing {p['cmd']} (PID: {p['pid']})...")
-            subprocess.run(["kill", "-9", p['pid']], capture_output=True)
+            console.print(f"Terminating {p['cmd']} (PID: {p['pid']})...")
+            subprocess.run(["kill", "-15", p['pid']], capture_output=True)
         time.sleep(1)
-        return True
-    return False
+        for p in processes:
+            res = subprocess.run(["kill", "-0", p['pid']], capture_output=True)
+            if res.returncode == 0:
+                console.print(f"Forcefully killing {p['cmd']} (PID: {p['pid']})...")
+                subprocess.run(["kill", "-9", p['pid']], capture_output=True)
+                action_taken = True
+            else:
+                action_taken = True
+        time.sleep(1)
+        return action_taken
+    else:
+        ans = Confirm.ask("Forcefully terminate all listed processes (SIGKILL/SIGTERM) to free the drive?", default=False)
+        if ans:
+            for p in processes:
+                console.print(f"Terminating {p['cmd']} (PID: {p['pid']})...")
+                subprocess.run(["kill", "-15", p['pid']], capture_output=True)
+            time.sleep(1)
+            for p in processes:
+                res = subprocess.run(["kill", "-0", p['pid']], capture_output=True)
+                if res.returncode == 0:
+                    console.print(f"Forcefully killing {p['cmd']} (PID: {p['pid']})...")
+                    subprocess.run(["kill", "-9", p['pid']], capture_output=True)
+            time.sleep(1)
+            return True
+        return False
 
 def teardown_descendants(device_node: Optional[dict[str, Any]]) -> bool:
     if not device_node: return True
@@ -411,6 +475,7 @@ def teardown_descendants(device_node: Optional[dict[str, Any]]) -> bool:
         path = get_val(child, "path")
         if dev_type in ["crypt", "lvm", "dm"] and path:
             console.print(f"[bold yellow]➜[/] Attempting to close mapped volume {path}...")
+            subprocess.run(["blockdev", "--flushbufs", path], capture_output=True)
             try:
                 res = subprocess.run(["cryptsetup", "close", path], capture_output=True, text=True)
                 if res.returncode == 0:
@@ -432,7 +497,7 @@ def teardown_descendants(device_node: Optional[dict[str, Any]]) -> bool:
                 success = False
     return success
 
-def unmount_device_locks(target_device: str, current_devices: list[dict[str, Any]]) -> bool:
+def unmount_device_locks(target_device: str, current_devices: list[dict[str, Any]], non_interactive: bool = False) -> bool:
     device_node = find_device_node(current_devices, target_device)
     active_mounts = get_all_mountpoints(device_node)
     active_mappings = get_all_mappings(device_node)
@@ -443,14 +508,61 @@ def unmount_device_locks(target_device: str, current_devices: list[dict[str, Any
     console.print(f"\n[bold yellow]➜[/] Clearing active mounts/locks on {target_device}...")
     for dev_path, m in sorted(active_mounts, key=lambda x: len(x[1]), reverse=True):
         if m == "[SWAP]":
-            subprocess.run(["swapoff", dev_path], capture_output=True)
+            console.print(f"  [yellow]Turning off swap on {dev_path}...[/]")
+            res = subprocess.run(["swapoff", dev_path], capture_output=True, text=True)
+            if res.returncode != 0:
+                console.print(f"  [bold red]Swapoff failed: {res.stderr.strip()}[/]")
         else:
-            subprocess.run(["umount", m], capture_output=True)
+            unmounted = False
+            if shutil.which("udisksctl") and (m.startswith("/run/media/") or m.startswith("/media/")):
+                u_res = subprocess.run(["udisksctl", "unmount", "-b", dev_path], capture_output=True, text=True)
+                if u_res.returncode == 0:
+                    console.print(f"  [bold green]✔ Unmounted {m} via udisksctl.[/]")
+                    unmounted = True
+
+            if not unmounted:
+                for attempt in range(3):
+                    u_res = subprocess.run(["umount", m], capture_output=True, text=True)
+                    if u_res.returncode == 0:
+                        console.print(f"  [bold green]✔ Unmounted {m}.[/]")
+                        unmounted = True
+                        break
+                    else:
+                        console.print(f"  [yellow]Notice:[/] Unmount {m} attempt {attempt+1}/3 failed ({u_res.stderr.strip()}). Scanning busy processes...")
+                        if resolve_busy_processes(m, non_interactive=non_interactive):
+                            time.sleep(1)
+                        else:
+                            time.sleep(1)
+
+            if not unmounted:
+                console.print(f"  [yellow]Attempting lazy unmount (umount -l) on {m}...[/]")
+                l_res = subprocess.run(["umount", "-l", m], capture_output=True, text=True)
+                if l_res.returncode == 0:
+                    console.print(f"  [bold green]✔ Lazy unmounted {m}.[/]")
+                    unmounted = True
+                else:
+                    console.print(f"  [bold red]✗ Lazy unmount failed for {m}: {l_res.stderr.strip()}[/]")
 
     if active_mappings:
         teardown_descendants(device_node)
 
+    subprocess.run(["blockdev", "--flushbufs", target_device], capture_output=True)
     subprocess.run(["udevadm", "settle"], capture_output=True)
+    
+    updated_devices = get_block_devices()
+    updated_node = find_device_node(updated_devices, target_device)
+    remaining_mounts = get_all_mountpoints(updated_node)
+    remaining_mappings = get_all_mappings(updated_node)
+
+    if remaining_mounts or remaining_mappings:
+        console.print(f"\n[bold red]ERROR: Locks remain on {target_device}:[/]")
+        for dev_path, m in remaining_mounts:
+            console.print(f"  - [red]Mounted at: {m} ({dev_path})[/]")
+        for m in remaining_mappings:
+            console.print(f"  - [red]Mapped volume: {m}[/]")
+        return False
+
+    console.print(f"[bold green]✔ All mounts and locks on {target_device} cleared successfully.[/]")
     return True
 
 # ==============================================================================
@@ -472,7 +584,10 @@ def build_plan_from_cli(args: argparse.Namespace) -> FormatPlan:
         console.print("[bold red]Error:[/] '--encrypt' requires '--passphrase' when running in non-interactive CLI mode.")
         sys.exit(1)
 
-    unmount_device_locks(args.device, current_devices)
+    if not unmount_device_locks(args.device, current_devices, non_interactive=True):
+        console.print(f"[bold red]Error:[/] Could not clear active mounts/locks on '{args.device}'. Aborting.")
+        sys.exit(1)
+
     ensure_package_for_fs(args.fs)
 
     label = args.label or ""
@@ -480,6 +595,8 @@ def build_plan_from_cli(args: argparse.Namespace) -> FormatPlan:
         label = label[:11].upper()
     elif args.fs == "exfat" and len(label) > 15:
         label = label[:15]
+    elif args.fs == "f2fs" and len(label) > 16:
+        label = label[:16]
     elif args.fs == "xfs" and len(label) > 12:
         label = label[:12]
     elif args.fs in ["ntfs", "bcachefs"] and len(label) > 32:
@@ -553,12 +670,12 @@ def interactive_setup() -> FormatPlan:
                 console.print(f"  - [magenta]Mapped volume: {m}[/]")
             
             if Confirm.ask("Would you like Dusky Formatter to attempt a [bold red]force unlock & unmount[/] now?", default=False):
-                unmount_device_locks(target_device, current_devices)
+                if not unmount_device_locks(target_device, current_devices, non_interactive=False):
+                    console.print(f"[bold red]Failed to clear locks on {target_device}. Select another device or clear locks manually.[/]")
+                    target_device = None
                 continue
             else:
                 target_device = None 
-                continue
-
         break
 
     device_node = find_device_node(get_block_devices(), target_device)
@@ -862,6 +979,9 @@ def execute_plan(commands: list[ExecutionStep], mapper_name: Optional[str] = Non
 # ==============================================================================
 
 def main() -> None:
+    cli_args, is_cli_mode = parse_cli_args()
+    ensure_root_privileges(is_cli_mode)
+
     if is_cli_mode and cli_args:
         plan = build_plan_from_cli(cli_args)
     else:
