@@ -3307,6 +3307,38 @@ Tooltip {
                 self._build_option(item, is_hl, prefix)
             )
 
+            # Automatically refresh parent subheadings / menu folders up the hierarchy
+            p_ref = getattr(item, "parent_ref", None)
+            if p_ref:
+                items_in_tab = self.schema.get(tab_idx, [])
+                visited_parents = set()
+                curr_ref = p_ref
+                while curr_ref and curr_ref not in visited_parents:
+                    visited_parents.add(curr_ref)
+                    parent_found = None
+                    p_i_idx = -1
+                    for i, itm in enumerate(items_in_tab):
+                        if itm.key == curr_ref or self._get_item_uid(itm) == curr_ref:
+                            parent_found = itm
+                            p_i_idx = i
+                            break
+
+                    if parent_found and p_i_idx >= 0:
+                        p_opt_id = f"item_{tab_idx}_{p_i_idx}"
+                        try:
+                            p_idx = ol.get_option_index(p_opt_id)
+                            p_is_hl = (ol.last_highlighted_id == p_opt_id)
+                            p_prefix = self._indent_cache.get(p_opt_id, "")
+                            ol.replace_option_prompt_at_index(
+                                p_idx,
+                                self._build_option(parent_found, p_is_hl, p_prefix)
+                            )
+                        except OptionDoesNotExist:
+                            pass
+                        curr_ref = getattr(parent_found, "parent_ref", None)
+                    else:
+                        break
+
         except OptionDoesNotExist:
             self._tab_dirty.add(tab_idx)
 
