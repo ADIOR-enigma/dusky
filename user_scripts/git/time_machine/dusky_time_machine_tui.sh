@@ -703,7 +703,7 @@ _dusky_compute_widths() {
     fi
     export DUSKY_TERM_COLS="$cols"
     export DUSKY_LIST_INNER="$list_cols"
-    export DUSKY_WHEN_W=4
+    export DUSKY_WHEN_W=3
     export DUSKY_AUTH_W=8
     local fixed_width=$(( DUSKY_WHEN_W + 3 + 3 + DUSKY_AUTH_W ))
     export DUSKY_MSG_WIDTH=$(( list_cols - fixed_width ))
@@ -717,8 +717,8 @@ _dusky_header_line() {
     b="$DUSKY_ANSI_BOLD"
     r="$DUSKY_ANSI_RESET"
     bar="${DUSKY_ANSI_BAR}│${r}"
-    printf '%s%-4s%s %s %s%-*s%s %s %s%-8s%s %s %s%s%s' \
-        "$b" "WHEN" "$r" \
+    printf '%s%s%s %s %s%-*s%s %s %s%-8s%s %s %s%s%s' \
+        "$b" "󰥔  " "$r" \
         "$bar" \
         "$b" "$DUSKY_MSG_WIDTH" "GRAPH / MESSAGE" "$r" \
         "$bar" \
@@ -1714,7 +1714,7 @@ main() {
         --highlight-line \
         --ghost='filter by hash, author, message…' \
         --prompt=' :: Time Machine ❯ ' \
-        --pointer='❯ ' \
+        --pointer='' \
         --marker='✔ ' \
         --layout=reverse \
         --info=inline-right \

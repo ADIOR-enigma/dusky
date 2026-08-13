@@ -82,9 +82,9 @@ readonly SEP=$'\x1f'                 # ASCII US: stripped from every payload
 readonly TAB=$'\t'
 readonly TMP_PREFIX='.clipfzf'       # single prefix => single cleanup glob
 
-readonly ICON_PIN='📌'
-readonly ICON_IMG='📸'
-readonly ICON_BIN='📦'
+readonly ICON_PIN='󰐃'
+readonly ICON_IMG='󰋩'
+readonly ICON_BIN='󰏖'
 
 # cliphist truncates `list` previews to -preview-width characters (default 100)
 # BEFORE we ever see them, so the search index can never be wider than this
@@ -98,13 +98,13 @@ readonly CACHE_TTL_MIN=1440
 readonly WIPE_ARM_SECONDS=5
 
 readonly MARK_VIM='🅝'
-readonly MARK_SEARCH='🔎'
-readonly LABEL_PREVIEW=' 📄 Preview '
-readonly LABEL_HELP=' 💡 Help '
+readonly MARK_SEARCH='󰍉'
+readonly LABEL_PREVIEW=' 󰈙 Preview '
+readonly LABEL_HELP=' 󰌵 Help '
 readonly PROMPT_NORMAL='  '
 readonly PROMPT_VIM=" $MARK_VIM q:quit /:search > "
 readonly PROMPT_SEARCH=" $MARK_SEARCH > "
-readonly HEADER_WIPE=' ⚠  Alt-W again within 5s to WIPE THE ENTIRE HISTORY '
+readonly HEADER_WIPE=' 󰀦  Alt-W again within 5s to WIPE THE ENTIRE HISTORY '
 
 # Keys owned by vim normal mode. Declared in exactly ONE place so the
 # bind / unbind / rebind sets can never drift out of sync.
@@ -163,7 +163,7 @@ notify() {
     local title="$1" msg="${2:-}" urgency="${3:-normal}"
     have notify-send && notify-send -u "$urgency" -a Clipboard \
         -h string:x-canonical-private-synchronous:cliphist-fzf \
-        -- "📋 $title" "$msg" 2>/dev/null
+        -- "󰅍 $title" "$msg" 2>/dev/null
     [[ $urgency == critical ]] && log_err "$title${msg:+: $msg}"
     return 0
 }
@@ -1049,7 +1049,7 @@ cmd_list() {
                 }
                 if (dims != "" || fmt != "") {
                     info = (dims != "" && fmt != "") ? dims " " fmt : (dims != "" ? dims : fmt)
-                    printf "%d %s %s%s%s%s%s\n", idx, icon_img, info, sep, "img", sep, id
+                    printf "%d \033[36m%s %s\033[0m%s%s%s%s\n", idx, icon_img, info, sep, "img", sep, id
                     next
                 }
                 info = content
@@ -1249,33 +1249,36 @@ cmd_help_pane() {
     state_load
     local k=$'\e[33m' c=$'\e[36m' r=$'\e[0m' mode=STANDARD
     [[ ${STATE[VIM_MODE]} == true ]] && mode=VIM
-    printf '\e[1;36m━━━ 💡 KEYBINDINGS (%s) ━━━%s\n\n' "$mode" "$r"
-    printf '  %sF1%s          : Toggle this help pane\n' "$k" "$r"
-    printf '  %sAlt-M%s       : Toggle Vim / Standard keybinds\n\n' "$k" "$r"
+    printf '\e[1;36m━━━ 󰌵 KEYBINDINGS (%s) ━━━%s\n\n' "$mode" "$r"
+    printf '  %sF1%s          : Toggle help pane\n' "$k" "$r"
+    printf '  %sAlt-M%s       : Toggle Vim keys\n\n' "$k" "$r"
     if [[ $mode == VIM ]]; then
         printf '  %s[ MOVEMENT & SEARCH ]%s\n' "$c" "$r"
         printf '  %sj / k%s       : Down / Up\n' "$k" "$r"
         printf '  %sg / G%s       : Top / Bottom\n' "$k" "$r"
         printf '  %sCtrl-D/U%s    : Half page down / up\n' "$k" "$r"
         printf '  %s/%s           : Enter search mode\n' "$k" "$r"
-        printf '  %sEsc%s         : Leave search mode (no-op in normal mode)\n\n' "$k" "$r"
+        printf '  %sEsc%s         : Leave search mode\n\n' "$k" "$r"
         printf '  %s[ SELECTION ]%s\n' "$c" "$r"
         printf '  %sv / V%s       : Toggle selection\n' "$k" "$r"
         printf '  %sJ / K%s       : Toggle + move down / up\n' "$k" "$r"
         printf '  %sCtrl-A%s      : Select all\n\n' "$k" "$r"
     fi
     printf '  %s[ PREVIEW ]%s\n' "$c" "$r"
-    printf '  %sAlt-H/J/K/L%s : Move pane (left/down/up/right)\n' "$k" "$r"
-    printf '  %sAlt-Arrows%s  : Resize pane (5%% steps, 10-90%%)\n' "$k" "$r"
-    printf '  %sAlt-V%s       : Hide / restore pane\n' "$k" "$r"
+    printf '  %sAlt-H/J/K/L%s : Move pane\n' "$k" "$r"
+    printf '  %sAlt-Arrows%s  : Resize pane\n' "$k" "$r"
+    printf '  %sAlt-V%s       : Toggle pane\n' "$k" "$r"
     printf '  %sShift-Up/Dn%s : Scroll preview\n\n' "$k" "$r"
     printf '  %s[ FILTERS ]%s\n' "$c" "$r"
-    printf '  %sAlt-T%s Text   %sAlt-I%s Images   %sAlt-P%s Pins   %sAlt-B%s Binaries   %sAlt-X%s Clear\n\n' \
-           "$k" "$r" "$k" "$r" "$k" "$r" "$k" "$r" "$k" "$r"
+    printf '  %sAlt-T%s       : Filter text\n' "$k" "$r"
+    printf '  %sAlt-I%s       : Filter images\n' "$k" "$r"
+    printf '  %sAlt-P%s       : Filter pins\n' "$k" "$r"
+    printf '  %sAlt-B%s       : Filter binaries\n' "$k" "$r"
+    printf '  %sAlt-X%s       : Clear filter\n\n' "$k" "$r"
     printf '  %s[ ACTIONS ]%s\n' "$c" "$r"
     printf '  %sAlt-A%s       : Pin / unpin selection\n' "$k" "$r"
     printf '  %sAlt-D%s       : Delete selection\n' "$k" "$r"
-    printf '  %sAlt-W%s       : Wipe history (press twice within %ss)\n' "$k" "$r" "$WIPE_ARM_SECONDS"
+    printf '  %sAlt-W%s       : Wipe history\n' "$k" "$r"
     printf '  %sCtrl-R%s      : Reload list\n' "$k" "$r"
     printf '  %sTab%s         : Multi-select\n' "$k" "$r"
     printf '  %sEnter%s       : Copy selection and exit\n' "$k" "$r"
@@ -1292,16 +1295,16 @@ cmd_help_pane() {
 #==============================================================================
 format_ts() {
     local ts="${1:-}" now week day time date_s
-    is_uint "$ts" || { printf '[ 🕒 Unknown ]'; return 1; }
+    is_uint "$ts" || { printf '[ 󰥔 Unknown ]'; return 1; }
     printf -v now '%(%s)T' -1
     (( week = now - 604800 ))
     printf -v day  '%(%a)T' "$ts"
     printf -v time '%(%-I:%M %p)T' "$ts"
     if (( ts >= week )); then
-        printf '[ 🕒 %s %s ]' "${day@U}" "$time"
+        printf '[ 󰥔 %s %s ]' "${day@U}" "$time"
     else
         printf -v date_s '%(%m/%d)T' "$ts"
-        printf '[ 🕒 %s %s %s ]' "$date_s" "${day@U}" "$time"
+        printf '[ 󰥔 %s %s %s ]' "$date_s" "${day@U}" "$time"
     fi
 }
 
