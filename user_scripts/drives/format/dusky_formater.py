@@ -425,7 +425,7 @@ def interactive_setup() -> FormatPlan:
                 console.print("[bold red]Passphrases do not match or are empty. Try again.[/]")
 
     console.print("\n[bold cyan]--- Filesystem Configuration ---[/]")
-    fs_options = ["btrfs", "ext4", "xfs", "fat32"]
+    fs_options = ["btrfs", "ext4", "f2fs", "exfat", "xfs", "fat32"]
     fs_type = Prompt.ask("Select target filesystem", choices=fs_options, default="btrfs")
     
     csum = None
@@ -436,6 +436,9 @@ def interactive_setup() -> FormatPlan:
     if fs_type == "fat32" and len(label) > 11:
         console.print("[bold yellow]Warning:[/] FAT32 limits labels to 11 characters. Truncating.")
         label = label[:11].upper()
+    elif fs_type == "exfat" and len(label) > 15:
+        console.print("[bold yellow]Warning:[/] exFAT limits labels to 15 characters. Truncating.")
+        label = label[:15]
 
     plan: FormatPlan = {
         "device": target_device,
@@ -514,6 +517,16 @@ def build_execution_plan(plan: FormatPlan) -> tuple[list[ExecutionStep], str, Op
             mkfs_cmd = ["mkfs.ext4", "-F", "-v"]
             if label: mkfs_cmd.extend(["-L", label])
             mkfs_cmd.extend(["-E", "lazy_itable_init=0,lazy_journal_init=0"])
+            mkfs_cmd.append(target_block)
+
+        case "f2fs":
+            mkfs_cmd = ["mkfs.f2fs", "-f"]
+            if label: mkfs_cmd.extend(["-l", label])
+            mkfs_cmd.append(target_block)
+
+        case "exfat":
+            mkfs_cmd = ["mkfs.exfat"]
+            if label: mkfs_cmd.extend(["-n", label])
             mkfs_cmd.append(target_block)
             
         case "xfs":
