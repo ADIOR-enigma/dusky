@@ -1132,6 +1132,7 @@ class ConfigOptionList(OptionList):
         for i in range(self.option_count):
             if not self.get_option_at_index(i).disabled:
                 self.highlighted = i
+                self.scroll_y = 0
                 break
 
     def action_scroll_bottom(self) -> None:
@@ -3829,10 +3830,39 @@ Tooltip {
                 elif hasattr(ol, "scroll_to_option") and curr_idx is not None:
                     ol.scroll_to_option(curr_idx)
 
+                self._ensure_header_visible(ol, curr_idx)
+
             except OptionDoesNotExist:
                 pass
 
         self._update_pagination(ol)
+
+    def _ensure_header_visible(self, ol: ConfigOptionList, curr_idx: int | None) -> None:
+        if ol is None or curr_idx is None or ol.option_count == 0:
+            return
+
+        has_selectable_above = False
+        for i in range(curr_idx):
+            try:
+                if not getattr(ol.get_option_at_index(i), "disabled", False):
+                    has_selectable_above = True
+                    break
+            except Exception:
+                pass
+
+        if not has_selectable_above:
+            ol.scroll_y = 0
+            return
+
+        if curr_idx > 0:
+            try:
+                prev_opt = ol.get_option_at_index(curr_idx - 1)
+                if getattr(prev_opt, "disabled", False):
+                    target_header_idx = curr_idx - 1
+                    if int(ol.scroll_y) > target_header_idx:
+                        ol.scroll_y = target_header_idx
+            except Exception:
+                pass
 
     def _update_pagination(self, ol: ConfigOptionList) -> None:
         try:
