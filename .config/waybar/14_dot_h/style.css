@@ -411,7 +411,7 @@ tooltip label,
 /* ─────────────────────────────────────────────────────────────────────────────
    TRANSPARENCY TOGGLE (MASTER SWITCH AT BOTTOM)
    ───────────────────────────────────────────────────────────────────────────── */
-/* WAYBAR_OPAQUE_SWITCH_START
+/* WAYBAR_OPAQUE_SWITCH_START */
 
 #left-pill,
 #expandable,
@@ -425,4 +425,4 @@ tooltip label,
     border: 1px solid @outline_variant;
 }
 
-WAYBAR_OPAQUE_SWITCH_END */
+/* WAYBAR_OPAQUE_SWITCH_END */

@@ -419,7 +419,7 @@ tooltip label,
    MASTER OPAQUE SWITCH (Placed at end of stylesheet for CSS cascade priority)
    ───────────────────────────────────────────────────────────────────────────── */
 
-/* WAYBAR_OPAQUE_SWITCH_START
+/* WAYBAR_OPAQUE_SWITCH_START */
 
 @define-color glass_bar                       transparent;
 @define-color glass_module                    @surface_container;
@@ -473,4 +473,4 @@ window#waybar > box {
   color: @on_primary_container;
 }
 
-WAYBAR_OPAQUE_SWITCH_END */
+/* WAYBAR_OPAQUE_SWITCH_END */
