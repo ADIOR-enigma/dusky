@@ -2467,19 +2467,19 @@ Tooltip {
 
             if item.type_ == "preset":
                 if is_active_preset:
-                    txt.append("Active", style=f"bold {self.theme_colors['success']}")
+                    txt.append(" 󰄬 Active ", style=f"bold {self.theme_colors['success']}")
                 elif is_deviated_preset:
-                    txt.append("Apply", style=f"bold {self.theme_colors['warning']}")
+                    txt.append(" 󰐊 Apply ", style=f"bold {self.theme_colors['warning']}")
                 else:
                     txt.append(
-                        "Apply",
+                        " 󰐊 Apply ",
                         style=f"bold {self.theme_colors['accent']}" if exists else f"{self.theme_colors['muted']} italic"
                     )
 
             elif item.type_ == "action":
                 txt.append(
-                    " Run",
-                    style=f"bold {self.theme_colors['warning']}" if exists else f"{self.theme_colors['muted']} italic"
+                    " 󰐊 Run ",
+                    style=f"bold {self.theme_colors['accent']}" if exists else f"{self.theme_colors['muted']} italic"
                 )
 
         else:
@@ -2495,15 +2495,15 @@ Tooltip {
                         opt0_lower = opt0.lower()
 
                         if opt0_lower.startswith("trigger:"):
-                            btn_label = f" {opt0[8:]} "
+                            btn_label = f" 󰐊 {opt0[8:]} "
                         elif opt0_lower.startswith("copy:"):
-                            btn_label = f" {opt0[5:]} "
+                            btn_label = f" 󰈔 {opt0[5:]} "
                         elif opt0_lower == "trigger":
-                            btn_label = " Apply "
+                            btn_label = " 󰐊 Apply "
                         elif opt0_lower == "copy":
-                            btn_label = " Copy "
+                            btn_label = " 󰈔 Copy "
                         else:
-                            btn_label = " Apply "
+                            btn_label = " 󰐊 Apply "
 
                         if not exists:
                             txt.append(btn_label, style=f"{self.theme_colors['muted']} italic")
