@@ -918,6 +918,12 @@ def main() -> None:
 
     # Strict sudo auto-elevation payload
     if not args.mock and os.geteuid() != 0:
+        if not sys.stdin.isatty():
+            probe = subprocess.run(["sudo", "-n", "true"], capture_output=True)
+            if probe.returncode != 0:
+                console.print("[bold red][x] Error: Hardware diagnostics require root privileges, but session is non-interactive and sudo requires a password.[/]")
+                console.print(f"Please run this command directly from your interactive terminal:\n  sudo {sys.executable} {' '.join(sys.argv)}\n")
+                sys.exit(1)
         console.print("[yellow][!] Hardware diagnostics require root privileges. Auto-elevating via sudo...[/]")
         target_args = ["sudo", sys.executable, sys.argv[0]]
         if choice > 0: target_args.extend(["--menu-executed", str(choice)])
