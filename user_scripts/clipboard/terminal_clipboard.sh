@@ -1706,7 +1706,7 @@ show_menu() {
     # metacharacters; the script path travels in $CLIPFZF_SELF instead.
     local -a args=(
         --multi --ansi --no-sort --exact --cycle --layout=reverse --scheme=history
-        --margin=0 --padding=0 --highlight-line --no-scrollbar
+        --margin=0 --padding=0 --highlight-line --no-scrollbar --ellipsis=''
         --border=rounded --border-label="$border_main" --border-label-pos=bottom:3
         --info=hidden
         --pointer='▌' --marker='┃'
