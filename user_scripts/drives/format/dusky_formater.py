@@ -66,7 +66,7 @@ KEY FEATURES & METHODOLOGIES (AUGUST 2026 STANDARDS):
      write amplification. Enabling lazy init defers zeroing to background 
      kernel allocation or discards block references.
    - TRIM / Discard: Automatically includes discard flags across supported 
-     filesystems (BTRFS, EXT4, F2FS, exFAT) and LUKS mappings (`--allow-discards`).
+     filesystems (BTRFS, EXT4, F2FS, exFAT, XFS) and LUKS mappings (`--allow-discards`).
    - Wiping: Uses `wipefs --all --force` to destroy magic signatures without
      overwriting whole disk blocks (avoiding zero-fills like `dd if=/dev/zero`).
 
@@ -75,7 +75,8 @@ KEY FEATURES & METHODOLOGIES (AUGUST 2026 STANDARDS):
    - BTRFS: Uses `btrfs-progs` 7.1 syntax supporting `blake2`, `xxhash`, 
      `sha256`, and `crc32c` checksum algorithms.
    - F2FS: Configured with `-t 1` for flash-friendly block placement and trim.
-   - Partitioning: Native GPT/MBR layout generation via `sfdisk` (util-linux 2.42.2).
+   - XFS: Uses `xfsprogs` 7.1 syntax (`-f` for force, `-L` label up to 12 chars).
+   - Partitioning: Universal GPT/MBR layout generation via `sfdisk` (util-linux 2.42.2).
    - Cryptography: LUKS2 with Argon2id PBKDF via `cryptsetup` 2.8.7.
 
 3. DEPENDENCY AUTO-RESOLUTION:
@@ -136,7 +137,6 @@ cli_args, is_cli_mode = parse_cli_args()
 
 if os.geteuid() != 0:
     if is_cli_mode:
-        # Re-run under sudo non-interactively
         res = subprocess.run(["sudo", sys.executable] + sys.argv)
         sys.exit(res.returncode)
     else:
@@ -280,7 +280,7 @@ def find_device_node(devices: list[dict[str, Any]], target_path: str) -> Optiona
 
 def display_device_tree(devices: list[dict[str, Any]], table: Table, mount_data: dict[str, dict[str, str]], level: int = 0) -> None:
     for dev in devices:
-        if get_val(dev, "type") in ["loop", "rom"] and level == 0:
+        if get_val(dev, "type") in ["rom"] and level == 0:
             continue
             
         path = get_val(dev, "path", "N/A")
@@ -450,6 +450,10 @@ def build_plan_from_cli(args: argparse.Namespace) -> FormatPlan:
         console.print(f"[bold red]Error:[/] Selected device '{args.device}' not found in system block device tree.")
         sys.exit(1)
 
+    if args.encrypt and not args.passphrase:
+        console.print("[bold red]Error:[/] '--encrypt' requires '--passphrase' when running in non-interactive CLI mode.")
+        sys.exit(1)
+
     unmount_device_locks(args.device, current_devices)
     ensure_package_for_fs(args.fs)
 
@@ -458,17 +462,19 @@ def build_plan_from_cli(args: argparse.Namespace) -> FormatPlan:
         label = label[:11].upper()
     elif args.fs == "exfat" and len(label) > 15:
         label = label[:15]
+    elif args.fs == "xfs" and len(label) > 12:
+        label = label[:12]
 
     device_node = find_device_node(current_devices, args.device)
     dev_type = get_val(device_node, "type", "part")
     
     target_block = args.device
-    partition_table = args.partition
+    partition_table = args.partition if dev_type == "disk" else "none"
 
     plan: FormatPlan = {
         "device": args.device,
         "target_block": target_block,
-        "partition_table": partition_table if dev_type == "disk" else "none",
+        "partition_table": partition_table,
         "encrypt": bool(args.encrypt),
         "fs_type": args.fs,
         "csum": args.csum if args.fs == "btrfs" else None,
@@ -576,6 +582,8 @@ def interactive_setup() -> FormatPlan:
         label = label[:11].upper()
     elif fs_type == "exfat" and len(label) > 15:
         label = label[:15]
+    elif fs_type == "xfs" and len(label) > 12:
+        label = label[:12]
 
     plan: FormatPlan = {
         "device": target_device,
@@ -621,9 +629,9 @@ def build_execution_plan(plan: FormatPlan) -> tuple[list[ExecutionStep], str, Op
 
     target_block = device
 
-    # Step 2: Optional Partitioning via sfdisk
+    # Step 2: Partitioning via sfdisk (Universal Linux Device Partition Suffix Handling)
     if partition_table in ["gpt", "mbr"]:
-        sfdisk_table = "label: gpt\n," if partition_table == "gpt" else "label: dos\n,"
+        sfdisk_table = "label: gpt\n,\n" if partition_table == "gpt" else "label: dos\n,\n"
         part_cmd = ["sfdisk", device]
         commands.append({
             "action": "partition",
@@ -634,8 +642,8 @@ def build_execution_plan(plan: FormatPlan) -> tuple[list[ExecutionStep], str, Op
         })
         bash_script += f"# Partition drive via sfdisk\nprintf '{sfdisk_table}' | sfdisk {device}\n"
         
-        # Target partition node e.g. /dev/sda1 or /dev/nvme0n1p1
-        part_suffix = "p1" if ("nvme" in device or "mmcblk" in device) else "1"
+        # UNIVERSAL PARTITION SUFFIX RULE: Devices ending in digits (loop0, nvme0n1, zram1, mmcblk0) use 'p1', others (sda) use '1'
+        part_suffix = "p1" if device[-1].isdigit() else "1"
         target_block = f"{device}{part_suffix}"
         
         settle_cmd = ["udevadm", "settle"]
@@ -703,8 +711,9 @@ def build_execution_plan(plan: FormatPlan) -> tuple[list[ExecutionStep], str, Op
             mkfs_cmd.append(target_block)
             
         case "xfs":
+            # xfsprogs 7.1 syntax: -f for force, -L for label (max 12 chars)
             mkfs_cmd = ["mkfs.xfs", "-f"]
-            if label: mkfs_cmd.extend(["-L", label])
+            if label: mkfs_cmd.extend(["-L", label[:12]])
             mkfs_cmd.append(target_block)
             
         case "fat32":
