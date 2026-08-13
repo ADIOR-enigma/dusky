@@ -139,8 +139,8 @@ P_ID=''
 # DEFAULTS + VALIDATION TABLE
 #==============================================================================
 declare -rA STATE_DEFAULTS=(
-    [PREVIEW_LAYOUT]='right,45%,~3,wrap-word'
-    [PREVIEW_LAST]='right,45%,~3,wrap-word'
+    [PREVIEW_LAYOUT]='right,45%,wrap-word'
+    [PREVIEW_LAST]='right,45%,wrap-word'
     [VIM_MODE]='false'
     [MAX_CLIP_ITEMS]='5000'
     [MAX_CLIP_AGE_DAYS]='7'
@@ -315,6 +315,11 @@ state_load() {
             STATE["$key"]="$val"
         done < "$USER_STATE_FILE"
     fi
+
+    STATE[PREVIEW_LAYOUT]="${STATE[PREVIEW_LAYOUT]//,~[0-9]/}"
+    STATE[PREVIEW_LAYOUT]="${STATE[PREVIEW_LAYOUT]//~[0-9],/}"
+    STATE[PREVIEW_LAST]="${STATE[PREVIEW_LAST]//,~[0-9]/}"
+    STATE[PREVIEW_LAST]="${STATE[PREVIEW_LAST]//~[0-9],/}"
 
     [[ ${STATE[PREVIEW_LAYOUT]} =~ $LAYOUT_RE ]] || STATE[PREVIEW_LAYOUT]="${STATE_DEFAULTS[PREVIEW_LAYOUT]}"
     [[ ${STATE[PREVIEW_LAST]} =~ $VISIBLE_LAYOUT_RE ]] || STATE[PREVIEW_LAST]="${STATE_DEFAULTS[PREVIEW_LAST]}"
@@ -628,22 +633,30 @@ guess_language() {
 }
 
 render_text_preview() {
-    local path="$1" max="${2:-0}" status head=''
+    local path="$1" max="${2:-0}" status head='' width="${FZF_PREVIEW_COLUMNS:-0}"
+    is_uint "$width" || width=0
+
     if have bat; then
         IFS= read -r -N 256 head < "$path" 2>/dev/null
         head="${head%%$'\n'*}"
         guess_language "$head"
-        # --wrap=never: fzf's own wrap-word does ANSI-aware word wrapping and
-        # renders the wrap indicator; letting bat wrap too produced double
-        # wrapping and defeated the indicator.
-        safe_print_text_file "$path" "$max" |
-            bat --style=plain --color=always --paging=never --wrap=never \
-                --language="$REPLY" - 2>/dev/null
-        # PIPESTATUS[0], not $? : v3.0 read bat's status, so the truncation
-        # marker could never appear.
+        if (( width > 4 )) && have fold; then
+            safe_print_text_file "$path" "$max" |
+                fold -s -w "$((width - 1))" |
+                bat --style=plain --color=always --paging=never --wrap=never \
+                    --language="$REPLY" - 2>/dev/null
+        else
+            safe_print_text_file "$path" "$max" |
+                bat --style=plain --color=always --paging=never --wrap=never \
+                    --language="$REPLY" - 2>/dev/null
+        fi
         status=${PIPESTATUS[0]}
     else
-        safe_print_text_file "$path" "$max"
+        if (( width > 4 )) && have fold; then
+            safe_print_text_file "$path" "$max" | fold -s -w "$((width - 1))"
+        else
+            safe_print_text_file "$path" "$max"
+        fi
         status=$?
     fi
     (( status == 10 )) && { printf '\n\e[2m[… truncated …]\e[0m\n'; return 0; }
@@ -1107,7 +1120,7 @@ cmd_move_preview() {
     if [[ $base =~ $VISIBLE_LAYOUT_RE ]]; then
         pct="${BASH_REMATCH[2]}"; rest="${BASH_REMATCH[3]}"
     else
-        pct=45; rest=',~3,wrap-word'
+        pct=45; rest=',wrap-word'
     fi
 
     if [[ $dir == hidden ]]; then
