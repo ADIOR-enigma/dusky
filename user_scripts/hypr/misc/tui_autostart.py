@@ -103,6 +103,15 @@ SCHEMA = {
             group="Interface & Background",
             extended_help="**Audio Visualizer Layer**\n\nLaunches background audio visualizer on boot."
         ),
+        ConfigItem(
+            label="Wayclick",
+            key="wayclick",
+            scope="autostart",
+            type_="bool",
+            default=False,
+            group="Interface & Background",
+            extended_help="**Wayclick**\n\nAutomatically launches Wayclick on startup."
+        ),
 
         # --- System Daemons & Security ---
         ConfigItem(
@@ -692,6 +701,15 @@ SCHEMA = {
             default="hypr-app $HOME/user_scripts/hypr/layout_notify.sh",
             group="Services",
             extended_help="**Layout Notifier**\n\nManually launches layout notifier script."
+        ),
+        ConfigItem(
+            label="Toggle Wayclick",
+            key="action_wayclick",
+            scope="DEFAULT",
+            type_="action",
+            default="hypr-app $HOME/user_scripts/wayclick/dusky_wayclick.sh",
+            group="Services",
+            extended_help="**Wayclick**\n\nToggles Wayclick."
         ),
         ConfigItem(
             label="Update Systemd Environment",

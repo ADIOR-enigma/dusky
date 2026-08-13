@@ -64,6 +64,11 @@ AUTOSTART_DEFAULTS: dict[str, dict[str, Any]] = {
         "canonical": 'hl.exec_cmd("$HOME/user_scripts/way_layers/visualizer/visualizer_toggle.sh")',
         "default": False
     },
+    "autostart/wayclick": {
+        "pattern": r'dusky_wayclick\.sh',
+        "canonical": 'hl.exec_cmd("$HOME/user_scripts/wayclick/dusky_wayclick.sh")',
+        "default": False
+    },
     "autostart/hyprpm_reload": {
         "pattern": r'hyprpm\s+reload',
         "canonical": 'hl.exec_cmd("hyprpm reload")',
