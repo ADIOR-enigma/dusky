@@ -324,7 +324,7 @@ class FontconfigEngine(BaseEngine):
                     self._drop_legacy()
 
                 self._refresh_cache_async()
-                self._sync_gtk_async()
+                self.sync_system_fonts(quiet=True)
 
                 return True, f"Successfully applied {len(changes)} font settings.", ""
             except Exception as e:
