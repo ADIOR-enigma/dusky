@@ -151,7 +151,7 @@ _MAKEPKG_ENV_SCRUB = (
 # ==============================================================================
 ALL_GROUPS: Dict[str, List[str]] = {
     "offline": [
-        "intel-ucode", "amd-ucode", "mkinitcpio", "python-cssselect", "base", "base-devel",
+        "intel-ucode", "amd-ucode", "mkinitcpio", "glaze", "python-cssselect", "base", "base-devel",
         "python-lxml", "python-certifi", "python-charset-normalizer", "python-idna",
         "python-requests", "python-urllib3", "deno", "yt-dlp", "yt-dlp-ejs", "hunspell",
         "xf86-input-libinput", "xorg-xauth", "boost-libs", "plymouth", "grub", "os-prober",
@@ -217,8 +217,9 @@ ALL_GROUPS: Dict[str, List[str]] = {
         "stylua", "prettier", "tree-sitter-cli", "nano", "luarocks",
     ],
     "multimedia": [
-        "ffmpeg", "mpv", "mpv-mpris", "satty", "swayimg", "grim", "slurp", "wl-clipboard",
-        "wl-clip-persist", "cliphist", "tesseract-data-eng", "gpu-screen-recorder-ui", "ddcutil",
+        "ffmpeg", "mpv", "mpv-mpris", "satty", "swayimg", "resvg", "imagemagick", "libheif",
+        "ffmpegthumbnailer", "grim", "slurp", "wl-clipboard", "wl-clip-persist", "cliphist",
+        "tesseract-data-eng", "gpu-screen-recorder-ui", "ddcutil",
     ],
     "sysadmin": [
         "btop", "htop", "dgop", "nvtop", "inxi", "sysstat", "sysbench", "logrotate", "acpid",
@@ -237,6 +238,8 @@ ALL_GROUPS: Dict[str, List[str]] = {
 # Seed list only — runtime queue is a copy that may grow with AUR deps.
 AUR_SEED: Tuple[str, ...] = (
     "wlogout",
+    "adwaita-qt6",
+    "adwaita-qt5",
     "adwsteamgtk",
     "hyprshade",
     "peaclock",

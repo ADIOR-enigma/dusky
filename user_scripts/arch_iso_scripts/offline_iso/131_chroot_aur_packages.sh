@@ -13,7 +13,6 @@ declare -ar pkgs_aur=(
   "adwaita-qt6"
   "adwaita-qt5"
   "adwsteamgtk"
-  "otf-atkinson-hyperlegible-next"
   "hyprshade"
   "peaclock"
   "tray-tui"
