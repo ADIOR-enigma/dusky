@@ -5049,9 +5049,16 @@ class DuskyOrchestratorApp(App):
         Binding("ctrl+left", "shrink_left_pane", "Shrink Sidebar", priority=True),
         Binding("ctrl+right", "expand_left_pane", "Expand Sidebar", priority=True),
         Binding("bracketleft", "shrink_left_pane", "Shrink Sidebar"),
-        Binding("bracketright", "expand_left_pane", "Expand Sidebar"),
-        Binding("j", "tree_down", "Tree Down"),
-        Binding("k", "tree_up", "Tree Up"),
+        Binding("j", "tree_down", "Tree Down", priority=True),
+        Binding("k", "tree_up", "Tree Up", priority=True),
+        Binding("up", "scroll_preview_up", "Scroll Log Up", priority=True),
+        Binding("down", "scroll_preview_down", "Scroll Log Down", priority=True),
+        Binding("pageup", "scroll_preview_page_up", "Page Up", priority=True),
+        Binding("pagedown", "scroll_preview_page_down", "Page Down", priority=True),
+        Binding("home", "scroll_preview_home", "Home", priority=True),
+        Binding("end", "scroll_preview_end", "End", priority=True),
+        Binding("tab", "toggle_focus", "Switch Focus"),
+        Binding("shift+tab", "toggle_focus", "Switch Focus"),
     ]
 
     def __init__(
@@ -5335,13 +5342,54 @@ class DuskyOrchestratorApp(App):
     def action_expand_left_pane(self) -> None:
         self._set_pane_widths(self.left_pane_width + 4)
 
-    def action_tree_down(self) -> None:
+    def _get_active_visible_log(self) -> Optional[RichLog]:
         with suppress(Exception):
-            self.tree_widget.action_cursor_down()
+            switcher = self.query_one("#log_switcher", ContentSwitcher)
+            if switcher.current:
+                return self.query_one(f"#{switcher.current}", RichLog)
+        return self._get_log_widget(None)
 
-    def action_tree_up(self) -> None:
+    def action_scroll_preview_up(self) -> None:
         with suppress(Exception):
-            self.tree_widget.action_cursor_up()
+            if log_w := self._get_active_visible_log():
+                log_w.scroll_up(animate=False)
+
+    def action_scroll_preview_down(self) -> None:
+        with suppress(Exception):
+            if log_w := self._get_active_visible_log():
+                log_w.scroll_down(animate=False)
+
+    def action_scroll_preview_page_up(self) -> None:
+        with suppress(Exception):
+            if log_w := self._get_active_visible_log():
+                log_w.scroll_page_up(animate=False)
+
+    def action_scroll_preview_page_down(self) -> None:
+        with suppress(Exception):
+            if log_w := self._get_active_visible_log():
+                log_w.scroll_page_down(animate=False)
+
+    def action_scroll_preview_home(self) -> None:
+        with suppress(Exception):
+            if log_w := self._get_active_visible_log():
+                log_w.scroll_home(animate=False)
+
+    def action_scroll_preview_end(self) -> None:
+        with suppress(Exception):
+            if log_w := self._get_active_visible_log():
+                log_w.scroll_end(animate=False)
+
+    def action_toggle_focus(self) -> None:
+        if self.tree_widget.has_focus:
+            with suppress(Exception):
+                switcher = self.query_one("#log_switcher", ContentSwitcher)
+                if switcher.current:
+                    cur_widget = self.query_one(f"#{switcher.current}")
+                    cur_widget.focus()
+                else:
+                    self.log_widget.focus()
+        else:
+            self.tree_widget.focus()
 
     def on_mouse_down(self, event: events.MouseDown) -> None:
         if isinstance(self.screen, ModalScreen):
