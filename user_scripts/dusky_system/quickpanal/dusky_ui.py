@@ -327,6 +327,11 @@ class NotificationStackHeader(Gtk.ListBoxRow):
         self.toggle_cb = toggle_cb
         self.on_close_stack = on_close_stack
         _add_css_class(self, 'notif-stack-header')
+        self.event_box = Gtk.EventBox()
+        self.event_box.set_visible_window(False)
+        self.event_box.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
+        self.event_box.connect('button-press-event', self._on_button_press)
+        self.event_box.connect('realize', lambda w: (w.get_window() and w.get_window().set_cursor(Gdk.Cursor.new_from_name(w.get_display(), 'pointer'))))
         main_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         app_lbl = Gtk.Label(label=app_name.upper())
@@ -344,17 +349,18 @@ class NotificationStackHeader(Gtk.ListBoxRow):
         main_box.pack_start(text_box, True, True, 0)
         right_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         right_box.set_valign(Gtk.Align.CENTER)
-        close_btn = Gtk.Button()
-        close_btn.set_image(Gtk.Image.new_from_icon_name('window-close-symbolic', Gtk.IconSize.MENU))
-        _add_css_class(close_btn, 'notif-close-btn')
-        close_btn.set_relief(Gtk.ReliefStyle.NONE)
-        close_btn.set_can_focus(False)
-        close_btn.connect('clicked', lambda _: self.on_close_stack(self.app_name))
-        right_box.pack_start(close_btn, False, False, 0)
+        self.close_btn = Gtk.Button()
+        self.close_btn.set_image(Gtk.Image.new_from_icon_name('window-close-symbolic', Gtk.IconSize.MENU))
+        _add_css_class(self.close_btn, 'notif-close-btn')
+        self.close_btn.set_relief(Gtk.ReliefStyle.NONE)
+        self.close_btn.set_can_focus(False)
+        self.close_btn.connect('clicked', lambda _: self.on_close_stack(self.app_name))
+        right_box.pack_start(self.close_btn, False, False, 0)
         self.icon = Gtk.Image.new_from_icon_name('pan-end-symbolic', Gtk.IconSize.MENU)
         right_box.pack_start(self.icon, False, False, 0)
         main_box.pack_end(right_box, False, False, 0)
-        self.add(main_box)
+        self.event_box.add(main_box)
+        self.add(self.event_box)
 
     def set_expanded(self, expanded: bool) -> None:
         self.expanded = expanded
@@ -366,6 +372,12 @@ class NotificationStackHeader(Gtk.ListBoxRow):
         self.set_expanded(self.expanded)
         self.toggle_cb(self.app_name, self.expanded)
 
+    def _on_button_press(self, widget: Gtk.Widget, event: Gdk.EventButton) -> bool:
+        if event.button == 1:
+            self.toggle()
+            return True
+        return False
+
 class NotificationsPanel(Gtk.Box):
 
     def __init__(self, pool: RefreshPool) -> None:
@@ -374,6 +386,7 @@ class NotificationsPanel(Gtk.Box):
         self._refresh_token = 0
         self.expanded_apps: set[str] = set()
         self.notif_times: dict[str, str] = {}
+        self._last_notifs: tuple[NotificationData, ...] | None = None
         _add_css_class(self, 'notifications-panel')
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         title = Gtk.Label(label='Notifications')
@@ -409,9 +422,11 @@ class NotificationsPanel(Gtk.Box):
         except Exception as e:
             LOG.error('Failed executing initial notification collection: %s', e)
         if not initial_notifs:
+            self._last_notifs = ()
             self.set_no_show_all(True)
             self.hide()
         else:
+            self._last_notifs = tuple(initial_notifs)
             self.set_no_show_all(False)
             self._render_notifs_list(initial_notifs)
 
@@ -539,6 +554,10 @@ class NotificationsPanel(Gtk.Box):
     def _apply_notifs(self, notifs: list[NotificationData], token: int) -> bool:
         if token != self._refresh_token:
             return GLib.SOURCE_REMOVE
+        notifs_tuple = tuple(notifs)
+        if notifs_tuple == self._last_notifs:
+            return GLib.SOURCE_REMOVE
+        self._last_notifs = notifs_tuple
         self._clear_listbox_safely()
         if not notifs:
             self.set_no_show_all(True)
@@ -561,6 +580,7 @@ class NotificationsPanel(Gtk.Box):
         execute_cmd(f'makoctl dismiss -n {n.id}')
         self.listbox.remove(row)
         row.destroy()
+        self._last_notifs = None
         if not self.listbox.get_children():
             self.set_no_show_all(True)
             self.hide()
@@ -587,6 +607,7 @@ class NotificationsPanel(Gtk.Box):
                 self.listbox.remove(child)
                 child.destroy()
         self.expanded_apps.discard(app_name)
+        self._last_notifs = None
         if not self.listbox.get_children():
             self.set_no_show_all(True)
             self.hide()
@@ -617,6 +638,7 @@ class NotificationsPanel(Gtk.Box):
         execute_cmd(f'makoctl dismiss -n {n.id}')
         self.listbox.remove(row)
         row.destroy()
+        self._last_notifs = None
         if not self.listbox.get_children():
             self.set_no_show_all(True)
             self.hide()
@@ -636,6 +658,8 @@ class NotificationsPanel(Gtk.Box):
             pass
         cmd = 'if systemctl --user is-active --quiet mako.service; then systemctl --user restart mako.service; else pkill -x mako && dusky-run -- mako & fi'
         execute_cmd(cmd)
+        self.expanded_apps.clear()
+        self._last_notifs = ()
         self._clear_listbox_safely()
         self.set_no_show_all(True)
         self.hide()

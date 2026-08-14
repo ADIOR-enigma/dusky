@@ -1704,10 +1704,12 @@ class DuskyOrchestratorApp(App):
         task_timeout: float = 0.0,
         once_store: Optional[OnceStore] = None,
         dry_run: bool = False,
+        is_final_phase: bool = True,
     ):
         super().__init__()
         self.tasks = tasks
         self.phase_title = phase_title
+        self.is_final_phase = is_final_phase
         self.profile_name = profile_name
         self.state_file = state_file
         self.manual = manual
@@ -2039,18 +2041,41 @@ class DuskyOrchestratorApp(App):
         self._render_final_overview_block()
 
         failed_tasks = [t for t in self.tasks if self.task_statuses.get(t.state_key) == "FAILED"]
+
+        if not self.is_final_phase:
+            # INTERMEDIATE PHASE (Phase 1: ISO) -> Automatically hand off to Phase 2
+            if failed_tasks and any(not t.ignore_fail for t in failed_tasks):
+                NotificationManager.play_sound("alert")
+                NotificationManager.send_desktop(
+                    "Phase 1 Failed",
+                    f"{len(failed_tasks)} required task(s) failed in Phase 1.",
+                    urgency="critical",
+                )
+                await asyncio.sleep(1.0)
+                self.exit(1)
+            else:
+                NotificationManager.play_sound("complete")
+                NotificationManager.send_desktop(
+                    "Phase 1 Completed",
+                    f"Successfully completed {self.phase_title}. Continuing to Phase 2...",
+                )
+                await asyncio.sleep(0.5)
+                self.exit(0)
+            return
+
+        # FINAL PHASE (Phase 2: Chroot / Full Installation Complete)
         if failed_tasks:
             NotificationManager.play_sound("alert")
             NotificationManager.send_desktop(
-                "Phase Finished with Warnings",
+                "Installation Finished with Warnings",
                 f"{len(failed_tasks)} task(s) failed in {self.phase_title}",
                 urgency="critical",
             )
         else:
             NotificationManager.play_sound("complete")
             NotificationManager.send_desktop(
-                "Phase Completed",
-                f"Successfully completed {self.phase_title}",
+                "Installation Completed",
+                f"Successfully completed installation ({self.phase_title})",
             )
 
         completed = self.counters.get("completed", 0)
@@ -2062,7 +2087,7 @@ class DuskyOrchestratorApp(App):
         elapsed_str = f"{elapsed_m:02d}:{elapsed_s:02d}"
 
         summary_lines = (
-            f"Phase: {self.phase_title}\n"
+            f"Installation: {self.phase_title}\n"
             f"Profile: {self.profile_name}\n"
             f"Completed: {completed}\n"
             f"Failed: {failed}\n"
@@ -2074,7 +2099,7 @@ class DuskyOrchestratorApp(App):
 
         res = await self.push_screen_wait(
             CompletionDialog(
-                title="PHASE FINISHED WITH WARNINGS" if failed_tasks else "PHASE COMPLETE",
+                title="INSTALLATION FINISHED WITH WARNINGS" if failed_tasks else "INSTALLATION COMPLETE",
                 message=summary_lines,
                 level="warning" if failed_tasks else "success",
             )
@@ -2339,7 +2364,11 @@ class DuskyOrchestratorApp(App):
                 self.exit(1)
 
     def action_quit_app(self):
-        self.exit(1)
+        if self.current_idx >= len(self.tasks):
+            failed_tasks = [t for t in self.tasks if self.task_statuses.get(t.state_key) == "FAILED"]
+            self.exit(1 if failed_tasks else 0)
+        else:
+            self.exit(1)
 
     def action_toggle_manual(self):
         self.manual = not self.manual
@@ -2717,6 +2746,7 @@ def main():
         force=force,
         task_timeout=task_timeout,
         once_store=once_store,
+        is_final_phase=bool(phase2),
     )
     app.run()
 
