@@ -127,9 +127,29 @@ menu,
   color: @popover_fg_color;
 }
 
-tooltip.background,
-tooltip.csd decoration {
+tooltip {
+  padding: 4px 8px;
+  border-radius: 8px;
+  box-shadow: none;
+  background-color: transparent;
+}
+
+tooltip.background {
   background-color: @dialog_bg_color;
+  color: @dialog_fg_color;
+  border-radius: 8px;
+  border: 1px solid alpha(@dialog_fg_color, 0.12);
+  box-shadow: none;
+}
+
+tooltip decoration,
+tooltip.csd decoration {
+  background-color: transparent;
+  box-shadow: none;
+}
+
+tooltip * {
+  background-color: transparent;
   color: @dialog_fg_color;
 }
 
