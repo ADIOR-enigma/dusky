@@ -61,7 +61,6 @@ scrollbar:backdrop slider {
 .sidebar-container scrollbar {
     opacity: 0;
     min-width: 0px;
-    width: 0px;
     margin: 0;
     padding: 0;
 }

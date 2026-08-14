@@ -543,12 +543,15 @@ def _write_to_disk_atomic(target: Path, value: str) -> bool:
         temp_path.rename(target)
         temp_path = None
 
-        dir_fd = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
         try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
-        
+            dir_fd = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
+
         return True
     except OSError as e:
         log.error("Save failed for %s: %s", target.name, e)
@@ -681,7 +684,7 @@ def _parse_bool(value: str) -> bool:
     lowered = value.strip().lower()
     if lowered in {"true", "yes", "on", "1"}:
         return True
-    if lowered in {"false", "no", "off", "0"}:
+    if lowered in {"false", "no", "off", "0", ""}:
         return False
     raise ValueError(f"Invalid boolean value: {value!r}")
 

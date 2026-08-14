@@ -16,7 +16,7 @@ import tomllib
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Any, override
+from typing import Any, Final, override
 sys.dont_write_bytecode = True
 signal.signal(signal.SIGINT, signal.SIG_DFL)
 try:
@@ -209,6 +209,7 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
             main_box.pack_start(self.metrics_row, False, False, 0)
         if self.layout_cfg.get('show_quick_toggles', True):
             self.flow = Gtk.FlowBox()
+            self.flow.set_can_focus(False)
             self.flow.set_selection_mode(Gtk.SelectionMode.NONE)
             self.flow.set_max_children_per_line(5)
             self.flow.set_min_children_per_line(5)

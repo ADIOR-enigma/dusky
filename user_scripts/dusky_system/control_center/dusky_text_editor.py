@@ -13,7 +13,7 @@ from pathlib import Path
 CONF_VARS = Path.home() / ".config/hypr/edit_here/source/default_apps.lua"
 DEFAULT_EDITOR = "mousepad"
 DEFAULT_TERMINAL = "kitty"
-TERMINAL_EDITORS = {"nvim", "nano", "helix", "micro"}
+TERMINAL_EDITORS = {"nvim", "nano", "helix", "micro", "vi", "vim"}
 
 def parse_config() -> tuple[str, str]:
     """Parses textEditor and terminal values from default_apps.lua."""
@@ -25,15 +25,22 @@ def parse_config() -> tuple[str, str]:
         
     try:
         content = CONF_VARS.read_text(encoding="utf-8")
-        # Match lines like: textEditor = "mousepad" or local terminal = 'foot'
-        # Handles single quotes, double quotes, and arbitrary spaces.
-        editor_match = re.search(r'(?:local\s+)?textEditor\s*=\s*[\'"]([^\'"]+)[\'"]', content)
-        terminal_match = re.search(r'(?:local\s+)?terminal\s*=\s*[\'"]([^\'"]+)[\'"]', content)
-        
-        if editor_match:
-            editor = editor_match.group(1).strip()
-        if terminal_match:
-            terminal = terminal_match.group(1).strip()
+        for line in content.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("--"):
+                continue
+            
+            editor_match = re.search(r'(?:local\s+)?textEditor\s*=\s*[\'"]([^\'"]+)[\'"]', stripped)
+            if editor_match:
+                val = editor_match.group(1).strip()
+                if val:
+                    editor = val
+
+            terminal_match = re.search(r'(?:local\s+)?terminal\s*=\s*[\'"]([^\'"]+)[\'"]', stripped)
+            if terminal_match:
+                val = terminal_match.group(1).strip()
+                if val:
+                    terminal = val
     except Exception as e:
         sys.stderr.write(f"dusky-text-editor: error reading config: {e}\n")
         

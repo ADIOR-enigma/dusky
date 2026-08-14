@@ -5,6 +5,8 @@ Target Specification: Arch Linux (Kernel 7.1+ / August 2026 Spec), Python 3.14.6
 Pure bleeding-edge implementation with zero legacy shims or backwards compatibility shims.
 """
 from __future__ import annotations
+from datetime import datetime
+import json
 import math
 import os
 import re
@@ -12,7 +14,7 @@ import shlex
 import time
 from concurrent.futures import Future, CancelledError
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Final
 import gi
 gi.require_version('Gtk', '3.0')
 gi.require_version('Gdk', '3.0')
@@ -256,6 +258,7 @@ class NotificationRow(Gtk.ListBoxRow):
 
     def __init__(self, notif: NotificationData, on_close: Callable[[NotificationRow], None], show_app_name: bool=True, time_str: str='') -> None:
         super().__init__()
+        self.set_can_focus(False)
         self.notif = notif
         self.on_close = on_close
         _add_css_class(self, 'notif-row')
@@ -318,6 +321,7 @@ class NotificationStackHeader(Gtk.ListBoxRow):
 
     def __init__(self, app_name: str, count: int, toggle_cb: Callable[[str, bool], None], on_close_stack: Callable[[str], None]) -> None:
         super().__init__()
+        self.set_can_focus(False)
         self.app_name = app_name
         self.expanded = False
         self.toggle_cb = toggle_cb
@@ -394,6 +398,7 @@ class NotificationsPanel(Gtk.Box):
         header.pack_start(btn_clear, False, False, 0)
         self.pack_start(header, False, False, 0)
         self.listbox = Gtk.ListBox()
+        self.listbox.set_can_focus(False)
         self.listbox.set_selection_mode(Gtk.SelectionMode.NONE)
         _add_css_class(self.listbox, 'notif-list')
         self.listbox.connect('row-activated', self._on_row_activated)
@@ -411,7 +416,6 @@ class NotificationsPanel(Gtk.Box):
             self._render_notifs_list(initial_notifs)
 
     def _render_notifs_list(self, notifs: list[NotificationData]) -> None:
-        import datetime
         self.notif_times = {}
         if is_dusky_notif_time_service_enabled():
             cache_file = NOTIF_CACHE_FILE
@@ -424,7 +428,7 @@ class NotificationsPanel(Gtk.Box):
                 except Exception:
                     pass
         if is_dusky_notif_time_service_enabled():
-            now_str = datetime.datetime.now().strftime('%I:%M %p').lstrip('0')
+            now_str = datetime.now().strftime('%I:%M %p').lstrip('0')
             changed = False
             for n in notifs:
                 str_id = str(n.id)
@@ -637,4 +641,230 @@ class NotificationsPanel(Gtk.Box):
         self.hide()
         self.refresh_async()
         self._request_layout_update()
-CSS: Final[str] = '\nwindow.panel-window {\n    background-color: alpha(@theme_bg_color, 0.95);\n    border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 10px; box-shadow: 0 12px 36px rgba(0, 0, 0, 0.6);\n}\n\n/* Hides native GTK3 scrollbar visually without breaking wheel scroll functions */\nscrolledwindow { background: transparent; }\nscrollbar, scrollbar trough, scrollbar slider, scrollbar button {\n    min-width: 0px; min-height: 0px; padding: 0px; margin: 0px;\n    background: transparent; background-color: transparent;\n    border: none; box-shadow: none; opacity: 0; color: transparent;\n}\n\n/* THEME THE OVERSCROLL "RUBBER BAND" GLOW */\nscrolledwindow overshoot.top {\n    background-image: radial-gradient(farthest-side at top, alpha(@theme_selected_bg_color, 0.2), transparent);\n}\nscrolledwindow overshoot.bottom {\n    background-image: radial-gradient(farthest-side at bottom, alpha(@theme_selected_bg_color, 0.2), transparent);\n}\n\n/* REMOVE THE STATIC UNDERSHOOT "DASHED LINE" IF PRESENT */\nscrolledwindow undershoot.top,\nscrolledwindow undershoot.bottom {\n    background-image: none;\n    background-color: transparent;\n}\n\n* { outline: none; }\nbutton { transition: background-color 200ms ease, opacity 200ms ease, box-shadow 200ms ease; }\n\n.header-time { font-size: 38px; font-weight: 800; letter-spacing: -2px; color: @theme_fg_color; }\n.header-date { font-size: 12px; font-weight: 600; color: @theme_selected_bg_color; }\n\nbox.weather-pill { padding: 4px 4px; }\n.weather-text { font-size: 12px; font-weight: 700; color: alpha(@theme_fg_color, 0.9); }\n\nbutton.power-header-btn {\n    min-width: 36px; min-height: 36px; border-radius: 18px; background-color: alpha(#ff453a, 0.6); color: white; border: 1px solid rgba(255, 255, 255, 0.05);\n}\nbutton.power-header-btn:hover { background-color: #ff453a; color: white; }\n\nbutton.quick-icon-toggle {\n    min-width: 44px; min-height: 44px; border-radius: 22px;\n    background-color: rgba(255, 255, 255, 0.06); background-image: none; border: 1px solid rgba(255, 255, 255, 0.05); padding: 0; box-shadow: none;\n    transition: all 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94);\n}\nbutton.quick-icon-toggle:hover { background-color: rgba(255, 255, 255, 0.12); }\nbutton.quick-icon-toggle.active { background-color: alpha(@theme_selected_bg_color, 0.3); border: 1px solid alpha(@theme_selected_bg_color, 0.5); }\nbutton.quick-icon-toggle.active:hover { background-color: alpha(@theme_selected_bg_color, 0.5); }\nbutton.quick-icon-toggle.active image { color: @theme_selected_bg_color; }\nbutton.quick-icon-toggle.power-saver-active { background-color: alpha(#a6e3a1, 0.3); border: 1px solid alpha(#a6e3a1, 0.5); }\nbutton.quick-icon-toggle.power-saver-active image { color: #a6e3a1; }\nbutton.quick-icon-toggle.dnd-active { background-color: alpha(#ff453a, 0.3); border: 1px solid alpha(#ff453a, 0.5); }\nbutton.quick-icon-toggle.dnd-active image { color: #ff453a; }\n\n.notification-badge {\n    background-color: @theme_selected_bg_color; color: black; font-size: 8px; font-weight: 800; border-radius: 7px;\n    min-width: 14px; min-height: 14px; padding: 0 2px; margin: 1px; border: 1px solid rgba(255, 255, 255, 0.2); box-shadow: 0 2px 4px rgba(0,0,0,0.5);\n}\n\nbox.metric-pill { background-color: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 14px; padding: 8px 10px; transition: all 0.2s; }\neventbox.clickable-pill:hover box.metric-pill { background-color: rgba(255, 255, 255, 0.12); }\n.metric-value, .metric-value-small { font-family: "JetBrainsMono Nerd Font", monospace; color: @theme_fg_color; font-weight: 700; }\n.metric-value { font-size: 12px; } .metric-value-small { font-size: 10px; letter-spacing: -0.5px; }\n\n.power-profile-row { background-color: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 14px; padding: 6px 10px; }\n.power-label { font-size: 14px; font-weight: 600; color: @theme_fg_color; }\n.accent-icon { color: @theme_selected_bg_color; }\n\nbutton.power-ring-btn { border: 2px solid transparent; border-radius: 999px; min-width: 30px; min-height: 30px; padding: 0; margin: 0; background-color: transparent; color: alpha(@theme_fg_color, 0.7); }\nbutton.power-ring-btn:hover { background-color: rgba(255, 255, 255, 0.08); }\nbutton.power-ring-btn:checked { background-color: alpha(@theme_selected_bg_color, 0.15); border-color: @theme_selected_bg_color; color: @theme_selected_bg_color; box-shadow: 0 0 8px alpha(@theme_selected_bg_color, 0.25); }\nbutton.power-ring-btn.power-saver:checked { background-color: alpha(#a6e3a1, 0.15); border-color: #a6e3a1; color: #a6e3a1; box-shadow: 0 0 8px alpha(#a6e3a1, 0.25); }\nbutton.power-ring-btn.balanced:checked { background-color: alpha(#89b4fa, 0.15); border-color: #89b4fa; color: #89b4fa; box-shadow: 0 0 8px alpha(#89b4fa, 0.25); }\nbutton.power-ring-btn.performance:checked { background-color: alpha(#f38ba8, 0.15); border-color: #f38ba8; color: #f38ba8; box-shadow: 0 0 8px alpha(#f38ba8, 0.25); }\n\n/* The applying sub-state override for when the script is actively running */\nbutton.power-ring-btn.applying:checked {\n    background-color: alpha(@theme_fg_color, 0.05); \n    border-color: alpha(@theme_fg_color, 0.3); \n    color: alpha(@theme_fg_color, 0.5); \n}\n\n.sliders-container { background-color: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 16px; padding: 6px; }\n.slider-row { background-color: transparent; padding: 6px 8px; }\n\nscale.pill-scale trough, scale.pill-scale highlight { min-height: 12px; border-radius: 6px; }\nscale.pill-scale trough { background-color: rgba(255, 255, 255, 0.08); }\nscale.pill-scale slider { min-width: 0px; min-height: 0px; margin: 0px; background: transparent; border: none; box-shadow: none; }\nscale.volume highlight, scale.brightness highlight, scale.sunset highlight { background-color: @theme_selected_bg_color; }\n.icon-volume, .icon-brightness, .icon-sunset { color: @theme_selected_bg_color; }\n.icon-label { font-size: 18px; font-family: "Symbols Nerd Font", "JetBrainsMono Nerd Font", monospace; }\n.value-label { font-size: 14px; font-weight: 700; opacity: 0.8; color: @theme_selected_bg_color; font-family: "JetBrainsMono Nerd Font", monospace; font-feature-settings: "tnum"; }\n\n/* Notifications Section */\nbox.notifications-panel { background: transparent; border: none; padding: 8px 4px 0px 4px; }\nrow.notif-stack-header { background-color: rgba(255, 255, 255, 0.05); border-radius: 8px; padding: 12px 14px; margin-bottom: 4px; border: 1px solid rgba(255, 255, 255, 0.02); }\nrow.notif-stack-header:hover { background-color: rgba(255, 255, 255, 0.08); border-color: rgba(255, 255, 255, 0.1); }\n.notif-stack-title { font-weight: bold; font-size: 12px; color: @theme_selected_bg_color; letter-spacing: 0.5px; }\n.notif-header-title { font-size: 14px; font-weight: bold; color: @theme_fg_color; }\nbutton.flat-icon-btn { background: transparent; border: none; box-shadow: none; border-radius: 8px; padding: 6px; color: @theme_fg_color; }\nbutton.flat-icon-btn:hover { background-color: rgba(255, 255, 255, 0.1); }\nbutton.dnd-active-btn { color: #ff453a; background-color: alpha(#ff453a, 0.15); }\nlistbox.notif-list { background: transparent; }\n\nrow.notif-row { background-color: rgba(255, 255, 255, 0.03); border-radius: 8px; margin-bottom: 4px; padding: 6px; border: 1px solid rgba(255, 255, 255, 0.02); }\nrow.notif-row:hover { background-color: rgba(255, 255, 255, 0.08); border-color: rgba(255, 255, 255, 0.1); }\n.notif-app-name { font-size: 9px; font-weight: bold; color: @theme_selected_bg_color; opacity: 0.9; letter-spacing: 0.5px; }\n.notif-summary { font-size: 12px; font-weight: bold; color: @theme_fg_color; }\n.notif-body { font-size: 11px; color: @theme_fg_color; opacity: 0.7; }\n.notif-time { font-size: 10px; font-weight: bold; color: @theme_fg_color; opacity: 0.4; margin-top: 0px; margin-right: -2px; }\n\nbutton.notif-close-btn { \n    background: transparent; border: none; box-shadow: none; border-radius: 4px; padding: 2px; \n    min-width: 16px; min-height: 16px; color: alpha(@theme_fg_color, 0.3); margin-right: -4px;\n}\nbutton.notif-close-btn:hover { background-color: alpha(#ff453a, 0.2); color: #ff453a; }\n\n/* Bottom Fade Gradient */\n.bottom-fade {\n    background-image: linear-gradient(to bottom, transparent 0%, alpha(@theme_bg_color, 0.95) 100%);\n    border-bottom-left-radius: 24px;\n    border-bottom-right-radius: 24px;\n}\n'
+CSS: Final[str] = """
+window.panel-window {
+    background-color: alpha(@theme_bg_color, 0.95);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 10px;
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.6);
+}
+
+/* Hides native GTK3 scrollbar visually without breaking wheel scroll functions */
+scrolledwindow { background: transparent; }
+scrollbar, scrollbar trough, scrollbar slider, scrollbar button {
+    min-width: 0px; min-height: 0px; padding: 0px; margin: 0px;
+    background: transparent; background-color: transparent;
+    border: none; box-shadow: none; opacity: 0; color: transparent;
+}
+
+/* THEME THE OVERSCROLL "RUBBER BAND" GLOW */
+scrolledwindow overshoot.top {
+    background-image: radial-gradient(farthest-side at top, alpha(@theme_selected_bg_color, 0.2), transparent);
+}
+scrolledwindow overshoot.bottom {
+    background-image: radial-gradient(farthest-side at bottom, alpha(@theme_selected_bg_color, 0.2), transparent);
+}
+
+/* REMOVE THE STATIC UNDERSHOOT "DASHED LINE" IF PRESENT */
+scrolledwindow undershoot.top,
+scrolledwindow undershoot.bottom {
+    background-image: none;
+    background-color: transparent;
+}
+
+* { outline: none; }
+*:focus { outline: none; box-shadow: none; }
+button { transition: background-color 200ms ease, opacity 200ms ease, box-shadow 200ms ease; }
+
+.header-time { font-size: 38px; font-weight: 800; letter-spacing: -2px; color: @theme_fg_color; }
+.header-date { font-size: 12px; font-weight: 600; color: @theme_selected_bg_color; }
+
+box.weather-pill { padding: 4px 4px; }
+.weather-text { font-size: 12px; font-weight: 700; color: alpha(@theme_fg_color, 0.9); }
+
+button.power-header-btn {
+    min-width: 36px; min-height: 36px; border-radius: 18px; background-color: alpha(#ff453a, 0.6); color: white; border: 1px solid rgba(255, 255, 255, 0.05);
+}
+button.power-header-btn:hover { background-color: #ff453a; color: white; }
+
+flowbox, flowboxchild, flowbox:focus, flowboxchild:focus {
+    background: transparent;
+    background-color: transparent;
+    border: none;
+    outline: none;
+    box-shadow: none;
+}
+
+button.quick-icon-toggle {
+    min-width: 44px; min-height: 44px; border-radius: 22px;
+    background-color: rgba(255, 255, 255, 0.06); background-image: none; border: 1px solid rgba(255, 255, 255, 0.05); padding: 0; box-shadow: none;
+    transition: all 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+button.quick-icon-toggle:hover { background-color: rgba(255, 255, 255, 0.12); }
+button.quick-icon-toggle.active { background-color: alpha(@theme_selected_bg_color, 0.3); border: 1px solid alpha(@theme_selected_bg_color, 0.5); }
+button.quick-icon-toggle.active:hover { background-color: alpha(@theme_selected_bg_color, 0.5); }
+button.quick-icon-toggle.active image { color: @theme_selected_bg_color; }
+button.quick-icon-toggle.power-saver-active { background-color: alpha(#a6e3a1, 0.3); border: 1px solid alpha(#a6e3a1, 0.5); }
+button.quick-icon-toggle.power-saver-active image { color: #a6e3a1; }
+button.quick-icon-toggle.dnd-active { background-color: alpha(#ff453a, 0.3); border: 1px solid alpha(#ff453a, 0.5); }
+button.quick-icon-toggle.dnd-active image { color: #ff453a; }
+
+.notification-badge {
+    background-color: @theme_selected_bg_color; color: black; font-size: 8px; font-weight: 800; border-radius: 7px;
+    min-width: 14px; min-height: 14px; padding: 0 2px; margin: 1px; border: 1px solid rgba(255, 255, 255, 0.2); box-shadow: 0 2px 4px rgba(0,0,0,0.5);
+}
+
+box.metric-pill { background-color: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 14px; padding: 8px 10px; transition: all 0.2s; }
+eventbox.clickable-pill:hover box.metric-pill { background-color: rgba(255, 255, 255, 0.12); }
+.metric-value, .metric-value-small { font-family: "JetBrainsMono Nerd Font", monospace; color: @theme_fg_color; font-weight: 700; }
+.metric-value { font-size: 12px; } .metric-value-small { font-size: 10px; letter-spacing: -0.5px; }
+
+.power-profile-row { background-color: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 14px; padding: 6px 10px; }
+.power-label { font-size: 14px; font-weight: 600; color: @theme_fg_color; }
+.accent-icon { color: @theme_selected_bg_color; }
+
+button.power-ring-btn { border: 2px solid transparent; border-radius: 999px; min-width: 30px; min-height: 30px; padding: 0; margin: 0; background-color: transparent; color: alpha(@theme_fg_color, 0.7); }
+button.power-ring-btn:hover { background-color: rgba(255, 255, 255, 0.08); }
+button.power-ring-btn:checked { background-color: alpha(@theme_selected_bg_color, 0.15); border-color: @theme_selected_bg_color; color: @theme_selected_bg_color; box-shadow: 0 0 8px alpha(@theme_selected_bg_color, 0.25); }
+button.power-ring-btn.power-saver:checked { background-color: alpha(#a6e3a1, 0.15); border-color: #a6e3a1; color: #a6e3a1; box-shadow: 0 0 8px alpha(#a6e3a1, 0.25); }
+button.power-ring-btn.balanced:checked { background-color: alpha(#89b4fa, 0.15); border-color: #89b4fa; color: #89b4fa; box-shadow: 0 0 8px alpha(#89b4fa, 0.25); }
+button.power-ring-btn.performance:checked { background-color: alpha(#f38ba8, 0.15); border-color: #f38ba8; color: #f38ba8; box-shadow: 0 0 8px alpha(#f38ba8, 0.25); }
+
+/* The applying sub-state override for when the script is actively running */
+button.power-ring-btn.applying:checked {
+    background-color: alpha(@theme_fg_color, 0.05); 
+    border-color: alpha(@theme_fg_color, 0.3); 
+    color: alpha(@theme_fg_color, 0.5); 
+}
+
+.sliders-container { background-color: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 16px; padding: 6px; }
+.slider-row { background-color: transparent; padding: 6px 8px; }
+
+scale.pill-scale trough, scale.pill-scale highlight { min-height: 12px; border-radius: 6px; }
+scale.pill-scale trough { background-color: rgba(255, 255, 255, 0.08); }
+scale.pill-scale slider { min-width: 0px; min-height: 0px; margin: 0px; background: transparent; border: none; box-shadow: none; }
+scale.volume highlight, scale.brightness highlight, scale.sunset highlight { background-color: @theme_selected_bg_color; }
+.icon-volume, .icon-brightness, .icon-sunset { color: @theme_selected_bg_color; }
+.icon-label { font-size: 18px; font-family: "Symbols Nerd Font", "JetBrainsMono Nerd Font", monospace; }
+.value-label { font-size: 14px; font-weight: 700; opacity: 0.8; color: @theme_selected_bg_color; font-family: "JetBrainsMono Nerd Font", monospace; font-feature-settings: "tnum"; }
+
+/* Notifications Section */
+box.notifications-panel { background: transparent; border: none; padding: 8px 4px 0px 4px; }
+button.flat-icon-btn { background: transparent; border: none; box-shadow: none; border-radius: 8px; padding: 6px; color: @theme_fg_color; }
+button.flat-icon-btn:hover { background-color: rgba(255, 255, 255, 0.1); }
+button.dnd-active-btn { color: #ff453a; background-color: alpha(#ff453a, 0.15); }
+.notif-header-title { font-size: 14px; font-weight: bold; color: @theme_fg_color; }
+
+list.notif-list,
+list,
+.notif-list {
+    background: transparent;
+    background-color: transparent;
+    border: none;
+    box-shadow: none;
+    outline: none;
+    padding: 0;
+    margin: 0;
+}
+
+list.notif-list:focus,
+list.notif-list:selected,
+list.notif-list:backdrop,
+list:focus,
+list:selected,
+list:backdrop,
+.notif-list:focus,
+.notif-list:selected,
+.notif-list:backdrop {
+    background: transparent;
+    background-color: transparent;
+    border: none;
+    box-shadow: none;
+    outline: none;
+}
+
+list.notif-list > row,
+list > row,
+row.notif-stack-header,
+row.notif-row {
+    outline: none;
+    box-shadow: none;
+}
+
+list.notif-list > row:focus,
+list.notif-list > row:selected,
+list.notif-list > row:active,
+list.notif-list > row:hover,
+list > row:focus,
+list > row:selected,
+row.notif-stack-header:focus,
+row.notif-stack-header:selected,
+row.notif-stack-header:active,
+row.notif-row:focus,
+row.notif-row:selected,
+row.notif-row:active {
+    outline: none;
+    box-shadow: none;
+}
+
+row.notif-stack-header {
+    background-color: rgba(255, 255, 255, 0.05);
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin-bottom: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.02);
+    outline: none;
+    box-shadow: none;
+}
+row.notif-stack-header:hover {
+    background-color: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.1);
+}
+row.notif-stack-header:selected,
+row.notif-stack-header:focus,
+row.notif-stack-header:active {
+    background-color: rgba(255, 255, 255, 0.05);
+    outline: none;
+    box-shadow: none;
+}
+.notif-stack-title { font-weight: bold; font-size: 12px; color: @theme_selected_bg_color; letter-spacing: 0.5px; }
+
+row.notif-row {
+    background-color: rgba(255, 255, 255, 0.03);
+    border-radius: 8px;
+    margin-bottom: 4px;
+    padding: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.02);
+    outline: none;
+    box-shadow: none;
+}
+row.notif-row:hover {
+    background-color: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.1);
+}
+row.notif-row:selected,
+row.notif-row:focus,
+row.notif-row:active {
+    background-color: rgba(255, 255, 255, 0.03);
+    outline: none;
+    box-shadow: none;
+}
+
+.notif-app-name { font-size: 9px; font-weight: bold; color: @theme_selected_bg_color; opacity: 0.9; letter-spacing: 0.5px; }
+.notif-summary { font-size: 12px; font-weight: bold; color: @theme_fg_color; }
+.notif-body { font-size: 11px; color: @theme_fg_color; opacity: 0.7; }
+.notif-time { font-size: 10px; font-weight: bold; color: @theme_fg_color; opacity: 0.4; margin-top: 0px; margin-right: -2px; }
+
+button.notif-close-btn { 
+    background: transparent; border: none; box-shadow: none; border-radius: 4px; padding: 2px; 
+    min-width: 16px; min-height: 16px; color: alpha(@theme_fg_color, 0.3); margin-right: -4px;
+}
+button.notif-close-btn:hover { background-color: alpha(#ff453a, 0.2); color: #ff453a; }
+
+/* Bottom Fade Gradient */
+.bottom-fade {
+    background-image: linear-gradient(to bottom, transparent 0%, alpha(@theme_bg_color, 0.95) 100%);
+    border-bottom-left-radius: 24px;
+    border-bottom-right-radius: 24px;
+}
+"""

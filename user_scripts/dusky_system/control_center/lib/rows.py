@@ -136,49 +136,6 @@ def _get_executor() -> ThreadPoolExecutor:
     return _ExecutorManager().get()
 
 
-class _SettingsExecutorManager:
-    """
-    Dedicated single-worker executor for persisted setting writes.
-    This preserves submission order and prevents stale values from
-    winning when the same key is updated rapidly.
-    """
-    __slots__ = ("_executor", "_lock", "_is_shutdown")
-    _instance: _SettingsExecutorManager | None = None
-
-    def __new__(cls) -> _SettingsExecutorManager:
-        if cls._instance is None:
-            instance = super().__new__(cls)
-            instance._executor = None
-            instance._lock = threading.Lock()
-            instance._is_shutdown = False
-            atexit.register(instance.shutdown)
-            cls._instance = instance
-        return cls._instance
-
-    def get(self) -> ThreadPoolExecutor:
-        if self._executor is None or self._is_shutdown:
-            with self._lock:
-                if self._executor is None or self._is_shutdown:
-                    self._is_shutdown = False
-                    self._executor = ThreadPoolExecutor(
-                        max_workers=1,
-                        thread_name_prefix="dusky-settings-",
-                    )
-        return self._executor
-
-    def shutdown(self) -> None:
-        with self._lock:
-            if self._executor is not None and not self._is_shutdown:
-                log.debug("Shutting down settings write executor.")
-                self._is_shutdown = True
-                self._executor.shutdown(wait=False, cancel_futures=True)
-                self._executor = None
-
-
-def _get_settings_executor() -> ThreadPoolExecutor:
-    return _SettingsExecutorManager().get()
-
-
 # =============================================================================
 # TYPE DEFINITIONS
 # =============================================================================
@@ -575,10 +532,7 @@ def _submit_task_safe(func: Callable[[], None], state: WidgetState) -> bool:
 
 def _submit_setting_save_safe(key: str, value: object) -> bool:
     try:
-        _get_settings_executor().submit(utility.save_setting, key, value)
-        return True
-    except RuntimeError:
-        return False
+        return utility.save_setting(key, value)  # type: ignore[arg-type]
     except Exception as e:
         log.error("Failed to submit setting save for %r: %s", key, e)
         return False
@@ -3476,5 +3430,3 @@ class GridToggleCard(DynamicIconMixin, StateMonitorMixin, HyprlandIPCMixin, Grid
         if key := self.properties.get("key"):
             key_str = str(key).strip()
             _submit_setting_save_safe(key_str, new_state)
-
-        return False

@@ -572,6 +572,7 @@ class DuskyControlCenter(Adw.Application):
         self._window.add_controller(key_ctrl)
 
         self._toast_overlay = Adw.ToastOverlay()
+        utility.register_toast_overlay(self._toast_overlay)
 
         self._split_view = Adw.OverlaySplitView()
         self._split_view.set_min_sidebar_width(SIDEBAR_MIN_WIDTH)
@@ -1221,6 +1222,19 @@ class DuskyControlCenter(Adw.Application):
             return 900
         if q in t:
             return 800
+
+        # Alphanumeric normalized matching (e.g., "wifi" <-> "Wi-Fi", "lockscreen" <-> "Lock Screen")
+        q_clean = "".join(c for c in q if c.isalnum())
+        t_clean = "".join(c for c in t if c.isalnum())
+        d_clean = "".join(c for c in d if c.isalnum())
+
+        if q_clean and t_clean == q_clean:
+            return 950
+        if q_clean and t_clean.startswith(q_clean):
+            return 850
+        if q_clean and q_clean in t_clean:
+            return 750
+
         if any(word.startswith(q) for word in t.split()):
             return 500
         if allow_fuzzy and _fuzzy_subsequence(q, t):
@@ -1229,6 +1243,8 @@ class DuskyControlCenter(Adw.Application):
         # Description matches are weaker but still useful.
         if q in d:
             return 200
+        if q_clean and q_clean in d_clean:
+            return 175
         if any(word.startswith(q) for word in d.split()):
             return 150
         if allow_fuzzy and _fuzzy_subsequence(q, d):
@@ -1497,6 +1513,8 @@ class DuskyControlCenter(Adw.Application):
             flow.append(child)
 
         for item in section.get("items", []):
+            if not isinstance(item, dict):
+                continue
             if item.get("type") == ItemType.DIRECTORY_GENERATOR:
                 for gen_item in self._process_directory_generator(item):
                     append_grid_item(gen_item)
@@ -1524,6 +1542,8 @@ class DuskyControlCenter(Adw.Application):
             group.set_description(GLib.markup_escape_text(str(desc)))
 
         for item in section.get("items", []):
+            if not isinstance(item, dict):
+                continue
             if item.get("type") == ItemType.DIRECTORY_GENERATOR:
                 for gen_item in self._process_directory_generator(item):
                     group.add(self._build_item_row(gen_item, ctx))
