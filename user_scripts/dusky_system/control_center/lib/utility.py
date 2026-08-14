@@ -79,11 +79,19 @@ _TERMINAL_CONFIG_PATH: Final[Path] = (
 _TERMINAL_DEFAULT: Final[str] = "kitty"
 
 
-@lru_cache(maxsize=1)
+_last_terminal_mtime: float = 0.0
+_cached_terminal: str = _TERMINAL_DEFAULT
+
+
 def _get_configured_terminal() -> str:
     """Return the user's configured terminal, falling back to a sane default."""
+    global _last_terminal_mtime, _cached_terminal
     try:
+        mtime = _TERMINAL_CONFIG_PATH.stat().st_mtime
+        if mtime == _last_terminal_mtime:
+            return _cached_terminal
         content = _TERMINAL_CONFIG_PATH.read_text(encoding="utf-8")
+        _last_terminal_mtime = mtime
     except OSError:
         return _TERMINAL_DEFAULT
 
@@ -100,7 +108,9 @@ def _get_configured_terminal() -> str:
         if match:
             terminal = match.group(1).strip()
             if terminal:
+                _cached_terminal = terminal
                 return terminal
+    _cached_terminal = _TERMINAL_DEFAULT
     return _TERMINAL_DEFAULT
 
 

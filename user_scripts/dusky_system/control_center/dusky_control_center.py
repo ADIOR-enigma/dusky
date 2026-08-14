@@ -345,10 +345,15 @@ class DuskyControlCenter(Adw.Application):
     def do_activate(self) -> None:
         """
         Application entry point.
-        DAEMON LOGIC: Window is pre-built in do_startup. Just present it.
+        DAEMON LOGIC: Window is pre-built in do_startup. Toggle visibility.
         """
         if self._window:
-            self._window.present()
+            if self._window.get_visible():
+                self._window.set_visible(False)
+                self._cancel_debounce()
+                gc.collect()
+            else:
+                self._window.present()
 
     def do_shutdown(self) -> None:
         """Cleanup resources on application exit."""
@@ -597,15 +602,11 @@ class DuskyControlCenter(Adw.Application):
     def _on_close_request(self, window: Adw.Window) -> bool:
         """
         Intercept window close. Return True to prevent destruction.
-        Hide window and GC to free RAM without freezing the compositor unmap animation.
+        Hide window and suspend all background activity to achieve zero-CPU idle.
         """
         window.set_visible(False)
-
-        def _deferred_gc() -> bool:
-            gc.collect()
-            return GLib.SOURCE_REMOVE
-
-        GLib.timeout_add(500, _deferred_gc)
+        self._cancel_debounce()
+        gc.collect()
         return True
 
     def _on_key_pressed(

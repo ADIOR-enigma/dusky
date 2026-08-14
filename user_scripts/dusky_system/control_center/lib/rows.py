@@ -57,8 +57,14 @@ log = logging.getLogger(__name__)
 
 
 # =============================================================================
-# CONSTANTS
+# CONSTANTS & HELPERS
 # =============================================================================
+class _SafeFormatDict(dict):
+    """Dictionary that returns the unformatted placeholder for missing format keys."""
+    def __missing__(self, key: str) -> str:
+        return f"{{{key}}}"
+
+
 DEFAULT_ICON: Final[str] = "utilities-terminal-symbolic"
 DEFAULT_INTERVAL_SECONDS: Final[int] = 5
 MONITOR_INTERVAL_SECONDS: Final[int] = 2
@@ -674,12 +680,21 @@ class HyprlandIPCMixin:
             except GLib.Error as e:
                 if not e.matches(Gio.io_error_quark(), Gio.IOErrorEnum.CANCELLED):
                     log.debug("Hyprland IPC connect failed: %s", e.message)
-                    GLib.timeout_add_seconds(2, self._reconnect_hyprland_ipc)
+                    self._schedule_hyprland_reconnect()
 
         client.connect_async(addr, cancellable, on_connected)
 
+    def _schedule_hyprland_reconnect(self) -> None:
+        with self._state.lock:
+            if self._state.is_destroyed:
+                return
+            if self._state.hyprland.source_id > 0:
+                _safe_source_remove(self._state.hyprland.source_id)
+            self._state.hyprland.source_id = GLib.timeout_add_seconds(2, self._reconnect_hyprland_ipc)
+
     def _reconnect_hyprland_ipc(self) -> bool:
         with self._state.lock:
+            self._state.hyprland.source_id = 0
             if self._state.is_destroyed:
                 return GLib.SOURCE_REMOVE
         self._start_hyprland_ipc()
@@ -695,14 +710,26 @@ class HyprlandIPCMixin:
                         GLib.idle_add(self._on_hyprland_ipc_event)
                     source.read_line_async(GLib.PRIORITY_DEFAULT, cancellable, on_read)
                 else:
-                    GLib.timeout_add_seconds(2, self._reconnect_hyprland_ipc)
+                    self._schedule_hyprland_reconnect()
             except GLib.Error as e:
                 if not e.matches(Gio.io_error_quark(), Gio.IOErrorEnum.CANCELLED):
-                    GLib.timeout_add_seconds(2, self._reconnect_hyprland_ipc)
+                    self._schedule_hyprland_reconnect()
                     
         stream.read_line_async(GLib.PRIORITY_DEFAULT, cancellable, on_read)
 
+    def _stop_hyprland_ipc(self) -> None:
+        with self._state.lock:
+            if self._state.hyprland.source_id > 0:
+                _safe_source_remove(self._state.hyprland.source_id)
+                self._state.hyprland.source_id = 0
+            if self._state.hyprland.cancellable is not None:
+                with suppress(Exception):
+                    self._state.hyprland.cancellable.cancel()
+                self._state.hyprland.cancellable = None
+
     def _on_hyprland_ipc_event(self) -> bool:
+        if isinstance(self, Gtk.Widget) and not self.get_mapped():
+            return GLib.SOURCE_REMOVE
         if hasattr(self, "force_refresh"):
             self.force_refresh()
         return GLib.SOURCE_REMOVE
@@ -736,7 +763,7 @@ class AsyncPollingMixin:
             slot.on_output = on_output
             slot.timeout = timeout
 
-        if immediate:
+        if immediate and (not isinstance(self, Gtk.Widget) or self.get_mapped()):
             self._poll_command(slot, command, on_output, timeout)
 
         old_source_id = 0
@@ -747,6 +774,9 @@ class AsyncPollingMixin:
             slot.source_id = 0
 
         _safe_source_remove(old_source_id)
+
+        if isinstance(self, Gtk.Widget) and not self.get_mapped():
+            return
 
         with self._state.lock:
             if self._state.is_destroyed:
@@ -759,6 +789,43 @@ class AsyncPollingMixin:
                 on_output,
                 timeout,
             )
+
+    def _pause_all_polls(self) -> None:
+        """Stops all active polling timers and in-flight subprocesses to save battery while unmapped."""
+        with self._state.lock:
+            for slot in self._state._slots:
+                if slot.source_id > 0:
+                    _safe_source_remove(slot.source_id)
+                    slot.source_id = 0
+                if slot.cancellable is not None:
+                    with suppress(Exception):
+                        slot.cancellable.cancel()
+                    slot.cancellable = None
+                    slot.is_running = False
+
+    def _resume_all_polls(self) -> None:
+        """Resumes active polling timers when widget becomes mapped/visible."""
+        slots_to_resume = []
+        interval = max(1, _safe_int(self.properties.get("interval"), DEFAULT_INTERVAL_SECONDS)) if hasattr(self, "properties") else DEFAULT_INTERVAL_SECONDS
+        with self._state.lock:
+            if self._state.is_destroyed:
+                return
+            for slot in self._state._slots:
+                if slot.current_command and slot.on_output and slot.source_id == 0:
+                    slots_to_resume.append((slot, slot.current_command, slot.on_output, slot.timeout))
+
+        for sl, cmd, out, tm in slots_to_resume:
+            with self._state.lock:
+                if not self._state.is_destroyed:
+                    sl.source_id = GLib.timeout_add_seconds(
+                        interval,
+                        self._poll_tick,
+                        sl,
+                        cmd,
+                        out,
+                        tm,
+                    )
+            self._poll_command(sl, cmd, out, tm)
 
     def force_refresh(self) -> None:
         """Forces an immediate repoll of all active slots (used heavily by IPC Mixin)."""
@@ -783,7 +850,9 @@ class AsyncPollingMixin:
         timeout: int,
     ) -> bool:
         if isinstance(self, Gtk.Widget) and not self.get_mapped():
-            return GLib.SOURCE_CONTINUE
+            with self._state.lock:
+                slot.source_id = 0
+            return GLib.SOURCE_REMOVE
 
         with self._state.lock:
             if self._state.is_destroyed:
@@ -908,6 +977,9 @@ class StateMonitorMixin(AsyncPollingMixin):
             )
             return
 
+        if isinstance(self, Gtk.Widget) and not self.get_mapped():
+            return
+
         key = str(self.properties.get("key", "")).strip()
         settings_dir = utility.SETTINGS_DIR.resolve()
         file_path = (settings_dir / key).resolve()
@@ -933,6 +1005,13 @@ class StateMonitorMixin(AsyncPollingMixin):
         except Exception as e:
             log.error("File monitor setup failed for %s: %s", key, e)
 
+    def _cancel_file_monitor(self) -> None:
+        with self._state.lock:
+            if self._state.monitor.cancellable is not None:
+                if isinstance(self._state.monitor.cancellable, Gio.FileMonitor):
+                    self._state.monitor.cancellable.cancel()
+                self._state.monitor.cancellable = None
+
     def _handle_state_output(self, output: str) -> None:
         new_state = output.strip().lower() in TRUE_VALUES
         self._apply_state_update(new_state)
@@ -946,6 +1025,9 @@ class StateMonitorMixin(AsyncPollingMixin):
         key: str,
         target_name: str,
     ) -> None:
+        if isinstance(self, Gtk.Widget) and not self.get_mapped():
+            return
+
         with self._state.lock:
             if self._state.is_destroyed:
                 return
@@ -1047,7 +1129,21 @@ class BaseActionRow(DynamicIconMixin, HyprlandIPCMixin, Adw.ActionRow):
         if _is_dynamic_icon(icon_config) and isinstance(icon_config, dict):
             self._start_icon_update_loop(icon_config)
             
+        self.connect("map", self._on_base_map)
+        self.connect("unmap", self._on_base_unmap)
+
+    def _on_base_map(self, _widget: Gtk.Widget) -> None:
         self._start_hyprland_ipc()
+        self._resume_all_polls()
+        if hasattr(self, "_start_state_monitor"):
+            self._start_state_monitor()
+        self.force_refresh()
+
+    def _on_base_unmap(self, _widget: Gtk.Widget) -> None:
+        self._stop_hyprland_ipc()
+        self._pause_all_polls()
+        if hasattr(self, "_cancel_file_monitor"):
+            self._cancel_file_monitor()
 
     def _create_icon_widget(self, icon: object) -> Gtk.Image:
         if isinstance(icon, dict) and icon.get("type") == "file":
@@ -1184,6 +1280,9 @@ class ButtonRow(BaseActionRow):
         return GLib.SOURCE_CONTINUE
 
     def _queue_dynamic_state_read(self) -> None:
+        if not self.get_mapped():
+            return
+
         with self._state.lock:
             if self._state.is_destroyed or self._state.misc.is_running:
                 return
@@ -1750,9 +1849,23 @@ class LabelRow(BaseActionRow):
     def _handle_async_output(self, output: str) -> None:
         self._update_label(output.strip() if output else LABEL_NA)
 
+    def _on_base_map(self, widget: Gtk.Widget) -> None:
+        super()._on_base_map(widget)
+        self._trigger_update()
+        interval = _safe_int(self.properties.get("interval"), 0)
+        is_exec = isinstance(self.value_config, dict) and self.value_config.get("type") == "exec"
+        if not is_exec and interval > 0:
+            with self._state.lock:
+                if not self._state.is_destroyed and self._state.value.source_id == 0:
+                    self._state.value.source_id = GLib.timeout_add_seconds(
+                        interval, self._on_timeout,
+                    )
+
     def _on_timeout(self) -> bool:
         if isinstance(self, Gtk.Widget) and not self.get_mapped():
-            return GLib.SOURCE_CONTINUE
+            with self._state.lock:
+                self._state.value.source_id = 0
+            return GLib.SOURCE_REMOVE
         with self._state.lock:
             if self._state.is_destroyed:
                 return GLib.SOURCE_REMOVE
@@ -1760,6 +1873,9 @@ class LabelRow(BaseActionRow):
         return GLib.SOURCE_CONTINUE
 
     def _trigger_update(self) -> None:
+        if isinstance(self, Gtk.Widget) and not self.get_mapped():
+            return
+
         with self._state.lock:
             if self._state.value.is_running or self._state.is_destroyed:
                 return
@@ -2043,6 +2159,7 @@ class SelectionRow(DynamicIconMixin, HyprlandIPCMixin, Adw.ComboRow):
 
         self.connect("notify::selected", self._on_selected)
         self.connect("map", self._on_map)
+        self.connect("unmap", self._on_unmap)
 
         if _is_dynamic_icon(icon_config) and isinstance(icon_config, dict):
             self._start_icon_update_loop(icon_config)
@@ -2093,6 +2210,9 @@ class SelectionRow(DynamicIconMixin, HyprlandIPCMixin, Adw.ComboRow):
             self._programmatic_update = False
 
     def _queue_options_fetch(self) -> None:
+        if not self.get_mapped():
+            return
+
         with self._state.lock:
             if self._state.is_destroyed:
                 return
@@ -2133,6 +2253,9 @@ class SelectionRow(DynamicIconMixin, HyprlandIPCMixin, Adw.ComboRow):
                     self._options_fetch_running = False
 
     def _queue_selection_fetch(self) -> None:
+        if not self.get_mapped():
+            return
+
         with self._state.lock:
             if self._state.is_destroyed:
                 return
@@ -2221,13 +2344,27 @@ class SelectionRow(DynamicIconMixin, HyprlandIPCMixin, Adw.ComboRow):
             )
 
     def _on_map(self, _widget: Gtk.Widget) -> None:
+        self._start_hyprland_ipc()
+        self._resume_all_polls()
         self._queue_selection_fetch()
         if self.properties.get("options_command"):
             self._queue_options_fetch()
+        if (self.properties.get("value_command") or self.properties.get("key")) and self._state.value.source_id == 0:
+            self._start_selection_monitor()
+
+    def _on_unmap(self, _widget: Gtk.Widget) -> None:
+        self._stop_hyprland_ipc()
+        self._pause_all_polls()
+        with self._state.lock:
+            if self._state.value.source_id > 0:
+                _safe_source_remove(self._state.value.source_id)
+                self._state.value.source_id = 0
 
     def _check_selection_tick(self) -> bool:
         if not self.get_mapped():
-            return GLib.SOURCE_CONTINUE
+            with self._state.lock:
+                self._state.value.source_id = 0
+            return GLib.SOURCE_REMOVE
 
         with self._state.lock:
             if self._state.is_destroyed:
@@ -2985,13 +3122,9 @@ class AsyncSelectorRow(DynamicIconMixin, HyprlandIPCMixin, Adw.PreferencesRow):
 
         strings: list[str] = []
 
-        class SafeDict(dict):
-            def __missing__(self, key):
-                return f"{{{key}}}"
-
         for item in self.json_data:
             try:
-                label = self.display_template.format_map(SafeDict(item))
+                label = self.display_template.format_map(_SafeFormatDict(item))
                 strings.append(label)
             except Exception:
                 strings.append("Format Error")
@@ -3053,15 +3186,11 @@ class AsyncSelectorRow(DynamicIconMixin, HyprlandIPCMixin, Adw.PreferencesRow):
             return
 
         if self.on_action.get("type") == "exec" and (cmd_template := self.on_action.get("command")):
-            class SafeDict(dict):
-                def __missing__(self, key):
-                    return f"{{{key}}}"
-
             title = str(self.properties.get("title", "Action"))
 
             try:
                 safe_dict = {k: shlex.quote(str(v)) for k, v in selected_dict.items()}
-                final_cmd = cmd_template.format_map(SafeDict(safe_dict))
+                final_cmd = cmd_template.format_map(_SafeFormatDict(safe_dict))
             except Exception as e:
                 log.error("AsyncSelector action formatting failed: %s", e)
                 utility.toast(self.toast_overlay, f"✖ Failed: {title}", 4)
@@ -3203,7 +3332,28 @@ class GridCard(DynamicIconMixin, HyprlandIPCMixin, GridCardBase):
         if self.text_file:
             self._start_dynamic_style_poll()
             
+        self.connect("map", self._on_grid_map)
+        self.connect("unmap", self._on_grid_unmap)
+
+    def _on_grid_map(self, _widget: Gtk.Widget) -> None:
         self._start_hyprland_ipc()
+        self._resume_all_polls()
+        if self.text_file and self._state.value.source_id == 0:
+            self._start_dynamic_style_poll()
+        if (badge_file := self.properties.get("badge_file")) and self._state.misc.source_id == 0:
+            self._start_badge_monitor(str(badge_file))
+        self.force_refresh()
+
+    def _on_grid_unmap(self, _widget: Gtk.Widget) -> None:
+        self._stop_hyprland_ipc()
+        self._pause_all_polls()
+        with self._state.lock:
+            if self._state.value.source_id > 0:
+                _safe_source_remove(self._state.value.source_id)
+                self._state.value.source_id = 0
+            if self._state.misc.source_id > 0:
+                _safe_source_remove(self._state.misc.source_id)
+                self._state.misc.source_id = 0
 
     def force_refresh(self) -> None:
         super().force_refresh()
@@ -3229,12 +3379,17 @@ class GridCard(DynamicIconMixin, HyprlandIPCMixin, GridCardBase):
                 return GLib.SOURCE_REMOVE
 
         if not self.get_mapped():
-            return GLib.SOURCE_CONTINUE
+            with self._state.lock:
+                self._state.value.source_id = 0
+            return GLib.SOURCE_REMOVE
 
         self._queue_dynamic_state_fetch()
         return GLib.SOURCE_CONTINUE
 
     def _queue_dynamic_state_fetch(self) -> None:
+        if not self.get_mapped():
+            return
+
         with self._state.lock:
             if self._state.is_destroyed or self._state.value.is_running:
                 return
@@ -3293,7 +3448,9 @@ class GridCard(DynamicIconMixin, HyprlandIPCMixin, GridCardBase):
 
     def _check_badge_tick(self, path_str: str) -> bool:
         if not self.get_mapped():
-            return GLib.SOURCE_CONTINUE
+            with self._state.lock:
+                self._state.misc.source_id = 0
+            return GLib.SOURCE_REMOVE
 
         with self._state.lock:
             if self._state.is_destroyed:
@@ -3303,6 +3460,9 @@ class GridCard(DynamicIconMixin, HyprlandIPCMixin, GridCardBase):
         return GLib.SOURCE_CONTINUE
 
     def _queue_badge_fetch(self, path_str: str) -> None:
+        if not self.get_mapped():
+            return
+
         with self._state.lock:
             if self._state.is_destroyed or self._state.misc.is_running:
                 return
@@ -3391,12 +3551,23 @@ class GridToggleCard(DynamicIconMixin, StateMonitorMixin, HyprlandIPCMixin, Grid
                 self._set_visual(val)
 
         self.connect("clicked", self._on_clicked)
+        self.connect("map", self._on_grid_toggle_map)
+        self.connect("unmap", self._on_grid_toggle_unmap)
+
         self._start_state_monitor()
 
         if _is_dynamic_icon(icon_conf) and isinstance(icon_conf, dict):
             self._start_icon_update_loop(icon_conf)
-            
+
+    def _on_grid_toggle_map(self, _widget: Gtk.Widget) -> None:
         self._start_hyprland_ipc()
+        self._resume_all_polls()
+        self._start_state_monitor()
+        self.force_refresh()
+
+    def _on_grid_toggle_unmap(self, _widget: Gtk.Widget) -> None:
+        self._stop_hyprland_ipc()
+        self._pause_all_polls()
 
     def _apply_state_update(self, new_state: bool) -> bool:
         with self._state.lock:
