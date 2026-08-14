@@ -51,7 +51,7 @@ try:
     from textual.widgets.tree import TreeNode
     from textual.binding import Binding
     from textual.screen import ModalScreen
-    from textual import work, on
+    from textual import work, on, events
 except ImportError as exc:
     sys.stderr.write(f"[FATAL] Missing Python dependencies: {exc}\n")
     sys.stderr.write("Install: python-textual python-rich\n")
@@ -1585,8 +1585,13 @@ class DuskyOrchestratorApp(App):
     #right_pane {
         width: 62%;
         height: 100%;
-        padding: 0 1;
+        layout: vertical;
+        padding: 0;
         background: #0d1117;
+    }
+    ContentSwitcher, #log_switcher {
+        height: 1fr;
+        width: 100%;
     }
     Tree {
         background: #0d1117;
@@ -1617,7 +1622,8 @@ class DuskyOrchestratorApp(App):
     }
     
     RichLog {
-        height: 100%;
+        height: 1fr;
+        width: 100%;
         border: none;
         background: #0d1117;
         color: #c9d1d9;
@@ -1762,6 +1768,7 @@ class DuskyOrchestratorApp(App):
         self.left_pane_width: int = GLOBAL_CONFIG.get("ui", {}).get("left_pane_width", 38)
         self.active_task: Optional[OrchestratorTask] = None
         self.current_log_key: str | None = None
+        self._log_widgets: dict[str | None, RichLog] = {}
         self.tree_nodes_map: dict[str, TreeNode] = {}
         self.tree_widget = Tree(f"{S('logo')} Execution Sequence", id="tree_widget")
 
@@ -2042,17 +2049,70 @@ class DuskyOrchestratorApp(App):
                 self.query_one("#log_switcher", ContentSwitcher).current = f"log_{state_key}"
                 self.current_log_key = state_key
 
-    def action_shrink_left_pane(self) -> None:
-        self.left_pane_width = max(20, min(80, self.left_pane_width - 4))
+    def _set_pane_widths(self, width_pct: int) -> None:
+        min_w = GLOBAL_CONFIG.get("ui", {}).get("min_left_pane_width", 15)
+        max_w = GLOBAL_CONFIG.get("ui", {}).get("max_left_pane_width", 80)
+        self.left_pane_width = max(min_w, min(max_w, width_pct))
         with suppress(Exception):
             self.query_one("#left_pane").styles.width = f"{self.left_pane_width}%"
             self.query_one("#right_pane").styles.width = f"{100 - self.left_pane_width}%"
 
-    def action_expand_left_pane(self) -> None:
-        self.left_pane_width = max(20, min(80, self.left_pane_width + 4))
+    def _update_pane_width_from_mouse(self, mouse_screen_x: int) -> None:
         with suppress(Exception):
-            self.query_one("#left_pane").styles.width = f"{self.left_pane_width}%"
-            self.query_one("#right_pane").styles.width = f"{100 - self.left_pane_width}%"
+            dashboard = self.query_one("#main_content")
+            dash_x = dashboard.region.x
+            dash_w = dashboard.region.width
+            if dash_w > 0:
+                rel_x = mouse_screen_x - dash_x
+                pct = int(rel_x * 100 / dash_w)
+                self._set_pane_widths(pct)
+
+    def action_shrink_left_pane(self) -> None:
+        self._set_pane_widths(self.left_pane_width - 4)
+
+    def action_expand_left_pane(self) -> None:
+        self._set_pane_widths(self.left_pane_width + 4)
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        if isinstance(self.screen, ModalScreen):
+            return
+        with suppress(Exception):
+            dashboard = self.query_one("#main_content")
+            dash_x = dashboard.region.x
+            dash_w = dashboard.region.width
+            if dash_w > 0:
+                current_split_x = dash_x + int(dash_w * self.left_pane_width / 100)
+                if abs(event.screen_x - current_split_x) <= 6:
+                    self._is_dragging_pane = True
+                    self._update_pane_width_from_mouse(event.screen_x)
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        if getattr(self, "_is_dragging_pane", False):
+            if event.button == 0:
+                self._is_dragging_pane = False
+            else:
+                self._update_pane_width_from_mouse(event.screen_x)
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        self._is_dragging_pane = False
+
+    @staticmethod
+    def _set_pty_size(fd: int) -> None:
+        try:
+            size = os.get_terminal_size()
+            winsize = struct.pack("HHHH", size.lines, size.columns, 0, 0)
+            fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
+        except Exception:
+            try:
+                winsize = struct.pack("HHHH", 40, 120, 0, 0)
+                fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
+            except Exception:
+                pass
+
+    def on_resize(self, event: events.Resize) -> None:
+        if getattr(self, "current_pty_master", None) is not None:
+            with suppress(Exception):
+                self._set_pty_size(self.current_pty_master)
 
     def action_tree_down(self) -> None:
         with suppress(Exception):
@@ -2074,19 +2134,34 @@ class DuskyOrchestratorApp(App):
         else:
             self.tree_widget.focus()
 
+    def _get_log_widget(self, key: str | None) -> Optional[RichLog]:
+        if key in self._log_widgets:
+            return self._log_widgets[key]
+        widget_id = "#pty_log" if key is None else f"#log_{key}"
+        with suppress(Exception):
+            w = self.query_one(widget_id, RichLog)
+            self._log_widgets[key] = w
+            return w
+        return None
+
     def log_system(self, msg: str):
-        text_ansi = f"\033[1;36m[SYSTEM]\033[0m {msg}"
-        self.log_widget.write(Text.from_ansi(text_ansi))
+        text_ansi = f"\033[1;36m[SYSTEM]\033[0m {msg}\n"
+        txt = Text.from_ansi(text_ansi)
+        if main_w := self._get_log_widget(None):
+            main_w.write(txt)
+        if self.active_task:
+            if task_w := self._get_log_widget(self.active_task.state_key):
+                task_w.write(txt)
         self.logger.system(msg)
 
     def log_task(self, msg: str, task: Optional[OrchestratorTask] = None):
         txt = Text.from_ansi(msg)
-        self.log_widget.write(txt)
-        t = task or getattr(self, "active_task", None)
+        if main_w := self._get_log_widget(None):
+            main_w.write(txt)
+        t = task or self.active_task
         if t:
-            with suppress(Exception):
-                task_log = self.query_one(f"#log_{t.state_key}", RichLog)
-                task_log.write(txt)
+            if task_w := self._get_log_widget(t.state_key):
+                task_w.write(txt)
 
     def update_telemetry(self, status_str: str, speed_str: str = ""):
         if speed_str:
@@ -2264,7 +2339,8 @@ class DuskyOrchestratorApp(App):
         self.active_task = task
         self.update_task_status(self.current_idx, TaskStatus.RUNNING)
         self.select_task_node(task.state_key)
-        self.log_widget.write(Text.from_ansi(f"\n\033[1;36m>>> PROCESS INITIATED: {task.script_name}\033[0m"))
+        start_header = f"\n\033[1;36m>>> PROCESS INITIATED: {task.script_name}\033[0m\n"
+        self.log_task(start_header, task)
         self.update_telemetry(f"Running {task.script_name}")
 
         args = list(task.args)
@@ -2303,10 +2379,10 @@ class DuskyOrchestratorApp(App):
                 else:
                     # NON-INTERACTIVE PTY EXECUTION
                     master_fd, slave_fd = pty.openpty()
-                    try:
-                        fl = fcntl.fcntl(master_fd, fcntl.F_GETFL)
-                        fcntl.fcntl(master_fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+                    self.current_pty_master = master_fd
+                    self._set_pty_size(master_fd)
 
+                    try:
                         proc = await asyncio.create_subprocess_exec(
                             *cmd,
                             stdin=slave_fd,
@@ -2316,84 +2392,106 @@ class DuskyOrchestratorApp(App):
                             start_new_session=True,
                         )
                         os.close(slave_fd)
+                        slave_fd = -1
 
                         loop = asyncio.get_running_loop()
-                        buffer = ""
+                        reader = asyncio.StreamReader(limit=1024 * 1024)
+                        protocol = asyncio.StreamReaderProtocol(reader)
+                        file_obj = os.fdopen(master_fd, "rb", buffering=0)
+                        master_fd = -1
+
+                        transport, _ = await loop.connect_read_pipe(lambda: protocol, file_obj)
+
+                        line_buffer = ""
+                        async def read_loop():
+                            nonlocal line_buffer
+                            prompt_buf = ""
+                            while True:
+                                try:
+                                    chunk = await reader.read(4096)
+                                except Exception:
+                                    chunk = b""
+                                if not chunk:
+                                    if line_buffer:
+                                        self.log_task(line_buffer + "\n", task)
+                                        self.logger.write_task(task, ANSI_STRIP_REGEX.sub("", line_buffer).strip())
+                                        line_buffer = ""
+                                    break
+
+                                text = chunk.decode("utf-8", errors="replace")
+                                prompt_buf = (prompt_buf + text)[-4096:]
+                                prompt_tail = ANSI_STRIP_REGEX.sub("", prompt_buf)
+                                for p_name, rule_re, p_resp in PROMPT_RULES:
+                                    if rule_re.search(prompt_tail):
+                                        with suppress(Exception):
+                                            file_obj.write(p_resp.encode("utf-8"))
+                                            self.log_system(f"Auto-responded to prompt ({p_name})")
+                                            prompt_buf = ""
+                                        break
+
+                                speed_match = SPEED_ETA_REGEX.search(text)
+                                pct_match = PCT_REGEX.search(text)
+                                if speed_match:
+                                    self.update_telemetry(
+                                        f"Running {task.script_name}",
+                                        f"{speed_match.group(1)} (ETA {speed_match.group(2)})",
+                                    )
+                                elif pct_match:
+                                    self.update_telemetry(f"Running {task.script_name} ({pct_match.group(0)})")
+
+                                line_buffer += text
+                                while "\n" in line_buffer or "\r" in line_buffer:
+                                    r_idx = line_buffer.find("\r")
+                                    n_idx = line_buffer.find("\n")
+                                    if r_idx != -1 and (n_idx == -1 or r_idx < n_idx):
+                                        line, line_buffer = line_buffer[:r_idx], line_buffer[r_idx + 1 :]
+                                    else:
+                                        line, line_buffer = line_buffer[:n_idx], line_buffer[n_idx + 1 :]
+
+                                    stripped = ANSI_STRIP_REGEX.sub("", line).strip()
+                                    if not stripped:
+                                        continue
+
+                                    self.log_task(line + "\n", task)
+                                    self.logger.write_task(task, stripped)
+
+                        read_task = asyncio.create_task(read_loop())
 
                         try:
                             async with asyncio.timeout(timeout) if timeout and timeout > 0 else nullcontext():
-                                prompt_buffer = ""
-                                while True:
-                                    try:
-                                        data = await loop.run_in_executor(None, os.read, master_fd, 4096)
-                                        if not data:
-                                            break
-                                        text = data.decode("utf-8", errors="replace")
-                                        buffer += text
-                                        prompt_buffer = (prompt_buffer + text)[-4096:]
-                                        prompt_tail = ANSI_STRIP_REGEX.sub("", prompt_buffer)
-
-                                        for p_name, rule_re, p_resp in PROMPT_RULES:
-                                            if rule_re.search(prompt_tail):
-                                                try:
-                                                    os.write(master_fd, p_resp.encode("utf-8"))
-                                                    self.log_system(f"Auto-responded to prompt ({p_name})")
-                                                    prompt_buffer = ""
-                                                except OSError:
-                                                    pass
-                                                break
-
-                                        speed_match = SPEED_ETA_REGEX.search(buffer)
-                                        pct_match = PCT_REGEX.search(buffer)
-                                        if speed_match:
-                                            self.update_telemetry(
-                                                f"Running {task.script_name}",
-                                                f"{speed_match.group(1)} (ETA {speed_match.group(2)})",
-                                            )
-                                        elif pct_match:
-                                            self.update_telemetry(f"Running {task.script_name} ({pct_match.group(0)})")
-
-                                        while "\r" in buffer or "\n" in buffer:
-                                            r_idx = buffer.find("\r")
-                                            n_idx = buffer.find("\n")
-                                            if r_idx != -1 and (n_idx == -1 or r_idx < n_idx):
-                                                line, buffer = buffer[:r_idx], buffer[r_idx + 1 :]
-                                            else:
-                                                line, buffer = buffer[:n_idx], buffer[n_idx + 1 :]
-
-                                            stripped = ANSI_STRIP_REGEX.sub("", line).strip()
-                                            if not stripped:
-                                                continue
-                                            if PROGRESS_BAR_REGEX.search(line) and len(line) < 80 and not ("Error" in line or "ERR" in line):
-                                                continue
-
-                                            self.log_task(line + "\n")
-                                            self.logger.write_task(task, stripped)
-
-                                    except (OSError, BlockingIOError):
-                                        if proc.returncode is not None:
-                                            break
-                                        await asyncio.sleep(0.05)
-
-                            if buffer:
-                                stripped = ANSI_STRIP_REGEX.sub("", buffer).strip()
-                                if stripped and not PROGRESS_BAR_REGEX.search(buffer):
-                                    self.log_task(stripped + "\n")
-                                    self.logger.write_task(task, stripped)
+                                rc = await proc.wait()
+                                with suppress(Exception):
+                                    await asyncio.wait_for(asyncio.shield(read_task), timeout=2.0)
                         except TimeoutError:
                             error_msg = f"Timeout after {timeout:.0f}s"
                             try:
                                 proc.kill()
                             except ProcessLookupError:
                                 pass
-                            await proc.wait()
-                        else:
+                            read_task.cancel()
+                            with suppress(asyncio.CancelledError, Exception):
+                                await read_task
                             rc = await proc.wait()
+                        finally:
+                            read_task.cancel()
+                            with suppress(asyncio.CancelledError, Exception):
+                                await read_task
+                            with suppress(Exception):
+                                transport.close()
+                            with suppress(Exception):
+                                file_obj.close()
                     finally:
-                        try:
-                            os.close(master_fd)
-                        except OSError:
-                            pass
+                        self.current_pty_master = None
+                        if slave_fd != -1:
+                            try:
+                                os.close(slave_fd)
+                            except OSError:
+                                pass
+                        if master_fd != -1:
+                            try:
+                                os.close(master_fd)
+                            except OSError:
+                                pass
 
                     dur = time.time() - start_t
                     if rc != 0 and not error_msg:
@@ -2430,7 +2528,7 @@ class DuskyOrchestratorApp(App):
     async def task_success(self, task: OrchestratorTask, duration: float = 0.0):
         self.update_task_status(self.current_idx, TaskStatus.COMPLETED)
         task.duration = duration
-        self.log_task("\n\033[1;32m>>> EXECUTION SUCCESSFUL\033[0m")
+        self.log_task("\n\033[1;32m>>> EXECUTION SUCCESSFUL\033[0m\n", task)
         self.completed_keys.add(task.state_key)
         self.task_statuses[task.state_key] = "COMPLETED"
         self.counters["completed"] += 1
@@ -2463,7 +2561,7 @@ class DuskyOrchestratorApp(App):
     async def task_failure(self, task: OrchestratorTask, reason: str, duration: float = 0.0):
         self.update_task_status(self.current_idx, TaskStatus.FAILED)
         task.duration = duration
-        self.log_task(f"\n\033[1;31m>>> EXECUTION FAILED: {reason}\033[0m")
+        self.log_task(f"\n\033[1;31m>>> EXECUTION FAILED: {reason}\033[0m\n", task)
         self.task_statuses[task.state_key] = "FAILED"
         self.counters["failed"] += 1
         if self.counters["pending"] > 0:
