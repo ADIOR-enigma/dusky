@@ -158,6 +158,9 @@ _LOCK_FD: Optional[int] = None
 # PATH RESOLUTION HELPERS
 # ==============================================================================
 def user_home() -> Path:
+    env_home = os.environ.get("DUSKY_WORK_TREE") or os.environ.get("DUSKY_HOME")
+    if env_home:
+        return Path(env_home).resolve()
     return Path.home()
 
 
@@ -205,7 +208,11 @@ def safe_filename(name: str) -> str:
 
 
 def resolve_home(path_str: str) -> Path:
-    p = Path(os.path.expandvars(path_str.strip())).expanduser()
+    raw = path_str.strip()
+    if raw.startswith("~/") or raw == "~":
+        p = user_home() / raw[2:] if raw.startswith("~/") else user_home()
+    else:
+        p = Path(os.path.expandvars(raw)).expanduser()
     if not p.is_absolute():
         p = SCRIPT_DIR / p
     return p
@@ -456,8 +463,10 @@ class ConditionEvaluator:
         self.cache: dict[str, bool] = {}
 
     def check(self, cond: str | None) -> bool:
-        if not cond or cond.strip().lower() == "always":
+        if not cond or cond.strip().lower() in ("always", "true", "yes"):
             return True
+        if cond.strip().lower() in ("never", "false", "no"):
+            return False
         cond_clean = cond.strip()
         if cond_clean in self.cache:
             return self.cache[cond_clean]
@@ -467,6 +476,15 @@ class ConditionEvaluator:
         return res
 
     def _eval(self, cond: str) -> bool:
+        if "," in cond:
+            parts = [p.strip() for p in cond.split(",") if p.strip()]
+            if len(parts) > 1:
+                return all(self.check(part) for part in parts)
+            if parts:
+                cond = parts[0]
+            else:
+                return True
+
         kind, _, value = cond.partition(":")
         kind = kind.strip().lower()
         value = value.strip()
@@ -477,18 +495,33 @@ class ConditionEvaluator:
             return bool(os.environ.get("WAYLAND_DISPLAY"))
         if kind == "x11":
             return bool(os.environ.get("DISPLAY"))
-        if kind == "command":
+        if kind == "graphical":
+            return bool(os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY"))
+        if kind in ("command", "cmd"):
             return shutil.which(value) is not None
         if kind == "dir":
             return Path(value).expanduser().is_dir()
         if kind == "file":
             return Path(value).expanduser().is_file()
-        if kind == "package":
+        if kind == "path":
+            return Path(value).expanduser().exists()
+        if kind == "missing":
+            return not Path(value).expanduser().exists()
+        if kind in ("package", "pkg"):
             pkg_cmd = GLOBAL_CONFIG.get("conditions", {}).get("package_check_cmd", ["pacman", "-Qq"])
             if not pkg_cmd or not shutil.which(pkg_cmd[0]):
                 return False
             try:
                 return subprocess.run(pkg_cmd + [value], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+            except Exception:
+                return False
+        if kind in ("service_active", "service", "svc"):
+            cmd = GLOBAL_CONFIG.get("conditions", {}).get(
+                "service_active_cmd",
+                ["systemctl", "is-active", "--quiet"],
+            )
+            try:
+                return subprocess.run(cmd + [value], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
             except Exception:
                 return False
         if kind == "gpu":
@@ -503,6 +536,13 @@ class ConditionEvaluator:
                         vf = card / "device" / "vendor"
                         if vf.exists() and vf.read_text().strip().lower() == target:
                             return True
+            if shutil.which("lspci"):
+                try:
+                    out = subprocess.run(["lspci"], capture_output=True, text=True).stdout.lower()
+                    if value.lower() in out:
+                        return True
+                except Exception:
+                    pass
             return False
 
         return True
@@ -825,9 +865,143 @@ def parse_task_table(table: dict, index: int) -> OrchestratorTask:
     )
 
 
+def repair_missing_commas(text: str) -> tuple[str, int]:
+    _NUM_BOOL_RE = re.compile(
+        r"[+-]?(?:\d[\d_]*(?:\.\d[\d_]*)?(?:[eE][+-]?\d+)?"
+        r"|0[xX][0-9a-fA-F_]+|0[oO][0-7_]+|0[bB][01_]+)"
+    )
+    _BOOL_WORDS = {"true", "false", "inf", "+inf", "-inf", "nan", "+nan", "-nan"}
+    _WORD_CHARS = "_.+-:"
+
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    depth = 0
+    pending_value = False
+    pending_is_word = False
+    value_end = -1
+    fixes = 0
+
+    def is_num_or_bool(word: str) -> bool:
+        return word in _BOOL_WORDS or _NUM_BOOL_RE.fullmatch(word) is not None
+
+    while i < n:
+        c = text[i]
+
+        if c == '#':
+            j = text.find('\n', i)
+            if j == -1:
+                j = n
+            out.append(text[i:j])
+            i = j
+            continue
+
+        if depth and pending_value and (c in '"\'[{+-' or c.isalnum()) and not (c == '-' and i + 1 >= n):
+            k = i
+            while k < n and (text[k].isalnum() or text[k] in _WORD_CHARS):
+                k += 1
+            word_end = k
+            while k < n and text[k] in ' \t':
+                k += 1
+            is_key = k < n and text[k] == '='
+            insert = True
+            if c.isalnum() and pending_is_word and not is_key and not is_num_or_bool(text[i:word_end]):
+                insert = False
+            if insert:
+                out.insert(value_end, ',')
+                pending_value = False
+                pending_is_word = False
+                fixes += 1
+
+        if c in '"\'':
+            quote = c
+            str_start = i
+            if text.startswith(quote * 3, i):
+                i += 3
+                while i < n and not text.startswith(quote * 3, i):
+                    if text[i] == '\\':
+                        i += 1
+                    i += 1
+                i = min(i + 3, n)
+            else:
+                i += 1
+                while i < n and text[i] != quote:
+                    if text[i] == '\\':
+                        i += 1
+                    i += 1
+                i += 1
+            out.append(text[str_start:i])
+            if depth:
+                pending_value = True
+                pending_is_word = False
+                value_end = len(out)
+            continue
+
+        if c == '=':
+            pending_value = False
+            pending_is_word = False
+            out.append(c)
+            i += 1
+            continue
+
+        if c in '[{':
+            depth += 1
+            pending_value = False
+            pending_is_word = False
+            out.append(c)
+            i += 1
+            continue
+
+        if c in ']}':
+            depth = max(0, depth - 1)
+            out.append(c)
+            i += 1
+            if depth:
+                pending_value = True
+                pending_is_word = False
+                value_end = len(out)
+            continue
+
+        if c == ',':
+            pending_value = False
+            pending_is_word = False
+            out.append(c)
+            i += 1
+            continue
+
+        if c in ' \t\r\n':
+            out.append(c)
+            i += 1
+            continue
+
+        start_w = i
+        while i < n and (text[i].isalnum() or text[i] in _WORD_CHARS):
+            i += 1
+        word = text[start_w:i]
+        out.append(word)
+        if depth:
+            pending_value = True
+            pending_is_word = True
+            value_end = len(out)
+
+    return "".join(out), fixes
+
+
 def load_profile(filepath: Path) -> ProfileConfig:
-    with open(filepath, "rb") as f:
-        data = tomllib.load(f)
+    try:
+        with open(filepath, "rb") as f:
+            data = tomllib.load(f)
+    except tomllib.TOMLDecodeError as err:
+        text = filepath.read_text(encoding="utf-8")
+        repaired, fixes = repair_missing_commas(text)
+        if fixes > 0:
+            try:
+                data = tomllib.loads(repaired)
+                sys.stderr.write(f"[WARN] Inserted {fixes} missing comma(s) in '{filepath.name}' -- auto-repaired.\n")
+            except Exception:
+                raise err
+        else:
+            raise err
 
     p_data = data.get("profile", {})
     ph1_data = data.get("phase1", {})
@@ -1145,13 +1319,15 @@ def acquire_lock(lock_file: Path) -> bool:
     global _LOCK_FD
     lock_file.parent.mkdir(parents=True, exist_ok=True)
     try:
-        fd = os.open(str(lock_file), os.O_CREAT | os.O_RDWR | os.O_CLOEXEC, 0o600)
+        fd = os.open(str(lock_file), os.O_CREAT | os.O_RDWR | getattr(os, "O_CLOEXEC", 0), 0o600)
     except Exception as e:
         sys.stderr.write(f"\033[1;31m[ERROR]\033[0m Could not open lock file {lock_file}: {e}\n")
         return False
 
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        os.ftruncate(fd, 0)
+        os.write(fd, f"{os.getpid()}\n".encode("ascii"))
         _LOCK_FD = fd
         atexit.register(lambda: _cleanup_lock(lock_file))
         return True
@@ -1162,6 +1338,10 @@ def acquire_lock(lock_file: Path) -> bool:
         except OSError:
             pass
         return False
+
+
+def release_lock(lock_file: Path | None = None) -> None:
+    _cleanup_lock(lock_file)
 
 
 def resolve_interpreter(script_path: Path) -> Tuple[str, bool]:
@@ -1297,6 +1477,50 @@ class ManualModalScreen(ModalScreen):
             self.dismiss("quit")
 
 
+class CompletionDialog(ModalScreen[bool]):
+    """Final dialog shown when the phase finishes: review logs or quit."""
+
+    BINDINGS = [
+        ("enter,space", "dismiss_stay", "View Logs"),
+    ]
+
+    def __init__(
+        self,
+        title: str = "PHASE COMPLETE",
+        message: str = "",
+        level: str = "success",
+    ) -> None:
+        super().__init__()
+        self.title_text = title
+        self.message = message
+        self.level = level
+
+    def compose(self) -> ComposeResult:
+        with Container(id="completion_dialog", classes=f"-{self.level}"):
+            yield Label(self.title_text, id="completion_title")
+            yield Static(self.message, id="completion_message", markup=False)
+            with Horizontal(id="button_bar"):
+                yield Button(" View Logs ", id="btn_completion_view")
+                yield Button(" Quit ", variant="primary", id="btn_completion_quit")
+
+    def on_mount(self) -> None:
+        with suppress(Exception):
+            self.query_one("#btn_completion_view", Button).focus()
+
+    def action_dismiss_stay(self) -> None:
+        self.dismiss(False)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "btn_completion_quit")
+
+    def on_key(self, event) -> None:
+        key = event.key.lower()
+        if key in ("q", "escape"):
+            self.dismiss(True)
+        elif key in ("enter", "space", "v"):
+            self.dismiss(False)
+
+
 # ==============================================================================
 # MAIN TEXTUAL APP
 # ==============================================================================
@@ -1386,11 +1610,36 @@ class DuskyOrchestratorApp(App):
         color: #8b949e;
     }
 
-    FailureModalScreen, ManualModalScreen {
+    FailureModalScreen, ManualModalScreen, CompletionDialog {
         align: center middle;
         background: rgba(0,0,0,0.88);
         width: 100%;
         height: 100%;
+    }
+    #completion_dialog {
+        width: 65;
+        height: auto;
+        border: heavy #58a6ff;
+        background: #161b22;
+        padding: 1 2;
+    }
+    #completion_dialog.-success {
+        border: heavy #3fb950;
+    }
+    #completion_dialog.-warning {
+        border: heavy #d29922;
+    }
+    #completion_dialog.-error {
+        border: heavy #f85149;
+    }
+    #completion_title {
+        text-align: center;
+        text-style: bold;
+        color: #58a6ff;
+        margin-bottom: 1;
+    }
+    #completion_message {
+        margin-bottom: 1;
     }
     #modal_dialog {
         width: 75;
@@ -1784,14 +2033,54 @@ class DuskyOrchestratorApp(App):
             await self.execute_task(task)
             return
 
-        self.log_system("All tasks in this phase completed successfully!")
+        self.log_system("All tasks in this phase completed.")
         self.update_telemetry("Finished Phase")
         self.logger.write_report(self.profile_name, self.tasks, self.task_statuses, self.counters)
         self._render_final_overview_block()
-        NotificationManager.play_sound("complete")
-        NotificationManager.send_desktop("Phase Completed", f"Successfully completed {self.phase_title}")
-        await asyncio.sleep(1.5)
-        self.exit(0)
+
+        failed_tasks = [t for t in self.tasks if self.task_statuses.get(t.state_key) == "FAILED"]
+        if failed_tasks:
+            NotificationManager.play_sound("alert")
+            NotificationManager.send_desktop(
+                "Phase Finished with Warnings",
+                f"{len(failed_tasks)} task(s) failed in {self.phase_title}",
+                urgency="critical",
+            )
+        else:
+            NotificationManager.play_sound("complete")
+            NotificationManager.send_desktop(
+                "Phase Completed",
+                f"Successfully completed {self.phase_title}",
+            )
+
+        completed = self.counters.get("completed", 0)
+        failed = self.counters.get("failed", 0)
+        skipped = self.counters.get("skipped", 0)
+        total_time = time.monotonic() - (getattr(self, "start_time", None) or time.monotonic())
+        elapsed_m = int(total_time) // 60
+        elapsed_s = int(total_time) % 60
+        elapsed_str = f"{elapsed_m:02d}:{elapsed_s:02d}"
+
+        summary_lines = (
+            f"Phase: {self.phase_title}\n"
+            f"Profile: {self.profile_name}\n"
+            f"Completed: {completed}\n"
+            f"Failed: {failed}\n"
+            f"Skipped: {skipped}\n"
+            f"Elapsed: {elapsed_str}\n"
+            f"Logs: {self.logger.root or logs_dir()}\n\n"
+            "Choose how to continue:"
+        )
+
+        res = await self.push_screen_wait(
+            CompletionDialog(
+                title="PHASE FINISHED WITH WARNINGS" if failed_tasks else "PHASE COMPLETE",
+                message=summary_lines,
+                level="warning" if failed_tasks else "success",
+            )
+        )
+        if res:
+            self.exit(1 if failed_tasks else 0)
 
     async def handle_missing_task(self, task: OrchestratorTask):
         self.update_task_status(self.current_idx, TaskStatus.FAILED)
@@ -1880,6 +2169,7 @@ class DuskyOrchestratorApp(App):
 
                         try:
                             async with asyncio.timeout(timeout) if timeout and timeout > 0 else nullcontext():
+                                prompt_buffer = ""
                                 while True:
                                     try:
                                         data = await loop.run_in_executor(None, os.read, master_fd, 4096)
@@ -1887,12 +2177,15 @@ class DuskyOrchestratorApp(App):
                                             break
                                         text = data.decode("utf-8", errors="replace")
                                         buffer += text
+                                        prompt_buffer = (prompt_buffer + text)[-4096:]
+                                        prompt_tail = ANSI_STRIP_REGEX.sub("", prompt_buffer)
 
                                         for p_name, rule_re, p_resp in PROMPT_RULES:
-                                            if rule_re.search(text):
+                                            if rule_re.search(prompt_tail):
                                                 try:
                                                     os.write(master_fd, p_resp.encode("utf-8"))
                                                     self.log_system(f"Auto-responded to prompt ({p_name})")
+                                                    prompt_buffer = ""
                                                 except OSError:
                                                     pass
                                                 break

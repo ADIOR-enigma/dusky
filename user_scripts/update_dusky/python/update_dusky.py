@@ -7,11 +7,11 @@ import asyncio
 import atexit
 import base64
 import codecs
-import datetime
 import fcntl
 import functools
 import hashlib
 import importlib
+import importlib.metadata as importlib_metadata
 import importlib.util
 import json
 import os
@@ -96,6 +96,10 @@ def user_home() -> Path:
     return Path.home()
 
 
+WORK_TREE: Path = Path(os.environ.get("DUSKY_WORK_TREE", user_home())).resolve()
+GIT_DIR: Path = Path(os.environ.get("DUSKY_GIT_DIR", WORK_TREE / "dusky")).resolve()
+
+
 def documents_root() -> Path:
     raw = GLOBAL_CONFIG.get("paths", {}).get("documents_dir", "Documents")
     p = Path(raw).expanduser()
@@ -142,9 +146,6 @@ def state_dir() -> Path:
 def lock_path() -> Path:
     lock_file = GLOBAL_CONFIG.get("paths", {}).get("lock_file", "lock")
     return runtime_dir() / lock_file
-
-
-from importlib import metadata as importlib_metadata
 
 
 def version_tuple(value: str) -> tuple[int, ...]:
@@ -346,11 +347,12 @@ class SudoEngine:
 
     @classmethod
     def _remove_stale_askpass_files(cls) -> None:
+        prefix = GLOBAL_CONFIG.get("paths", {}).get("askpass_prefix", ".dusky_askpass_")
         with suppress(OSError):
-            for p in askpass_dir().glob(".dusky_askpass_*"):
+            for p in askpass_dir().glob(f"{prefix}*"):
                 with suppress(OSError):
                     p.unlink(missing_ok=True)
-            for p in runtime_dir().glob(".dusky_askpass_*"):
+            for p in runtime_dir().glob(f"{prefix}*"):
                 with suppress(OSError):
                     p.unlink(missing_ok=True)
 
@@ -879,7 +881,8 @@ CREATE TABLE IF NOT EXISTS once_markers (
 
         if updates:
             for new_k, old_k in updates:
-                self.conn.execute("UPDATE once_markers SET marker_key = ? WHERE marker_key = ?", (new_k, old_k))
+                with suppress(sqlite3.IntegrityError, sqlite3.OperationalError):
+                    self.conn.execute("UPDATE once_markers SET marker_key = ? WHERE marker_key = ?", (new_k, old_k))
             self.conn.commit()
 
     def forget(self, script: str) -> int:
@@ -1129,7 +1132,7 @@ class ConditionEvaluator:
         if kind == "baremetal":
             return not self._is_vm()
 
-        if kind == "command":
+        if kind in ("command", "cmd"):
             return bool(shutil.which(value))
         if kind == "path":
             return Path(value).expanduser().exists()
@@ -1140,20 +1143,20 @@ class ConditionEvaluator:
         if kind == "dir":
             return Path(value).expanduser().is_dir()
 
-        if kind == "package":
+        if kind in ("package", "pkg"):
             return self._package_installed(value)
         if kind == "group":
             return self._user_in_group(value)
         if kind == "gpu":
             return self._gpu(value.lower())
 
-        if kind == "service_active":
+        if kind in ("service_active", "service", "svc"):
             cmd = GLOBAL_CONFIG.get("conditions", {}).get(
                 "service_active_cmd",
                 ["systemctl", "is-active", "--quiet"],
             )
             return self._run(cmd + [value])
-        if kind == "user_service_active":
+        if kind in ("user_service_active", "user_service", "user_svc"):
             cmd = GLOBAL_CONFIG.get("conditions", {}).get(
                 "user_service_active_cmd",
                 ["systemctl", "--user", "is-active", "--quiet"],
@@ -1292,6 +1295,8 @@ class ConditionEvaluator:
                 or self._lspci_vga("radeon")
                 or self._lspci_vga("advanced micro devices")
             )
+        if kind in ("vmware", "virtio", "qemu"):
+            return self._lspci_vga(kind)
         return False
 
     def _lspci_vga(self, needle: str) -> bool:
@@ -2271,11 +2276,36 @@ def _cleanup_lock() -> None:
 
 
 def acquire_lock() -> bool:
-    return True
+    global _LOCK_FD
+    if OPT_DRY_RUN:
+        return True
+    lp = lock_path()
+    try:
+        lp.parent.mkdir(parents=True, exist_ok=True)
+        cloexec = getattr(os, "O_CLOEXEC", 0)
+        _LOCK_FD = os.open(str(lp), os.O_RDWR | os.O_CREAT | cloexec, 0o600)
+        try:
+            fcntl.flock(_LOCK_FD, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            os.ftruncate(_LOCK_FD, 0)
+            os.write(_LOCK_FD, f"{os.getpid()}\n".encode("ascii"))
+            atexit.register(_cleanup_lock)
+            return True
+        except (BlockingIOError, OSError):
+            holders = get_lock_holders()
+            msg = f"Another instance of Dusky Updater is currently active on {lp}."
+            if holders:
+                msg += f"\nActive lock holder(s):\n{holders}"
+            sys.stderr.write(f"\033[1;31m[FATAL]\033[0m {msg}\n")
+            os.close(_LOCK_FD)
+            _LOCK_FD = None
+            return False
+    except OSError as e:
+        sys.stderr.write(f"\033[1;33m[WARN]\033[0m Could not establish process lock ({lp}): {e}\n")
+        return True
 
 
 def release_lock() -> None:
-    pass
+    _cleanup_lock()
 
 
 async def wait_for_process(proc: asyncio.subprocess.Process, timeout: float | None = None) -> int:
@@ -2592,14 +2622,13 @@ CompletionDialog, TaskSearchScreen, LogSearchScreen, ConfirmQuitScreen, HelpScre
 # ==============================================================================
 #  MANIFEST & PATH CONSTANTS
 # ==============================================================================
-WORK_TREE = user_home()
-GIT_DIR = WORK_TREE / "dusky"
+# WORK_TREE and GIT_DIR are configured in PATH RESOLUTION UTILITIES (with env overrides)
 
 
 # ==============================================================================
 #  STRUCTURAL PATTERN MATCHING & PARSING
 # ==============================================================================
-@dataclass
+@dataclass(slots=True)
 class DuskyTask:
     name: str
     mode: Literal['U', 'S', 'GIT']
@@ -4834,7 +4863,7 @@ class DuskyApp(App):
             return
 
         self._prompt_buffer = (getattr(self, "_prompt_buffer", "") + text)[-4096:]
-        tail = self._prompt_buffer
+        tail = ANSI_STRIP_REGEX.sub("", self._prompt_buffer)
 
         for name, pattern, kind in PROMPT_RULES:
             if not pattern.search(tail):
@@ -5896,7 +5925,9 @@ class DuskyApp(App):
             sys.stderr.flush()
         except Exception:
             pass
-        os.execv(sys.executable, [sys.executable, str(SCRIPT_PATH), "--post-self-update", *sys.argv[1:]])
+        release_lock()
+        cleaned_args = [a for a in sys.argv[1:] if a != "--post-self-update"]
+        os.execv(sys.executable, [sys.executable, str(SCRIPT_PATH), "--post-self-update", *cleaned_args])
         return True
 
     def _on_completion_reply(self, quit_now: bool | None) -> None:

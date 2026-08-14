@@ -194,6 +194,9 @@ def target_user_pw() -> pwd.struct_passwd:
 
 
 def user_home() -> Path:
+    env_home = os.environ.get("DUSKY_WORK_TREE") or os.environ.get("DUSKY_HOME")
+    if env_home:
+        return Path(env_home).resolve()
     return Path(target_user_pw().pw_dir)
 
 
@@ -433,7 +436,11 @@ class ProfileConfig:
 # UTILITIES
 # ==============================================================================
 def resolve_home(path_str: str) -> Path:
-    p = Path(os.path.expandvars(path_str.strip())).expanduser()
+    raw = path_str.strip()
+    if raw.startswith("~/") or raw == "~":
+        p = user_home() / raw[2:] if raw.startswith("~/") else user_home()
+    else:
+        p = Path(os.path.expandvars(raw)).expanduser()
     if not p.is_absolute():
         p = SCRIPT_DIR / p
     return p
@@ -1224,13 +1231,19 @@ def acquire_lock() -> bool:
         ensure_dir(lp.parent, 0o700)
 
     try:
-        fd = os.open(str(lp), os.O_CREAT | os.O_RDWR | os.O_CLOEXEC, 0o600)
+        fd = os.open(
+            str(lp),
+            os.O_CREAT | os.O_RDWR | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+        )
     except Exception as e:
         sys.stderr.write(f"[ERROR] Could not open lock file {lp}: {e}\n")
         return False
 
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        os.ftruncate(fd, 0)
+        os.write(fd, f"{os.getpid()}\n".encode("ascii"))
         _LOCK_FD = fd
         atexit.register(_cleanup_lock)
         return True
@@ -1247,6 +1260,10 @@ def acquire_lock() -> bool:
         with suppress(OSError):
             os.close(fd)
         return False
+
+
+def release_lock() -> None:
+    _cleanup_lock()
 
 
 # ==============================================================================
@@ -1320,8 +1337,9 @@ class SudoEngine:
 
     @classmethod
     def _remove_stale_askpass_files(cls) -> None:
+        prefix = GLOBAL_CONFIG.get("paths", {}).get("askpass_prefix", ".dusky_askpass_")
         with suppress(OSError):
-            for p in askpass_dir().glob(".dusky_askpass_*"):
+            for p in askpass_dir().glob(f"{prefix}*"):
                 with suppress(OSError):
                     p.unlink(missing_ok=True)
 
@@ -2962,7 +2980,7 @@ class ConditionEvaluator:
         if kind == "baremetal":
             return not self._is_vm()
 
-        if kind == "command":
+        if kind in ("command", "cmd"):
             return bool(shutil.which(value))
         if kind == "path":
             return Path(value).expanduser().exists()
@@ -2973,20 +2991,20 @@ class ConditionEvaluator:
         if kind == "dir":
             return Path(value).expanduser().is_dir()
 
-        if kind == "package":
+        if kind in ("package", "pkg"):
             return self._package_installed(value)
         if kind == "group":
             return self._user_in_group(value)
         if kind == "gpu":
             return self._gpu(value.lower())
 
-        if kind == "service_active":
+        if kind in ("service_active", "service", "svc"):
             cmd = GLOBAL_CONFIG.get("conditions", {}).get(
                 "service_active_cmd",
                 ["systemctl", "is-active", "--quiet"],
             )
             return self._run(cmd + [value])
-        if kind == "user_service_active":
+        if kind in ("user_service_active", "user_service", "user_svc"):
             cmd = GLOBAL_CONFIG.get("conditions", {}).get(
                 "user_service_active_cmd",
                 ["systemctl", "--user", "is-active", "--quiet"],
@@ -3125,6 +3143,8 @@ class ConditionEvaluator:
                 or self._lspci_vga("radeon")
                 or self._lspci_vga("advanced micro devices")
             )
+        if kind in ("vmware", "virtio", "qemu"):
+            return self._lspci_vga(kind)
         return False
 
     def _lspci_vga(self, needle: str) -> bool:
@@ -4044,6 +4064,7 @@ def run_git_self_update(
             if preserve_profile and profile and not any(a == "--profile" or a.startswith("--profile=") or a == "-p" for a in args):
                 args.extend(["--profile", profile.filepath.stem])
 
+            release_lock()
             if wrapper_path.is_file():
                 with suppress(OSError):
                     os.chmod(wrapper_path, 0o755)
@@ -4309,6 +4330,7 @@ def run_git_self_update(
         if preserve_profile and profile and not any(a == "--profile" or a.startswith("--profile=") or a == "-p" for a in args):
             args.extend(["--profile", profile.filepath.stem])
 
+        release_lock()
         if wrapper_path.is_file():
             with suppress(OSError):
                 os.chmod(wrapper_path, 0o755)
@@ -5128,6 +5150,14 @@ class DuskyOrchestratorApp(App):
                 with ContentSwitcher(id="log_switcher"):
                     yield self.log_widget
                     max_lines = GLOBAL_CONFIG.get("ui", {}).get("max_log_lines", 6000)
+                    yield RichLog(
+                        id="log_report",
+                        highlight=False,
+                        markup=True,
+                        wrap=True,
+                        auto_scroll=False,
+                        max_lines=max_lines,
+                    )
                     for task in self.tasks:
                         yield RichLog(
                             id=f"log_{task.state_key}",
@@ -5219,7 +5249,11 @@ class DuskyOrchestratorApp(App):
         node = event.node
         switcher = self.query_one("#log_switcher", ContentSwitcher)
 
-        if node == self.tree_widget.root:
+        if node.data == "REPORT":
+            switcher.current = "log_report"
+            self.current_log_key = "report"
+            self._update_details(None)
+        elif node == self.tree_widget.root or node.data == "MAIN":
             switcher.current = "pty_log"
             self.current_log_key = None
             self._update_details(None)
@@ -5251,8 +5285,10 @@ class DuskyOrchestratorApp(App):
             return
 
         key = self.current_log_key
-        title = "global"
-        if key is not None:
+        title = "Main Engine Log"
+        if key == "report":
+            title = "Final Overview Report"
+        elif key is not None:
             for t in self.tasks:
                 if t.state_key == key:
                     title = t.script_name
@@ -5360,6 +5396,14 @@ class DuskyOrchestratorApp(App):
     def _on_completion_reply(self, quit_now: bool | None) -> None:
         if quit_now:
             self.exit()
+        else:
+            self.current_log_key = "report"
+            self._update_details(None)
+            with suppress(Exception):
+                if report_node := self.tree_nodes_map.get("__report__"):
+                    self.tree_widget.select_node(report_node)
+                    self.tree_widget.scroll_to_node(report_node)
+                self.query_one("#log_switcher", ContentSwitcher).current = "log_report"
 
     def _render_final_overview_block(self) -> None:
         total_duration = time.monotonic() - (self.start_time or time.monotonic())
@@ -5471,8 +5515,25 @@ class DuskyOrchestratorApp(App):
             f"════════════════════════════════════════════════════════════════════════════════\n",
         ])
 
+        overview_text = "\n".join(lines) + "\n"
+        with suppress(Exception):
+            rw = self.query_one("#log_report", RichLog)
+            rw.clear()
+            for line in lines:
+                rw.write(Text.from_markup(line))
+
+        self._log_lines["report"] = deque([ANSI_STRIP_REGEX.sub("", overview_text)], maxlen=6000)
+
         for line in lines:
             self._queue_ui(Text.from_markup(line))
+
+        self.current_log_key = "report"
+        self._update_details(None)
+        with suppress(Exception):
+            if report_node := self.tree_nodes_map.get("__report__"):
+                self.tree_widget.select_node(report_node)
+                self.tree_widget.scroll_to_node(report_node)
+            self.query_one("#log_switcher", ContentSwitcher).current = "log_report"
 
     def action_help(self) -> None:
         if isinstance(self.screen, HelpScreen):
@@ -5584,12 +5645,24 @@ class DuskyOrchestratorApp(App):
         self.tree_widget.root.label = f"{S('logo')} Sequence [{self.filter_mode}]"
         self.tree_widget.root.expand()
 
+        main_node = self.tree_widget.root.add_leaf(
+            Text.from_markup(f" [bold {PALETTE['accent']}]CORE[/] Main Engine Log")
+        )
+        main_node.data = "MAIN"
+        self.tree_nodes_map["__main__"] = main_node
+
         for task in self.tasks:
             if not self._task_visible(task):
                 continue
             node = self.tree_widget.root.add_leaf(_task_label(task))
             node.data = task
             self.tree_nodes_map[task.state_key] = node
+
+        report_node = self.tree_widget.root.add_leaf(
+            Text.from_markup(f" [bold {PALETTE['success']}]◆ REPORT[/] Final Overview")
+        )
+        report_node.data = "REPORT"
+        self.tree_nodes_map["__report__"] = report_node
 
     def build_task_tree(self) -> None:
         self._rebuild_tree()
@@ -5655,7 +5728,8 @@ class DuskyOrchestratorApp(App):
             return
 
         if self._ui_flush_timer is None:
-            self._ui_flush_timer = self.set_timer(0.03, self._flush_ui)
+            with suppress(Exception):
+                self._ui_flush_timer = self.set_timer(0.03, self._flush_ui)
 
     def _append_log_line(self, key: str | None, line: str) -> None:
         dq = self._log_lines.get(key)
@@ -5690,7 +5764,8 @@ class DuskyOrchestratorApp(App):
             self._telemetry["pct"] = pct
 
         if self._telemetry_timer is None:
-            self._telemetry_timer = self.set_timer(0.2, self._flush_telemetry)
+            with suppress(Exception):
+                self._telemetry_timer = self.set_timer(0.2, self._flush_telemetry)
 
     def _flush_telemetry(self) -> None:
         if self._telemetry_timer is not None:
@@ -5801,7 +5876,7 @@ class DuskyOrchestratorApp(App):
             return
 
         self._prompt_buffer = (getattr(self, "_prompt_buffer", "") + text)[-4096:]
-        tail = self._prompt_buffer
+        tail = ANSI_STRIP_REGEX.sub("", self._prompt_buffer)
 
         for name, pattern, kind in PROMPT_RULES:
             if not pattern.search(tail):
