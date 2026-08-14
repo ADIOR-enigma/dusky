@@ -47,8 +47,9 @@ try:
 
     from textual.app import App, ComposeResult
     from textual.containers import Container, Horizontal, Vertical
-    from textual.widgets import Header, Footer, Static, RichLog, ProgressBar, Button, Label, Input, OptionList
-    from textual.widgets.option_list import Option
+    from textual.widgets import Header, Footer, Static, RichLog, ProgressBar, Button, Label, Input, OptionList, Tree, ContentSwitcher
+    from textual.widgets.tree import TreeNode
+    from textual.binding import Binding
     from textual.screen import ModalScreen
     from textual import work, on
 except ImportError as exc:
@@ -1574,9 +1575,8 @@ class DuskyOrchestratorApp(App):
     #left_pane {
         width: 38%;
         border-right: solid #30363d;
-        padding: 0 1;
+        padding: 0;
         height: 100%;
-        overflow-y: auto;
         background: #0d1117;
     }
     #left_pane:focus {
@@ -1588,13 +1588,33 @@ class DuskyOrchestratorApp(App):
         padding: 0 1;
         background: #0d1117;
     }
-    .task_row {
-        layout: horizontal;
-        height: 1;
+    Tree {
+        background: #0d1117;
+        color: #c9d1d9;
+        scrollbar-size-vertical: 1;
+        scrollbar-size-horizontal: 0;
+        padding: 0;
+        height: 100%;
     }
-    .task_icon { width: 3; text-align: center; }
-    .task_mode { width: 5; text-align: center; }
-    .task_name { width: 1fr; color: #c9d1d9; }
+    Tree:focus {
+        background-tint: transparent 0%;
+        background: #0d1117;
+    }
+    Tree > .tree--highlight-line {
+        background: transparent;
+    }
+    Tree > .tree--cursor {
+        background: #21262d;
+        color: #c9d1d9;
+        text-style: bold;
+        border-left: tall #58a6ff;
+    }
+    Tree:focus > .tree--cursor {
+        background: #21262d;
+        color: #c9d1d9;
+        text-style: bold;
+        border-left: tall #58a6ff;
+    }
     
     RichLog {
         height: 100%;
@@ -1687,9 +1707,21 @@ class DuskyOrchestratorApp(App):
     """
 
     BINDINGS = [
-        ("q", "quit_app", "Quit"),
-        ("m", "toggle_manual", "Manual Mode"),
-        ("r", "reset_state", "Reset State"),
+        Binding("q", "quit_app", "Quit"),
+        Binding("m", "toggle_manual", "Manual Mode"),
+        Binding("r", "reset_state", "Reset State"),
+        Binding("alt+left", "shrink_left_pane", "Shrink Sidebar", priority=True),
+        Binding("alt+right", "expand_left_pane", "Expand Sidebar", priority=True),
+        Binding("alt+h", "shrink_left_pane", "Shrink Sidebar", priority=True),
+        Binding("alt+l", "expand_left_pane", "Expand Sidebar", priority=True),
+        Binding("ctrl+left", "shrink_left_pane", "Shrink Sidebar", priority=True),
+        Binding("ctrl+right", "expand_left_pane", "Expand Sidebar", priority=True),
+        Binding("bracketleft", "shrink_left_pane", "Shrink Sidebar"),
+        Binding("bracketright", "expand_left_pane", "Expand Sidebar"),
+        Binding("tab", "toggle_focus", "Switch Focus"),
+        Binding("shift+tab", "toggle_focus", "Switch Focus"),
+        Binding("j", "tree_down", "Tree Down"),
+        Binding("k", "tree_up", "Tree Up"),
     ]
 
     def __init__(
@@ -1727,6 +1759,11 @@ class DuskyOrchestratorApp(App):
         self.conditions = ConditionEvaluator()
         self.run_id = hashlib.md5(f"{time.time()}:{phase_title}".encode()).hexdigest()[:8]
         self.logger = RunLogger(profile_name, self.run_id)
+        self.left_pane_width: int = GLOBAL_CONFIG.get("ui", {}).get("left_pane_width", 38)
+        self.active_task: Optional[OrchestratorTask] = None
+        self.current_log_key: str | None = None
+        self.tree_nodes_map: dict[str, TreeNode] = {}
+        self.tree_widget = Tree(f"{S('logo')} Execution Sequence", id="tree_widget")
 
         if self.state_file.exists():
             try:
@@ -1735,8 +1772,7 @@ class DuskyOrchestratorApp(App):
                 pass
 
         max_lines = GLOBAL_CONFIG.get("ui", {}).get("max_log_lines", 6000)
-        self.log_widget = RichLog(id="syslog", highlight=True, markup=False, max_lines=max_lines)
-        self.left_pane = Vertical(id="left_pane")
+        self.log_widget = RichLog(id="pty_log", highlight=False, markup=False, wrap=True, max_lines=max_lines)
         self.progress_bar = ProgressBar(total=len(self.tasks), show_eta=False, id="progress_bar")
         self.header_title = Static(
             f"{S('logo')} DUSKY ARCH INSTALLER  [{self.phase_title}]  (Profile: {self.profile_name})",
@@ -1752,14 +1788,36 @@ class DuskyOrchestratorApp(App):
                 yield self.progress_bar
 
         with Horizontal(id="main_content"):
-            yield self.left_pane
+            with Vertical(id="left_pane"):
+                yield self.tree_widget
             with Vertical(id="right_pane"):
-                yield self.log_widget
+                with ContentSwitcher(id="log_switcher"):
+                    yield self.log_widget
+                    max_lines = GLOBAL_CONFIG.get("ui", {}).get("max_log_lines", 6000)
+                    yield RichLog(
+                        id="log_report",
+                        highlight=False,
+                        markup=True,
+                        wrap=True,
+                        auto_scroll=False,
+                        max_lines=max_lines,
+                    )
+                    for task in self.tasks:
+                        yield RichLog(
+                            id=f"log_{task.state_key}",
+                            highlight=False,
+                            markup=False,
+                            wrap=True,
+                            max_lines=max_lines,
+                        )
 
         yield Footer()
 
     def on_mount(self) -> None:
-        self.render_task_list()
+        with suppress(Exception):
+            self.query_one("#log_switcher", ContentSwitcher).current = "pty_log"
+
+        self._rebuild_tree()
 
         for t in self.tasks:
             if t.state_key in self.completed_keys:
@@ -1768,6 +1826,7 @@ class DuskyOrchestratorApp(App):
                 self.counters["completed"] += 1
                 self.counters["pending"] -= 1
                 self.progress_bar.advance(1)
+                self.update_task_status(t.index - 1, TaskStatus.COMPLETED)
 
         self.log_system(f"Started Phase: {self.phase_title}")
         self.log_system(f"Active Profile: {self.profile_name}")
@@ -1884,83 +1943,150 @@ class DuskyOrchestratorApp(App):
             f"════════════════════════════════════════════════════════════════════════════════\n",
         ])
 
+        with suppress(Exception):
+            rw = self.query_one("#log_report", RichLog)
+            rw.clear()
+            for line in lines:
+                rw.write(Text.from_markup(line))
+
         for line in lines:
             self.log_widget.write(Text.from_markup(line))
 
-    def render_task_list(self):
-        self.left_pane.remove_children()
-        for i, t in enumerate(self.tasks):
-            if t.status == TaskStatus.COMPLETED or t.state_key in self.completed_keys:
-                icon = f"[bold #3fb950]{S('completed')}[/]"
-            elif not t.resolved_path:
-                icon = f"[bold #f85149]![/]"
-            elif t.status == TaskStatus.RUNNING:
-                icon = f"[bold #58a6ff]{S('running')}[/]"
-            elif t.status == TaskStatus.FAILED:
-                icon = f"[bold #f85149]{S('failed')}[/]"
-            elif t.status == TaskStatus.SKIPPED:
-                icon = f"[bold #d29922]{S('skipped')}[/]"
-            else:
-                icon = f"[#8b949e]{S('pending')}[/]"
+        self.current_log_key = "report"
+        with suppress(Exception):
+            if report_node := self.tree_nodes_map.get("__report__"):
+                self.tree_widget.select_node(report_node)
+                self.tree_widget.scroll_to_node(report_node)
+            self.query_one("#log_switcher", ContentSwitcher).current = "log_report"
 
-            mode_str = "SUDO" if t.mode == "S" else "USER"
+    def _task_label(self, task: OrchestratorTask) -> Text:
+        if task.status == TaskStatus.COMPLETED or task.state_key in self.completed_keys:
+            icon = f"[bold #3fb950]{S('completed')}[/]"
+            name_style = "bold #3fb950"
+        elif not task.resolved_path:
+            icon = "[bold #f85149]![/]"
+            name_style = "bold #f85149"
+        elif task.status == TaskStatus.RUNNING:
+            icon = f"[bold #58a6ff]{S('running')}[/]"
+            name_style = "bold #58a6ff"
+        elif task.status == TaskStatus.FAILED:
+            icon = f"[bold #f85149]{S('failed')}[/]"
+            name_style = "bold #f85149"
+        elif task.status == TaskStatus.SKIPPED:
+            icon = f"[bold #d29922]{S('skipped')}[/]"
+            name_style = "dim #d29922"
+        else:
+            icon = f"[#8b949e]{S('pending')}[/]"
+            name_style = "dim #8b949e"
 
-            if t.status == TaskStatus.COMPLETED or t.state_key in self.completed_keys:
-                name_style = "bold #3fb950"
-            elif t.status == TaskStatus.RUNNING:
-                name_style = "bold #58a6ff"
-            elif t.status == TaskStatus.FAILED:
-                name_style = "bold #f85149"
-            elif t.status == TaskStatus.SKIPPED:
-                name_style = "dim #d29922"
-            else:
-                name_style = "dim #8b949e"
+        # Clean script name WITHOUT redundant "USER" moniker
+        return Text.from_markup(f" {icon} [{name_style}]{task.script_name}[/]")
 
-            name_text = f"[{name_style}]{t.script_name}[/]"
-            row = Horizontal(
-                Static(icon, classes="task_icon"),
-                Static(name_text, classes="task_name"),
-                Static(f"[{name_style}]{mode_str}[/]", classes="task_mode"),
-                classes="task_row",
-                id=f"row_{i}",
-            )
-            self.left_pane.mount(row)
+    def _rebuild_tree(self) -> None:
+        self.tree_nodes_map.clear()
+        with suppress(Exception):
+            self.tree_widget.root.remove_children()
+        with suppress(Exception):
+            self.tree_widget.clear()
+
+        self.tree_widget.show_guides = False
+        self.tree_widget.show_root = False
+        self.tree_widget.root.expand()
+
+        main_node = self.tree_widget.root.add_leaf(
+            Text.from_markup(f" [bold #58a6ff]CORE[/] Main Engine Log")
+        )
+        main_node.data = "MAIN"
+        self.tree_nodes_map["__main__"] = main_node
+
+        for task in self.tasks:
+            node = self.tree_widget.root.add_leaf(self._task_label(task))
+            node.data = task
+            self.tree_nodes_map[task.state_key] = node
+
+        report_node = self.tree_widget.root.add_leaf(
+            Text.from_markup(f" [bold #3fb950]◆ REPORT[/] Final Overview")
+        )
+        report_node.data = "REPORT"
+        self.tree_nodes_map["__report__"] = report_node
+
+    @on(Tree.NodeSelected)
+    @on(Tree.NodeHighlighted)
+    def on_tree_node_change(self, event: Tree.NodeSelected | Tree.NodeHighlighted) -> None:
+        node = event.node
+        with suppress(Exception):
+            switcher = self.query_one("#log_switcher", ContentSwitcher)
+            if node.data == "REPORT":
+                switcher.current = "log_report"
+                self.current_log_key = "report"
+            elif node == self.tree_widget.root or node.data == "MAIN":
+                switcher.current = "pty_log"
+                self.current_log_key = None
+            elif isinstance(node.data, OrchestratorTask):
+                switcher.current = f"log_{node.data.state_key}"
+                self.current_log_key = node.data.state_key
 
     def update_task_status(self, idx: int, status: TaskStatus):
-        self.tasks[idx].status = status
-        try:
-            row = self.query_one(f"#row_{idx}")
-            icon_w = row.children[0]
-            name_w = row.children[1]
-            mode_w = row.children[2]
+        if 0 <= idx < len(self.tasks):
             t = self.tasks[idx]
-            mode_str = "SUDO" if t.mode == "S" else "USER"
-            if status == TaskStatus.RUNNING:
-                icon_w.update(f"[bold #58a6ff]{S('running')}[/]")
-                name_w.update(f"[bold #58a6ff]{t.script_name}[/]")
-                mode_w.update(f"[bold #58a6ff]{mode_str}[/]")
-            elif status == TaskStatus.COMPLETED:
-                icon_w.update(f"[bold #3fb950]{S('completed')}[/]")
-                name_w.update(f"[bold #3fb950]{t.script_name}[/]")
-                mode_w.update(f"[bold #3fb950]{mode_str}[/]")
-            elif status == TaskStatus.FAILED:
-                icon_w.update(f"[bold #f85149]{S('failed')}[/]")
-                name_w.update(f"[bold #f85149]{t.script_name}[/]")
-                mode_w.update(f"[bold #f85149]{mode_str}[/]")
-            elif status == TaskStatus.SKIPPED:
-                icon_w.update(f"[bold #d29922]{S('skipped')}[/]")
-                name_w.update(f"[dim #d29922]{t.script_name}[/]")
-                mode_w.update(f"[dim #d29922]{mode_str}[/]")
-        except Exception:
-            pass
+            t.status = status
+            with suppress(Exception):
+                if node := self.tree_nodes_map.get(t.state_key):
+                    node.label = self._task_label(t)
+
+    def select_task_node(self, state_key: str):
+        with suppress(Exception):
+            if node := self.tree_nodes_map.get(state_key):
+                self.tree_widget.select_node(node)
+                self.tree_widget.scroll_to_node(node)
+                self.query_one("#log_switcher", ContentSwitcher).current = f"log_{state_key}"
+                self.current_log_key = state_key
+
+    def action_shrink_left_pane(self) -> None:
+        self.left_pane_width = max(20, min(80, self.left_pane_width - 4))
+        with suppress(Exception):
+            self.query_one("#left_pane").styles.width = f"{self.left_pane_width}%"
+            self.query_one("#right_pane").styles.width = f"{100 - self.left_pane_width}%"
+
+    def action_expand_left_pane(self) -> None:
+        self.left_pane_width = max(20, min(80, self.left_pane_width + 4))
+        with suppress(Exception):
+            self.query_one("#left_pane").styles.width = f"{self.left_pane_width}%"
+            self.query_one("#right_pane").styles.width = f"{100 - self.left_pane_width}%"
+
+    def action_tree_down(self) -> None:
+        with suppress(Exception):
+            self.tree_widget.action_cursor_down()
+
+    def action_tree_up(self) -> None:
+        with suppress(Exception):
+            self.tree_widget.action_cursor_up()
+
+    def action_toggle_focus(self) -> None:
+        if self.tree_widget.has_focus:
+            with suppress(Exception):
+                switcher = self.query_one("#log_switcher", ContentSwitcher)
+                if switcher.current:
+                    cur_widget = self.query_one(f"#{switcher.current}")
+                    cur_widget.focus()
+                else:
+                    self.log_widget.focus()
+        else:
+            self.tree_widget.focus()
 
     def log_system(self, msg: str):
         text_ansi = f"\033[1;36m[SYSTEM]\033[0m {msg}"
         self.log_widget.write(Text.from_ansi(text_ansi))
         self.logger.system(msg)
 
-    def log_task(self, msg: str):
-        self.log_widget.write(Text.from_ansi(msg))
+    def log_task(self, msg: str, task: Optional[OrchestratorTask] = None):
+        txt = Text.from_ansi(msg)
+        self.log_widget.write(txt)
+        t = task or getattr(self, "active_task", None)
+        if t:
+            with suppress(Exception):
+                task_log = self.query_one(f"#log_{t.state_key}", RichLog)
+                task_log.write(txt)
 
     def update_telemetry(self, status_str: str, speed_str: str = ""):
         if speed_str:
@@ -2135,7 +2261,9 @@ class DuskyOrchestratorApp(App):
             self.exit(1)
 
     async def execute_task(self, task: OrchestratorTask):
+        self.active_task = task
         self.update_task_status(self.current_idx, TaskStatus.RUNNING)
+        self.select_task_node(task.state_key)
         self.log_widget.write(Text.from_ansi(f"\n\033[1;36m>>> PROCESS INITIATED: {task.script_name}\033[0m"))
         self.update_telemetry(f"Running {task.script_name}")
 
