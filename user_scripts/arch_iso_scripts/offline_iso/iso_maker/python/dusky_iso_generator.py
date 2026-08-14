@@ -151,11 +151,11 @@ _MAKEPKG_ENV_SCRUB = (
 # ==============================================================================
 ALL_GROUPS: Dict[str, List[str]] = {
     "offline": [
-        "intel-ucode", "amd-ucode", "mkinitcpio", "glaze", "python-cssselect", "base", "base-devel",
+        "intel-ucode", "amd-ucode", "linux", "mkinitcpio", "glaze", "python-cssselect", "base", "base-devel",
         "python-lxml", "python-certifi", "python-charset-normalizer", "python-idna",
         "python-requests", "python-urllib3", "deno", "yt-dlp", "yt-dlp-ejs", "hunspell",
         "xf86-input-libinput", "xorg-xauth", "boost-libs", "plymouth", "grub", "os-prober",
-        "cryptsetup",
+        "cryptsetup", "efibootmgr",
     ],
     "graphics": [
         "intel-media-driver", "vpl-gpu-rt", "mesa", "vulkan-intel", "mesa-utils",

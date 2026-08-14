@@ -1,4 +1,4 @@
-#arch_iso_scripts/offline_iso/131_chroot_aur_packages.sh!/usr/bin/env bash
+#!/usr/bin/env bash
 # This script installs ALL PACKAGES from the Offline Repository. Inspect it manually to remove/add anything you want.
 # It installs packages only. It does not enable systemd services automatically.
 # ------------------------------------------------------------------------------
