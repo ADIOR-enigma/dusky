@@ -116,6 +116,7 @@ scripts = [
     "S | 320_systemdboot_optimization.py",
     "S | 325_hosts_files_block.sh",
     "S | 330_gtk_root_symlink.sh",
+    "U | 331_sync_kde_apps.py",
     # "S | 335_preload_config.sh",
     "S | 350_dns_systemd_resolve.sh",
     "U | 360_obsidian_pensive_vault_configure.sh",

@@ -56,6 +56,15 @@ post_hook   = '''
   ln -nfs "$HOME/.config/matugen/generated/qt6ct-colors.conf" "$HOME/.config/qt6ct/colors/matugen.conf"
 '''
 
+[templates.kdeglobals]
+input_path  = '~/.config/matugen/templates/Matugen.colors'
+output_path = '~/.config/matugen/generated/kdeglobals'
+post_hook   = '''
+  mkdir -p "$HOME/.local/share/color-schemes"
+  ln -nfs "$HOME/.config/matugen/generated/kdeglobals" "$HOME/.local/share/color-schemes/Matugen.colors"
+  ln -nfs "$HOME/.config/matugen/generated/kdeglobals" "$HOME/.config/kdeglobals"
+'''
+
 [templates.kvantum_kvconfig]
 input_path  = '~/.config/matugen/templates/kvantum-colors.kvconfig'
 output_path = '~/.config/matugen/generated/kvantum-matugen.kvconfig'
