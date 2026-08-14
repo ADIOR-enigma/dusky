@@ -46,7 +46,9 @@ CHECK_CMDS: dict[str, str] = {
     "waybar": "waybar",
     "wlogout": "wlogout",
     "rofi": "rofi",
+    "mako": "mako",
     "kitty": "kitty",
+    "foot": "foot",
     "opencode": "opencode",
     "vscode": "vscodium",
     "alacritty": "alacritty",
@@ -55,12 +57,16 @@ CHECK_CMDS: dict[str, str] = {
     "yazi": "yazi",
     "zathura": "zathura",
     "tmux": "tmux",
+    "zellij": "zellij",
+    "fastfetch": "fastfetch",
+    "khal": "khal",
     "obsidian": "obsidian",
     "obs": "obs",
     "vesktop": "vesktop",
     "beeper": "beeper",
     "spicetify": "spicetify",
     "pywalfox": "pywalfox",
+    "dolphin": "dolphin",
 }
 
 # Track all explicitly registered keys for auto-discovery
@@ -119,6 +125,33 @@ SCHEMA: dict[int, list[ConfigItem]] = {
             group="Qt Theming",
             extended_help="**Qt6 Color Palette**\n\nGenerates Matugen color scheme for Qt6 Configuration Tool."
         ),
+        ConfigItem(
+            label="KDE Frameworks (kdeglobals)",
+            key="kdeglobals",
+            scope="DEFAULT",
+            type_="bool",
+            default=True,
+            group="KDE Theming",
+            extended_help="**KDE Frameworks 6 / Dolphin Theming**\n\nGenerates `kdeglobals` and `~/.local/share/color-schemes/Matugen.colors` for Dolphin, Kate, Gwenview, and KF6 apps."
+        ),
+        ConfigItem(
+            label="Kvantum Config",
+            key="kvantum_kvconfig",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Kvantum",
+            extended_help="**Kvantum Matugen Theme Config**\n\nGenerates `kvconfig` for Kvantum Qt SVG engine."
+        ),
+        ConfigItem(
+            label="Kvantum SVG",
+            key="kvantum_svg",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Kvantum",
+            extended_help="**Kvantum Matugen Theme SVG Assets**\n\nGenerates dynamic SVG assets for Kvantum."
+        ),
     ],
 
     # -------------------------------------------------------------------------
@@ -171,6 +204,24 @@ SCHEMA: dict[int, list[ConfigItem]] = {
             extended_help="**Rofi Application Launcher**\n\nGenerates Rasi stylesheet `rofi-colors.rasi`."
         ),
         ConfigItem(
+            label="Mako Notifications",
+            key="mako",
+            scope="DEFAULT",
+            type_="bool",
+            default=True,
+            group="Notifications",
+            extended_help="**Mako Notification Daemon**\n\nGenerates `mako-colors.ini` and reloads Mako."
+        ),
+        ConfigItem(
+            label="Theme Notify",
+            key="theme_notify",
+            scope="DEFAULT",
+            type_="bool",
+            default=True,
+            group="Notifications",
+            extended_help="**Theme Change Notification**\n\nSends desktop notification upon theme update completion."
+        ),
+        ConfigItem(
             label="Dusky Control",
             key="dusky_control_center",
             scope="DEFAULT",
@@ -187,6 +238,24 @@ SCHEMA: dict[int, list[ConfigItem]] = {
             default=False,
             group="Dusky Services",
             extended_help="**Dusky QuickPanel Service**\n\nTriggers `dusky_quickpanal.service` systemd restart on theme changes."
+        ),
+        ConfigItem(
+            label="Dusky TUI Theme",
+            key="dusky_tui",
+            scope="DEFAULT",
+            type_="bool",
+            default=True,
+            group="Dusky Services",
+            extended_help="**Dusky TUI Color Scheme**\n\nGenerates `dusky_tui.json` for all Dusky TUI interactive apps."
+        ),
+        ConfigItem(
+            label="Dusky Visualizer",
+            key="dusky_visualizer_colors",
+            scope="DEFAULT",
+            type_="bool",
+            default=True,
+            group="Dusky Services",
+            extended_help="**Dusky Visualizer Colors**\n\nGenerates palette variables for desktop audio visualizer."
         ),
         ConfigItem(
             label="Hyprpolkit",
@@ -213,6 +282,24 @@ SCHEMA: dict[int, list[ConfigItem]] = {
             extended_help="**Kitty Terminal**\n\nGenerates `kitty-colors.conf` and reloads Kitty instances live via SIGUSR1."
         ),
         ConfigItem(
+            label="Foot Terminal",
+            key="foot",
+            scope="DEFAULT",
+            type_="bool",
+            default=True,
+            group="Terminals",
+            extended_help="**Foot Terminal**\n\nGenerates `foot-colors.ini` for Foot Wayland terminal emulator."
+        ),
+        ConfigItem(
+            label="Alacritty",
+            key="alacritty",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Terminals",
+            extended_help="**Alacritty Terminal**\n\nGenerates `alacritty-colors.toml`."
+        ),
+        ConfigItem(
             label="OpenCode",
             key="opencode",
             scope="DEFAULT",
@@ -229,24 +316,6 @@ SCHEMA: dict[int, list[ConfigItem]] = {
             default=False,
             group="Editors",
             extended_help="**Visual Studio Code / VSCodium**\n\nGenerates theme settings for VSCodium."
-        ),
-        ConfigItem(
-            label="Alacritty",
-            key="alacritty",
-            scope="DEFAULT",
-            type_="bool",
-            default=False,
-            group="Terminals",
-            extended_help="**Alacritty Terminal**\n\nGenerates `alacritty-colors.toml`."
-        ),
-        ConfigItem(
-            label="Steam",
-            key="steam",
-            scope="DEFAULT",
-            type_="bool",
-            default=False,
-            group="Gaming",
-            extended_help="**AdwSteamGtk / Steam**\n\nGenerates custom CSS for AdwSteamGtk."
         ),
         ConfigItem(
             label="NeoVim",
@@ -301,6 +370,24 @@ SCHEMA: dict[int, list[ConfigItem]] = {
             default=False,
             group="Terminal Multiplexers",
             extended_help="**Tmux Terminal Multiplexer**\n\nGenerates `tmux-colors.conf`."
+        ),
+        ConfigItem(
+            label="Zellij",
+            key="zellij",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Terminal Multiplexers",
+            extended_help="**Zellij Terminal Multiplexer**\n\nGenerates `zellij-colors.kdl` for Zellij sessions."
+        ),
+        ConfigItem(
+            label="Steam",
+            key="steam",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Gaming",
+            extended_help="**AdwSteamGtk / Steam**\n\nGenerates custom CSS for AdwSteamGtk."
         ),
         ConfigItem(
             label="Obsidian",
@@ -363,15 +450,6 @@ SCHEMA: dict[int, list[ConfigItem]] = {
             extended_help="**Cava Audio Visualizer**\n\nGenerates `cava-colors.ini` and reloads Cava via SIGUSR1."
         ),
         ConfigItem(
-            label="Dump All Matugen Colors",
-            key="master_dump",
-            scope="DEFAULT",
-            type_="bool",
-            default=False,
-            group="Developer Tools",
-            extended_help="**Master Dump Palette**\n\nGenerates complete raw JSONL dump of all Matugen colors."
-        ),
-        ConfigItem(
             label="Btop",
             key="btop",
             scope="DEFAULT",
@@ -379,6 +457,24 @@ SCHEMA: dict[int, list[ConfigItem]] = {
             default=True,
             group="System Monitors",
             extended_help="**Btop System Monitor**\n\nGenerates `btop-colors.theme` for Btop resource monitor."
+        ),
+        ConfigItem(
+            label="Fastfetch",
+            key="fastfetch",
+            scope="DEFAULT",
+            type_="bool",
+            default=True,
+            group="System Information",
+            extended_help="**Fastfetch System Info**\n\nGenerates `fastfetch-colors.jsonc`."
+        ),
+        ConfigItem(
+            label="Khal Calendar",
+            key="khal",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Productivity",
+            extended_help="**Khal CLI Calendar**\n\nGenerates color settings for Khal."
         ),
         ConfigItem(
             label="Pywalfox",
@@ -407,6 +503,24 @@ SCHEMA: dict[int, list[ConfigItem]] = {
             group="Icons",
             extended_help="**Papirus Icon Folder Recolor**\n\nTriggers Papirus folder color generation script."
         ),
+        ConfigItem(
+            label="Standalone Commands",
+            key="standalone_commands",
+            scope="DEFAULT",
+            type_="bool",
+            default=True,
+            group="Developer Tools",
+            extended_help="**Standalone Shell Commands Theme**\n\nGenerates color export script for standalone tools."
+        ),
+        ConfigItem(
+            label="Dump All Matugen Colors",
+            key="master_dump",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Developer Tools",
+            extended_help="**Master Dump Palette**\n\nGenerates complete raw JSONL dump of all Matugen colors."
+        ),
     ],
 
     # -------------------------------------------------------------------------
@@ -422,11 +536,14 @@ SCHEMA: dict[int, list[ConfigItem]] = {
             group="Presets",
             preset_payload={
                 "gtk3": True, "gtk4": True, "icon_theme": True, "qt5ct": True, "qt6ct": True,
-                "hyprland": True, "hyprlock": True, "waybar": True, "wlogout": True, "rofi": True,
-                "hyprpolkitagent": True, "kitty": True, "neovim": True, "yazi": True,
-                "cava": True, "btop": True, "pywalfox": True, "dusky_sites": True
+                "kdeglobals": True, "hyprland": True, "hyprlock": True, "waybar": True,
+                "wlogout": True, "rofi": True, "mako": True, "theme_notify": True,
+                "hyprpolkitagent": True, "dusky_tui": True, "dusky_visualizer_colors": True,
+                "kitty": True, "foot": True, "neovim": True, "yazi": True,
+                "cava": True, "btop": True, "fastfetch": True, "pywalfox": True, "dusky_sites": True,
+                "standalone_commands": True
             },
-            extended_help="**Standard Workstation Preset**\n\nEnables standard desktop suite (GTK, Hyprland, Waybar, Kitty, Neovim, Yazi, Btop)."
+            extended_help="**Standard Workstation Preset**\n\nEnables standard desktop suite (GTK, Qt, KDE, Hyprland, Waybar, Terminals, Neovim, Yazi, Btop)."
         ),
         ConfigItem(
             label="Enable All Discovered & Known Templates",

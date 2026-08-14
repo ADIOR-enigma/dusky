@@ -137,16 +137,24 @@ class MatugenEngine(BaseEngine):
 
         for key, target_active in changes_dict.items():
             start_idx: int | None = None
+            is_currently_active: bool = False
 
             # 1. Locate start of template block
             for idx, line in enumerate(lines):
                 m = self._RE_TEMPLATE_HEADER.match(line)
                 if m and m.group(2) == key:
                     start_idx = idx
+                    is_currently_active = (m.group(1) == "")
                     break
 
             if start_idx is None:
                 print(f"[!] MatugenEngine: Key '{key}' not found in {self.config_path.name}")
+                continue
+
+            # If current state already matches target state, skip mutation to protect internal block comments
+            if is_currently_active == target_active:
+                self.cache[key] = target_active
+                self.cache[f"DEFAULT/{key}"] = target_active
                 continue
 
             # 2. Determine end of template block using multiline tracking and demarcation rules
@@ -217,14 +225,16 @@ class MatugenEngine(BaseEngine):
                 line = lines[i]
 
                 if target_active:
-                    # Uncomment line by removing leading '#' or '# '
-                    new_line = re.sub(r"^[ \t]*#[ \t]?", "", line)
-                    if new_line != line:
-                        lines[i] = new_line
+                    # Uncomment line by stripping exactly one outer comment prefix (#  or #)
+                    if line.startswith("# "):
+                        lines[i] = line[2:]
+                        modified = True
+                    elif line.startswith("#"):
+                        lines[i] = line[1:]
                         modified = True
                 else:
-                    # Comment line if not already commented and not purely empty whitespace
-                    if line.strip() != "" and not re.match(r"^[ \t]*#", line):
+                    # Comment line by prepending outer comment prefix (# )
+                    if line.strip() != "":
                         lines[i] = f"# {line}"
                         modified = True
 

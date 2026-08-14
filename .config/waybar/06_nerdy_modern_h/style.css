@@ -206,7 +206,7 @@ tooltip label,
    WORKSPACES
    ═══════════════════════════════════════════════════════════════════════════ */
 #workspaces {
-    background-color: @bg_primary_container;
+    background: transparent;
     padding: 0 4px;
     border-radius: 10px;
 }

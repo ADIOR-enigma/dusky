@@ -65,19 +65,19 @@ post_hook   = '''
   ln -nfs "$HOME/.config/matugen/generated/kdeglobals" "$HOME/.config/kdeglobals"
 '''
 
-[templates.kvantum_kvconfig]
-input_path  = '~/.config/matugen/templates/kvantum-colors.kvconfig'
-output_path = '~/.config/matugen/generated/kvantum-matugen.kvconfig'
-post_hook   = '''
-  ln -nfs "$HOME/.config/matugen/generated/kvantum-matugen.kvconfig" "$HOME/.config/Kvantum/matugen/matugen.kvconfig"
-'''
+# [templates.kvantum_kvconfig]
+# input_path  = '~/.config/matugen/templates/kvantum-colors.kvconfig'
+# output_path = '~/.config/matugen/generated/kvantum-matugen.kvconfig'
+# post_hook   = '''
+#   ln -nfs "$HOME/.config/matugen/generated/kvantum-matugen.kvconfig" "$HOME/.config/Kvantum/matugen/matugen.kvconfig"
+# '''
 
-[templates.kvantum_svg]
-input_path  = '~/.config/matugen/templates/kvantum-colors.svg'
-output_path = '~/.config/matugen/generated/kvantum-matugen.svg'
-post_hook   = '''
-  ln -nfs "$HOME/.config/matugen/generated/kvantum-matugen.svg" "$HOME/.config/Kvantum/matugen/matugen.svg"
-'''
+# [templates.kvantum_svg]
+# input_path  = '~/.config/matugen/templates/kvantum-colors.svg'
+# output_path = '~/.config/matugen/generated/kvantum-matugen.svg'
+# post_hook   = '''
+#   ln -nfs "$HOME/.config/matugen/generated/kvantum-matugen.svg" "$HOME/.config/Kvantum/matugen/matugen.svg"
+# '''
 
 
 # =============================================================================
@@ -149,13 +149,13 @@ input_path  = '~/.config/matugen/templates/khal.conf'
 output_path = '~/.config/matugen/generated/khal-config'
 post_hook   = 'ln -nfs "$HOME/.config/matugen/generated/khal-config" "$HOME/.config/khal/config"'
 
-[templates.zellij]
-input_path  = '~/.config/matugen/templates/zellij.kdl'
-output_path = '~/.config/matugen/generated/zellij.kdl'
-post_hook   = '''
-  ln -nfs "$HOME/.config/matugen/generated/zellij.kdl" "$HOME/.config/zellij/themes/matugen.kdl"
-  touch "$HOME/.config/zellij/config.kdl" || :
-'''
+# [templates.zellij]
+# input_path  = '~/.config/matugen/templates/zellij.kdl'
+# output_path = '~/.config/matugen/generated/zellij.kdl'
+# post_hook   = '''
+#   ln -nfs "$HOME/.config/matugen/generated/zellij.kdl" "$HOME/.config/zellij/themes/matugen.kdl"
+#   touch "$HOME/.config/zellij/config.kdl" || :
+# '''
 
 [templates.opencode]
 input_path  = '~/.config/matugen/templates/opencode-colors.json'
@@ -220,15 +220,15 @@ post_hook   = '''
 # input_path  = '~/.config/matugen/templates/tmux-colors.conf'
 # output_path = '~/.config/matugen/generated/tmux-colors.conf'
 
-# [templates.pywalfox]
-# input_path  = '~/.config/matugen/templates/pywalfox-colors.json'
-# output_path = '~/.config/matugen/generated/pywalfox-colors.json'
-# post_hook   = '''
-#   if command -v pywalfox >/dev/null 2>&1; then
-#     ln -nfs "$HOME/.config/matugen/generated/pywalfox-colors.json" "$HOME/.cache/wal/colors.json"
-#     pywalfox update || :
-#   fi
-# '''
+[templates.pywalfox]
+input_path  = '~/.config/matugen/templates/pywalfox-colors.json'
+output_path = '~/.config/matugen/generated/pywalfox-colors.json'
+post_hook   = '''
+  if command -v pywalfox >/dev/null 2>&1; then
+    ln -nfs "$HOME/.config/matugen/generated/pywalfox-colors.json" "$HOME/.cache/wal/colors.json"
+    pywalfox update || :
+  fi
+'''
 
 [templates.obsidian]
 input_path  = '~/.config/matugen/templates/obsidian-theme.css'
