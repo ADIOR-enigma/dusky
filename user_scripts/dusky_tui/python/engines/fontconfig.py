@@ -475,23 +475,16 @@ class FontconfigEngine(BaseEngine):
     # ------------------------------------------------------------------
     def _sync_gtk_toolkits(self, family: str, mono: str, quiet: bool) -> bool:
         size = FontconfigEngine._existing_gtk_size("gtk-font-name=")
-        gtk3_entries = {"gtk-font-name": f"{family} {size}"}
-        gtk4_entries = {"gtk-font-name": f"{family} {size}"}
-        if mono:
-            mono_size = FontconfigEngine._existing_gtk_size("gtk-monospace-font-name=")
-            if mono_size == str(FontconfigEngine._DEFAULT_GTK_SIZE):
-                gs = shutil.which("gsettings")
-                mono_size = self._gsettings_font_size(gs or "", "monospace-font-name")
-            gtk3_entries["gtk-monospace-font-name"] = f"{mono} {mono_size}"
+        gtk_entries = {"gtk-font-name": f"{family} {size}"}
         ok = True
         conf_dir = self._config_dir()
         gtk3_path = conf_dir / "gtk-3.0" / "settings.ini"
         gtk4_path = conf_dir / "gtk-4.0" / "settings.ini"
 
         try:
-            self._patch_gtk_ini(gtk3_path, gtk3_entries)
+            self._patch_gtk_ini(gtk3_path, gtk_entries, remove_keys={"gtk-monospace-font-name"})
             if not quiet:
-                for k, v in gtk3_entries.items():
+                for k, v in gtk_entries.items():
                     print(f"[+] {gtk3_path}: {k}={v}")
         except OSError as e:
             ok = False
@@ -499,9 +492,9 @@ class FontconfigEngine(BaseEngine):
                 print(f"[-] {gtk3_path}: {e}")
 
         try:
-            self._patch_gtk_ini(gtk4_path, gtk4_entries, remove_keys={"gtk-monospace-font-name"})
+            self._patch_gtk_ini(gtk4_path, gtk_entries, remove_keys={"gtk-monospace-font-name"})
             if not quiet:
-                for k, v in gtk4_entries.items():
+                for k, v in gtk_entries.items():
                     print(f"[+] {gtk4_path}: {k}={v}")
         except OSError as e:
             ok = False
