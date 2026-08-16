@@ -95,13 +95,16 @@
 @define-color wm_bg_b @window_bg_color;
 
 /* Explicit Dialog & Popover widget overrides for GTK3 & GTK4 */
-messagedialog.background,
-messagedialog.csd.background,
-dialog.background,
-dialog.csd.background,
+messagedialog,
+dialog,
 window.dialog {
   background-color: @dialog_bg_color;
   color: @dialog_fg_color;
+}
+
+messagedialog.background,
+dialog.background {
+  background-color: transparent;
 }
 
 messagedialog .titlebar,
@@ -118,8 +121,17 @@ dialog.csd.background button {
   color: @dialog_fg_color;
 }
 
+popover,
 popover.background,
-.popover.background,
+.popover,
+.popover.background {
+  background-color: transparent;
+}
+
+popover > contents,
+popover > arrow,
+.popover > contents,
+.popover > arrow,
 menu,
 .menu,
 .context-menu {
