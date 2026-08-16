@@ -41,6 +41,31 @@ class FontconfigEngine(BaseEngine):
     DIR_KEYS = {"font_dir", "font_dirs"}
     IGNORED_PATTERN_EDIT_NAMES = {"family", "familylang"}
 
+    # Noto Color Emoji is a bitmap (CBDT/CBLC) font: it must keep
+    # embeddedbitmap=true or it renders blank/tofu. Any embeddedbitmap=false
+    # render setting is guarded with a family not_eq test so the emoji font
+    # is exempt while all other fonts honor the setting.
+    EMOJI_GUARD_FAMILY = "Noto Color Emoji"
+
+    @staticmethod
+    def _is_emoji_guard_render(match: ET.Element) -> bool:
+        """True when a target="font" block is our embeddedbitmap render block
+        guarded with a family not_eq test for the color emoji font. Such a
+        block is parsed as a render block (its edits feed state) instead of
+        being preserved verbatim as a pattern rewrite."""
+        if match.get("target", "font") != "font":
+            return False
+        has_guard_test = any(
+            t.get("name") == "family"
+            and t.get("compare") == "not_eq"
+            and t.findtext("string") == FontconfigEngine.EMOJI_GUARD_FAMILY
+            for t in match.findall("test")
+        )
+        has_embeddedbitmap = any(
+            e.get("name") == "embeddedbitmap" for e in match.findall("edit")
+        )
+        return has_guard_test and has_embeddedbitmap
+
     _KNOWN_CONSTS = {
         "none", "rgb", "bgr", "vrgb", "vbgr",
         "hintnone", "hintslight", "hintmedium", "hintfull",
@@ -96,7 +121,8 @@ class FontconfigEngine(BaseEngine):
                 has_family_test = any(
                     t.get("name") in ("family", "familylang") for t in match.findall("test")
                 )
-                is_pattern_rewrite = target == "pattern" or has_family_test
+                is_emoji_guard = self._is_emoji_guard_render(match)
+                is_pattern_rewrite = (target == "pattern" or has_family_test) and not is_emoji_guard
                 if is_pattern_rewrite:
                     self._pattern_rewrites.append(ET.tostring(match, encoding="unicode"))
                     continue
@@ -377,6 +403,12 @@ class FontconfigEngine(BaseEngine):
         return True
 
     def _append_render_edit(self, match: ET.Element, name: str, val: Any) -> None:
+        if name == "embeddedbitmap" and not self.as_bool(val):
+            guard = ET.SubElement(
+                match, "test", {"name": "family", "compare": "not_eq"}
+            )
+            fam = ET.SubElement(guard, "string")
+            fam.text = self.EMOJI_GUARD_FAMILY
         edit = ET.SubElement(match, "edit", {"mode": "assign", "name": name})
         if isinstance(val, bool):
             kid = ET.SubElement(edit, "bool")
