@@ -27,8 +27,18 @@ class FontconfigEngine(BaseEngine):
       - Generic family aliases are emitted with binding="strong" on the alias
         element. Binding-less aliases lose to the system prefer chains in the
         font matching pass and are silently ineffective.
-      - Rendered settings are emitted inside a single <match target="font">
-        block with mode="assign" for predictable override behavior.
+      - Rendered settings are emitted in a <match target="font"> block with
+        mode="assign" for predictable override behavior.
+      - Noto Color Emoji is a bitmap-only (CBDT/CBLC) color font with no
+        scalable outlines, so a blanket embeddedbitmap=false would leave it
+        nothing to draw on stacks that gate color bitmaps on that flag. When
+        embeddedbitmap=false is requested, the false edit is therefore placed
+        in its OWN <match target="font"> block guarded by a family not_eq
+        test (fontconfig applies every <test> to all edits of its block, so
+        sharing the guard would also exempt the emoji font from antialias /
+        hinting / rgba etc.), and a separate <test family eq> block pins
+        embeddedbitmap=true for the emoji font so it always keeps its bitmap
+        strikes regardless of fontconfig version defaults.
       - Arbitrary target="pattern" family rewrites (Arial -> X, etc.) and any
         match blocks with explicit <test> predicates are preserved verbatim
         across load/write cycles to keep the configuration lossless.
@@ -41,30 +51,68 @@ class FontconfigEngine(BaseEngine):
     DIR_KEYS = {"font_dir", "font_dirs"}
     IGNORED_PATTERN_EDIT_NAMES = {"family", "familylang"}
 
-    # Noto Color Emoji is a bitmap (CBDT/CBLC) font: it must keep
-    # embeddedbitmap=true or it renders blank/tofu. Any embeddedbitmap=false
-    # render setting is guarded with a family not_eq test so the emoji font
-    # is exempt while all other fonts honor the setting.
+    # Noto Color Emoji is a bitmap-only (CBDT/CBLC) color font: it has no
+    # scalable outlines, so a global embeddedbitmap=false can leave it with
+    # nothing to draw on stacks that gate color bitmaps on that flag. Any
+    # embeddedbitmap=false setting is therefore guarded with a family not_eq
+    # test (other fonts honor the setting) and paired with a family eq block
+    # that pins embeddedbitmap=true for the emoji font itself.
     EMOJI_GUARD_FAMILY = "Noto Color Emoji"
 
     @staticmethod
-    def _is_emoji_guard_render(match: ET.Element) -> bool:
-        """True when a target="font" block is our embeddedbitmap render block
-        guarded with a family not_eq test for the color emoji font. Such a
-        block is parsed as a render block (its edits feed state) instead of
-        being preserved verbatim as a pattern rewrite."""
+    def _test_string_matches(match: ET.Element, compare: str | None, expected: str) -> bool:
+        """True when the match has a <test name="family"> whose <string> text
+        equals `expected` (whitespace tolerated) and whose compare matches.
+
+        compare=None also accepts a missing compare attribute, which
+        fontconfig treats as the default "eq"."""
+        for t in match.findall("test"):
+            if t.get("name") != "family":
+                continue
+            if t.get("compare", "eq") != (compare or "eq"):
+                continue
+            el = t.find("string")
+            if el is not None and el.text and el.text.strip() == expected:
+                return True
+        return False
+
+    @classmethod
+    def _is_emoji_guard_render(cls, match: ET.Element) -> bool:
+        """True when a target="font" block is our embeddedbitmap guard block:
+        <test name="family" compare="not_eq">Noto Color Emoji</test> plus an
+        embeddedbitmap edit. Such a block is parsed as a render block (its
+        edits feed state) instead of being preserved verbatim as a pattern
+        rewrite."""
         if match.get("target", "font") != "font":
             return False
-        has_guard_test = any(
-            t.get("name") == "family"
-            and t.get("compare") == "not_eq"
-            and t.findtext("string") == FontconfigEngine.EMOJI_GUARD_FAMILY
-            for t in match.findall("test")
-        )
+        has_guard_test = cls._test_string_matches(match, "not_eq", cls.EMOJI_GUARD_FAMILY)
         has_embeddedbitmap = any(
             e.get("name") == "embeddedbitmap" for e in match.findall("edit")
         )
         return has_guard_test and has_embeddedbitmap
+
+    @classmethod
+    def _is_emoji_force_render(cls, match: ET.Element) -> bool:
+        """True when a target="font" block is our engine-emitted override
+        that pins embeddedbitmap=true for the color emoji font
+        (<test name="family" compare="eq">). Such a block is derived state,
+        regenerated on every write, so it is dropped on load: it neither
+        feeds state nor is preserved as a pattern rewrite. Only blocks whose
+        edits are purely embeddedbitmap are claimed, so a hand-authored
+        block that also sets other properties is left untouched."""
+        if match.get("target", "font") != "font":
+            return False
+        has_eq_test = cls._test_string_matches(match, "eq", cls.EMOJI_GUARD_FAMILY)
+        edits = match.findall("edit")
+        if not edits or not all(e.get("name") == "embeddedbitmap" for e in edits):
+            return False
+        has_embeddedbitmap_true = any(
+            (b := e.find("bool")) is not None
+            and b.text
+            and b.text.strip().lower() in ("true", "1", "yes", "on")
+            for e in edits
+        )
+        return has_eq_test and has_embeddedbitmap_true
 
     _KNOWN_CONSTS = {
         "none", "rgb", "bgr", "vrgb", "vbgr",
@@ -122,9 +170,13 @@ class FontconfigEngine(BaseEngine):
                     t.get("name") in ("family", "familylang") for t in match.findall("test")
                 )
                 is_emoji_guard = self._is_emoji_guard_render(match)
-                is_pattern_rewrite = (target == "pattern" or has_family_test) and not is_emoji_guard
+                is_emoji_force = self._is_emoji_force_render(match)
+                is_pattern_rewrite = (target == "pattern" or has_family_test) and not is_emoji_guard and not is_emoji_force
                 if is_pattern_rewrite:
                     self._pattern_rewrites.append(ET.tostring(match, encoding="unicode"))
+                    continue
+
+                if is_emoji_force:
                     continue
 
                 for edit in match.findall("edit"):
@@ -305,10 +357,19 @@ class FontconfigEngine(BaseEngine):
                                and k in self.RENDER_PROP_WHITELIST
                                and state[k] is not None
                                and not isinstance(state[k], (list, dict))]
-                if render_keys:
+
+                emoji_guard = "embeddedbitmap" in render_keys and not self.as_bool(state["embeddedbitmap"])
+                plain_keys = [k for k in render_keys
+                              if k != "embeddedbitmap" or not emoji_guard]
+
+                if plain_keys:
                     match = ET.SubElement(root, "match", {"target": "font"})
-                    for k in render_keys:
+                    for k in plain_keys:
                         self._append_render_edit(match, k, state[k])
+
+                if emoji_guard:
+                    self._append_emoji_guard_edit(root)
+                    self._append_emoji_force_edit(root)
 
                 for raw in self._pattern_rewrites:
                     try:
@@ -403,12 +464,6 @@ class FontconfigEngine(BaseEngine):
         return True
 
     def _append_render_edit(self, match: ET.Element, name: str, val: Any) -> None:
-        if name == "embeddedbitmap" and not self.as_bool(val):
-            guard = ET.SubElement(
-                match, "test", {"name": "family", "compare": "not_eq"}
-            )
-            fam = ET.SubElement(guard, "string")
-            fam.text = self.EMOJI_GUARD_FAMILY
         edit = ET.SubElement(match, "edit", {"mode": "assign", "name": name})
         if isinstance(val, bool):
             kid = ET.SubElement(edit, "bool")
@@ -425,6 +480,32 @@ class FontconfigEngine(BaseEngine):
         else:
             kid = ET.SubElement(edit, "string")
             kid.text = str(val)
+
+    def _append_emoji_guard_edit(self, root: ET.Element) -> None:
+        """Emit embeddedbitmap=false for every family EXCEPT the color emoji
+        font, in its own <match target="font"> block.
+
+        fontconfig applies every <test> in a <match> to all of that block's
+        edits, so the guard must NOT share a block with the other render
+        settings -- doing so would silently exempt the emoji font from
+        antialias / hinting / rgba / etc. as well."""
+        match = ET.SubElement(root, "match", {"target": "font"})
+        test = ET.SubElement(match, "test", {"name": "family", "compare": "not_eq"})
+        fam = ET.SubElement(test, "string")
+        fam.text = self.EMOJI_GUARD_FAMILY
+        self._append_render_edit(match, "embeddedbitmap", False)
+
+    def _append_emoji_force_edit(self, root: ET.Element) -> None:
+        """Pin embeddedbitmap=true for the color emoji font so it always
+        keeps its bitmap strikes, even where fontconfig's default for the
+        flag is false (>= 2.18). Emitted after the guard block; this block
+        is regenerated on every write (_is_emoji_force_render drops it on
+        load) so round-trips stay stable."""
+        match = ET.SubElement(root, "match", {"target": "font"})
+        test = ET.SubElement(match, "test", {"name": "family", "compare": "eq"})
+        fam = ET.SubElement(test, "string")
+        fam.text = self.EMOJI_GUARD_FAMILY
+        self._append_render_edit(match, "embeddedbitmap", True)
 
     def _drop_legacy(self) -> None:
         """Remove the legacy ~/.config/fontconfig/fonts.conf so its raw
