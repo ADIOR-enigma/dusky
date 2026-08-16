@@ -724,6 +724,7 @@ class UnsavedChangesDialog(ModalScreen[str]):
 
 class HybridInputScreen(ModalScreen[str | None]):
     BINDINGS = [
+        Binding("escape", "dismiss_modal", "Cancel"),
         Binding("down,j", "focus_list", "Focus List"),
         Binding("up,k", "focus_input", "Focus Input"),
     ]
@@ -780,6 +781,9 @@ class HybridInputScreen(ModalScreen[str | None]):
     def action_focus_input(self) -> None:
         self.query_one(Input).focus()
 
+    def action_dismiss_modal(self) -> None:
+        self.dismiss(None)
+
     @on(events.Click, "#btn-cancel")
     def on_cancel_click(self) -> None:
         self.dismiss(None)
@@ -798,6 +802,7 @@ class HybridInputScreen(ModalScreen[str | None]):
 
 class PickerScreen(ModalScreen[str | None]):
     BINDINGS = [
+        Binding("escape", "dismiss_modal", "Cancel"),
         Binding("up,k", "cursor_up", "Up"),
         Binding("down,j", "cursor_down", "Down"),
     ]
@@ -852,6 +857,9 @@ class PickerScreen(ModalScreen[str | None]):
     def action_cursor_down(self) -> None:
         self.query_one(OptionList).action_cursor_down()
 
+    def action_dismiss_modal(self) -> None:
+        self.dismiss(None)
+
     @on(events.Click, ".modal-close-btn")
     def on_close_click(self) -> None:
         self.dismiss(None)
@@ -864,6 +872,7 @@ class PickerScreen(ModalScreen[str | None]):
 
 class SearchScreen(ModalScreen[tuple[int, int] | None]):
     BINDINGS = [
+        Binding("escape", "dismiss_modal", "Cancel"),
         Binding("down,j", "cursor_down", "Down"),
         Binding("up,k", "cursor_up", "Up"),
     ]
@@ -976,6 +985,9 @@ class SearchScreen(ModalScreen[tuple[int, int] | None]):
 
     def action_cursor_up(self) -> None:
         self.query_one(OptionList).action_cursor_up()
+
+    def action_dismiss_modal(self) -> None:
+        self.dismiss(None)
 
     @on(events.Click, ".modal-close-btn")
     def on_close_click(self) -> None:
@@ -4655,7 +4667,7 @@ Tooltip {
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if action == "clear_local_search":
-            return self._local_search_is_open()
+            return self._modal_active() or self._local_search_is_open()
         return True
 
     def _local_search_is_open(self) -> bool:
@@ -4689,6 +4701,15 @@ Tooltip {
         inp.focus(scroll_visible=True)
 
     def action_clear_local_search(self) -> None:
+        if self._modal_active():
+            if isinstance(self.screen, UnsavedChangesDialog):
+                self.screen.dismiss("cancel")
+            elif isinstance(self.screen, ConfirmDialog):
+                self.screen.dismiss(False)
+            else:
+                self.screen.dismiss(None)
+            return
+
         inp = self._local_search_input()
         if not inp.display:
             return
