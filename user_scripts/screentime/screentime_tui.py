@@ -1,29 +1,18 @@
 #!/usr/bin/env python3
 """
 ===============================================================================
-DUSKY SCREENTIME: MATUGEN THEMED RICH & FZF DASHBOARD (Python 3.14)
+DUSKY SCREENTIME: MATUGEN THEMED RICH & FZF DASHBOARD (Python 3.14 Bleeding-Edge)
 ===============================================================================
 Ultra-fast, lightweight screentime visualization engine featuring:
 1. Full-bleed Live Rich Terminal Dashboard with locked bottom footer
-2. Single-instance Live lifecycle (ZERO TTY termios deadlock on tab switch)
-3. Instant 1..5 period tab switching in < 1ms
-4. Strict TTY ECHO suppression (ZERO mouse/key/number leakage to stdout)
-5. Robust ANSI sequence buffer parser for Arrow keys & Vim controls
-6. Smart Yesterday fallback to most recent recorded date
-7. Dynamic Matugen color integration (~/.config/matugen/generated/dusky_tui.json)
-
-FIXES (Kitty freeze / threading.excepthook on 1..5):
-- Live auto_refresh is OFF. Rich's _RefreshThread has no try/except; any render
-  error killed the thread, FileProxy-wrapped stderr made threading.excepthook
-  itself fail, and live.update() without refresh=True then never redrew.
-- redirect_stdout/stderr disabled so exception hooks and the TTY stay intact.
-- Main-thread-only live.update(..., refresh=True) with a hard try/except.
-- No O_NONBLOCK on stdin (VMIN=0/VTIME=0 + select). Mixing O_NONBLOCK with
-  VMIN=1 races Rich/Kitty and can raise in the refresh thread.
-- Period keys never tear down Live or touch termios.
-- Streaming ANSI parser + input buffer so split CSI / leftover bytes can't
-  poison the next key.
-- Cached JSON + Hyprland window so a tab switch does zero I/O.
+2. Dual-mode Live navigation: Dashboard Overview & App Details Breakdown
+3. Single-instance Live lifecycle (ZERO TTY termios deadlock or screen flashes)
+4. Instant 1..5 period tab switching in < 1ms
+5. Strict TTY ECHO suppression (ZERO mouse/key/number leakage to stdout)
+6. Robust ANSI sequence buffer parser for Arrow keys, Mouse Wheel & Vim controls
+7. Smart Yesterday fallback to most recent recorded date
+8. Dynamic Truecolor Matugen color integration (~/.config/matugen/generated/dusky_tui.json)
+9. Theme-aware FZF explorer & ANSI-clean preview renderer
 """
 
 from __future__ import annotations
@@ -32,6 +21,7 @@ import fcntl
 import json
 import os
 import select
+import socket
 import subprocess
 import sys
 import termios
@@ -83,16 +73,28 @@ PERIOD_KEYS: dict[str, str] = {
     "period_all": "all",
 }
 
+PERIOD_LIST: list[str] = ["today", "yesterday", "week", "month", "all"]
+
+
+def get_cycled_period(current_key: str, step: int = 1) -> str:
+    """Cycle forward (+1) or backward (-1) through PERIOD_LIST."""
+    try:
+        idx = PERIOD_LIST.index(current_key)
+    except ValueError:
+        idx = 0
+    return PERIOD_LIST[(idx + step) % len(PERIOD_LIST)]
+
 # Mouse / cursor control (written only when Live does not own the TTY)
 _MOUSE_ON = "\x1b[?1000h\x1b[?1006h"
 _MOUSE_OFF = "\x1b[?1000l\x1b[?1006l"
 _CURSOR_HIDE = "\x1b[?25l"
 _CURSOR_SHOW = "\x1b[?25h"
 _CLEAR_HOME = "\x1b[2J\x1b[3J\x1b[H"
+_ANSI_RESET = "\x1b[0m"
 
 
 # =============================================================================
-# LOGGING / THEME / DATA
+# LOGGING / THEME / DATA HELPERS
 # =============================================================================
 def log_error(err_msg: str) -> None:
     try:
@@ -104,7 +106,7 @@ def log_error(err_msg: str) -> None:
 
 
 def _thread_excepthook(args: threading.ExceptHookArgs) -> None:
-    """Never print thread crashes onto the Live TTY (that is the freeze)."""
+    """Never print thread crashes onto the Live TTY."""
     try:
         tb = "".join(
             traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback)
@@ -130,6 +132,24 @@ def _safe_color(value: Any, fallback: str) -> str:
             return v
         return fallback
     return v
+
+
+def hex_to_rgb(hex_str: str) -> tuple[int, int, int]:
+    hex_clean = hex_str.strip().lstrip("#")
+    if len(hex_clean) == 3:
+        hex_clean = "".join(c * 2 for c in hex_clean)
+    if len(hex_clean) >= 6:
+        try:
+            return int(hex_clean[0:2], 16), int(hex_clean[2:4], 16), int(hex_clean[4:6], 16)
+        except ValueError:
+            pass
+    return 222, 227, 229
+
+
+def ansi_color(hex_str: str, bold: bool = False) -> str:
+    r, g, b = hex_to_rgb(hex_str)
+    prefix = "\033[1;" if bold else "\033["
+    return f"{prefix}38;2;{r};{g};{b}m"
 
 
 def load_theme_colors() -> dict[str, str]:
@@ -163,41 +183,59 @@ def load_screentime_data() -> dict[str, dict[str, Any]]:
 
 
 def get_active_hypr_window() -> tuple[str, str]:
+    """Retrieve active Hyprland window class and title via Unix domain socket."""
     xdg_runtime = os.environ.get("XDG_RUNTIME_DIR")
     sig = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
 
-    sock_path = None
+    sock_path: Path | None = None
     if xdg_runtime and sig:
         p = Path(xdg_runtime) / "hypr" / sig / ".socket.sock"
         if p.exists():
             sock_path = p
 
-    if not sock_path and xdg_runtime:
-        base_dir = Path(xdg_runtime) / "hypr"
-        if base_dir.exists():
-            try:
-                for sdir in base_dir.iterdir():
-                    sp = sdir / ".socket.sock"
-                    if sp.exists():
-                        sock_path = sp
-                        break
-            except Exception:
-                sock_path = None
+    if not sock_path:
+        base_dirs: list[Path] = []
+        if xdg_runtime:
+            base_dirs.append(Path(xdg_runtime) / "hypr")
+        base_dirs.append(Path("/tmp/hypr"))
+
+        candidates: list[tuple[float, Path]] = []
+        for bd in base_dirs:
+            if bd.exists() and bd.is_dir():
+                try:
+                    for sdir in bd.iterdir():
+                        if sdir.is_dir():
+                            sp = sdir / ".socket.sock"
+                            if sp.exists():
+                                try:
+                                    candidates.append((sp.stat().st_mtime, sp))
+                                except OSError:
+                                    pass
+                except Exception:
+                    pass
+
+        if candidates:
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            sock_path = candidates[0][1]
 
     if sock_path:
         try:
-            import socket
-
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
                 s.settimeout(0.05)
                 s.connect(str(sock_path))
                 s.sendall(b"j/activewindow")
-                resp = s.recv(4096).decode("utf-8", errors="ignore")
-                data = json.loads(resp)
+                response = bytearray()
+                while True:
+                    chunk = s.recv(4096)
+                    if not chunk:
+                        break
+                    response.extend(chunk)
+                resp_str = response.decode("utf-8", errors="ignore")
+                data = json.loads(resp_str)
                 if isinstance(data, dict):
                     return str(data.get("class", "")).strip(), str(data.get("title", "")).strip()
         except Exception as e:
-            log_error(f"get_active_hypr_window error: {e}")
+            log_error(f"get_active_hypr_window socket error: {e}")
 
     return "", ""
 
@@ -220,13 +258,19 @@ def simplify_category(cat: str) -> str:
             return "System"
         case "Virtual machine viewer/manager" | "Virtual Machine":
             return "VM"
+        case "Office":
+            return "Office"
+        case "Gaming" | "Game":
+            return "Gaming"
+        case "Graphics":
+            return "Graphics"
         case _:
             if len(cat) > 15:
                 return f"{cat[:12]}..."
             return cat
 
 
-def format_duration(seconds: int) -> str:
+def format_duration(seconds: int | float) -> str:
     if not isinstance(seconds, (int, float)) or seconds <= 0:
         return "0s"
     seconds = int(seconds)
@@ -242,7 +286,13 @@ def format_duration(seconds: int) -> str:
             return f"{s}s"
 
 
-def make_bar_text(percent: float, colors: dict[str, str], is_active: bool, is_cursor: bool, width: int = 16) -> Text:
+def make_bar_text(
+    percent: float,
+    colors: dict[str, str],
+    is_active: bool = False,
+    is_cursor: bool = False,
+    width: int = 16,
+) -> Text:
     percent = max(0.0, min(100.0, float(percent)))
     filled = int(round((percent / 100.0) * width))
     filled = max(0, min(width, filled))
@@ -298,13 +348,14 @@ def aggregate_by_range(
             ]
             display_label = "Past 30 Days"
         case _:
-            target_days = list(raw_data.keys())
+            target_days = sorted(raw_data.keys(), reverse=True)
             display_label = "All Time"
 
     agg: dict[str, dict[str, Any]] = {}
     total_time = 0
 
-    for day in target_days:
+    # Process in reverse chronological order so most recent app metadata is retained
+    for day in sorted(target_days, reverse=True):
         if day not in raw_data or not isinstance(raw_data[day], dict):
             continue
         for cls, info in raw_data[day].items():
@@ -330,7 +381,7 @@ def aggregate_by_range(
             titles_dict = info.get("titles")
             if isinstance(titles_dict, dict):
                 for t_title, t_dur in titles_dict.items():
-                    if isinstance(t_dur, (int, float)):
+                    if isinstance(t_dur, (int, float)) and t_dur > 0:
                         agg[cls]["titles"][str(t_title)] = (
                             agg[cls]["titles"].get(str(t_title), 0) + int(t_dur)
                         )
@@ -339,52 +390,89 @@ def aggregate_by_range(
 
 
 # =============================================================================
-# COLOR-CODED FZF PREVIEW RENDERER
+# COLOR-CODED RICH FZF PREVIEW RENDERER (Clean Markup, Zero Raw ANSI Escape Leaks)
 # =============================================================================
 def render_fzf_preview(app_class: str, range_key: str = "today") -> None:
-    console = Console()
+    console = Console(
+        force_terminal=True,
+        color_system="truecolor",
+        highlight=False,
+        soft_wrap=False,
+    )
     colors = load_theme_colors()
     raw_data = load_screentime_data()
-    agg, total_time, _ = aggregate_by_range(raw_data, range_key)
+    agg, total_time, r_label = aggregate_by_range(raw_data, range_key)
 
-    if app_class not in agg:
-        console.print(f"[bold red]No screentime data found for class:[/] {app_class}")
-        return
+    app_class_clean = app_class.strip()
+    target_info: dict[str, Any] | None = None
+    target_class = app_class_clean
 
-    info = agg[app_class]
-    name = info.get("name", app_class)
-    cat = simplify_category(info.get("category", "Application"))
-    icon = info.get("icon", "")
-    dur = info.get("duration", 0)
-    sessions = info.get("sessions", 1)
-    share = (dur / total_time * 100.0) if total_time > 0 else 0.0
+    if app_class_clean in agg:
+        target_info = agg[app_class_clean]
+    else:
+        # Case-insensitive and name fallback lookup
+        for cls, info in agg.items():
+            if cls.lower() == app_class_clean.lower() or info.get("name", "").lower() == app_class_clean.lower():
+                target_info = info
+                target_class = cls
+                break
 
     accent = colors.get("accent", "#82d3e2")
     success = colors.get("success", "#bbc5ea")
+    warning = colors.get("warning", "#b1cbd0")
     fg = colors.get("fg", "#dee3e5")
+    muted = colors.get("muted", "#3f484a")
+    error = colors.get("error", "#ffb4ab")
 
-    console.print(f"\n\033[1;38;5;81m:: \033[1;37m{name}\033[0m  \033[1;38;5;203m({cat})\033[0m")
-    console.print(f"\033[38;5;242mClass:\033[0m \033[1;37m{app_class}\033[0m \033[38;5;238m│\033[0m \033[38;5;242mIcon:\033[0m \033[38;5;114m{icon}\033[0m")
-    console.print("\033[38;5;238m────────────────────────────────────────────────────────\033[0m")
+    if not target_info:
+        console.print(f"\n[bold {error}]✖ No screentime data found for:[/] [bold {fg}]{app_class_clean}[/] [dim]({r_label})[/]\n")
+        return
+
+    name = target_info.get("name", target_class)
+    cat = simplify_category(target_info.get("category", "Application"))
+    icon = target_info.get("icon", "")
+    dur = target_info.get("duration", 0)
+    sessions = target_info.get("sessions", 1)
+    share = (dur / total_time * 100.0) if total_time > 0 else 0.0
+
+    # Header Card
+    console.print()
+    console.print(f"[bold {accent}]󱎫 {name}[/]  [dim {warning}]({cat})[/]")
     console.print(
-        f"Time: \033[1;38;5;114m{format_duration(dur)}\033[0m  \033[38;5;238m│\033[0m  Share: \033[1;38;5;220m{share:.1f}%\033[0m  \033[38;5;238m│\033[0m  Sessions: \033[1;38;5;81m{sessions}\033[0m"
+        f"[dim {muted}]Class:[/] [{fg}]{target_class}[/] [dim {muted}]│[/] "
+        f"[dim {muted}]Icon:[/] [bold {success}]{icon or 'application'}[/] [dim {muted}]│[/] "
+        f"[dim {muted}]Period:[/] [bold {warning}]{r_label}[/]"
     )
-    console.print("\033[38;5;238m────────────────────────────────────────────────────────\033[0m")
-    console.print("\n\033[1;38;5;220m󰏖 Window Title & Document Breakdown:\033[0m\n")
+    console.print(f"[dim {muted}]────────────────────────────────────────────────────────[/]")
+    console.print(
+        f"[dim {muted}]Time:[/] [bold {success}]{format_duration(dur)}[/]  "
+        f"[dim {muted}]│[/]  [dim {muted}]Share:[/] [bold {accent}]{share:.1f}%[/]  "
+        f"[dim {muted}]│[/]  [dim {muted}]Sessions:[/] [bold {fg}]{sessions}[/]"
+    )
+    console.print(f"[dim {muted}]────────────────────────────────────────────────────────[/]")
+    console.print(f"\n[bold {accent}]󰏖 Window Title & Document Breakdown:[/] [dim {muted}]({len(target_info.get('titles', {}))} entries)[/]\n")
 
-    table = Table(box=None, show_header=True, header_style=f"bold {accent}", expand=True)
-    table.add_column("Duration", style=f"bold {success}", width=12, no_wrap=True)
-    table.add_column("Window Title / Document", style=f"{fg}", no_wrap=True)
+    table = Table(
+        box=None,
+        show_header=True,
+        header_style=f"bold {accent}",
+        expand=True,
+        pad_edge=False,
+    )
+    table.add_column("Duration", style=f"bold {success}", min_width=12, max_width=12, justify="right", no_wrap=True)
+    table.add_column("Share", style=f"bold {accent}", min_width=7, max_width=7, justify="right", no_wrap=True)
+    table.add_column("Window Title / Document", style=f"{fg}", ratio=1, overflow="ellipsis", no_wrap=True)
 
     titles_sorted = sorted(
-        info.get("titles", {}).items(), key=lambda x: x[1], reverse=True
+        target_info.get("titles", {}).items(), key=lambda x: x[1], reverse=True
     )
 
     if titles_sorted:
         for t_title, t_dur in titles_sorted:
-            table.add_row(format_duration(t_dur), str(t_title))
+            t_share = (t_dur / dur * 100.0) if dur > 0 else 0.0
+            table.add_row(format_duration(t_dur), f"{t_share:5.1f}%", str(t_title))
     else:
-        table.add_row("-", "No detailed window titles recorded")
+        table.add_row("-", "0.0%", "No detailed window titles recorded")
 
     console.print(table)
 
@@ -394,12 +482,18 @@ def render_fzf_preview(app_class: str, range_key: str = "today") -> None:
 # =============================================================================
 def run_fzf_explorer(range_key: str = "today") -> None:
     raw_data = load_screentime_data()
-    agg, total_time, _ = aggregate_by_range(raw_data, range_key)
+    agg, total_time, r_label = aggregate_by_range(raw_data, range_key)
     colors = load_theme_colors()
 
     if not agg:
-        print("[!] No screentime data available for the selected period.")
+        print(f"[!] No screentime data available for the selected period ({range_key}).")
         return
+
+    accent_c = ansi_color(colors.get("accent", "#82d3e2"), bold=True)
+    success_c = ansi_color(colors.get("success", "#bbc5ea"), bold=True)
+    warning_c = ansi_color(colors.get("warning", "#b1cbd0"))
+    fg_c = ansi_color(colors.get("fg", "#dee3e5"))
+    muted_c = ansi_color(colors.get("muted", "#3f484a"))
 
     sorted_apps = sorted(agg.items(), key=lambda x: x[1]["duration"], reverse=True)
 
@@ -410,13 +504,24 @@ def run_fzf_explorer(range_key: str = "today") -> None:
         name = info.get("name", cls)
         cat = simplify_category(info.get("category", "Application"))
 
-        disp = f"\033[1;38;5;81m{name:<26}\033[0m \033[38;5;238m│\033[0m \033[1;38;5;114m{format_duration(dur):<10}\033[0m \033[38;5;238m│\033[0m \033[1;38;5;220m{share:5.1f}%\033[0m \033[38;5;238m│\033[0m \033[38;5;246m{cat:<12}\033[0m \033[38;5;238m│\033[0m {cls}"
+        disp = (
+            f"{accent_c}{name:<26}{_ANSI_RESET} "
+            f"{muted_c}│{_ANSI_RESET} {success_c}{format_duration(dur):<10}{_ANSI_RESET} "
+            f"{muted_c}│{_ANSI_RESET} {warning_c}{share:5.1f}%{_ANSI_RESET} "
+            f"{muted_c}│{_ANSI_RESET} {fg_c}{cat:<12}{_ANSI_RESET} "
+            f"{muted_c}│{_ANSI_RESET} {cls}"
+        )
         lines.append(disp)
 
-    script_path = sys.argv[0]
+    script_path = str(Path(__file__).resolve())
     preview_cmd = f'python3 "{script_path}" --preview {{5}} {range_key}'
 
-    visual_header = f" \033[1;37m{'APPLICATION':<26}\033[0m \033[38;5;238m│\033[0m \033[1;37m{'TIME':<10}\033[0m \033[38;5;238m│\033[0m \033[1;37m{'SHARE':<6}\033[0m \033[38;5;238m│\033[0m \033[1;37m{'CATEGORY':<12}\033[0m"
+    visual_header = (
+        f" {accent_c}{'APPLICATION':<26}{_ANSI_RESET} "
+        f"{muted_c}│{_ANSI_RESET} {accent_c}{'TIME':<10}{_ANSI_RESET} "
+        f"{muted_c}│{_ANSI_RESET} {accent_c}{'SHARE':<6}{_ANSI_RESET} "
+        f"{muted_c}│{_ANSI_RESET} {accent_c}{'CATEGORY':<12}{_ANSI_RESET}"
+    )
 
     fzf_cmd = [
         "fzf",
@@ -430,7 +535,7 @@ def run_fzf_explorer(range_key: str = "today") -> None:
         "--marker=✔ ",
         "--layout=reverse",
         "--border=rounded",
-        "--border-label= 󱎫 Dusky Screentime Explorer [Alt+C: Copy Summary] ",
+        f"--border-label= 󱎫 Dusky Screentime Explorer ({r_label}) [Alt+C: Copy Summary] ",
         "--border-label-pos=3",
         "--info=hidden",
         f"--header={visual_header}",
@@ -454,7 +559,7 @@ def run_fzf_explorer(range_key: str = "today") -> None:
 
 
 # =============================================================================
-# LIVE RICH TERMINAL DASHBOARD
+# LIVE RICH TERMINAL DASHBOARD LAYOUTS (Overview & App Details)
 # =============================================================================
 def render_dashboard_layout(
     range_key: str,
@@ -493,9 +598,9 @@ def _render_dashboard_layout_impl(
         raw_data = load_screentime_data()
     agg, total_time, r_name = aggregate_by_range(raw_data, range_key)
     if active_window is None:
-        active_cls, active_title = get_active_hypr_window()
+        active_cls, _active_title = get_active_hypr_window()
     else:
-        active_cls, active_title = active_window
+        active_cls, _active_title = active_window
 
     console_height = max(8, int(console_height or 24))
 
@@ -540,9 +645,9 @@ def _render_dashboard_layout_impl(
 
     table = Table(box=None, expand=True, show_header=True, header_style=f"bold {accent}")
     table.add_column("", width=2, justify="center", no_wrap=True)
-    table.add_column("Application & Category", ratio=3, no_wrap=True)
-    table.add_column("Time", width=12, justify="right", no_wrap=True)
-    table.add_column("Share", width=8, justify="right", no_wrap=True)
+    table.add_column("Application & Category", ratio=3, overflow="ellipsis", no_wrap=True)
+    table.add_column("Time", min_width=12, max_width=12, justify="right", no_wrap=True)
+    table.add_column("Share", min_width=7, max_width=7, justify="right", no_wrap=True)
     table.add_column("Usage Bar", ratio=2, no_wrap=True)
     table.add_column("", width=1, justify="center", no_wrap=True)
 
@@ -639,7 +744,7 @@ def _render_dashboard_layout_impl(
 
     footer_text = Text(overflow="ellipsis", no_wrap=True)
     footer_text.append(" Controls: ", style=f"bold {muted}")
-    footer_text.append("[1-5] Period   [j/k/↑/↓] Move   [Ctrl-D/Ctrl-U] Page   ", style=f"{fg}")
+    footer_text.append("[1-5/Tab] Period   [j/k/↑/↓] Move   [Ctrl-D/Ctrl-U] Page   ", style=f"{fg}")
     footer_text.append("[Enter] Details   [F] FZF   [Q] Quit", style=f"bold {accent}")
 
     layout_group = Table.grid(expand=True)
@@ -669,23 +774,226 @@ def _render_dashboard_layout_impl(
     return panel, scroll_offset, cursor_idx, max_scroll
 
 
+def render_details_layout(
+    target_app_class: str,
+    range_key: str,
+    colors: dict[str, str],
+    details_scroll: int,
+    details_cursor: int,
+    console_height: int,
+    raw_data: dict[str, dict[str, Any]] | None = None,
+    active_window: tuple[str, str] | None = None,
+) -> tuple[Panel, int, int, int]:
+    """
+    Renders the in-TUI Deep Dive Details layout for a specific application.
+    Supports full scroll navigation through all recorded window titles and documents.
+    """
+    if raw_data is None:
+        raw_data = load_screentime_data()
+    agg, total_time, r_name = aggregate_by_range(raw_data, range_key)
+    if active_window is None:
+        active_cls, _active_title = get_active_hypr_window()
+    else:
+        active_cls, _active_title = active_window
+
+    console_height = max(8, int(console_height or 24))
+
+    accent = colors.get("accent", "#82d3e2")
+    success = colors.get("success", "#bbc5ea")
+    warning = colors.get("warning", "#b1cbd0")
+    fg = colors.get("fg", "#dee3e5")
+    muted = colors.get("muted", "#3f484a")
+    cursor_bg = colors.get("cursor_bg", "#1c2528")
+
+    # Resolve target info
+    app_class_clean = target_app_class.strip()
+    target_info = agg.get(app_class_clean)
+    if not target_info:
+        for cls, info in agg.items():
+            if cls.lower() == app_class_clean.lower() or info.get("name", "").lower() == app_class_clean.lower():
+                target_info = info
+                app_class_clean = cls
+                break
+
+    # Navigation / Period Bar
+    period_tabs = Text(overflow="ellipsis", no_wrap=True)
+    period_tabs.append("  ", style=f"dim {muted}")
+    tab_defs = [
+        ("1", "today", "Today"),
+        ("2", "yesterday", "Yesterday"),
+        ("3", "week", "7 Days"),
+        ("4", "month", "30 Days"),
+        ("5", "all", "All Time"),
+    ]
+    for key_num, key_id, label in tab_defs:
+        if key_id == range_key:
+            period_tabs.append(f" {key_num}:{label} ", style=f"bold {accent} on {cursor_bg}")
+        else:
+            period_tabs.append(f" {key_num}:{label} ", style=f"dim {fg}")
+        period_tabs.append(" ", style=f"dim {muted}")
+
+    if not target_info:
+        empty_grid = Table.grid(expand=True)
+        empty_grid.add_row(period_tabs)
+        empty_grid.add_row(Text(f"\n  ✖ No screentime data recorded for '{app_class_clean}' in period: {r_name}\n", style=f"bold {warning}"))
+        empty_grid.add_row(Text("  [Esc/Enter/q] Back to Dashboard   [1-5] Switch Period", style=f"bold {accent}"))
+        panel = Panel(
+            empty_grid,
+            border_style=f"{warning}",
+            subtitle=f"[bold {warning}]Empty Details ({r_name})[/]",
+            expand=True,
+            height=console_height,
+        )
+        return panel, 0, 0, 0
+
+    name = target_info.get("name", app_class_clean)
+    cat = simplify_category(target_info.get("category", "Application"))
+    icon = target_info.get("icon", "")
+    dur = target_info.get("duration", 0)
+    sessions = target_info.get("sessions", 1)
+    share = (dur / total_time * 100.0) if total_time > 0 else 0.0
+    is_active = (app_class_clean.lower() == active_cls.lower() and active_cls != "")
+
+    # Top metadata block
+    meta_line = Text(overflow="ellipsis", no_wrap=True)
+    meta_line.append(" 󱎫 ", style=f"bold {accent}")
+    meta_line.append(f"{name}", style=f"bold {success}" if is_active else f"bold {fg}")
+    meta_line.append(f" ({cat})", style=f"dim {warning}")
+    meta_line.append("   Class: ", style=f"dim {muted}")
+    meta_line.append(f"{app_class_clean}", style=f"{fg}")
+    meta_line.append("   Icon: ", style=f"dim {muted}")
+    meta_line.append(f"{icon or 'default'}", style=f"{success}")
+
+    stats_line = Text(overflow="ellipsis", no_wrap=True)
+    stats_line.append("   Total Time: ", style=f"{fg}")
+    stats_line.append(f"{format_duration(dur)}", style=f"bold {success}")
+    stats_line.append("   Share: ", style=f"{fg}")
+    stats_line.append(f"{share:.1f}%", style=f"bold {accent}")
+    stats_line.append("   Sessions: ", style=f"{fg}")
+    stats_line.append(f"{sessions}", style=f"bold {fg}")
+    if is_active:
+        stats_line.append("   [ACTIVE NOW]", style=f"bold {success}")
+
+    # Title breakdown table
+    titles_sorted = sorted(
+        target_info.get("titles", {}).items(), key=lambda x: x[1], reverse=True
+    )
+    total_titles = len(titles_sorted)
+
+    table = Table(box=None, expand=True, show_header=True, header_style=f"bold {accent}")
+    table.add_column("", width=2, justify="center", no_wrap=True)
+    table.add_column("Window Title / Document", ratio=4, overflow="ellipsis", no_wrap=True)
+    table.add_column("Duration", min_width=12, max_width=12, justify="right", no_wrap=True)
+    table.add_column("Share", min_width=7, max_width=7, justify="right", no_wrap=True)
+    table.add_column("Usage Bar", ratio=2, no_wrap=True)
+    table.add_column("", width=1, justify="center", no_wrap=True)
+
+    # Calculate layout space: console_height minus header lines and footer
+    visible_rows = max(3, console_height - 9)
+    max_scroll = max(0, total_titles - visible_rows)
+
+    if total_titles > 0:
+        details_cursor = max(0, min(details_cursor, total_titles - 1))
+        if details_cursor < details_scroll:
+            details_scroll = details_cursor
+        elif details_cursor >= details_scroll + visible_rows:
+            details_scroll = details_cursor - visible_rows + 1
+    else:
+        details_cursor = 0
+        details_scroll = 0
+
+    details_scroll = max(0, min(details_scroll, max_scroll))
+    page_titles = titles_sorted[details_scroll : details_scroll + visible_rows]
+
+    if total_titles > visible_rows:
+        thumb_h = max(1, int(round((visible_rows / total_titles) * visible_rows)))
+        max_thumb_top = max(0, visible_rows - thumb_h)
+        if max_scroll > 0:
+            thumb_top = int(round((details_scroll / max_scroll) * max_thumb_top))
+        else:
+            thumb_top = 0
+    else:
+        thumb_h = visible_rows
+        thumb_top = 0
+
+    for idx_in_page, (t_title, t_dur) in enumerate(page_titles):
+        global_idx = details_scroll + idx_in_page
+        t_share = (t_dur / dur * 100.0) if dur > 0 else 0.0
+        is_cursor = (global_idx == details_cursor)
+
+        status_cell = Text("▸" if is_cursor else "·", style=f"bold {accent}" if is_cursor else f"dim {muted}")
+        title_cell = Text(str(t_title), style=f"bold {fg}" if is_cursor or global_idx == 0 else f"{fg}")
+        dur_cell = Text(format_duration(t_dur), style=f"bold {success}" if is_cursor or global_idx == 0 else f"{success}")
+        share_cell = Text(f"{t_share:.1f}%", style=f"bold {accent}" if is_cursor else f"{accent}")
+        bar_cell = make_bar_text(t_share, colors, is_active=False, is_cursor=is_cursor, width=16)
+
+        if total_titles > visible_rows:
+            if thumb_top <= idx_in_page < thumb_top + thumb_h:
+                scroll_cell = Text("┃", style=f"bold {accent}")
+            else:
+                scroll_cell = Text("│", style=f"dim {muted}")
+        else:
+            scroll_cell = Text("")
+
+        bg_style = f"on {cursor_bg}" if is_cursor else ""
+        if bg_style:
+            status_cell.stylize(bg_style)
+            title_cell.stylize(bg_style)
+            dur_cell.stylize(bg_style)
+            share_cell.stylize(bg_style)
+            bar_cell.stylize(bg_style)
+
+        table.add_row(status_cell, title_cell, dur_cell, share_cell, bar_cell, scroll_cell)
+
+    rows_rendered = len(page_titles)
+    if rows_rendered < visible_rows:
+        for _ in range(visible_rows - rows_rendered):
+            table.add_row("", "", "", "", "", "")
+
+    divider = Text(" ─" * 40, style=f"dim {muted}", overflow="ellipsis", no_wrap=True)
+
+    footer_text = Text(overflow="ellipsis", no_wrap=True)
+    footer_text.append(" Controls: ", style=f"bold {muted}")
+    footer_text.append("[Esc/Enter/q] Back   [1-5/Tab] Period   [j/k/↑/↓] Scroll   [Ctrl-D/U] Page   ", style=f"{fg}")
+    footer_text.append("[F] FZF Explorer", style=f"bold {accent}")
+
+    layout_group = Table.grid(expand=True)
+    layout_group.add_row(period_tabs)
+    layout_group.add_row(meta_line)
+    layout_group.add_row(stats_line)
+    layout_group.add_row(divider)
+    layout_group.add_row(table)
+    layout_group.add_row(footer_text)
+
+    if total_titles > visible_rows:
+        subtitle_str = (
+            f"[bold {accent}]Item {details_cursor + 1} of {total_titles}[/] "
+            f"[dim]({details_scroll + 1}–{min(details_scroll + visible_rows, total_titles)} visible | j/k/Wheel to scroll)[/dim]"
+        )
+    elif total_titles > 0:
+        subtitle_str = f"[bold {accent}]Item {details_cursor + 1} of {total_titles}[/] [dim](Titles Breakdown)[/dim]"
+    else:
+        subtitle_str = f"[bold {warning}]No window titles recorded for {name}[/]"
+
+    panel = Panel(
+        layout_group,
+        border_style=f"{accent}",
+        subtitle=subtitle_str,
+        expand=True,
+        height=console_height,
+    )
+    return panel, details_scroll, details_cursor, max_scroll
+
+
 # =============================================================================
-# TERMINAL / INPUT
+# TERMINAL / RAW INPUT / EVENT LOOP
 # =============================================================================
 def set_terminal_cbreak(fd: int) -> list[Any]:
-    """Enter non-canonical, no-echo mode WITHOUT O_NONBLOCK.
-
-    VMIN=0 / VTIME=0 makes os.read() return immediately with whatever is
-    queued. Combined with select() this is the race-free pattern. The old
-    VMIN=1 + O_NONBLOCK mix is undefined on many ttys (including Kitty) and
-    is what blew up Rich's refresh thread via unexpected EAGAIN / short reads.
-    """
+    """Enter non-canonical, no-echo mode WITHOUT O_NONBLOCK."""
     old_settings = termios.tcgetattr(fd)
     new_settings = termios.tcgetattr(fd)
 
-    # iflag: no software flow control, no CR→NL (so Ctrl-S / Enter stay raw)
     new_settings[0] &= ~(termios.IXON | termios.IXOFF | termios.ICRNL | termios.INLCR)
-    # lflag: no echo, non-canonical. Keep ISIG off so we handle Ctrl-C ourselves.
     new_settings[3] &= ~(
         termios.ECHO
         | termios.ECHOE
@@ -728,13 +1036,7 @@ def _write_tty(data: str) -> None:
 
 
 def parse_input_sequence(buf: bytes) -> tuple[str | None, int]:
-    """Parse one command from the front of *buf*.
-
-    Returns (command_or_None, bytes_consumed).
-    consumed == 0 means the sequence is incomplete — wait for more bytes.
-    Never consumes past the current command, so a burst like b'15j' is
-    processed as three separate keys.
-    """
+    """Parse one command from the front of *buf*."""
     if not buf:
         return None, 0
 
@@ -765,7 +1067,6 @@ def parse_input_sequence(buf: bytes) -> tuple[str | None, int]:
         if buf[1] == ord("["):
             if len(buf) < 3:
                 return None, 0
-            # Walk to the final byte (0x40–0x7E) per ECMA-48
             for i in range(2, len(buf)):
                 if 0x40 <= buf[i] <= 0x7E:
                     final = chr(buf[i])
@@ -775,10 +1076,21 @@ def parse_input_sequence(buf: bytes) -> tuple[str | None, int]:
                         return "up", i + 1
                     if final == "B":
                         return "down", i + 1
+                    if final == "C":
+                        return "right", i + 1
+                    if final == "D":
+                        return "left", i + 1
                     if final == "H":
                         return "home", i + 1
                     if final == "F":
                         return "end", i + 1
+                    if final == "Z":
+                        return "prev_tab", i + 1
+                    if final == "u":
+                        if num == "9":
+                            if ";2" in inner or ":2" in inner:
+                                return "prev_tab", i + 1
+                            return "next_tab", i + 1
                     if final == "~":
                         if num == "5":
                             return "page_up", i + 1
@@ -788,6 +1100,8 @@ def parse_input_sequence(buf: bytes) -> tuple[str | None, int]:
                             return "home", i + 1
                         if num in {"4", "8"}:
                             return "end", i + 1
+                        if num == "27" and (";2;9" in inner or ":2:9" in inner):
+                            return "prev_tab", i + 1
                     return None, i + 1
             return (None, 0) if len(buf) < 32 else (None, 1)
 
@@ -799,10 +1113,16 @@ def parse_input_sequence(buf: bytes) -> tuple[str | None, int]:
                 return "up", 3
             if buf[2] == ord("B"):
                 return "down", 3
+            if buf[2] == ord("C"):
+                return "right", 3
+            if buf[2] == ord("D"):
+                return "left", 3
             if buf[2] == ord("H"):
                 return "home", 3
             if buf[2] == ord("F"):
                 return "end", 3
+            if buf[2] in (ord("Z"), ord("I"), ord("i")):
+                return "prev_tab", 3
             return None, 3
 
         # ESC + regular key (Alt+key) — consume both, ignore
@@ -810,14 +1130,28 @@ def parse_input_sequence(buf: bytes) -> tuple[str | None, int]:
 
     ch = buf[:1]
     match ch:
-        case b"q" | b"Q" | b"\x03":
+        case b"\x1b":
+            return "escape", 1
+        case b"q" | b"Q":
             return "quit", 1
-        case b"\r" | b"\n":
-            return "details", 1
+        case b"\x03":
+            return "force_quit", 1
+        case b"\r" | b"\n" | b" ":
+            return "select", 1
+        case b"\x7f" | b"\x08":
+            return "back", 1
+        case b"\t" | b"]":
+            return "next_tab", 1
+        case b"[":
+            return "prev_tab", 1
         case b"j" | b"s":
             return "down", 1
         case b"k" | b"w":
             return "up", 1
+        case b"h" | b"a":
+            return "left", 1
+        case b"l" | b"d":
+            return "right", 1
         case b"\x04":
             return "page_down", 1
         case b"\x15":
@@ -849,7 +1183,7 @@ def parse_input_sequence(buf: bytes) -> tuple[str | None, int]:
 
 
 class _DashCache:
-    """In-memory snapshot so 1..5 never blocks on disk or Hyprland."""
+    """In-memory snapshot so tab/details switches do zero disk I/O."""
 
     __slots__ = ("raw_data", "raw_ts", "active", "active_ts", "colors", "colors_ts")
 
@@ -886,7 +1220,7 @@ class _DashCache:
 
 
 def _pause_live(live: Live, fd: int, old_settings: list[Any]) -> None:
-    """Leave alt-screen + cbreak so a child (fzf / input) can own the TTY."""
+    """Leave alt-screen + cbreak so a child process (FZF) can own the TTY."""
     try:
         live.stop()
     except Exception as e:
@@ -925,27 +1259,44 @@ def run_live_dashboard() -> None:
     fd = sys.stdin.fileno()
     old_settings = set_terminal_cbreak(fd)
 
-    # Enable SGR mouse wheel reporting once, before Live takes the alt screen.
     _write_tty(_CLEAR_HOME + _MOUSE_ON + _CURSOR_HIDE)
 
     cache = _DashCache()
     cache.reload(force=True)
 
+    current_view: str = "dashboard"  # "dashboard" or "details"
+    selected_app_class: str = ""
+
     range_key = "today"
     scroll_offset = 0
     cursor_idx = 0
 
+    details_scroll = 0
+    details_cursor = 0
+
     def build_panel() -> Panel:
-        nonlocal scroll_offset, cursor_idx
-        panel, scroll_offset, cursor_idx, _max_scroll = render_dashboard_layout(
-            range_key,
-            cache.colors,
-            scroll_offset,
-            cursor_idx,
-            console.height,
-            raw_data=cache.raw_data,
-            active_window=cache.active,
-        )
+        nonlocal scroll_offset, cursor_idx, details_scroll, details_cursor
+        if current_view == "details":
+            panel, details_scroll, details_cursor, _ = render_details_layout(
+                selected_app_class,
+                range_key,
+                cache.colors,
+                details_scroll,
+                details_cursor,
+                console.height,
+                raw_data=cache.raw_data,
+                active_window=cache.active,
+            )
+        else:
+            panel, scroll_offset, cursor_idx, _ = render_dashboard_layout(
+                range_key,
+                cache.colors,
+                scroll_offset,
+                cursor_idx,
+                console.height,
+                raw_data=cache.raw_data,
+                active_window=cache.active,
+            )
         return panel
 
     def push_frame(live: Live) -> None:
@@ -957,8 +1308,6 @@ def run_live_dashboard() -> None:
     try:
         panel = build_panel()
 
-        # Single Live instance. NO refresh thread. NO FileProxy.
-        # The main loop is the only writer — this is what makes 1..5 crash-free.
         with Live(
             panel,
             console=console,
@@ -992,11 +1341,18 @@ def run_live_dashboard() -> None:
                         input_buf.extend(chunk)
                         got_keys = True
 
-                # Drain every complete command before painting once.
+                # Standalone Escape key detection on select timeout
+                if not got_keys and input_buf == b"\x1b":
+                    input_buf.clear()
+                    if current_view == "details":
+                        current_view = "dashboard"
+                    else:
+                        running = False
+                        break
+
                 while input_buf:
                     cmd, consumed = parse_input_sequence(bytes(input_buf))
                     if consumed <= 0:
-                        # Incomplete ESC — drop if it sits too long, else wait.
                         if input_buf[0] == 0x1B and len(input_buf) > 48:
                             del input_buf[0]
                             continue
@@ -1004,50 +1360,109 @@ def run_live_dashboard() -> None:
                     del input_buf[:consumed]
 
                     match cmd:
-                        case "quit":
+                        case "force_quit":
                             running = False
                             break
+                        case "quit":
+                            if current_view == "details":
+                                current_view = "dashboard"
+                            else:
+                                running = False
+                                break
+                        case "escape" | "back":
+                            if current_view == "details":
+                                current_view = "dashboard"
+                            else:
+                                running = False
+                                break
                         case "up":
-                            cursor_idx = max(0, cursor_idx - 1)
+                            if current_view == "details":
+                                details_cursor = max(0, details_cursor - 1)
+                            else:
+                                cursor_idx = max(0, cursor_idx - 1)
                         case "down":
-                            cursor_idx += 1
+                            if current_view == "details":
+                                details_cursor += 1
+                            else:
+                                cursor_idx += 1
                         case "scroll_up":
-                            cursor_idx = max(0, cursor_idx - 3)
+                            if current_view == "details":
+                                details_cursor = max(0, details_cursor - 3)
+                            else:
+                                cursor_idx = max(0, cursor_idx - 3)
                         case "scroll_down":
-                            cursor_idx += 3
+                            if current_view == "details":
+                                details_cursor += 3
+                            else:
+                                cursor_idx += 3
                         case "page_up":
-                            cursor_idx = max(0, cursor_idx - 10)
+                            if current_view == "details":
+                                details_cursor = max(0, details_cursor - 10)
+                            else:
+                                cursor_idx = max(0, cursor_idx - 10)
                         case "page_down":
-                            cursor_idx += 10
+                            if current_view == "details":
+                                details_cursor += 10
+                            else:
+                                cursor_idx += 10
                         case "half_page_up":
-                            cursor_idx = max(0, cursor_idx - 15)
+                            if current_view == "details":
+                                details_cursor = max(0, details_cursor - 15)
+                            else:
+                                cursor_idx = max(0, cursor_idx - 15)
                         case "half_page_down":
-                            cursor_idx += 15
+                            if current_view == "details":
+                                details_cursor += 15
+                            else:
+                                cursor_idx += 15
                         case "home":
-                            cursor_idx = 0
+                            if current_view == "details":
+                                details_cursor = 0
+                            else:
+                                cursor_idx = 0
                         case "end":
-                            cursor_idx = 10**9
+                            if current_view == "details":
+                                details_cursor = 10**9
+                            else:
+                                cursor_idx = 10**9
+                        case "left":
+                            if current_view == "details":
+                                current_view = "dashboard"
+                        case "select" | "right":
+                            if current_view == "dashboard":
+                                agg, _, _ = aggregate_by_range(cache.raw_data, range_key)
+                                sorted_apps = sorted(agg.items(), key=lambda x: x[1]["duration"], reverse=True)
+                                if sorted_apps and 0 <= cursor_idx < len(sorted_apps):
+                                    selected_app_class = sorted_apps[cursor_idx][0]
+                                    details_cursor = 0
+                                    details_scroll = 0
+                                    current_view = "details"
+                            else:
+                                current_view = "dashboard"
                         case "period_today" | "period_yesterday" | "period_week" | "period_month" | "period_all":
-                            # Pure in-memory state flip. No Live restart. No termios.
                             range_key = PERIOD_KEYS[cmd]
-                            cursor_idx = 0
-                            scroll_offset = 0
-                        case "details":
-                            agg, _, _ = aggregate_by_range(cache.raw_data, range_key)
-                            sorted_apps = sorted(agg.items(), key=lambda x: x[1]["duration"], reverse=True)
-                            if sorted_apps and 0 <= cursor_idx < len(sorted_apps):
-                                target_app = sorted_apps[cursor_idx][0]
-                                _pause_live(live, fd, old_settings)
-                                try:
-                                    render_fzf_preview(target_app, range_key)
-                                    print("\n[Press Enter to return to Dashboard...]")
-                                    try:
-                                        input()
-                                    except EOFError:
-                                        pass
-                                finally:
-                                    _resume_live(live, fd)
-                                    cache.reload(force=True)
+                            if current_view == "dashboard":
+                                cursor_idx = 0
+                                scroll_offset = 0
+                            else:
+                                details_cursor = 0
+                                details_scroll = 0
+                        case "next_tab":
+                            range_key = get_cycled_period(range_key, 1)
+                            if current_view == "dashboard":
+                                cursor_idx = 0
+                                scroll_offset = 0
+                            else:
+                                details_cursor = 0
+                                details_scroll = 0
+                        case "prev_tab":
+                            range_key = get_cycled_period(range_key, -1)
+                            if current_view == "dashboard":
+                                cursor_idx = 0
+                                scroll_offset = 0
+                            else:
+                                details_cursor = 0
+                                details_scroll = 0
                         case "fzf":
                             _pause_live(live, fd, old_settings)
                             try:
@@ -1063,7 +1478,6 @@ def run_live_dashboard() -> None:
                 if not running:
                     break
 
-                # Idle tick: refresh cached live data. Key path: skip I/O.
                 if not got_keys:
                     cache.reload(force=False)
 
@@ -1089,19 +1503,25 @@ def main() -> None:
         cmd = sys.argv[1].lower()
         match cmd:
             case "--preview":
-                app_cls = sys.argv[2] if len(sys.argv) > 2 else ""
-                r_key = sys.argv[3] if len(sys.argv) > 3 else "today"
+                # Handle multi-word app classes safely: python3 screentime_tui.py --preview <cls...> <key>
+                valid_keys = {"today", "yesterday", "week", "month", "all"}
+                if len(sys.argv) >= 4 and sys.argv[-1].lower() in valid_keys:
+                    r_key = sys.argv[-1].lower()
+                    app_cls = " ".join(sys.argv[2:-1]).strip()
+                else:
+                    app_cls = sys.argv[2].strip() if len(sys.argv) > 2 else ""
+                    r_key = sys.argv[3].lower() if len(sys.argv) > 3 else "today"
                 render_fzf_preview(app_cls, r_key)
                 return
             case "--fzf" | "-i" | "fzf" | "explore":
-                r_key = sys.argv[2] if len(sys.argv) > 2 else "today"
+                r_key = sys.argv[2].lower() if len(sys.argv) > 2 else "today"
                 run_fzf_explorer(r_key)
                 return
             case "--help" | "-h":
                 print("Usage: screentime_tui.py [OPTIONS]")
                 print("  (no args)           Launch Python Rich Live Dashboard")
-                print("  --fzf, -i           Launch Interactive FZF Explorer")
-                print("  --preview CLS KEY   Render ANSI preview window for FZF")
+                print("  --fzf, -i [PERIOD]  Launch Interactive FZF Explorer")
+                print("  --preview CLS [KEY] Render Matugen ANSI preview window for FZF")
                 return
             case _:
                 pass
