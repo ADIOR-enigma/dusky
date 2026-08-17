@@ -2508,6 +2508,8 @@ Tooltip {
                 label_style = f"{self.theme_colors['warning']} bold" if is_highlighted else f"{self.theme_colors['fg']}"
             elif is_modified:
                 label_style = f"{self.theme_colors['warning']} bold" if is_highlighted else self.theme_colors["warning"]
+            elif item.is_parent or item.type_ == "menu":
+                label_style = f"{self.theme_colors['accent']} bold" if is_highlighted else self.theme_colors["accent"]
             else:
                 label_style = f"{self.theme_colors['fg']} bold" if is_highlighted else self.theme_colors["fg"]
 
