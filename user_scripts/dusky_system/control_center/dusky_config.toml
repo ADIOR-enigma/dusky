@@ -2499,7 +2499,7 @@ description = "Launch TUI to switch prompt style"
 icon = "utilities-terminal-symbolic"
 [pages.layout.items.layout.items.on_press]
 type = "exec"
-command = "kitty --class starship_tui --hold python3 ~/user_scripts/starship/tui_starship.py"
+command = "kitty --class dusky_tui --hold python3 ~/user_scripts/starship/tui_starship.py"
 terminal = false
 
 [[pages.layout.items]]

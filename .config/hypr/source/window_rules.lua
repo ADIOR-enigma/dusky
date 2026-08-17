@@ -1446,16 +1446,6 @@ hl.window_rule({
     -- size = {"monitor_w * 0.5523", "monitor_h * 0.9583"},
 })
 
---- starship tui ---
-hl.window_rule({
-	name = "starship_tui",
-	match = {
-		class = "^(starship_tui)$"
-	},
-	float = true,
-	size = { 720, 690 }
-})
-
 --- Zathura (PDF Viewer) ---
 hl.window_rule({
     name = "float-zathura",
