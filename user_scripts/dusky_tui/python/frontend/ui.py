@@ -2355,14 +2355,22 @@ Tooltip {
 
     def _get_parent_children_status(self, parent_item: ConfigItem, tab_idx: int | None = None) -> tuple[bool, bool]:
         """
-        Recursively inspects all child items under `parent_item` to determine if:
-        - is_child_modified: Any descendant item value differs from its schema default.
-        - is_child_pending: Any descendant item value differs from its initial value.
+        Recursively inspects all child items under `parent_item` AND parent_item itself to determine if:
+        - is_child_modified: Parent or any descendant item value differs from its schema default.
+        - is_child_pending: Parent or any descendant item value differs from its initial value.
         """
+        parent_modified = False
+        parent_pending = False
+        if parent_item.type_ not in ("menu", "action", "preset"):
+            v_ser = parent_item.serialize(parent_item.value)
+            d_ser = parent_item.serialize(parent_item.default)
+            init_val = parent_item.initial_value if getattr(parent_item, "initial_value", None) is not None else parent_item.value
+            i_ser = parent_item.serialize(init_val)
+            parent_modified = (v_ser != d_ser)
+            parent_pending = (v_ser != i_ser)
+
         parent_key = parent_item.key
         parent_uid = self._get_item_uid(parent_item)
-        if not parent_key:
-            return False, False
 
         if tab_idx is None:
             tab_idx = self._current_tab_index()
@@ -2371,23 +2379,28 @@ Tooltip {
 
         child_uids = set()
         child_keys = set()
-        stack = [parent_key, parent_uid]
+        stack = []
+        if parent_key:
+            stack.append(parent_key)
+        if parent_uid:
+            stack.append(parent_uid)
+
         while stack:
             curr = stack.pop()
             for itm in items_in_tab:
                 p_ref = getattr(itm, "parent_ref", None)
                 if p_ref and p_ref == curr:
-                    child_uids.add(self._get_item_uid(itm))
-                    child_keys.add(itm.key)
-                    if getattr(itm, "is_parent", False) or getattr(itm, "type_", None) == "menu":
-                        stack.append(itm.key)
-                        stack.append(self._get_item_uid(itm))
+                    u = self._get_item_uid(itm)
+                    if u not in child_uids:
+                        child_uids.add(u)
+                        child_keys.add(itm.key)
+                        if getattr(itm, "is_parent", False) or getattr(itm, "type_", None) == "menu":
+                            if itm.key:
+                                stack.append(itm.key)
+                            stack.append(u)
 
-        if not child_uids:
-            return False, False
-
-        any_modified = False
-        any_pending = False
+        any_modified = parent_modified
+        any_pending = parent_pending
 
         for itm in items_in_tab:
             if (itm.key in child_keys or self._get_item_uid(itm) in child_uids) and itm.type_ not in ("menu", "action", "preset"):
@@ -2413,7 +2426,8 @@ Tooltip {
         self,
         item: ConfigItem,
         is_highlighted: bool = False,
-        indent_prefix: str = ""
+        indent_prefix: str = "",
+        tab_idx: int | None = None
     ) -> Text:
         val_ser = item.serialize(item.value)
         init_val = item.initial_value if getattr(item, "initial_value", None) is not None else item.value
@@ -2422,7 +2436,7 @@ Tooltip {
         ratio_bucket = int(self._get_preset_match_ratio(item) * 10) if item.type_ == "preset" else -1
 
         if item.is_parent or item.type_ == "menu":
-            is_modified, is_pending = self._get_parent_children_status(item)
+            is_modified, is_pending = self._get_parent_children_status(item, tab_idx)
         else:
             is_pending = (val_ser != init_ser)
             is_modified = (val_ser != def_ser)
@@ -3200,15 +3214,16 @@ Tooltip {
             depth = len(is_last_sibling_list) - 1
 
             if depth > 0:
+                prefix = "  "
                 for is_last in is_last_sibling_list[1:-1]:
                     prefix += "  " if is_last else "│ "
-                prefix += "  └─" if is_last_sibling_list[-1] else "  ├─"
+                prefix += "└─" if is_last_sibling_list[-1] else "├─"
 
             self._indent_cache[opt_id] = prefix
 
             options.append(
                 Option(
-                    self._build_option(node_item, is_highlighted=is_hl, indent_prefix=prefix),
+                    self._build_option(node_item, is_highlighted=is_hl, indent_prefix=prefix, tab_idx=tab_idx),
                     id=opt_id
                 )
             )
@@ -3319,7 +3334,7 @@ Tooltip {
 
             ol.replace_option_prompt_at_index(
                 idx,
-                self._build_option(item, is_hl, prefix)
+                self._build_option(item, is_hl, prefix, tab_idx=tab_idx)
             )
 
             # Automatically refresh parent subheadings / menu folders up the hierarchy
@@ -3346,7 +3361,7 @@ Tooltip {
                             p_prefix = self._indent_cache.get(p_opt_id, "")
                             ol.replace_option_prompt_at_index(
                                 p_idx,
-                                self._build_option(parent_found, p_is_hl, p_prefix)
+                                self._build_option(parent_found, p_is_hl, p_prefix, tab_idx=tab_idx)
                             )
                         except OptionDoesNotExist:
                             pass
@@ -3822,7 +3837,7 @@ Tooltip {
                     old_prefix = self._indent_cache.get(last_id, "")
                     ol.replace_option_prompt_at_index(
                         old_idx,
-                        self._build_option(old_parsed[2], False, old_prefix)
+                        self._build_option(old_parsed[2], False, old_prefix, tab_idx=old_parsed[0])
                     )
                 except OptionDoesNotExist:
                     pass
@@ -3834,7 +3849,7 @@ Tooltip {
 
                 ol.replace_option_prompt_at_index(
                     curr_idx,
-                    self._build_option(parsed[2], True, curr_prefix)
+                    self._build_option(parsed[2], True, curr_prefix, tab_idx=parsed[0])
                 )
 
                 ol.last_highlighted_id = event.option_id
@@ -4953,19 +4968,40 @@ Tooltip {
 
         if item.is_parent or item.type_ == "menu":
             items_in_tab = self.schema.get(tab_idx, [])
+            parent_key = item.key
+            parent_uid = self._get_item_uid(item)
+
+            child_uids = set()
             child_keys = set()
-            stack = [item.key]
+            stack = []
+            if parent_key:
+                stack.append(parent_key)
+            if parent_uid:
+                stack.append(parent_uid)
+
             while stack:
                 curr = stack.pop()
                 for itm in items_in_tab:
-                    if getattr(itm, "parent_ref", None) == curr:
-                        child_keys.add(itm.key)
-                        if getattr(itm, "is_parent", False) or getattr(itm, "type_", None) == "menu":
-                            stack.append(itm.key)
+                    p_ref = getattr(itm, "parent_ref", None)
+                    if p_ref and p_ref == curr:
+                        u = self._get_item_uid(itm)
+                        if u not in child_uids:
+                            child_uids.add(u)
+                            child_keys.add(itm.key)
+                            if getattr(itm, "is_parent", False) or getattr(itm, "type_", None) == "menu":
+                                if itm.key:
+                                    stack.append(itm.key)
+                                stack.append(u)
 
             transaction = []
+
+            # 1. Reset parent item itself if configurable and modified
+            if item.type_ not in ("menu", "action", "preset") and str(item.value) != str(item.default):
+                transaction.append((tab_idx, item_idx, item.value, item.default))
+
+            # 2. Reset all descendant child items if modified
             for i_idx, itm in enumerate(items_in_tab):
-                if itm.key in child_keys and itm.type_ not in ("menu", "action", "preset"):
+                if (itm.key in child_keys or self._get_item_uid(itm) in child_uids) and itm.type_ not in ("menu", "action", "preset"):
                     if str(itm.value) != str(itm.default):
                         transaction.append((tab_idx, i_idx, itm.value, itm.default))
 
@@ -5249,11 +5285,14 @@ Tooltip {
             self.action_toggle_expand()
             return
 
-        is_modified = str(item.value) != str(item.default)
+        if item.is_parent or item.type_ == "menu":
+            is_modified, _ = self._get_parent_children_status(item, tab_idx)
+        else:
+            is_modified = str(item.value) != str(item.default)
 
         if is_modified and item.type_ not in ("action", "preset"):
             prefix = self._indent_cache.get(opt_id, "")
-            rendered_text = self._build_option(item, True, indent_prefix=prefix)
+            rendered_text = self._build_option(item, True, indent_prefix=prefix, tab_idx=tab_idx)
             total_width = rendered_text.cell_len
             reset_width = 10
             threshold = total_width - reset_width
