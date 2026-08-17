@@ -222,7 +222,7 @@ SCHEMA: dict[int, list[ConfigItem]] = {
             extended_help="**Theme Change Notification**\n\nSends desktop notification upon theme update completion."
         ),
         ConfigItem(
-            label="Dusky Control",
+            label="Dusky Control Center",
             key="dusky_control_center",
             scope="DEFAULT",
             type_="bool",
