@@ -31,6 +31,7 @@ search_dirs = [
     "user_scripts/waybar",
     "user_scripts/tts_stt/dusky_kokoro",
     "user_scripts/tts_stt/dusky_parakeet",
+    "user_scripts/starship",
 ]
 
 [conflict_resolutions]
@@ -165,6 +166,7 @@ tasks = [
     "U | ignore-fail | update_counter.sh",
     # "U | once | system_update.sh --pacman",
     "S | once | fix_wayland_session.py",
+    "U | tui_starship.py --apply-state"
     # ==============================================
 
 
