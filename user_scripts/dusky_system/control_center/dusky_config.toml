@@ -2482,6 +2482,29 @@ description = "Specific component settings"
 [[pages.layout.items]]
 type = "navigation"
 [pages.layout.items.properties]
+title = "Shell Prompt Style"
+description = "Choose Starship prompt style"
+icon = "utilities-terminal-symbolic"
+
+[[pages.layout.items.layout]]
+type = "section"
+[pages.layout.items.layout.properties]
+title = "Prompt Management"
+
+[[pages.layout.items.layout.items]]
+type = "button"
+[pages.layout.items.layout.items.properties]
+title = "Dusky Starship Select"
+description = "Launch TUI to switch prompt style"
+icon = "utilities-terminal-symbolic"
+[pages.layout.items.layout.items.on_press]
+type = "exec"
+command = "kitty --class starship_tui --hold python3 ~/user_scripts/starship/tui_starship.py"
+terminal = false
+
+[[pages.layout.items]]
+type = "navigation"
+[pages.layout.items.properties]
 title = "Status Bar (Waybar)"
 description = "Configure Waybar layout and style"
 icon = "view-more-symbolic"

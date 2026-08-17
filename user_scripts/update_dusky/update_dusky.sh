@@ -162,6 +162,7 @@ declare -a SCRIPT_SEARCH_DIRS=(
     "${WORK_TREE}/user_scripts/firefox"
     "${WORK_TREE}/user_scripts/theme_matugen"
     "${WORK_TREE}/user_scripts/waybar"
+    "${WORK_TREE}/user_scripts/starship"
     "${WORK_TREE}/user_scripts/tts_stt/dusky_kokoro"
     "${WORK_TREE}/user_scripts/tts_stt/dusky_parakeet"
 )
@@ -301,6 +302,7 @@ declare -ra UPDATE_SEQUENCE=(
     "U | ignore-fail | hypr_anim.sh --current"
     "U | ignore-fail | theme_ctl.sh refresh"
     "U | ignore-fail | update_counter.sh"
+    "U | tui_starship.py --apply-state"
     "U | 480_dusky_commands.py -a"
 #    "U | system_update.sh --pacman"
 #
