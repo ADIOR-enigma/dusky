@@ -2452,7 +2452,7 @@ Tooltip {
 
         exists = item.exists_in_target
 
-        CURSOR_CHAR = "▶"
+        CURSOR_CHAR = "❯"
         cursor = f"{CURSOR_CHAR} " if is_highlighted else "  "
         txt.append(cursor, style=f"{self.theme_colors['accent']} bold" if is_highlighted else "")
 
@@ -2468,14 +2468,14 @@ Tooltip {
         # Tree indentation.
         if indent_prefix:
             txt.append(indent_prefix, style=self.theme_colors["muted"])
-
-        if item.is_parent:
+            if item.is_parent:
+                exp_char = "▼ " if item.expanded else "▶ "
+                txt.append(exp_char, style=f"{self.theme_colors['accent']} bold")
+        elif item.is_parent:
             exp_char = "▼ " if item.expanded else "▶ "
             txt.append(exp_char, style=f"{self.theme_colors['accent']} bold")
-        elif indent_prefix and len(indent_prefix) > 0 and indent_prefix != "    ":
-            txt.append("    ")
         else:
-            txt.append("    ")
+            txt.append("  ")
 
         # Status indicator.
         if item.type_ == "preset":
@@ -3198,9 +3198,9 @@ Tooltip {
             depth = len(is_last_sibling_list) - 1
 
             if depth > 0:
-                for is_last in is_last_sibling_list[:-1]:
-                    prefix += "   " if is_last else " │ "
-                prefix += " └─ " if is_last_sibling_list[-1] else " ├─ "
+                for is_last in is_last_sibling_list[1:-1]:
+                    prefix += "  " if is_last else "│ "
+                prefix += "  └─" if is_last_sibling_list[-1] else "  ├─"
 
             self._indent_cache[opt_id] = prefix
 
