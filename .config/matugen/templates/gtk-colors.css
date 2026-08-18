@@ -41,17 +41,17 @@
 /* =============================================================================
  * 4. Cards, Dialogs & Elevated Containers
  * ============================================================================= */
-@define-color card_bg_color {{colors.surface_container.default.hex}};
+@define-color card_bg_color {{colors.surface_container_low.default.hex}};
 @define-color card_fg_color {{colors.on_surface.default.hex}};
 @define-color card_border_color {{colors.outline_variant.default.hex}};
 @define-color card_shade_color rgba(0, 0, 0, 0.25);
 
-@define-color dialog_bg_color {{colors.surface_container_high.default.hex}};
+@define-color dialog_bg_color {{colors.surface_dim.default.hex}};
 @define-color dialog_fg_color {{colors.on_surface.default.hex}};
 
-@define-color popover_bg_color {{colors.surface_container_high.default.hex}};
+@define-color popover_bg_color {{colors.surface_container.default.hex}};
 @define-color popover_fg_color {{colors.on_surface.default.hex}};
-@define-color popover_shade_color rgba(0, 0, 0, 0.35);
+@define-color popover_shade_color rgba(0, 0, 0, 0.45);
 
 @define-color shade_color rgba(0, 0, 0, 0.35);
 @define-color scrollbar_outline_color rgba(0, 0, 0, 0.5);
@@ -200,37 +200,60 @@
 messagedialog,
 dialog,
 window.dialog,
-window.messagedialog {
-  background-color: @dialog_bg_color;
-  color: @dialog_fg_color;
+window.messagedialog,
+dialog.csd,
+messagedialog.csd {
+  background-color: @window_bg_color;
+  color: @window_fg_color;
 }
 
 messagedialog .titlebar,
 messagedialog .titlebar:backdrop,
 dialog .titlebar,
-dialog .titlebar:backdrop {
-  background-color: @dialog_bg_color;
-  color: @dialog_fg_color;
+dialog .titlebar:backdrop,
+window.dialog .titlebar,
+window.dialog headerbar,
+dialog headerbar {
+  background-color: @window_bg_color;
+  color: @window_fg_color;
   border-style: none;
+  border-bottom: 1px solid @borders;
 }
 
 messagedialog button,
 dialog button {
-  color: @dialog_fg_color;
+  color: @window_fg_color;
 }
 
 /* =============================================================================
- * 10. Popovers & Menus (Zero-Clipping Wayland Rules)
+ * 10. Popovers, Menus & Menubars
  * ============================================================================= */
+menubar,
+.menubar {
+  background-color: @headerbar_bg_color;
+  color: @window_fg_color;
+  padding: 0;
+}
+
+menubar > menuitem,
+.menubar > menuitem {
+  color: @window_fg_color;
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+
+menubar > menuitem:hover,
+.menubar > menuitem:hover,
+menubar > menuitem:selected,
+.menubar > menuitem:selected {
+  background-color: alpha(@window_fg_color, 0.12);
+  color: @window_fg_color;
+}
+
 popover,
 popover.background,
 .popover,
-.popover.background {
-  background-color: transparent;
-  box-shadow: none;
-  border: none;
-}
-
+.popover.background,
 popover > contents,
 .popover > contents,
 menu,
@@ -253,11 +276,20 @@ popover > arrow,
   box-shadow: none;
 }
 
+menuitem,
+.menuitem,
+modelbutton {
+  min-height: 28px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  color: @popover_fg_color;
+}
+
 menuitem:hover,
 .menuitem:hover,
 modelbutton:hover,
 popover listview row:hover {
-  background-color: alpha(@accent_color, 0.15);
+  background-color: alpha(@accent_color, 0.18);
   color: @window_fg_color;
   border-radius: 6px;
 }
@@ -377,9 +409,167 @@ scale slider:active {
 }
 
 /* =============================================================================
- * 14. Headerbar Window Controls & Tabs
+ * 14. Buttons, Stack Switchers, Linked Controls & Window Buttons
  * ============================================================================= */
+button {
+  background-color: {{colors.surface_container_low.default.hex}};
+  color: @window_fg_color;
+  border: 1px solid @borders;
+}
+
+button:hover {
+  background-color: {{colors.surface_container.default.hex}};
+  color: @window_fg_color;
+}
+
+button:active,
+button:checked {
+  background-color: {{colors.surface_container_high.default.hex}};
+  color: @window_fg_color;
+}
+
+button.flat {
+  background-color: transparent;
+  border-color: transparent;
+}
+
+button.flat:hover {
+  background-color: alpha(@window_fg_color, 0.08);
+}
+
+button.flat:active,
+button.flat:checked {
+  background-color: alpha(@window_fg_color, 0.15);
+}
+
+/* Stack Switchers & Segmented Button Pills (e.g. About/Credits/License) */
+headerbar .stack-switcher,
+.titlebar .stack-switcher,
+headerbar .stack-switcher.linked,
+.titlebar .stack-switcher.linked,
+.stack-switcher,
+stackswitcher,
+.linked.stack-switcher {
+  background-color: @view_bg_color;
+  border-radius: 10px;
+  padding: 3px;
+  border: 1px solid @borders;
+}
+
+headerbar .stack-switcher > button,
+.titlebar .stack-switcher > button,
+headerbar .stack-switcher.linked > button,
+.titlebar .stack-switcher.linked > button,
+headerbar .stack-switcher.linked > button:not(:only-child),
+.titlebar .stack-switcher.linked > button:not(:only-child),
+headerbar .linked > button.radio,
+.titlebar .linked > button.radio,
+.stack-switcher > button,
+stackswitcher > button {
+  background-color: transparent;
+  color: alpha(@window_fg_color, 0.65);
+  border: none;
+  box-shadow: none;
+  border-radius: 7px;
+  padding: 4px 14px;
+}
+
+headerbar .stack-switcher > button:hover,
+.titlebar .stack-switcher > button:hover,
+headerbar .stack-switcher.linked > button:hover,
+.titlebar .stack-switcher.linked > button:hover,
+headerbar .stack-switcher.linked > button:hover:not(:only-child),
+.titlebar .stack-switcher.linked > button:hover:not(:only-child),
+.stack-switcher > button:hover,
+stackswitcher > button:hover {
+  background-color: alpha(@window_fg_color, 0.08);
+  color: @window_fg_color;
+}
+
+headerbar .stack-switcher > button:checked,
+headerbar .stack-switcher > button:active,
+.titlebar .stack-switcher > button:checked,
+.titlebar .stack-switcher > button:active,
+headerbar .stack-switcher.linked > button:checked,
+headerbar .stack-switcher.linked > button:active,
+.titlebar .stack-switcher.linked > button:checked,
+.titlebar .stack-switcher.linked > button:active,
+headerbar .stack-switcher.linked > button:checked:not(:only-child),
+headerbar .stack-switcher.linked > button:active:not(:only-child),
+.titlebar .stack-switcher.linked > button:checked:not(:only-child),
+.titlebar .stack-switcher.linked > button:active:not(:only-child),
+headerbar .linked > button.radio:checked,
+.titlebar .linked > button.radio:checked,
+.stack-switcher > button:checked,
+.stack-switcher > button:active,
+stackswitcher > button:checked,
+stackswitcher > button:active {
+  background-color: {{colors.surface_container_high.default.hex}};
+  color: @window_fg_color;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  border: 1px solid @borders;
+}
+
+/* Headerbar & Titlebar Window Controls */
+headerbar button,
+.titlebar button {
+  background-color: {{colors.surface_container_low.default.hex}};
+  border-color: @borders;
+}
+
+headerbar button:hover,
+.titlebar button:hover {
+  background-color: {{colors.surface_container.default.hex}};
+}
+
+headerbar button:active,
+headerbar button:checked,
+.titlebar button:active,
+.titlebar button:checked {
+  background-color: {{colors.surface_container_high.default.hex}};
+}
+
+headerbar button.flat,
+.titlebar button.flat {
+  background-color: transparent;
+  border-color: transparent;
+}
+
+headerbar button.flat:hover,
+.titlebar button.flat:hover {
+  background-color: alpha(@window_fg_color, 0.08);
+}
+
+headerbar button.flat:active,
+headerbar button.flat:checked,
+.titlebar button.flat:active,
+.titlebar button.flat:checked {
+  background-color: alpha(@window_fg_color, 0.15);
+}
+
+/* Titlebuttons (Close / Maximize / Minimize) */
+headerbar button.titlebutton,
+.titlebar button.titlebutton,
+headerbar.default-decoration button.titlebutton,
+.default-decoration.titlebar button.titlebutton {
+  background-color: transparent;
+  border: none;
+  box-shadow: none;
+  border-radius: 50%;
+  padding: 4px;
+  color: alpha(@window_fg_color, 0.7);
+}
+
+headerbar button.titlebutton:hover,
+.titlebar button.titlebutton:hover,
+headerbar.default-decoration button.titlebutton:hover,
+.default-decoration.titlebar button.titlebutton:hover {
+  background-color: alpha(@window_fg_color, 0.12);
+  color: @window_fg_color;
+}
+
 headerbar button.titlebutton.close:hover,
+.titlebar button.titlebutton.close:hover,
 windowcontrols button.close:hover {
   background-color: @destructive_bg_color;
   color: @destructive_fg_color;
@@ -387,6 +577,8 @@ windowcontrols button.close:hover {
 
 headerbar button.titlebutton.maximize:hover,
 headerbar button.titlebutton.minimize:hover,
+.titlebar button.titlebutton.maximize:hover,
+.titlebar button.titlebutton.minimize:hover,
 windowcontrols button.maximize:hover,
 windowcontrols button.minimize:hover {
   background-color: alpha(@window_fg_color, 0.12);
