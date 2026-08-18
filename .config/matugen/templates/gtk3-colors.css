@@ -239,6 +239,7 @@ menubar > menuitem,
   color: @window_fg_color;
   border-radius: 6px;
   padding: 4px 8px;
+  background-color: transparent;
 }
 
 menubar > menuitem:hover,
@@ -249,34 +250,62 @@ menubar > menuitem:selected,
   color: @window_fg_color;
 }
 
-/* In GTK3, popover.background IS the menu bubble itself */
-popover.background,
+/* In GTK3, menus and popovers: completely remove box-shadow artifacts */
 popover,
+popover.background,
+popover.menu,
 .popover,
 menu,
 .menu,
 .context-menu,
+.csd menu,
+.csd .menu,
+.csd .context-menu,
 combobox window.popup > contents {
   background-color: @popover_bg_color;
   color: @popover_fg_color;
   border-radius: 12px;
   border: 1px solid @borders;
-  box-shadow: 0 4px 16px @popover_shade_color;
-  padding: 4px;
+  box-shadow: none;
+  padding: 6px;
+}
+
+/* Remove popup window decoration box-shadows that cause dark edge halos in Wayland */
+.csd.popup decoration,
+.popup decoration,
+menubar .csd.popup decoration,
+.menubar .csd.popup decoration {
+  border-radius: 12px;
+  box-shadow: none;
+  border: none;
+}
+
+/* Zero out stack margins so items don't spill out over the top/bottom rounded border */
+popover.menu > stack,
+popover > stack,
+popover.background > stack,
+popover.background > list,
+popover.background > .view {
+  margin: 0;
+  padding: 0;
+  background-color: transparent;
 }
 
 menuitem,
 .menuitem,
-modelbutton {
+modelbutton,
+popover modelbutton {
   min-height: 28px;
-  padding: 4px 8px;
+  padding: 6px 10px;
   border-radius: 6px;
   color: @popover_fg_color;
+  outline: none;
 }
 
 menuitem:hover,
 .menuitem:hover,
 modelbutton:hover,
+popover modelbutton:hover,
 popover listview row:hover {
   background-color: alpha(@accent_color, 0.18);
   color: @window_fg_color;
@@ -566,40 +595,33 @@ headerbar .linked > button.radio:checked,
   border: 1px solid @borders;
 }
 
-/* Headerbar & Titlebar Window Controls */
+/* Headerbar & Titlebar Flat / Clean Buttons */
 headerbar button,
-.titlebar button {
-  background-color: {{colors.surface_dim.default.hex}};
+.titlebar button,
+headerbar menubutton > button,
+.titlebar menubutton > button,
+headerbar button.image-button,
+.titlebar button.image-button,
+headerbar button.flat,
+.titlebar button.flat {
+  background-color: transparent;
   border: 1px solid transparent;
+  box-shadow: none;
 }
 
 headerbar button:hover,
-.titlebar button:hover {
-  background-color: {{colors.surface_container_low.default.hex}};
+.titlebar button:hover,
+headerbar menubutton > button:hover,
+.titlebar menubutton > button:hover {
+  background-color: alpha(@window_fg_color, 0.08);
 }
 
 headerbar button:active,
 headerbar button:checked,
 .titlebar button:active,
-.titlebar button:checked {
-  background-color: {{colors.surface_container.default.hex}};
-}
-
-headerbar button.flat,
-.titlebar button.flat {
-  background-color: transparent;
-  border-color: transparent;
-}
-
-headerbar button.flat:hover,
-.titlebar button.flat:hover {
-  background-color: alpha(@window_fg_color, 0.08);
-}
-
-headerbar button.flat:active,
-headerbar button.flat:checked,
-.titlebar button.flat:active,
-.titlebar button.flat:checked {
+.titlebar button:checked,
+headerbar menubutton > button:checked,
+.titlebar menubutton > button:checked {
   background-color: alpha(@window_fg_color, 0.15);
 }
 

@@ -208,7 +208,7 @@ popover.background,
   margin: 0;
 }
 
-/* In GTK 4, ONLY the inner contents bubble gets the color, single border, radius & shadow */
+/* In GTK 4, ONLY the inner contents bubble gets the color, single border, radius & NO shadow artifacts */
 popover > contents,
 .popover > contents,
 popover.menu > contents,
@@ -218,7 +218,7 @@ combobox window.popup > contents {
   color: @popover_fg_color;
   border-radius: 12px;
   border: 1px solid @borders;
-  box-shadow: 0 4px 16px @popover_shade_color;
+  box-shadow: none;
   padding: 6px;
 }
 
@@ -348,6 +348,36 @@ button.flat:hover {
 
 button.flat:active,
 button.flat:checked {
+  background-color: alpha(@window_fg_color, 0.15);
+}
+
+/* Headerbar & Titlebar Flat / Clean Buttons */
+headerbar button,
+.titlebar button,
+headerbar menubutton > button,
+.titlebar menubutton > button,
+headerbar button.image-button,
+.titlebar button.image-button,
+headerbar button.flat,
+.titlebar button.flat {
+  background-color: transparent;
+  border: 1px solid transparent;
+  box-shadow: none;
+}
+
+headerbar button:hover,
+.titlebar button:hover,
+headerbar menubutton > button:hover,
+.titlebar menubutton > button:hover {
+  background-color: alpha(@window_fg_color, 0.08);
+}
+
+headerbar button:checked,
+headerbar button:active,
+.titlebar button:checked,
+.titlebar button:active,
+headerbar menubutton > button:checked,
+.titlebar menubutton > button:checked {
   background-color: alpha(@window_fg_color, 0.15);
 }
 
