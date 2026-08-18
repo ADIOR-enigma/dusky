@@ -1,6 +1,6 @@
 [Colors:Button]
-BackgroundAlternate={{colors.surface_container_high.default.hex}}
-BackgroundNormal={{colors.surface_container.default.hex}}
+BackgroundAlternate={{colors.surface_container_lowest.default.hex}}
+BackgroundNormal={{colors.surface_container_lowest.default.hex}}
 DecorationFocus={{colors.primary.default.hex}}
 DecorationHover={{colors.primary.default.hex}}
 ForegroundActive={{colors.primary.default.hex}}
@@ -13,7 +13,7 @@ ForegroundPositive={{colors.tertiary.default.hex}}
 ForegroundVisited={{colors.secondary.default.hex}}
 
 [Colors:Complementary]
-BackgroundAlternate={{colors.surface_dim.default.hex}}
+BackgroundAlternate={{colors.surface_container_lowest.default.hex}}
 BackgroundNormal={{colors.surface_container_lowest.default.hex}}
 DecorationFocus={{colors.primary.default.hex}}
 DecorationHover={{colors.primary.default.hex}}
@@ -41,8 +41,8 @@ ForegroundPositive={{colors.tertiary.default.hex}}
 ForegroundVisited={{colors.secondary.default.hex}}
 
 [Colors:Selection]
-BackgroundAlternate={{colors.primary_container.default.hex}}
-BackgroundNormal={{colors.primary_container.default.hex}}
+BackgroundAlternate={{colors.primary.default.hex}}
+BackgroundNormal={{colors.primary.default.hex}}
 DecorationFocus={{colors.primary.default.hex}}
 DecorationHover={{colors.primary.default.hex}}
 ForegroundActive={{colors.primary.default.hex}}
@@ -50,13 +50,13 @@ ForegroundInactive={{colors.outline.default.hex}}
 ForegroundLink={{colors.primary.default.hex}}
 ForegroundNegative={{colors.error.default.hex}}
 ForegroundNeutral={{colors.secondary.default.hex}}
-ForegroundNormal={{colors.on_primary_container.default.hex}}
+ForegroundNormal={{colors.on_primary.default.hex}}
 ForegroundPositive={{colors.tertiary.default.hex}}
 ForegroundVisited={{colors.secondary.default.hex}}
 
 [Colors:Tooltip]
-BackgroundAlternate={{colors.surface_container_highest.default.hex}}
-BackgroundNormal={{colors.surface_container_high.default.hex}}
+BackgroundAlternate={{colors.surface_container_lowest.default.hex}}
+BackgroundNormal={{colors.surface_container_lowest.default.hex}}
 DecorationFocus={{colors.primary.default.hex}}
 DecorationHover={{colors.primary.default.hex}}
 ForegroundActive={{colors.primary.default.hex}}
@@ -69,7 +69,7 @@ ForegroundPositive={{colors.tertiary.default.hex}}
 ForegroundVisited={{colors.secondary.default.hex}}
 
 [Colors:View]
-BackgroundAlternate={{colors.surface_container_low.default.hex}}
+BackgroundAlternate={{colors.surface_container_lowest.default.hex}}
 BackgroundNormal={{colors.surface_container_lowest.default.hex}}
 DecorationFocus={{colors.primary.default.hex}}
 DecorationHover={{colors.primary.default.hex}}
@@ -83,8 +83,8 @@ ForegroundPositive={{colors.tertiary.default.hex}}
 ForegroundVisited={{colors.secondary.default.hex}}
 
 [Colors:Window]
-BackgroundAlternate={{colors.surface_container_low.default.hex}}
-BackgroundNormal={{colors.surface_dim.default.hex}}
+BackgroundAlternate={{colors.surface_container_lowest.default.hex}}
+BackgroundNormal={{colors.surface_container_lowest.default.hex}}
 DecorationFocus={{colors.primary.default.hex}}
 DecorationHover={{colors.primary.default.hex}}
 ForegroundActive={{colors.primary.default.hex}}
@@ -109,7 +109,7 @@ IntensityEffect=2
 
 [ColorEffects:Inactive]
 ChangeSelectionColor=true
-Color={{colors.surface_dim.default.hex}}
+Color={{colors.surface_container_lowest.default.hex}}
 ColorAmount=0
 ColorEffect=0
 ContrastAmount=0.15
@@ -135,9 +135,9 @@ widgetStyle=Fusion
 ColorScheme=Matugen
 
 [WM]
-activeBackground={{colors.primary_container.default.hex}}
-activeBlend={{colors.on_primary_container.default.hex}}
-activeForeground={{colors.on_primary_container.default.hex}}
-inactiveBackground={{colors.surface_dim.default.hex}}
+activeBackground={{colors.primary.default.hex}}
+activeBlend={{colors.on_primary.default.hex}}
+activeForeground={{colors.on_primary.default.hex}}
+inactiveBackground={{colors.surface_container_lowest.default.hex}}
 inactiveBlend={{colors.outline.default.hex}}
 inactiveForeground={{colors.outline.default.hex}}
