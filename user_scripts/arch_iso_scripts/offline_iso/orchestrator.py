@@ -2726,9 +2726,6 @@ def main():
             print(f"    Phase 1 tasks: {len(p.phase1_tasks)}, Phase 2 tasks: {len(p.phase2_tasks)}")
         sys.exit(0)
 
-    if args.auto:
-        os.environ["AUTO_MODE"] = "1"
-
     phase1 = args.phase1
     phase2 = args.phase2
 

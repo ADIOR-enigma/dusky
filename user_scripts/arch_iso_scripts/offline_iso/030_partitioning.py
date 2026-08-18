@@ -1453,8 +1453,6 @@ def main():
     parser.add_argument("--strategy", type=str, default=None, help="Partitioning strategy: wipe|existing|manual|rescue (1-4)")
     parser.add_argument("--rescue", action="store_true", help="Shortcut for --strategy rescue")
     args = parser.parse_args()
-    if os.environ.get("AUTO_MODE") in ("1", "true", "True"):
-        args.auto = True
 
     if hasattr(os, "geteuid") and os.geteuid() != 0:
         console.print("[red]Need root[/red]")
