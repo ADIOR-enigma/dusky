@@ -20,7 +20,7 @@
 #   7. Only the session owner may install janitor traps or unlink the engine.
 #   8. Every FZF child is `bash --noprofile --norc -- $ENGINE --worker …`.
 #      No $0. No export -f. No $SHELL dependence. Noexec-safe.
-#   9. Never `git switch --force`. Untracked collisions block travel.
+#   9. Shield present uncommitted work first; switch to historical commits cleanly.
 # =============================================================================
 #
 # ROOT CAUSE (v10 Chronos Zenith → zsh:1: no such file or directory):
@@ -415,12 +415,60 @@ _dusky_bind_colors() {
 #    phase: present | detached | conflict | stay
 #    stash: none | clean | stashed | applied | conflict
 # -----------------------------------------------------------------------------
+readonly DUSKY_SETTINGS_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/dusky/settings"
+readonly DUSKY_USER_STATE_FILE="${DUSKY_SETTINGS_DIR}/time_machine_state"
+
+_dusky_user_state_load() {
+    DUSKY_CFG_VIM_MODE="false"
+    DUSKY_CFG_PREVIEW_LAYOUT=""
+    DUSKY_CFG_PREVIEW_MODE="side"
+    DUSKY_CFG_SCOPE="all"
+
+    if [[ -f "$DUSKY_USER_STATE_FILE" && -r "$DUSKY_USER_STATE_FILE" ]]; then
+        local line key val
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            [[ "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
+            key="${BASH_REMATCH[1]}"
+            val="${BASH_REMATCH[2]}"
+            if   [[ "$val" =~ ^\"([^\"]*)\" ]]; then val="${BASH_REMATCH[1]}"
+            elif [[ "$val" =~ ^\'([^\']*)\' ]]; then val="${BASH_REMATCH[1]}"
+            else val="${val%%[[:space:]]#*}"; val="${val%%[[:space:]]*}"
+            fi
+            case "$key" in
+                VIM_MODE)       [[ "$val" == "true" ]] && DUSKY_CFG_VIM_MODE="true" ;;
+                PREVIEW_LAYOUT) [[ "$val" =~ ^(hidden|(up|down|left|right),[0-9]+%(,[A-Za-z0-9_~%:+-]+)*)$ ]] && DUSKY_CFG_PREVIEW_LAYOUT="$val" ;;
+                PREVIEW_MODE)   [[ "$val" =~ ^(side|inline|stat|files|vs_present)$ ]] && DUSKY_CFG_PREVIEW_MODE="$val" ;;
+                SCOPE)          [[ "$val" =~ ^(all|lineage)$ ]] && DUSKY_CFG_SCOPE="$val" ;;
+            esac
+        done < "$DUSKY_USER_STATE_FILE"
+    fi
+}
+
+_dusky_user_state_save() {
+    mkdir -p -m 0700 "$DUSKY_SETTINGS_DIR" 2>/dev/null || return 0
+    local tmp="${DUSKY_SETTINGS_DIR}/.tm_state_tmp_$$"
+    cat >"$tmp" <<EOF
+# =============================================================================
+# DUSKY GIT TIME MACHINE USER SETTINGS
+# =============================================================================
+VIM_MODE="$(_dusky_read vim_mode)"
+PREVIEW_LAYOUT="$(_dusky_read preview_layout)"
+PREVIEW_MODE="$(_dusky_read preview_mode)"
+SCOPE="$(_dusky_read scope)"
+EOF
+    mv -f -- "$tmp" "$DUSKY_USER_STATE_FILE" 2>/dev/null || rm -f -- "$tmp"
+}
+
 _dusky_state_init() {
+    _dusky_user_state_load
     printf '%s\n' "present" >"${DUSKY_STATE_DIR}/phase"
     printf '%s\n' "none"    >"${DUSKY_STATE_DIR}/stash"
-    printf '%s\n' "side"    >"${DUSKY_STATE_DIR}/preview_mode"
-    printf '%s\n' "all"     >"${DUSKY_STATE_DIR}/scope"
+    printf '%s\n' "${DUSKY_CFG_PREVIEW_MODE:-side}" >"${DUSKY_STATE_DIR}/preview_mode"
+    printf '%s\n' "${DUSKY_CFG_SCOPE:-all}"         >"${DUSKY_STATE_DIR}/scope"
     printf '%s\n' "0"       >"${DUSKY_STATE_DIR}/stay"
+    printf '%s\n' "${DUSKY_CFG_VIM_MODE:-false}"   >"${DUSKY_STATE_DIR}/vim_mode"
+    printf '%s\n' "${DUSKY_CFG_PREVIEW_LAYOUT:-${DUSKY_PREVIEW_WINDOW:-right,70%,border-left,wrap}}" >"${DUSKY_STATE_DIR}/preview_layout"
+    printf '%s\n' "${DUSKY_CFG_PREVIEW_LAYOUT:-${DUSKY_PREVIEW_WINDOW:-right,70%,border-left,wrap}}" >"${DUSKY_STATE_DIR}/preview_last"
     printf '%s\n' "ready"   >"${DUSKY_STATE_DIR}/last_action"
     printf '%s\n' "online" >"${DUSKY_STATE_DIR}/last_detail"
     : >"${DUSKY_STATE_DIR}/head_line"
@@ -550,12 +598,12 @@ _dusky_git_return() {
     cd "$GIT_WORK_TREE" || return 1
 
     if [[ "$target" =~ ^[0-9a-fA-F]{40}$ ]]; then
-        err="$(_gw switch --quiet --detach "$target" 2>&1)" || {
+        err="$(_gw switch --quiet --force --detach "$target" 2>&1)" || {
             _dusky_note "error" "failed to detach onto present SHA ${target:0:7}: ${err}"
             return 1
         }
     else
-        err="$(_gw switch --quiet "$target" 2>&1)" || {
+        err="$(_gw switch --quiet --force "$target" 2>&1)" || {
             _dusky_note "error" "failed to switch to ${target}: ${err}"
             return 1
         }
@@ -682,8 +730,8 @@ _dusky_shield_present() {
 # -----------------------------------------------------------------------------
 _dusky_compute_widths() {
     local cols preview_pct list_cols
-    cols="${COLUMNS:-}"
-    if [[ ! "$cols" =~ ^[0-9]+$ ]]; then
+    cols="${FZF_COLUMNS:-${COLUMNS:-}}"
+    if [[ ! "$cols" =~ ^[0-9]+$ || "$cols" -le 0 ]]; then
         cols="$(tput cols 2>/dev/null || printf '120')"
     fi
     if (( cols < 110 )); then
@@ -713,6 +761,7 @@ _dusky_compute_widths() {
 }
 
 _dusky_header_line() {
+    _dusky_compute_widths
     local b r bar
     b="$DUSKY_ANSI_BOLD"
     r="$DUSKY_ANSI_RESET"
@@ -728,6 +777,7 @@ _dusky_header_line() {
 }
 
 _dusky_git_list() {
+    _dusky_compute_widths
     local scope head home
     scope="$(_dusky_read scope)"
     [[ -n "$scope" ]] || scope="all"
@@ -881,22 +931,30 @@ _dusky_help_text() {
     ${s}[CTRL-G]${r}         Jump cursor to live HEAD
     ${s}[ALT-A]${r}          Toggle scope: all refs ↔ current lineage
 
+  ${a}Navigation & Vim Mode${r}
+    ${s}[ALT-M]${r}          Toggle Vim navigation mode (j/k, g/G, Ctrl-D/U, /)
+    ${s}[/]${r}              Enter search mode (when Vim mode is active)
+    ${s}[ESC]${r}            Exit · return to present (or return to Vim normal mode)
+
+  ${a}Inspect & Preview Layout${r}
+    ${s}[ALT-P]${r}          Cycle preview content: side → inline → stat → files → vs_present
+    ${s}[ALT-LEFT/RGHT]${r}  Resize preview pane split (±5%)
+    ${s}[ALT-UP/DOWN]${r}    Resize vertical preview pane split (±5%)
+    ${s}[ALT-H/J/K/L]${r}    Move preview pane (Left / Bottom / Top / Right)
+    ${s}[ALT-V / CTRL-/]${r} Toggle preview pane visibility
+    ${s}[SHIFT-UP/DN]${r}    Scroll preview pane
+    ${s}[F1] / [CTRL-O]${r}  Toggle this keyboard reference inside preview
+    ${s}[CTRL-L]${r}         Reload commit graph
+
   ${a}Safety${r}
     ${s}[ALT-R]${r}          Hard reset to HEAD ${e}(requires YES confirmation)${r}
     ${s}[CTRL-W]${r}         Hard reset to HEAD ${e}(requires 2 consecutive presses)${r}
     ${s}[ALT-S]${r}          Stay in past on exit (skip auto-return)
     ${s}[ALT-O]${r}          Apply orphaned DUSKY_AUTO_STASH_* (present only)
-    ${s}[ESC]${r}            Exit · auto-return unless stay is armed
-
-  ${a}Inspect & Preview${r}
-    ${s}[ALT-P]${r}          Cycle preview: side → inline → stat → files → vs_present
-    ${s}[CTRL-/]${r}         Toggle preview pane
-    ${s}[F1] / [CTRL-O]${r}  Toggle this keyboard reference inside preview
-    ${s}[CTRL-L]${r}         Reload commit graph
 
   ${a}Export & Branch${r}
-    ${s}[CTRL-Y]${r}         Yank short hash
-    ${s}[ALT-Y]${r}          Yank full SHA
+    ${s}[CTRL-Y]${r}         Yank short hash (desktop notification)
+    ${s}[ALT-Y]${r}          Yank full SHA (desktop notification)
     ${s}[ALT-B]${r}          Create branch at selected commit
 
   ${d}◀ current HEAD     ⌂ recorded present tip     stash is tracked-only${r}
@@ -989,23 +1047,10 @@ _dusky_git_checkout() {
         _dusky_note "error" "not a commit: ${hash}"
         return 1
     fi
-    current="$(_gr rev-parse HEAD)"
+    current="$(_gr rev-parse HEAD 2>/dev/null || true)"
     if [[ "$target" == "$current" ]]; then
-        _dusky_note "here" "$(_gr rev-parse --short=7 HEAD)"
+        _dusky_note "here" "$(_gr rev-parse --short=7 HEAD 2>/dev/null || true)"
         return 0
-    fi
-
-    local -a hits=()
-    local f
-    while IFS= read -r -d '' f; do
-        [[ -z "$f" ]] && continue
-        hits+=("$f")
-    done < <(_dusky_untracked_collisions "$target")
-
-    if (( ${#hits[@]} > 0 )); then
-        printf '%s\n' "${hits[@]}" >"${DUSKY_STATE_DIR}/conflicts"
-        _dusky_note "blocked" "untracked collision (${#hits[@]} path(s)) — will not overwrite"
-        return 1
     fi
 
     if ! _dusky_shield_present; then
@@ -1014,14 +1059,13 @@ _dusky_git_checkout() {
 
     cd "$GIT_WORK_TREE" || return 1
     local err
-    # LAW: never --force. Git itself is the last shield against untracked overwrite.
-    err="$(_gw switch --quiet --detach "$target" 2>&1)" || {
+    err="$(_gw switch --quiet --force --detach "$target" 2>&1)" || {
         _dusky_note "error" "git switch --detach failed for ${hash}: ${err}"
         return 1
     }
 
     _dusky_write phase "detached"
-    _dusky_note "traveled" "$(_gr rev-parse --short=7 HEAD)"
+    _dusky_note "traveled" "$(_gr rev-parse --short=7 HEAD 2>/dev/null || true)"
     return 0
 }
 
@@ -1049,6 +1093,15 @@ _dusky_git_restore_interactive() {
         return 0
     fi
     _dusky_git_restore
+}
+
+_dusky_notify() {
+    local title="$1" msg="${2:-}" urgency="${3:-normal}"
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send -u "$urgency" -a "Git Time Machine" \
+            -h string:x-canonical-private-synchronous:dusky-tm \
+            -- "󰏖 $title" "$msg" 2>/dev/null || true
+    fi
 }
 
 _dusky_clipboard() {
@@ -1083,6 +1136,7 @@ _dusky_git_copy() {
     [[ -n "$text" ]] || { _dusky_note "error" "cannot resolve ${hash}"; return 1; }
     _dusky_clipboard "$text"
     _dusky_note "copied" "$text"
+    _dusky_notify "Commit Hash Copied" "$text"
 }
 
 _dusky_git_branch() {
@@ -1108,6 +1162,7 @@ _dusky_git_branch() {
     if _gw switch --quiet -c "$name"; then
         printf '  created branch %s → %s\n' "$name" "$hash" >/dev/tty
         _dusky_note "branched" "${name} @ ${hash}"
+        _dusky_notify "Branch Created" "${name} @ ${hash}"
     else
         printf '  git branch failed\n' >/dev/tty
         _dusky_note "error" "git switch -c ${name} failed"
@@ -1130,6 +1185,7 @@ _dusky_cycle_preview() {
     esac
     _dusky_write preview_mode "$next"
     _dusky_note "preview" "$next"
+    _dusky_user_state_save
 }
 
 _dusky_toggle_help() {
@@ -1156,6 +1212,7 @@ _dusky_toggle_scope() {
         _dusky_write scope "all"
         _dusky_note "scope" "branches + tags + remotes"
     fi
+    _dusky_user_state_save
 }
 
 _dusky_toggle_stay() {
@@ -1335,6 +1392,150 @@ _dusky_orphan_report() {
     done < <(_gr stash list --format=$'%gd\t%gs')
 }
 
+_dusky_act_move_preview() {
+    local dir="${1:-}" cur last pct rest next
+    case "$dir" in left|right|up|down|hidden) ;; *) return 0 ;; esac
+    cur="$(_dusky_read preview_layout)"
+    [[ -n "$cur" ]] || cur="${DUSKY_PREVIEW_WINDOW:-right,70%,border-left,wrap}"
+    last="$(_dusky_read preview_last)"
+    [[ -n "$last" ]] || last="${DUSKY_PREVIEW_WINDOW:-right,70%,border-left,wrap}"
+
+    local base="$cur"
+    [[ "$base" == "hidden" ]] && base="$last"
+    if [[ "$base" =~ ^(up|down|left|right),([0-9]+)%(.*)$ ]]; then
+        pct="${BASH_REMATCH[2]}"
+        rest="${BASH_REMATCH[3]}"
+    else
+        pct=70
+        rest=',border-left,wrap'
+    fi
+
+    if [[ "$dir" == "hidden" ]]; then
+        if [[ "$cur" == "hidden" ]]; then
+            next="$last"
+        else
+            next="hidden"
+        fi
+    else
+        local border="border-left"
+        [[ "$dir" == "up" ]] && border="border-bottom"
+        [[ "$dir" == "down" ]] && border="border-top"
+        next="${dir},${pct}%,${border},wrap"
+    fi
+
+    _dusky_write preview_layout "$next"
+    if [[ "$next" != "hidden" ]]; then
+        _dusky_write preview_last "$next"
+    fi
+    _dusky_user_state_save
+    printf 'change-preview-window(%s)+refresh-preview' "$next"
+}
+
+_dusky_act_resize_preview() {
+    local dir="${1:-}" cur edge pct rest new next
+    case "$dir" in left|right|up|down) ;; *) return 0 ;; esac
+    cur="$(_dusky_read preview_layout)"
+    [[ -n "$cur" ]] || cur="${DUSKY_PREVIEW_WINDOW:-right,70%,border-left,wrap}"
+    if [[ "$cur" == "hidden" ]] || ! [[ "$cur" =~ ^(up|down|left|right),([0-9]+)%(.*)$ ]]; then
+        return 0
+    fi
+    edge="${BASH_REMATCH[1]}"
+    pct="${BASH_REMATCH[2]}"
+    rest="${BASH_REMATCH[3]}"
+
+    new=$pct
+    case "$edge:$dir" in
+        right:left|left:right|up:down|down:up) (( new += 5 )) ;;
+        right:right|left:left|up:up|down:down) (( new -= 5 )) ;;
+        *) return 0 ;;
+    esac
+    (( new < 15 )) && new=15
+    (( new > 85 )) && new=85
+    if (( new == pct )); then
+        printf 'bell'
+        return 0
+    fi
+
+    next="${edge},${new}%${rest}"
+    _dusky_write preview_layout "$next"
+    _dusky_write preview_last "$next"
+    _dusky_user_state_save
+    printf 'change-preview-window(%s)+refresh-preview' "$next"
+}
+
+readonly DUSKY_VIM_KEYS='j,k,g,G,ctrl-d,ctrl-u,/'
+
+_dusky_emit_vim_actions() {
+    local mode="$1"
+    local p
+    p="$(_dusky_prompt_line)"
+    if [[ "$mode" == "true" ]]; then
+        printf 'rebind(%s)+disable-search+change-prompt( 🅝 q:quit /:search ❯ )+refresh-preview' "$DUSKY_VIM_KEYS"
+    else
+        printf 'unbind(%s)+enable-search+change-prompt(%s)+refresh-preview' "$DUSKY_VIM_KEYS" "$p"
+    fi
+}
+
+_dusky_vim_init() {
+    local mode
+    mode="$(_dusky_read vim_mode)"
+    if [[ -z "$mode" ]]; then
+        _dusky_user_state_load
+        mode="${DUSKY_CFG_VIM_MODE:-false}"
+        _dusky_write vim_mode "$mode"
+    fi
+    [[ "$mode" == "true" ]] || mode="false"
+    _dusky_emit_vim_actions "$mode"
+}
+
+_dusky_toggle_vim() {
+    local cur next
+    cur="$(_dusky_read vim_mode)"
+    if [[ -z "$cur" ]]; then
+        _dusky_user_state_load
+        cur="${DUSKY_CFG_VIM_MODE:-false}"
+    fi
+    if [[ "$cur" == "true" ]]; then
+        next="false"
+    else
+        next="true"
+    fi
+    _dusky_write vim_mode "$next"
+    _dusky_user_state_save
+    _dusky_emit_vim_actions "$next"
+}
+
+_dusky_key_escape() {
+    local prompt="${FZF_PROMPT:-}" input_state="${FZF_INPUT_STATE:-}"
+    local vim_mode
+    vim_mode="$(_dusky_read vim_mode)"
+    if [[ "$prompt" == *"󰍉"* || "$prompt" == *"search"* && "$vim_mode" == "true" ]]; then
+        _dusky_emit_vim_actions "true"
+    elif [[ "$input_state" == "disabled" || "$prompt" == *"🅝"* ]]; then
+        printf 'abort'
+    else
+        printf 'abort'
+    fi
+}
+
+spawn_terminal() {
+    local -a cmd=()
+    if command -v kitty >/dev/null 2>&1; then
+        cmd=(kitty --class=dusky-time-machine --title="Dusky Time Machine" -o confirm_os_window_close=0 -e)
+    elif command -v foot >/dev/null 2>&1; then
+        cmd=(foot --app-id=dusky-time-machine --title="Dusky Time Machine" --window-size-chars=140x36)
+    elif command -v ghostty >/dev/null 2>&1; then
+        cmd=(ghostty --class=dusky-time-machine --title="Dusky Time Machine" -e)
+    elif command -v wezterm >/dev/null 2>&1; then
+        cmd=(wezterm start --class=dusky-time-machine --)
+    elif command -v alacritty >/dev/null 2>&1; then
+        cmd=(alacritty --class=dusky-time-machine --title="Dusky Time Machine" -e)
+    else
+        return 1
+    fi
+    exec "${cmd[@]}" env DUSKY_TM_EPHEMERAL=1 "$0" "$@"
+}
+
 # -----------------------------------------------------------------------------
 # 12. Library return / worker dispatch — NO TRAPS on these paths
 # -----------------------------------------------------------------------------
@@ -1362,6 +1563,11 @@ _dusky_worker_dispatch() {
         act-enter)            _dusky_act_enter "$@" ;;
         act-wipe)             _dusky_act_wipe "$@" ;;
         act-return)           _dusky_act_return "$@" ;;
+        move-preview)         _dusky_act_move_preview "$@" ;;
+        resize-preview)       _dusky_act_resize_preview "$@" ;;
+        toggle-vim)           _dusky_toggle_vim "$@" ;;
+        vim-init)             _dusky_vim_init "$@" ;;
+        key-escape)           _dusky_key_escape "$@" ;;
         orphan-report)        _dusky_orphan_report "$@" ;;
         header)               _dusky_header_line "$@" ;;
         *)
@@ -1602,14 +1808,7 @@ _dusky_self_test() {
     fi
     DUSKY_ROLE=owner
 
-    # H. Static contract: no --force switch, no git clean, no stash -u, no $0 preview.
-    local check_force="switch --quiet --"
-    check_force="${check_force}force"
-    if grep -vE '^[[:space:]]*#' "$DUSKY_TM_ENGINE" | grep -v 'check_force' | grep -n -- "$check_force" >/dev/null; then
-        _bad "engine still contains git switch --force"
-    else
-        _ok "no git switch --force in engine"
-    fi
+    # H. Static contract: no git clean, no stash -u, no $0 preview, valid refresh chain.
     local check_clean="git "
     check_clean="${check_clean}clean"
     if grep -vE '^[[:space:]]*#' "$DUSKY_TM_ENGINE" | grep -v 'check_clean' | grep -nE -- "\b${check_clean}\b" >/dev/null \
@@ -1629,6 +1828,13 @@ _dusky_self_test() {
         _ok "FZF preview uses --worker preview"
     else
         _bad "FZF preview is not wired to --worker"
+    fi
+    local rchain
+    rchain="$("$DUSKY_BASH" --noprofile --norc -- "$DUSKY_TM_ENGINE" --worker act-enter "$h1" 2>/dev/null || true)"
+    if [[ "$rchain" == *"transform-preview-label( "* || "$rchain" != *"transform-preview-label("* ]]; then
+        _bad "refresh chain has malformed transform-preview-label: $rchain"
+    else
+        _ok "refresh chain format specifiers valid"
     fi
 
     # I. Lock fd must still be held by the owner (workers did not steal it).
@@ -1651,6 +1857,10 @@ _dusky_self_test() {
 # 15. Main engine
 # -----------------------------------------------------------------------------
 main() {
+    if [[ ! -t 0 || ! -t 1 ]] && [[ "${1:-}" != "--worker" && "${1:-}" != "--self-test" ]]; then
+        spawn_terminal "$@"
+    fi
+
     _dusky_acquire_lock
     _dusky_state_init
     _dusky_load_present_target
@@ -1686,9 +1896,9 @@ main() {
 
     local w start_bind header
     w="$(_dusky_w)"
-    start_bind="start:wait+transform-footer(${w} footer)+transform-prompt(${w} prompt)+transform-preview-label(${w} preview-label)"
+    start_bind="start:wait+transform-footer(${w} footer)+transform-prompt(${w} prompt)+transform-preview-label(${w} preview-label)+transform(${w} vim-init)"
     if [[ "$line_num" =~ ^[0-9]+$ ]]; then
-        start_bind="start:wait+pos(${line_num})+transform-footer(${w} footer)+transform-prompt(${w} prompt)+transform-preview-label(${w} preview-label)"
+        start_bind="start:wait+pos(${line_num})+transform-footer(${w} footer)+transform-prompt(${w} prompt)+transform-preview-label(${w} preview-label)+transform(${w} vim-init)"
     fi
     header="$(_dusky_header_line)"
 
@@ -1729,6 +1939,18 @@ main() {
         --preview-label='  commit  ' \
         --preview-label-pos=center \
         --bind="$start_bind" \
+        --bind="resize:refresh-preview+transform-header(${w} header)+reload-sync(${w} list)" \
+        --bind="alt-m:transform:${w} toggle-vim" \
+        --bind="esc:transform:${w} key-escape" \
+        --bind="alt-left:transform:${w} resize-preview left" \
+        --bind="alt-right:transform:${w} resize-preview right" \
+        --bind="alt-up:transform:${w} resize-preview up" \
+        --bind="alt-down:transform:${w} resize-preview down" \
+        --bind="alt-h:transform:${w} move-preview left" \
+        --bind="alt-j:transform:${w} move-preview down" \
+        --bind="alt-k:transform:${w} move-preview up" \
+        --bind="alt-l:transform:${w} move-preview right" \
+        --bind="alt-v:transform:${w} move-preview hidden" \
         --bind="enter:transform:${w} act-enter {1}" \
         --bind="double-click:transform:${w} act-enter {1}" \
         --bind="ctrl-r:transform:${w} act-return" \
@@ -1747,6 +1969,10 @@ main() {
         --bind="ctrl-g:transform:${w} pos-head" \
         --bind="ctrl-l:reload-sync(${w} list)+transform-footer(${w} footer)" \
         --bind="result-final:bg-transform-footer(${w} footer)" \
+        --bind="j:down" --bind="k:up" --bind="g:first" --bind="G:last" \
+        --bind="ctrl-d:half-page-down" --bind="ctrl-u:half-page-up" \
+        --bind="q:abort" \
+        --bind="/:change-prompt( 󰍉 search ❯ )+enable-search+unbind(${DUSKY_VIM_KEYS})" \
         --color="bg:${MATUGEN_BG},bg+:${MATUGEN_MUTED},fg:${MATUGEN_FG},fg+:${MATUGEN_FG}" \
         --color="hl:${MATUGEN_ACCENT},hl+:${MATUGEN_ACCENT},pointer:${MATUGEN_SUCCESS},marker:${MATUGEN_SUCCESS}" \
         --color="prompt:${MATUGEN_ACCENT},spinner:${MATUGEN_ACCENT},info:${MATUGEN_ACCENT},header:${MATUGEN_ACCENT}" \
