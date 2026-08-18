@@ -545,9 +545,10 @@ hl.bind(
 -- Music Recognition
 hl.bind(
     "SUPER + ALT + M",
-    hl.dsp.exec_cmd(terminal .. " --class music_recognition.py --hold  " .. dusky_scripts .. "music/music_recognition.py"),
+    hl.dsp.exec_cmd(terminal .. " --class music_recognition.py  " .. dusky_scripts .. "music/music_recognition.py"),
     { description = "Music Recognition aka Shazam" }
 )
+
 
 
 -- Kokoro TTS

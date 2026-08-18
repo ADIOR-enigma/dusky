@@ -888,6 +888,22 @@ def read_single_key() -> str:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
 
+def open_in_browser(url: str) -> None:
+    """Open URL in default browser completely detached from the terminal process group."""
+    if not url:
+        return
+    try:
+        subprocess.Popen(
+            ["xdg-open", url],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True
+        )
+    except Exception as e:
+        log_error(f"Failed to open URL in browser ({url}): {e}")
+
+
 def run_fzf_browser(history_store: HistoryStore) -> None:
     """Interactive fuzzy search browser using fzf perfectly themed with Matugen."""
     items = history_store.get_all()
@@ -911,7 +927,7 @@ def run_fzf_browser(history_store: HistoryStore) -> None:
         lookup[key] = s
 
     fzf_input = "\n".join(lines)
-    header = "ENTER: Open Track URL | CTRL-Y: Copy Info | ESC: Back"
+    header = "ENTER: Open on YouTube | CTRL-Y: Copy Info | ESC: Exit"
     env = os.environ.copy()
     env["FZF_DEFAULT_OPTS"] = f"--color={fzf_colors} --pointer='▌' --marker='┃' --info=inline-right"
 
@@ -931,21 +947,31 @@ def run_fzf_browser(history_store: HistoryStore) -> None:
                 "--border-label-pos=top:center",
                 "--layout=reverse",
                 "--height=50%",
+                "--expect=ctrl-y",
             ],
             input=fzf_input.encode("utf-8"),
             capture_output=True,
             env=env
         )
-        selected_key = proc.stdout.decode("utf-8").strip()
+        output_lines = proc.stdout.decode("utf-8").splitlines()
+        if len(output_lines) >= 2:
+            key_pressed = output_lines[0].strip()
+            selected_key = output_lines[1].strip()
+        elif len(output_lines) == 1:
+            key_pressed = ""
+            selected_key = output_lines[0].strip()
+        else:
+            return
+
         if selected_key and selected_key in lookup:
             selected_song = lookup[selected_key]
-            console.clear()
-            console.print(render_song_card(selected_song, len(items)))
-            url = selected_song.youtube_search_url or selected_song.shazam_url or selected_song.spotify_url
-            if url:
-                console.print()
-                if console.input("[accent]Open this track in browser? (Y/n): [/accent]").strip().lower() not in ("n", "no"):
-                    subprocess.Popen(["xdg-open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if key_pressed == "ctrl-y":
+                copy_to_clipboard(f"{selected_song.title} - {selected_song.artist}")
+                sys.exit(0)
+            else:
+                url = selected_song.youtube_search_url or selected_song.shazam_url or selected_song.spotify_url
+                open_in_browser(url)
+                sys.exit(0)
     except Exception as e:
         log_error(f"fzf error: {e}")
 
@@ -955,37 +981,60 @@ def handle_interactive_post_recognition(song: SongMetadata | None, history_store
     if not sys.stdin.isatty():
         return
 
-    while True:
-        action_text = Text.from_markup(
-            "\n [accent]Actions:[/accent] [bold fg][H][/bold fg] History  [bold fg][F][/bold fg] FZF Search  [bold fg][O][/bold fg] Open URL  [bold fg][C][/bold fg] Copy  [bold fg][Q][/bold fg] Exit"
-        )
-        console.print(action_text)
+    action_text = Text.from_markup(
+        "\n [accent]Actions:[/accent] [bold fg][H][/bold fg] History  [bold fg][F][/bold fg] FZF Search  [bold fg][O][/bold fg] Open on YouTube  [bold fg][C][/bold fg] Copy  [bold fg][Q][/bold fg] Exit"
+    )
+    console.print(action_text)
 
+    try:
+        key = read_single_key().lower()
+    except (KeyboardInterrupt, EOFError):
+        sys.exit(0)
+
+    if key in ("q", "\x1b", "\r", "\n", "\x03", "\x04", ""):
+        sys.exit(0)
+    elif key == "h":
+        console.clear()
+        items = history_store.get_all()
+        console.print(render_history_table(items))
+        console.print(Text.from_markup("\n [accent]Actions:[/accent] [bold fg][F][/bold fg] FZF Search  [bold fg][O][/bold fg] Open on YouTube  [bold fg][C][/bold fg] Copy Last  [bold fg][Q][/bold fg] Exit"))
         try:
-            key = read_single_key().lower()
+            sub_key = read_single_key().lower()
         except (KeyboardInterrupt, EOFError):
-            break
-
-        if key in ("q", "\x1b", "\r", "\n", "\x03", "\x04", ""):
-            break
-        elif key == "h":
+            sys.exit(0)
+        if sub_key == "f":
             console.clear()
-            items = history_store.get_all()
-            console.print(render_history_table(items))
-        elif key == "f":
             run_fzf_browser(history_store)
-        elif key == "o":
-            target = song or history_store.get_latest()
-            if target:
-                url = target.spotify_url or target.youtube_search_url or target.shazam_url
-                if url:
-                    subprocess.Popen(["xdg-open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    console.print("[success]✔ Opening track in browser...[/success]")
-        elif key == "c":
-            target = song or history_store.get_latest()
-            if target:
-                copy_to_clipboard(f"{target.title} - {target.artist}")
-                console.print(f"[success]✔ Copied '{target.title} - {target.artist}' to clipboard.[/success]")
+        elif sub_key == "o":
+            latest = history_store.get_latest()
+            if latest:
+                url = latest.youtube_search_url or latest.shazam_url or latest.spotify_url
+                open_in_browser(url)
+            sys.exit(0)
+        elif sub_key == "c":
+            latest = history_store.get_latest()
+            if latest:
+                copy_to_clipboard(f"{latest.title} - {latest.artist}")
+            sys.exit(0)
+        else:
+            sys.exit(0)
+    elif key == "f":
+        console.clear()
+        run_fzf_browser(history_store)
+    elif key == "o":
+        target = song or history_store.get_latest()
+        if target:
+            url = target.youtube_search_url or target.shazam_url or target.spotify_url
+            open_in_browser(url)
+        sys.exit(0)
+    elif key == "c":
+        target = song or history_store.get_latest()
+        if target:
+            copy_to_clipboard(f"{target.title} - {target.artist}")
+        sys.exit(0)
+
+
+
 
 
 # ==============================================================================
