@@ -729,23 +729,45 @@ _dusky_shield_present() {
 # 11. Layout & Rendering Math — WHEN | GRAPH/REFS/MSG | AUTHOR | DATE
 # -----------------------------------------------------------------------------
 _dusky_compute_widths() {
-    local cols preview_pct list_cols
+    local cols preview_pct list_cols cur_layout edge pct
     cols="${FZF_COLUMNS:-${COLUMNS:-}}"
     if [[ ! "$cols" =~ ^[0-9]+$ || "$cols" -le 0 ]]; then
         cols="$(tput cols 2>/dev/null || printf '120')"
     fi
-    if (( cols < 110 )); then
-        export DUSKY_PREVIEW_WINDOW="down,50%,border-top,wrap"
-        list_cols=$(( cols - 6 ))
-    elif (( cols < 140 )); then
-        preview_pct=70
-        export DUSKY_PREVIEW_WINDOW="right,${preview_pct}%,border-left,wrap"
-        list_cols=$(( (cols * (100 - preview_pct) / 100) - 8 ))
-    else
-        preview_pct=70
-        export DUSKY_PREVIEW_WINDOW="right,${preview_pct}%,border-left,wrap"
-        list_cols=$(( (cols * (100 - preview_pct) / 100) - 8 ))
+
+    cur_layout="$(_dusky_read preview_layout 2>/dev/null || true)"
+    if [[ -z "$cur_layout" ]]; then
+        _dusky_user_state_load
+        cur_layout="${DUSKY_CFG_PREVIEW_LAYOUT:-}"
     fi
+
+    if [[ "$cur_layout" =~ ^(up|down|left|right),([0-9]+)% ]]; then
+        edge="${BASH_REMATCH[1]}"
+        pct="${BASH_REMATCH[2]}"
+    elif [[ "$cur_layout" == "hidden" ]]; then
+        edge="hidden"
+        pct=0
+    else
+        if (( cols < 110 )); then
+            edge="down"
+            pct=50
+            cur_layout="down,50%,border-top,wrap"
+        else
+            edge="right"
+            pct=70
+            cur_layout="right,70%,border-left,wrap"
+        fi
+    fi
+
+    _dusky_write preview_layout "$cur_layout" 2>/dev/null || true
+    export DUSKY_PREVIEW_WINDOW="$cur_layout"
+
+    if [[ "$edge" == "down" || "$edge" == "up" || "$edge" == "hidden" ]]; then
+        list_cols=$(( cols - 6 ))
+    else
+        list_cols=$(( (cols * (100 - pct) / 100) - 8 ))
+    fi
+
     if (( list_cols < 48 )); then
         list_cols=48
     fi
