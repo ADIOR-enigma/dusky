@@ -656,6 +656,32 @@ def teardown_target_storage(target_dev: str, max_retries: int = 4) -> None:
         # 5. Flush Dirty Page Buffers
         run("blockdev", "--flushbufs", resolved_disk, check=False, capture=True)
 
+        # 5.5. Deregister Btrfs kernel device references.
+        # If a Btrfs filesystem was previously mounted from a partition on this
+        # disk, the kernel's btrfs module retains a bd_claim on the block device
+        # even after umount. This prevents O_EXCL opens (which mkfs.btrfs uses)
+        # and makes the partition permanently "busy" until reboot.
+        # We must deregister BEFORE wipefs erases the superblock, because once
+        # the superblock is gone, `btrfs device scan --forget` cannot identify
+        # the device to release.
+        try:
+            dev_name = Path(resolved_disk).name
+            # Check each partition for btrfs sysfs references
+            for btrfs_uuid_dir in Path("/sys/fs/btrfs").iterdir():
+                if btrfs_uuid_dir.name == "features":
+                    continue
+                devices_dir = btrfs_uuid_dir / "devices"
+                if devices_dir.is_dir():
+                    for dev_link in devices_dir.iterdir():
+                        if dev_name in dev_link.name:
+                            part_dev = f"/dev/{dev_link.name}"
+                            console.print(f"[yellow]>> Deregistering stale Btrfs reference on {part_dev} (UUID: {btrfs_uuid_dir.name})[/yellow]")
+                            run("btrfs", "device", "scan", "--forget", part_dev, check=False, capture=True)
+            # Global forget as fallback
+            run("btrfs", "device", "scan", "--forget", check=False, capture=True)
+        except Exception:
+            pass
+
         # 6. Settle udev events
         run("udevadm", "settle", "--timeout=5", check=False, capture=True)
 
@@ -676,6 +702,23 @@ def teardown_target_storage(target_dev: str, max_retries: int = 4) -> None:
                 if holders_path.is_dir() and any(holders_path.iterdir()):
                     busy_found = True
                     break
+
+        # Also check for stale btrfs kernel claims via O_EXCL test
+        if not busy_found:
+            dev_name = Path(resolved_disk).name
+            for block_path in Path("/sys/class/block").glob(f"{dev_name}[0-9]*"):
+                part_dev = f"/dev/{block_path.name}"
+                if Path(part_dev).exists():
+                    try:
+                        fd = os.open(part_dev, os.O_RDONLY | os.O_EXCL)
+                        os.close(fd)
+                    except OSError:
+                        # Device has a kernel claim — retry btrfs forget
+                        console.print(f"[yellow]>> {part_dev} still has kernel claim, forcing btrfs forget...[/yellow]")
+                        run("btrfs", "device", "scan", "--forget", check=False, capture=True)
+                        time.sleep(1)
+                        busy_found = True
+                        break
 
         if not busy_found:
             console.print(f"[green]>> Teardown clean on attempt {attempt}. Block device and partitions are free.[/green]")
@@ -959,10 +1002,25 @@ def format_root_and_efi(root_part, efi_part, format_efi, do_encrypt, boot_mode, 
                     luks_ba[i]=0
         btrfs_target = f"/dev/mapper/{TARGET_CRYPT_NAME}"
         
+    mkfs_cmd = ["mkfs.btrfs", "-f"]
     if BTRFS_CSUM == "blake2":
-        run("mkfs.btrfs","-f","--csum","blake2","-O","no-holes","-L",DUSKY_ROOT_LABEL,btrfs_target, capture=True)
-    else:
-        run("mkfs.btrfs","-f","-L",DUSKY_ROOT_LABEL,btrfs_target, capture=True)
+        mkfs_cmd += ["--csum", "blake2", "-O", "no-holes"]
+    mkfs_cmd += ["-L", DUSKY_ROOT_LABEL, btrfs_target]
+
+    for mkfs_attempt in range(1, 6):
+        try:
+            run(*mkfs_cmd, capture=True)
+            break
+        except subprocess.CalledProcessError as e:
+            detail = (e.stderr or e.stdout or str(e)).strip()
+            if "busy" in detail.lower() and mkfs_attempt < 5:
+                console.print(f"[yellow]Failed mkfs.btrfs {btrfs_target} (attempt {mkfs_attempt}/5, device busy). Retrying...[/yellow]")
+                run("udevadm", "settle", "--timeout=5", check=False, capture=True)
+                time.sleep(2)
+            else:
+                console.print(f"[red]Failed mkfs.btrfs -f -L {DUSKY_ROOT_LABEL} {btrfs_target}[/red]")
+                console.print(f"[red]Details: {detail}[/red]")
+                raise
         
     if boot_mode == "UEFI" and efi_part:
         if format_efi:
@@ -1138,7 +1196,21 @@ def strategy_wipe(target_dev, boot_mode, do_encrypt, efi_size, has_win, win_esp,
     teardown_device(target_dev)
     ensure_mapper_free(target_dev)
     root_part, efi_part = write_gpt_sfdisk(target_dev, boot_mode, do_encrypt, efi_size)
-    
+
+    # Robust settle: after sfdisk creates new partitions, udev rules can hold
+    # the device busy for several seconds. We must ensure they're fully released
+    # before attempting mkfs.
+    for _settle in range(5):
+        run("udevadm", "settle", "--timeout=5", check=False, capture=True)
+        # Check if the root partition is actually openable
+        try:
+            fd = os.open(root_part, os.O_RDONLY | os.O_EXCL)
+            os.close(fd)
+            break  # Device is free
+        except OSError:
+            console.print(f"[yellow]Partition {root_part} still busy, waiting... ({_settle+1}/5)[/yellow]")
+            time.sleep(2)
+
     format_root_and_efi(root_part, efi_part, True, do_encrypt, boot_mode, has_win, win_esp, creds, luks_ba)
 
     env=f'PROVISIONED_ROOT_PART="{root_part}"\n'
@@ -1381,6 +1453,8 @@ def main():
     parser.add_argument("--strategy", type=str, default=None, help="Partitioning strategy: wipe|existing|manual|rescue (1-4)")
     parser.add_argument("--rescue", action="store_true", help="Shortcut for --strategy rescue")
     args = parser.parse_args()
+    if os.environ.get("AUTO_MODE") in ("1", "true", "True"):
+        args.auto = True
 
     if hasattr(os, "geteuid") and os.geteuid() != 0:
         console.print("[red]Need root[/red]")

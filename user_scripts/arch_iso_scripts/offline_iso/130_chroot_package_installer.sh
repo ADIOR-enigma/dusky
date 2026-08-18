@@ -508,9 +508,30 @@ main() {
   
   ensure_keyring
 
-  for i in "${!GROUP_LABELS[@]}"; do
-    install_group "${GROUP_LABELS[i]}" "${GROUP_ARRAYS[i]}"
+  # Build unified deduplicated package list across all configured groups
+  local -a all_pkgs=()
+  local -A seen_pkgs=()
+  local grp_array pkg
+  for grp_array in "${GROUP_ARRAYS[@]}"; do
+    local -n arr_ref="$grp_array"
+    for pkg in "${arr_ref[@]}"; do
+      [[ -n $pkg ]] || continue
+      if [[ -z ${seen_pkgs[$pkg]+_} ]]; then
+        seen_pkgs[$pkg]=1
+        all_pkgs+=("$pkg")
+      fi
+    done
   done
+
+  print_info "Attempting consolidated single-pass batch installation (${#all_pkgs[@]} packages)..."
+  if run_pacman --sync --needed --noconfirm -- "${all_pkgs[@]}"; then
+    print_ok "Consolidated batch installation completed successfully in a single pass!"
+  else
+    print_warn "Consolidated batch encountered issues. Falling back to group-by-group installation..."
+    for i in "${!GROUP_LABELS[@]}"; do
+      install_group "${GROUP_LABELS[i]}" "${GROUP_ARRAYS[i]}"
+    done
+  fi
 
   print_summary
   exit 0

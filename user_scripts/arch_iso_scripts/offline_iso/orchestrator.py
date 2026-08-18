@@ -1077,6 +1077,47 @@ def discover_profiles() -> List[ProfileConfig]:
     return profiles
 
 
+def recover_iso_block_device() -> Optional[Path]:
+    """
+    Recovers the ISO block device if unmounted due to copytoram or Ventoy abstraction.
+    """
+    # 1. Check blkid for iso9660
+    try:
+        r = subprocess.run(["blkid", "-t", "TYPE=iso9660", "-o", "device"], capture_output=True, text=True, check=False)
+        if r.stdout:
+            for line in r.stdout.splitlines():
+                dev = line.strip()
+                if dev and Path(dev).exists():
+                    return Path(dev)
+    except Exception:
+        pass
+
+    # 2. Check Ventoy mapper
+    ventoy_map = Path("/dev/mapper/ventoy")
+    if ventoy_map.is_block_device():
+        return ventoy_map
+
+    # 3. Check lsblk JSON for iso9660 or archiso labels
+    try:
+        r = subprocess.run(["lsblk", "--json", "--paths", "-o", "PATH,TYPE,FSTYPE,LABEL"], capture_output=True, text=True, check=False)
+        if r.stdout:
+            data = json.loads(r.stdout)
+            for dev in data.get("blockdevices", []):
+                fstype = (dev.get("fstype") or "").lower()
+                label = (dev.get("label") or "").lower()
+                if "iso9660" in fstype or "arch" in label:
+                    return Path(dev["path"])
+                for child in dev.get("children", []) or []:
+                    c_fstype = (child.get("fstype") or "").lower()
+                    c_label = (child.get("label") or "").lower()
+                    if "iso9660" in c_fstype or "arch" in c_label:
+                        return Path(child["path"])
+    except Exception:
+        pass
+
+    return None
+
+
 def verify_offline_repo_fast(repo_dir: Optional[str] = None) -> Tuple[bool, str]:
     """
     Fast verification of offline package repository integrity across candidate paths.
@@ -1100,6 +1141,20 @@ def verify_offline_repo_fast(repo_dir: Optional[str] = None) -> Tuple[bool, str]
         if cand.is_dir() and (cand / "archrepo.db").is_file():
             r_path = cand
             break
+
+    # If not found, attempt recovery of ISO block device (e.g. Ventoy / copytoram)
+    if not r_path and os.geteuid() == 0:
+        iso_dev = recover_iso_block_device()
+        if iso_dev:
+            iso_mnt = Path("/run/archiso/bootmnt")
+            iso_mnt.mkdir(parents=True, exist_ok=True)
+            res = subprocess.run(["mountpoint", "-q", str(iso_mnt)], check=False)
+            if res.returncode != 0:
+                subprocess.run(["mount", "-o", "ro", str(iso_dev), str(iso_mnt)], capture_output=True, check=False)
+            for cand in candidates:
+                if cand.is_dir() and (cand / "archrepo.db").is_file():
+                    r_path = cand
+                    break
 
     if not r_path:
         return False, "Offline repository media directory / archrepo.db not found."
@@ -2670,6 +2725,9 @@ def main():
             print(f"  - {pname}: {p.name} ({p.description})")
             print(f"    Phase 1 tasks: {len(p.phase1_tasks)}, Phase 2 tasks: {len(p.phase2_tasks)}")
         sys.exit(0)
+
+    if args.auto:
+        os.environ["AUTO_MODE"] = "1"
 
     phase1 = args.phase1
     phase2 = args.phase2

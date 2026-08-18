@@ -46,8 +46,16 @@ FINAL_PACKAGES = [
 def wait_for_pacman_lock():
     lock_file = Path("/var/lib/pacman/db.lck")
     while lock_file.exists():
+        res = subprocess.run(["pgrep", "-x", "pacman"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if res.returncode != 0:
+            try:
+                lock_file.unlink()
+                Log.warn("Removed stale pacman lock file: /var/lib/pacman/db.lck")
+                break
+            except Exception:
+                pass
         Log.warn("Waiting for pacman lock...")
-        time.sleep(3)
+        time.sleep(2)
 
 class HardwareScanner:
     def __init__(self):
@@ -294,7 +302,7 @@ def main():
     Log.info("Installing...")
     wait_for_pacman_lock()
 
-    pacstrap_cmd = ["pacstrap", "-K", str(MOUNT_POINT)] + deduped_packages + ["--needed"]
+    pacstrap_cmd = ["pacstrap", str(MOUNT_POINT)] + deduped_packages + ["--needed"]
     
     try:
         if auto_mode:

@@ -10,6 +10,17 @@
 # Set to 1 for pure Offline Installation (skips internet check and network configure scripts).
 # Set to 0 for Online Installation (performs internet checks and prompts to configure).
 declare -gi OFFLINE_MODE=1
+for ((i=1; i<=$#; i++)); do
+    arg="${!i}"
+    if [[ "$arg" == "--online" || "$arg" == --profile=Online* || "$arg" == --profile=002_online* ]]; then
+        OFFLINE_MODE=0
+    elif [[ "$arg" == "--profile" ]]; then
+        next_i=$((i+1))
+        if [[ "${!next_i:-}" =~ ^(Online|002_online) ]]; then
+            OFFLINE_MODE=0
+        fi
+    fi
+done
 
 set -o errexit -o nounset -o pipefail -o errtrace
 

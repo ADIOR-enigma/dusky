@@ -139,6 +139,15 @@ Server = https://berlin.mirror.pkgbuild.com/$repo/os/x86_64
 
     console.print("[bold green][OK] Online repository configuration successfully applied.[/bold green]")
 
+    clear_stale_pacman_lock()
+
+    console.print("[cyan]Syncing online package databases (core, extra, multilib)...[/cyan]")
+    res = subprocess.run(["pacman", "-Sy"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    if res.returncode == 0:
+        console.print("[bold green][OK] Online package databases synced successfully.[/bold green]")
+    else:
+        console.print(f"[yellow][WARN] 'pacman -Sy' returned exit code {res.returncode}:\n{res.stdout}[/yellow]")
+
 
 def switch_to_offline(pacman_conf: Path, mirrorlist: Path) -> None:
     console.print(Panel("[bold cyan]Switching to OFFLINE Repositories (Local Media file://)[/bold cyan]", box=box.ROUNDED))
