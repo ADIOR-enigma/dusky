@@ -77,6 +77,30 @@ post_hook   = '''
   dbus-send --session --type=signal /KGlobalSettings org.kde.KGlobalSettings.notifyChange int32:0 int32:0 || :
 '''
 
+[templates.kate_syntax]
+input_path  = '~/.config/matugen/templates/kate-syntax.theme'
+output_path = '~/.config/matugen/generated/kate-matugen.theme'
+post_hook   = '''
+  mkdir -p "$HOME/.local/share/org.kde.syntax-highlighting/themes"
+  ln -nfs "$HOME/.config/matugen/generated/kate-matugen.theme" "$HOME/.local/share/org.kde.syntax-highlighting/themes/Matugen.theme"
+'''
+
+[templates.konsole]
+input_path  = '~/.config/matugen/templates/konsole.colorscheme'
+output_path = '~/.config/matugen/generated/konsole-matugen.colorscheme'
+post_hook   = '''
+  mkdir -p "$HOME/.local/share/konsole"
+  ln -nfs "$HOME/.config/matugen/generated/konsole-matugen.colorscheme" "$HOME/.local/share/konsole/Matugen.colorscheme"
+'''
+
+[templates.konsole_profile]
+input_path  = '~/.config/matugen/templates/konsole.profile'
+output_path = '~/.config/matugen/generated/konsole-matugen.profile'
+post_hook   = '''
+  mkdir -p "$HOME/.local/share/konsole"
+  ln -nfs "$HOME/.config/matugen/generated/konsole-matugen.profile" "$HOME/.local/share/konsole/Matugen.profile"
+'''
+
 # [templates.kvantum_kvconfig]
 # input_path  = '~/.config/matugen/templates/kvantum-colors.kvconfig'
 # output_path = '~/.config/matugen/generated/kvantum-matugen.kvconfig'

@@ -35,6 +35,12 @@ KDE_APP_CONFIGS: Final[tuple[str, ...]] = (
     "konsolerc",
     "filelightrc",
     "plasma-systemmonitorrc",
+    "elisarc",
+    "kdenliverc",
+    "kritarc",
+    "ktorrentrc",
+    "korganizerrc",
+    "merkurorc",
     "kdeglobals",
 )
 
@@ -52,7 +58,7 @@ def patch_ini_file_content(content: str, group_entries: dict[str, dict[str, str]
     keys_updated: dict[str, set[str]] = {g: set() for g in group_entries}
 
     group_header_regex = re.compile(r"^\s*\[([^\]]+)\]\s*$")
-    key_val_regex = re.compile(r"^(\s*)([A-Za-z0-9_.:-]+)(\s*=\s*)(.*)$")
+    key_val_regex = re.compile(r"^(\s*)([^=\r\n]+?)(\s*=\s*)(.*)$")
 
     for line in lines:
         match_header = group_header_regex.match(line)
@@ -148,10 +154,31 @@ def sync_kde_apps(
     config_dir = config_directory or Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
     synced: list[str] = []
 
-    target_patch = {
+    base_patch = {
         "General": {"ColorScheme": scheme_name},
         "UiSettings": {"ColorScheme": scheme_name},
         "KDE": {"ColorScheme": scheme_name, "widgetStyle": "Fusion"},
+    }
+
+    app_specific_patches: dict[str, dict[str, dict[str, str]]] = {
+        "katerc": {
+            "KTextEditor Renderer": {"Color Theme": scheme_name, "Auto Color Theme Selection": "false"},
+        },
+        "kwriterc": {
+            "KTextEditor Renderer": {"Color Theme": scheme_name, "Auto Color Theme Selection": "false"},
+        },
+        "katepartrc": {
+            "KTextEditor Renderer": {"Color Theme": scheme_name, "Auto Color Theme Selection": "false"},
+        },
+        "konsolerc": {
+            "Desktop Entry": {"DefaultProfile": f"{scheme_name}.profile"},
+        },
+        "gwenviewrc": {
+            "View": {"BackgroundColorMode": "0"},
+        },
+        "kritarc": {
+            "theme": {"theme": scheme_name, "color-scheme": scheme_name},
+        },
     }
 
     for conf_name in KDE_APP_CONFIGS:
@@ -161,8 +188,16 @@ def sync_kde_apps(
         if conf_name == "kdeglobals" and conf_path.is_symlink():
             continue
 
+        # Merge base patch with any app-specific custom sections
+        patch = {g: dict(kvs) for g, kvs in base_patch.items()}
+        if conf_name in app_specific_patches:
+            for group, kvs in app_specific_patches[conf_name].items():
+                if group not in patch:
+                    patch[group] = {}
+                patch[group].update(kvs)
+
         original_content = conf_path.read_text(encoding="utf-8") if conf_path.is_file() else ""
-        content = patch_ini_file_content(original_content, target_patch)
+        content = patch_ini_file_content(original_content, patch)
 
         if content != original_content:
             if not dry_run:
