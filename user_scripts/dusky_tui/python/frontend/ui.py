@@ -2550,22 +2550,20 @@ Tooltip {
 
         # Tail rendering.
         if item.type_ in ("action", "preset", "menu"):
-            txt.append("   ")
-
             if item.type_ == "preset":
                 if is_active_preset:
-                    txt.append(" 󰄬 Active ", style=f"bold {self.theme_colors['success']}")
+                    txt.append("󰄬 Active", style=f"bold {self.theme_colors['success']}")
                 elif is_deviated_preset:
-                    txt.append(" 󰐊 Apply ", style=f"bold {self.theme_colors['warning']}")
+                    txt.append("󰐊 Apply", style=f"bold {self.theme_colors['warning']}")
                 else:
                     txt.append(
-                        " 󰐊 Apply ",
+                        "󰐊 Apply",
                         style=f"bold {self.theme_colors['accent']}" if exists else f"{self.theme_colors['muted']} italic"
                     )
 
             elif item.type_ == "action":
                 txt.append(
-                    " 󰐊 Run ",
+                    "󰐊 Run",
                     style=f"bold {self.theme_colors['accent']}" if exists else f"{self.theme_colors['muted']} italic"
                 )
 
@@ -2582,15 +2580,15 @@ Tooltip {
                         opt0_lower = opt0.lower()
 
                         if opt0_lower.startswith("trigger:"):
-                            btn_label = f" 󰐊 {opt0[8:]} "
+                            btn_label = f"󰐊 {opt0[8:]}"
                         elif opt0_lower.startswith("copy:"):
-                            btn_label = f" 󰈔 {opt0[5:]} "
+                            btn_label = f"󰈔 {opt0[5:]}"
                         elif opt0_lower == "trigger":
-                            btn_label = " 󰐊 Apply "
+                            btn_label = "󰐊 Apply"
                         elif opt0_lower == "copy":
-                            btn_label = " 󰈔 Copy "
+                            btn_label = "󰈔 Copy"
                         else:
-                            btn_label = " 󰐊 Apply "
+                            btn_label = "󰐊 Apply"
 
                         if not exists:
                             txt.append(btn_label, style=f"{self.theme_colors['muted']} italic")
@@ -2606,14 +2604,14 @@ Tooltip {
 
                     elif not exists:
                         txt.append(
-                            f" {'◉' if item.value else '◯'} ",
+                            f"{'◉' if item.value else '◯'}",
                             style=f"{self.theme_colors['muted']} italic"
                         )
 
                     elif item.value:
-                        txt.append(" ◉ ", style=f"bold {self.theme_colors['success']}")
+                        txt.append("◉", style=f"bold {self.theme_colors['success']}")
                     else:
-                        txt.append(" ◯ ", style=f"{self.theme_colors['muted']}")
+                        txt.append("◯", style=f"dim {self.theme_colors['fg']}")
 
                 case "string":
                     if val_str == "":
@@ -2630,7 +2628,7 @@ Tooltip {
                     hex_color = f"#{r:02x}{g:02x}{b:02x}"
 
                     if not is_theme_variable(val_str):
-                        txt.append(" ⬤ ", style=hex_color if exists else self.theme_colors["muted"])
+                        txt.append("⬤ ", style=hex_color if exists else self.theme_colors["muted"])
 
                     if is_theme_variable(val_str):
                         display_name = None
@@ -2695,7 +2693,7 @@ Tooltip {
 
                             display_name = self._color_var_registry[norm_val]
 
-                        txt.append(f" {display_name}", style=accent)
+                        txt.append(display_name, style=accent)
 
                     else:
                         color_name = get_color_name(r, g, b)
@@ -5255,7 +5253,7 @@ Tooltip {
 
         trigger_bool = is_trigger_item(item)
 
-        if (item.type_ in ("preset", "action") or trigger_bool) and click_x >= 44:
+        if (item.type_ in ("preset", "action") or trigger_bool) and click_x >= 40:
             instant_action = True
 
         if item.key in ("__save_new_preset", "__import_new_preset") and (1 <= click_x <= 17):
