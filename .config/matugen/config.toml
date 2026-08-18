@@ -14,6 +14,7 @@ input_path  = '~/.config/matugen/templates/gtk3-colors.css'
 output_path = '~/.config/matugen/generated/gtk-3.css'
 post_hook   = '''
   ln -nfs "$HOME/.config/matugen/generated/gtk-3.css" "$HOME/.config/gtk-3.0/gtk.css"
+  gsettings set org.gnome.desktop.interface gtk-theme "Adwaita" || :
   gsettings set org.gnome.desktop.interface gtk-theme "adw-gtk3-dark" || :
 '''
 

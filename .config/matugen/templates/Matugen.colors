@@ -1,6 +1,6 @@
 [Colors:Button]
 BackgroundAlternate={{colors.surface_container_lowest.default.hex}}
-BackgroundNormal={{colors.surface_container_lowest.default.hex}}
+BackgroundNormal={{colors.surface_container_low.default.hex}}
 DecorationFocus={{colors.primary.default.hex}}
 DecorationHover={{colors.primary.default.hex}}
 ForegroundActive={{colors.primary.default.hex}}
@@ -56,7 +56,7 @@ ForegroundVisited={{colors.secondary.default.hex}}
 
 [Colors:Tooltip]
 BackgroundAlternate={{colors.surface_container_lowest.default.hex}}
-BackgroundNormal={{colors.surface_container_lowest.default.hex}}
+BackgroundNormal={{colors.surface_container_low.default.hex}}
 DecorationFocus={{colors.primary.default.hex}}
 DecorationHover={{colors.primary.default.hex}}
 ForegroundActive={{colors.primary.default.hex}}
@@ -69,7 +69,7 @@ ForegroundPositive={{colors.tertiary.default.hex}}
 ForegroundVisited={{colors.secondary.default.hex}}
 
 [Colors:View]
-BackgroundAlternate={{colors.surface_container_lowest.default.hex}}
+BackgroundAlternate={{colors.surface_container_low.default.hex}}
 BackgroundNormal={{colors.surface_container_lowest.default.hex}}
 DecorationFocus={{colors.primary.default.hex}}
 DecorationHover={{colors.primary.default.hex}}

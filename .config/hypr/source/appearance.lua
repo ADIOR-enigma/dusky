@@ -55,7 +55,7 @@ hl.config({
             vibrancy = 0.1696, -- Increase saturation of blurred colors [0.0 - 1.0]
             vibrancy_darkness = 0.0, -- How strong vibrancy effect is on dark areas [0.0 - 1.0]
             special = false, -- Whether to blur behind special workspace (expensive)
-            popups = false, -- Whether to blur popups (e.g. right-click menus)
+            popups = true, -- Whether to blur popups (e.g. right-click menus)
             popups_ignorealpha = 0.2, -- If pixel opacity is below this, will not blur popups [0.0 - 1.0]
             input_methods = false, -- Whether to blur input methods (e.g. fcitx5)
             input_methods_ignorealpha = 0.2 -- If pixel opacity is below this, will not blur input methods [0.0 - 1.0]
