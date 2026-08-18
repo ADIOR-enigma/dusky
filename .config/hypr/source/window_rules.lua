@@ -312,7 +312,7 @@ hl.window_rule({
     name = "float-clocks",
     match = { class = "^(org.gnome.clocks)$" },
     float = true,
-    size = {602, 297},  -- Compact landscape for World Clocks/Alarms
+    size = {376, 605}, -- set absolute window size in pixels
     center = true
 })
 
