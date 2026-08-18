@@ -2472,6 +2472,11 @@ class DuskyOrchestratorApp(App):
                     dur = time.time() - start_t
                     self.log_system(f"TUI Resumed. Script exited with code: {rc}")
 
+                    if rc in (130, -signal.SIGINT):
+                        self.log_system(f"Interactive task '{task.script_name}' cancelled by user (Ctrl+C). Aborting.")
+                        self.exit(130)
+                        return
+
                     if rc != 0:
                         error_msg = f"Exit code {rc}"
                 else:
@@ -3060,19 +3065,23 @@ def main():
         once_store.close()
         sys.exit(1)
 
-    app = DuskyOrchestratorApp(
-        tasks=tasks,
-        phase_title=phase_title,
-        profile_name=profile_name,
-        state_file=state_file,
-        manual=manual,
-        stop_on_fail=stop_on_fail,
-        force=force,
-        task_timeout=task_timeout,
-        once_store=once_store,
-        is_final_phase=bool(phase2),
-    )
-    app.run()
+    try:
+        app = DuskyOrchestratorApp(
+            tasks=tasks,
+            phase_title=phase_title,
+            profile_name=profile_name,
+            state_file=state_file,
+            manual=manual,
+            stop_on_fail=stop_on_fail,
+            force=force,
+            task_timeout=task_timeout,
+            once_store=once_store,
+            is_final_phase=bool(phase2),
+        )
+        exit_code = app.run()
+        sys.exit(exit_code if isinstance(exit_code, int) else 0)
+    except KeyboardInterrupt:
+        sys.exit(130)
 
 
 if __name__ == "__main__":

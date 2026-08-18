@@ -230,11 +230,17 @@ export PYTHONUTF8=1
 export PYTHONDONTWRITEBYTECODE=1
 
 log "INFO" "Handing execution control over to Python Textual UI..."
+set +e
 python3 "$ORCHESTRATOR_PY" "$PHASE_FLAG" "$@"
 orchestrator_exit=$?
+set -e
 
 if (( orchestrator_exit != 0 )); then
-    log "ERR" "Orchestrator exited with non-zero code: $orchestrator_exit"
+    if (( orchestrator_exit == 130 )); then
+        log "WARN" "Installation cancelled by user (Ctrl+C)."
+    else
+        log "ERR" "Orchestrator exited with code: $orchestrator_exit"
+    fi
     exit "$orchestrator_exit"
 fi
 
@@ -255,10 +261,15 @@ if (( IN_CHROOT == 0 )); then
         exit 0
     fi
 
+    readonly CHROOT_MNT="/mnt"
+    if ! mountpoint -q "$CHROOT_MNT"; then
+        log "ERR" "Target filesystem '$CHROOT_MNT' is not mounted. Cannot proceed to Phase 2."
+        exit 1
+    fi
+
     log "OK" "Phase 1 (ISO) completed successfully."
     log "INFO" "Initiating boundary crossing to Phase 2 (Chroot)..."
 
-    readonly CHROOT_MNT="/mnt"
     readonly TMP_DIR="/root/arch_install_tmp"
     readonly TARGET_TMP="${CHROOT_MNT}${TMP_DIR}"
 
