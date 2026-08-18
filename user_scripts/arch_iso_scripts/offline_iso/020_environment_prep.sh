@@ -104,7 +104,7 @@ fi
 
 # 1. Console Font
 msg_info "Setting console font..."
-setfont ter-v28b || setfont latarcyrheb-sun24 || msg_warn "Could not set font. Continuing..."
+setfont ter-v22b || setfont ter-v24b || setfont latarcyrheb-sun24 || msg_warn "Could not set font. Continuing..."
 
 # 2. Battery Threshold
 BAT_DIR=""
