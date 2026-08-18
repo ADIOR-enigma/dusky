@@ -770,7 +770,7 @@ class QuickPanalApp(Gtk.Application):
         provider = Gtk.CssProvider()
         extended_css = CSS + "\nswitch.compact-switch { min-width: 38px; min-height: 20px; }\nswitch.compact-switch slider { min-width: 18px; min-height: 18px; }\n"
         provider.load_from_data(extended_css.encode("utf-8"))
-        Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_USER + 10)
         self.window = QuickPanalWindow(self, self.pool, config_data, volume_submit=self.submit_volume if HAS_VOLUME else None, brightness_submit=self._submit_brightness if HAS_BRIGHTNESS else None, sunset_submit=self.submit_sunset if HAS_SUNSET else None)
         self.suspend_workers()
         _reclaim_idle_memory()

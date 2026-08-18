@@ -761,16 +761,43 @@ button.power-ring-btn.applying:checked {
     color: alpha(@theme_fg_color, 0.5); 
 }
 
-.sliders-container { background-color: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 16px; padding: 6px; }
-.slider-row { background-color: transparent; padding: 6px 8px; }
+switch.compact-switch {
+    background-color: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 999px;
+    min-width: 38px;
+    min-height: 20px;
+    box-shadow: none;
+}
+switch.compact-switch:checked {
+    background-color: alpha(@theme_selected_bg_color, 0.35);
+    border: 1px solid alpha(@theme_selected_bg_color, 0.6);
+}
+switch.compact-switch slider {
+    background-color: rgba(255, 255, 255, 0.85);
+    border-radius: 50%;
+    min-width: 16px;
+    min-height: 16px;
+    margin: 2px;
+    border: none;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+switch.compact-switch:checked slider {
+    background-color: @theme_selected_bg_color;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
 
-scale.pill-scale trough, scale.pill-scale highlight { min-height: 12px; border-radius: 6px; }
+.sliders-container { background-color: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 16px; padding: 6px 8px; }
+.slider-row { background-color: transparent; padding: 4px 6px; }
+
+scale.pill-scale { margin: 0 4px; padding: 0px; }
+scale.pill-scale trough, scale.pill-scale highlight { min-height: 15px; border-radius: 8px; border: none; box-shadow: none; }
 scale.pill-scale trough { background-color: rgba(255, 255, 255, 0.08); }
-scale.pill-scale slider { min-width: 0px; min-height: 0px; margin: 0px; background: transparent; border: none; box-shadow: none; }
+scale.pill-scale slider { min-width: 0px; min-height: 0px; margin: 0px; padding: 0px; background: transparent; background-color: transparent; border: none; box-shadow: none; opacity: 0; }
 scale.volume highlight, scale.brightness highlight, scale.sunset highlight { background-color: @theme_selected_bg_color; }
 .icon-volume, .icon-brightness, .icon-sunset { color: @theme_selected_bg_color; }
 .icon-label { font-size: 18px; font-family: "Symbols Nerd Font", "JetBrainsMono Nerd Font", monospace; }
-.value-label { font-size: 14px; font-weight: 700; opacity: 0.8; color: @theme_selected_bg_color; font-family: "JetBrainsMono Nerd Font", monospace; font-feature-settings: "tnum"; }
+.value-label { font-size: 14px; font-weight: 700; opacity: 0.8; color: @theme_selected_bg_color; font-family: "JetBrainsMono Nerd Font", monospace; font-feature-settings: "tnum"; min-width: 32px; }
 
 /* Notifications Section */
 box.notifications-panel { background: transparent; border: none; padding: 8px 4px 0px 4px; }
