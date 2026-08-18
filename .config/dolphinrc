@@ -1,8 +1,14 @@
+[DetailsMode]
+PreviewSize=22
+
 [General]
+ColorScheme=Matugen
 Version=202
 ViewPropsTimestamp=2026,8,14,12,43,21.165
 
+[KDE]
 ColorScheme=Matugen
+widgetStyle=Fusion
 
 [KFileDialog Settings]
 Places Icons Auto-resize=false
@@ -13,7 +19,3 @@ MenuBar=Disabled
 
 [UiSettings]
 ColorScheme=Matugen
-
-[KDE]
-ColorScheme=Matugen
-widgetStyle=Fusion

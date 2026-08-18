@@ -27,8 +27,8 @@ ForegroundPositive={{colors.tertiary.default.hex}}
 ForegroundVisited={{colors.secondary.default.hex}}
 
 [Colors:Header]
-BackgroundAlternate={{colors.surface_dim.default.hex}}
-BackgroundNormal={{colors.surface_dim.default.hex}}
+BackgroundAlternate={{colors.surface_container_lowest.default.hex}}
+BackgroundNormal={{colors.surface_container_lowest.default.hex}}
 DecorationFocus={{colors.primary.default.hex}}
 DecorationHover={{colors.primary.default.hex}}
 ForegroundActive={{colors.primary.default.hex}}

@@ -1,8 +1,7 @@
 /*
  * =============================================================================
- * GTK 3, GTK 4 & Libadwaita Material You Dynamic Dark Theme
+ * GTK 3 Material You Dynamic Dark Theme (adw-gtk3 Compatibility Layer)
  * Generated dynamically via Matugen (Arch Linux / Hyprland Rolling Release)
- * Canonical GNOME / Libadwaita 1.6+ & GTK 4.18+ Specification
  * =============================================================================
  */
 
@@ -226,7 +225,7 @@ dialog button {
 }
 
 /* =============================================================================
- * 10. Popovers, Menus & Menubars (Zero-Clipping Unified Rules)
+ * 10. Popovers, Menus & Menubars (GTK 3 Dedicated Specification)
  * ============================================================================= */
 menubar,
 .menubar {
@@ -250,34 +249,20 @@ menubar > menuitem:selected,
   color: @window_fg_color;
 }
 
-/* Outer popover window must be transparent in GTK4 to prevent double borders */
-popover {
-  background-color: transparent;
-  box-shadow: none;
-  border: none;
-}
-
-/* Inner popover contents and traditional menus */
+/* In GTK3, popover.background IS the menu bubble itself */
 popover.background,
-popover > contents,
+popover,
+.popover,
 menu,
 .menu,
 .context-menu,
-dropdown popover > contents,
 combobox window.popup > contents {
   background-color: @popover_bg_color;
   color: @popover_fg_color;
   border-radius: 12px;
   border: 1px solid @borders;
   box-shadow: 0 4px 16px @popover_shade_color;
-  padding: 6px;
-}
-
-popover > arrow,
-.popover > arrow {
-  background-color: @popover_bg_color;
-  border: none;
-  box-shadow: none;
+  padding: 4px;
 }
 
 menuitem,
@@ -449,7 +434,7 @@ button.flat:checked {
   background-color: alpha(@window_fg_color, 0.15);
 }
 
-/* Suggested & Accent Actions (e.g. Calculator '=' button) */
+/* Suggested & Accent Actions */
 button.suggested-action,
 button.accent,
 .suggested-action button {
@@ -476,15 +461,6 @@ button.destructive-action {
 
 button.destructive-action:hover {
   background-color: @destructive_hover_color;
-}
-
-/* Calculator & Keypad Tiles */
-.calculator button,
-.keypad button,
-mathdisplay {
-  border: 1px solid transparent;
-  border-radius: 10px;
-  font-weight: bold;
 }
 
 /* Stack Switchers & Segmented Button Pills (e.g. About/Credits/License) */

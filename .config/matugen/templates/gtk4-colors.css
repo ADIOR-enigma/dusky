@@ -1,6 +1,6 @@
 /*
  * =============================================================================
- * GTK 3, GTK 4 & Libadwaita Material You Dynamic Dark Theme
+ * GTK 4 & Libadwaita Material You Dynamic Dark Theme
  * Generated dynamically via Matugen (Arch Linux / Hyprland Rolling Release)
  * Canonical GNOME / Libadwaita 1.6+ & GTK 4.18+ Specification
  * =============================================================================
@@ -160,42 +160,7 @@
 @define-color light_5 {{colors.on_surface.default.hex}};
 
 /* =============================================================================
- * 8. GTK 3 & adw-gtk3 Canonical Compatibility Aliases
- * ============================================================================= */
-@define-color theme_fg_color @window_fg_color;
-@define-color theme_text_color @view_fg_color;
-@define-color theme_bg_color @window_bg_color;
-@define-color theme_base_color @view_bg_color;
-@define-color theme_selected_bg_color {{colors.primary_container.default.hex}};
-@define-color theme_selected_fg_color {{colors.on_primary_container.default.hex}};
-
-@define-color insensitive_bg_color {{colors.surface_container_lowest.default.hex}};
-@define-color insensitive_fg_color alpha(@window_fg_color, 0.45);
-@define-color insensitive_base_color @view_bg_color;
-
-@define-color theme_unfocused_fg_color alpha(@window_fg_color, 0.7);
-@define-color theme_unfocused_text_color alpha(@view_fg_color, 0.7);
-@define-color theme_unfocused_bg_color @window_bg_color;
-@define-color theme_unfocused_base_color @view_bg_color;
-@define-color theme_unfocused_selected_bg_color {{colors.surface_container_highest.default.hex}};
-@define-color theme_unfocused_selected_fg_color @window_fg_color;
-@define-color unfocused_insensitive_color alpha(@window_fg_color, 0.3);
-
-@define-color borders {{colors.outline_variant.default.hex}};
-@define-color unfocused_borders {{colors.outline_variant.default.hex}};
-
-@define-color wm_title @window_fg_color;
-@define-color wm_unfocused_title alpha(@window_fg_color, 0.5);
-@define-color wm_bg_a @window_bg_color;
-@define-color wm_bg_b @window_bg_color;
-@define-color wm_shadow rgba(0, 0, 0, 0.5);
-
-@define-color content_view_bg @view_bg_color;
-@define-color text_view_bg @view_bg_color;
-@define-color drop_target_color @accent_color;
-
-/* =============================================================================
- * 9. Dialogs, Message Boxes & Modal Windows
+ * 8. Dialogs, Message Boxes & Modal Windows
  * ============================================================================= */
 messagedialog,
 dialog,
@@ -226,43 +191,27 @@ dialog button {
 }
 
 /* =============================================================================
- * 10. Popovers, Menus & Menubars (Zero-Clipping Unified Rules)
+ * 9. Popovers & Menus (GTK 4 Dedicated Zero-Margin Specification)
  * ============================================================================= */
-menubar,
-.menubar {
-  background-color: @headerbar_bg_color;
-  color: @window_fg_color;
-  padding: 0;
-}
-
-menubar > menuitem,
-.menubar > menuitem {
-  color: @window_fg_color;
-  border-radius: 6px;
-  padding: 4px 8px;
-}
-
-menubar > menuitem:hover,
-.menubar > menuitem:hover,
-menubar > menuitem:selected,
-.menubar > menuitem:selected {
-  background-color: alpha(@window_fg_color, 0.12);
-  color: @window_fg_color;
-}
-
-/* Outer popover window must be transparent in GTK4 to prevent double borders */
-popover {
+/* In GTK 4, ALL outer popover wrappers MUST be 100% transparent with NO border/shadow */
+popover,
+popover.menu,
+popover.background,
+.popover,
+.popover.menu,
+.popover.background {
   background-color: transparent;
+  background-image: none;
   box-shadow: none;
   border: none;
+  padding: 0;
+  margin: 0;
 }
 
-/* Inner popover contents and traditional menus */
-popover.background,
+/* In GTK 4, ONLY the inner contents bubble gets the color, single border, radius & shadow */
 popover > contents,
-menu,
-.menu,
-.context-menu,
+.popover > contents,
+popover.menu > contents,
 dropdown popover > contents,
 combobox window.popup > contents {
   background-color: @popover_bg_color;
@@ -280,18 +229,15 @@ popover > arrow,
   box-shadow: none;
 }
 
-menuitem,
-.menuitem,
-modelbutton {
+popover modelbutton,
+popover listview row {
   min-height: 28px;
   padding: 4px 8px;
   border-radius: 6px;
   color: @popover_fg_color;
 }
 
-menuitem:hover,
-.menuitem:hover,
-modelbutton:hover,
+popover modelbutton:hover,
 popover listview row:hover {
   background-color: alpha(@accent_color, 0.18);
   color: @window_fg_color;
@@ -299,51 +245,7 @@ popover listview row:hover {
 }
 
 /* =============================================================================
- * 11. Tooltips (Zero-Clipping Subsurface CSD Rules)
- * ============================================================================= */
-tooltip {
-  background-color: transparent;
-  box-shadow: none;
-  border: none;
-  padding: 4px 8px;
-}
-
-tooltip.background {
-  background-color: @dialog_bg_color;
-  color: @dialog_fg_color;
-  border-radius: 8px;
-  border: 1px solid alpha(@dialog_fg_color, 0.15);
-  box-shadow: 0 2px 8px @shade_color;
-}
-
-tooltip decoration,
-tooltip.csd decoration {
-  background-color: transparent;
-  box-shadow: none;
-  border: none;
-}
-
-tooltip * {
-  background-color: transparent;
-  color: @dialog_fg_color;
-}
-
-/* =============================================================================
- * 12. OSD (On-Screen Displays)
- * ============================================================================= */
-osd,
-.osd,
-window.osd,
-osd.background {
-  background-color: @dialog_bg_color;
-  color: @dialog_fg_color;
-  border-radius: 12px;
-  border: 1px solid @borders;
-  box-shadow: 0 4px 16px @shade_color;
-}
-
-/* =============================================================================
- * 13. Form Controls: Switches, Checkboxes, Radios, Sliders
+ * 10. Form Controls: Switches, Checkboxes, Radios, Sliders
  * ============================================================================= */
 switch {
   background-color: @card_bg_color;
@@ -413,7 +315,7 @@ scale slider:active {
 }
 
 /* =============================================================================
- * 14. Buttons, Stack Switchers, Keypads & Window Controls
+ * 11. Buttons, Keypads, Calculator & Actions
  * ============================================================================= */
 button {
   background-color: {{colors.surface_dim.default.hex}};
@@ -487,151 +389,8 @@ mathdisplay {
   font-weight: bold;
 }
 
-/* Stack Switchers & Segmented Button Pills (e.g. About/Credits/License) */
-.linked,
-.linked.stack-switcher,
-.stack-switcher,
-stackswitcher,
-headerbar .linked,
-.titlebar .linked,
-headerbar .stack-switcher,
-.titlebar .stack-switcher,
-headerbar .stack-switcher.linked,
-.titlebar .stack-switcher.linked {
-  background-color: @view_bg_color;
-  border-radius: 10px;
-  padding: 3px;
-  border: 1px solid @borders;
-}
-
-.linked > button,
-.linked > button:not(:only-child),
-.linked.stack-switcher > button,
-.linked.stack-switcher > button:not(:only-child),
-.stack-switcher > button,
-.stack-switcher > button:not(:only-child),
-stackswitcher > button,
-stackswitcher > button:not(:only-child),
-.linked > button.radio,
-headerbar .linked > button,
-headerbar .linked > button:not(:only-child),
-.titlebar .linked > button,
-.titlebar .linked > button:not(:only-child),
-headerbar .stack-switcher > button,
-.titlebar .stack-switcher > button,
-headerbar .stack-switcher.linked > button,
-.titlebar .stack-switcher.linked > button,
-headerbar .stack-switcher.linked > button:not(:only-child),
-.titlebar .stack-switcher.linked > button:not(:only-child),
-headerbar .linked > button.radio,
-.titlebar .linked > button.radio {
-  background-color: transparent;
-  color: alpha(@window_fg_color, 0.65);
-  border: none;
-  box-shadow: none;
-  border-radius: 7px;
-  padding: 4px 14px;
-}
-
-.linked > button:hover,
-.linked > button:hover:not(:only-child),
-.linked.stack-switcher > button:hover,
-.stack-switcher > button:hover,
-stackswitcher > button:hover,
-headerbar .linked > button:hover,
-headerbar .linked > button:hover:not(:only-child),
-.titlebar .linked > button:hover,
-.titlebar .linked > button:hover:not(:only-child),
-headerbar .stack-switcher > button:hover,
-.titlebar .stack-switcher > button:hover,
-headerbar .stack-switcher.linked > button:hover,
-.titlebar .stack-switcher.linked > button:hover,
-headerbar .stack-switcher.linked > button:hover:not(:only-child),
-.titlebar .stack-switcher.linked > button:hover:not(:only-child) {
-  background-color: alpha(@window_fg_color, 0.08);
-  color: @window_fg_color;
-}
-
-.linked > button:checked,
-.linked > button:active,
-.linked > button:checked:not(:only-child),
-.linked > button:active:not(:only-child),
-.linked.stack-switcher > button:checked,
-.linked.stack-switcher > button:active,
-.stack-switcher > button:checked,
-.stack-switcher > button:active,
-stackswitcher > button:checked,
-stackswitcher > button:active,
-.linked > button.radio:checked,
-.linked > button.radio:active,
-headerbar .linked > button:checked,
-headerbar .linked > button:active,
-headerbar .linked > button:checked:not(:only-child),
-headerbar .linked > button:active:not(:only-child),
-.titlebar .linked > button:checked,
-.titlebar .linked > button:active,
-.titlebar .linked > button:checked:not(:only-child),
-.titlebar .linked > button:active:not(:only-child),
-headerbar .stack-switcher > button:checked,
-headerbar .stack-switcher > button:active,
-.titlebar .stack-switcher > button:checked,
-.titlebar .stack-switcher > button:active,
-headerbar .stack-switcher.linked > button:checked,
-headerbar .stack-switcher.linked > button:active,
-headerbar .stack-switcher.linked > button:checked:not(:only-child),
-headerbar .stack-switcher.linked > button:active:not(:only-child),
-.titlebar .stack-switcher.linked > button:checked:not(:only-child),
-.titlebar .stack-switcher.linked > button:active:not(:only-child),
-headerbar .linked > button.radio:checked,
-.titlebar .linked > button.radio:checked {
-  background-color: {{colors.surface_container.default.hex}};
-  color: @window_fg_color;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
-  border: 1px solid @borders;
-}
-
-/* Headerbar & Titlebar Window Controls */
-headerbar button,
-.titlebar button {
-  background-color: {{colors.surface_dim.default.hex}};
-  border: 1px solid transparent;
-}
-
-headerbar button:hover,
-.titlebar button:hover {
-  background-color: {{colors.surface_container_low.default.hex}};
-}
-
-headerbar button:active,
-headerbar button:checked,
-.titlebar button:active,
-.titlebar button:checked {
-  background-color: {{colors.surface_container.default.hex}};
-}
-
-headerbar button.flat,
-.titlebar button.flat {
-  background-color: transparent;
-  border-color: transparent;
-}
-
-headerbar button.flat:hover,
-.titlebar button.flat:hover {
-  background-color: alpha(@window_fg_color, 0.08);
-}
-
-headerbar button.flat:active,
-headerbar button.flat:checked,
-.titlebar button.flat:active,
-.titlebar button.flat:checked {
-  background-color: alpha(@window_fg_color, 0.15);
-}
-
-/* Titlebuttons (Close / Maximize / Minimize) */
-headerbar button.titlebutton,
-.titlebar button.titlebutton,
-headerbar.default-decoration button.titlebutton,
-.default-decoration.titlebar button.titlebutton {
+/* Window Controls (Close / Maximize / Minimize) */
+windowcontrols button {
   background-color: transparent;
   border: none;
   box-shadow: none;
@@ -640,49 +399,18 @@ headerbar.default-decoration button.titlebutton,
   color: alpha(@window_fg_color, 0.7);
 }
 
-headerbar button.titlebutton:hover,
-.titlebar button.titlebutton:hover,
-headerbar.default-decoration button.titlebutton:hover,
-.default-decoration.titlebar button.titlebutton:hover {
+windowcontrols button:hover {
   background-color: alpha(@window_fg_color, 0.12);
   color: @window_fg_color;
 }
 
-headerbar button.titlebutton.close:hover,
-.titlebar button.titlebutton.close:hover,
 windowcontrols button.close:hover {
   background-color: @destructive_bg_color;
   color: @destructive_fg_color;
 }
 
-headerbar button.titlebutton.maximize:hover,
-headerbar button.titlebutton.minimize:hover,
-.titlebar button.titlebutton.maximize:hover,
-.titlebar button.titlebutton.minimize:hover,
 windowcontrols button.maximize:hover,
 windowcontrols button.minimize:hover {
   background-color: alpha(@window_fg_color, 0.12);
   color: @window_fg_color;
-}
-
-notebook > header > tabs > tab:checked {
-  background-color: @card_bg_color;
-  border-bottom: 2px solid @accent_color;
-  color: @window_fg_color;
-}
-
-/* =============================================================================
- * 15. GtkTextView & GtkSourceView Gutters
- * ============================================================================= */
-textview border,
-textview border.left,
-textview border.right,
-textview border.top,
-textview border.bottom,
-sourceview gutter,
-gutter,
-gutter.left {
-  background-color: @view_bg_color;
-  color: {{colors.outline.default.hex}};
-  border-color: @borders;
 }

@@ -10,7 +10,7 @@
 # =============================================================================
 
 [templates.gtk3]
-input_path  = '~/.config/matugen/templates/gtk-colors.css'
+input_path  = '~/.config/matugen/templates/gtk3-colors.css'
 output_path = '~/.config/matugen/generated/gtk-3.css'
 post_hook   = '''
   ln -nfs "$HOME/.config/matugen/generated/gtk-3.css" "$HOME/.config/gtk-3.0/gtk.css"
@@ -18,7 +18,7 @@ post_hook   = '''
 '''
 
 [templates.gtk4]
-input_path  = '~/.config/matugen/templates/gtk-colors.css'
+input_path  = '~/.config/matugen/templates/gtk4-colors.css'
 output_path = '~/.config/matugen/generated/gtk-4.css'
 post_hook   = '''
   ln -nfs "$HOME/.config/matugen/generated/gtk-4.css" "$HOME/.config/gtk-4.0/gtk.css"
