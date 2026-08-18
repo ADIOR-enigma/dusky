@@ -60,7 +60,7 @@ hl_env("XDG_MENU_PREFIX", "arch-") -- fixes empty Open With in Dolphin/digiKam o
 -- 5. Toolkit / Wayland native backends - merged from your UWSM env
 hl_env("GDK_BACKEND", "wayland,x11,*")
 hl_env("QT_QPA_PLATFORM", "wayland;xcb")
-hl_env("QT_QPA_PLATFORMTHEME", "qt6ct;qt5ct")
+hl_env("QT_QPA_PLATFORMTHEME", "qt6ct")
 hl_env("QT_WAYLAND_DISABLE_WINDOWDECORATION", "1")
 hl_env("QT_QUICK_CONTROLS_STYLE", "Fusion")
 hl_env("QT_WAYLAND_RECONNECT_AFTER_VT_SWITCH", "1")
