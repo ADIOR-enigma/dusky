@@ -1529,6 +1529,20 @@ command = "$HOME/user_scripts/rofi/rofi_theme.sh"
 [[pages.layout.items.layout.items]]
 type = "button"
 [pages.layout.items.layout.items.properties]
+title = "Fix KDE Apps Theming"
+button_text = "Fix"
+description = "Sync & pin Matugen theme for newly installed KDE apps"
+icon = "applications-system-symbolic"
+
+style = "suggested"
+[pages.layout.items.layout.items.on_press]
+type = "exec"
+command = "python3 $HOME/user_scripts/arch_setup_scripts/scripts/331_sync_kde_apps.py && notify-send 'KDE Theming' 'KDE applications successfully themed!'"
+terminal = false
+
+[[pages.layout.items.layout.items]]
+type = "button"
+[pages.layout.items.layout.items.properties]
 title = "Matugen Theme Generator"
 description = "Fine-tune Material You color generation and application themes"
 icon = "preferences-color-symbolic"
