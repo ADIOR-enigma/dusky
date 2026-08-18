@@ -73,6 +73,7 @@ post_hook   = '''
   mkdir -p "$HOME/.local/share/color-schemes"
   ln -nfs "$HOME/.config/matugen/generated/kdeglobals" "$HOME/.local/share/color-schemes/Matugen.colors"
   ln -nfs "$HOME/.config/matugen/generated/kdeglobals" "$HOME/.config/kdeglobals"
+  dbus-send --session --type=signal /KGlobalSettings org.kde.KGlobalSettings.notifyChange int32:0 int32:0 || :
 '''
 
 # [templates.kvantum_kvconfig]
