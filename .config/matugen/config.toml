@@ -41,7 +41,7 @@ post_hook   = '''
 input_path  = '/dev/null'
 output_path = '/dev/null'
 post_hook   = '''
-  gsettings set org.gnome.desktop.interface icon-theme "Papirus" || :
+  gsettings set org.gnome.desktop.interface icon-theme "Papirus-Dark" || :
 '''
 
 # [templates.papirus_icon_theme]

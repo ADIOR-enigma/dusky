@@ -45,10 +45,10 @@
 @define-color card_border_color {{colors.outline_variant.default.hex}};
 @define-color card_shade_color rgba(0, 0, 0, 0.35);
 
-@define-color dialog_bg_color {{colors.surface_container_lowest.default.hex}};
+@define-color dialog_bg_color {{colors.surface_dim.default.hex}};
 @define-color dialog_fg_color {{colors.on_surface.default.hex}};
 
-@define-color popover_bg_color {{colors.surface_container_low.default.hex}};
+@define-color popover_bg_color {{colors.surface_dim.default.hex}};
 @define-color popover_fg_color {{colors.on_surface.default.hex}};
 @define-color popover_shade_color rgba(0, 0, 0, 0.45);
 
@@ -225,49 +225,36 @@ dialog button {
 }
 
 /* =============================================================================
- * 10. Popovers, Menus & Menubars (GTK 3 Dedicated Specification)
+ * 10. Popovers & Menus
  * ============================================================================= */
-menubar,
-.menubar {
-  background-color: @headerbar_bg_color;
-  color: @window_fg_color;
-  padding: 0;
-}
-
-menubar > menuitem,
-.menubar > menuitem {
-  color: @window_fg_color;
-  border-radius: 6px;
-  padding: 4px 8px;
-  background-color: transparent;
-}
-
-menubar > menuitem:hover,
-.menubar > menuitem:hover,
-menubar > menuitem:selected,
-.menubar > menuitem:selected {
-  background-color: alpha(@window_fg_color, 0.12);
-  color: @window_fg_color;
-}
-
-/* In GTK3, menus and popovers: completely remove box-shadow artifacts */
 popover,
 popover.background,
 popover.menu,
 .popover,
+.popover.background {
+  background-color: transparent;
+  box-shadow: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+}
+
+popover > contents,
+.popover > contents,
 menu,
 .menu,
 .context-menu,
 .csd menu,
 .csd .menu,
 .csd .context-menu,
+dropdown popover > contents,
 combobox window.popup > contents {
   background-color: @popover_bg_color;
   color: @popover_fg_color;
   border-radius: 12px;
   border: 1px solid @borders;
   box-shadow: none;
-  padding: 6px;
+  padding: 4px;
 }
 
 /* Remove popup window decoration box-shadows that cause dark edge halos in Wayland */
@@ -280,34 +267,18 @@ menubar .csd.popup decoration,
   border: none;
 }
 
-/* Zero out stack margins so items don't spill out over the top/bottom rounded border */
-popover.menu > stack,
-popover > stack,
-popover.background > stack,
-popover.background > list,
-popover.background > .view {
-  margin: 0;
-  padding: 0;
-  background-color: transparent;
-}
-
-menuitem,
-.menuitem,
-modelbutton,
-popover modelbutton {
-  min-height: 28px;
-  padding: 6px 10px;
-  border-radius: 6px;
-  color: @popover_fg_color;
-  outline: none;
+popover > arrow,
+.popover > arrow {
+  background-color: @popover_bg_color;
+  border: none;
+  box-shadow: none;
 }
 
 menuitem:hover,
 .menuitem:hover,
 modelbutton:hover,
-popover modelbutton:hover,
 popover listview row:hover {
-  background-color: alpha(@accent_color, 0.18);
+  background-color: alpha(@accent_color, 0.15);
   color: @window_fg_color;
   border-radius: 6px;
 }
@@ -381,25 +352,6 @@ switch:checked slider {
   background-color: @accent_fg_color;
 }
 
-check,
-radio {
-  background-color: @card_bg_color;
-  border: 1px solid @borders;
-  border-radius: 4px;
-}
-
-radio {
-  border-radius: 50%;
-}
-
-check:checked,
-check:indeterminate,
-radio:checked {
-  background-color: @accent_bg_color;
-  color: @accent_fg_color;
-  border-color: @accent_bg_color;
-}
-
 scale trough {
   background-color: @card_bg_color;
   border-radius: 9999px;
@@ -427,227 +379,9 @@ scale slider:active {
 }
 
 /* =============================================================================
- * 14. Buttons, Stack Switchers, Keypads & Window Controls
+ * 14. Headerbar Window Controls & Tabs
  * ============================================================================= */
-button {
-  background-color: {{colors.surface_dim.default.hex}};
-  color: @window_fg_color;
-  border: 1px solid transparent;
-  border-radius: 8px;
-}
-
-button:hover {
-  background-color: {{colors.surface_container_low.default.hex}};
-  color: @window_fg_color;
-  border-color: transparent;
-}
-
-button:active,
-button:checked {
-  background-color: {{colors.surface_container.default.hex}};
-  color: @window_fg_color;
-  border-color: transparent;
-}
-
-button.flat {
-  background-color: transparent;
-  border-color: transparent;
-}
-
-button.flat:hover {
-  background-color: alpha(@window_fg_color, 0.08);
-}
-
-button.flat:active,
-button.flat:checked {
-  background-color: alpha(@window_fg_color, 0.15);
-}
-
-/* Suggested & Accent Actions */
-button.suggested-action,
-button.accent,
-.suggested-action button {
-  background-color: @accent_bg_color;
-  color: @accent_fg_color;
-  border: 1px solid transparent;
-}
-
-button.suggested-action:hover,
-button.accent:hover {
-  background-color: @accent_hover_color;
-}
-
-button.suggested-action:active,
-button.accent:active {
-  background-color: @accent_active_color;
-}
-
-button.destructive-action {
-  background-color: @destructive_bg_color;
-  color: @destructive_fg_color;
-  border: 1px solid transparent;
-}
-
-button.destructive-action:hover {
-  background-color: @destructive_hover_color;
-}
-
-/* Stack Switchers & Segmented Button Pills (e.g. About/Credits/License) */
-.linked,
-.linked.stack-switcher,
-.stack-switcher,
-stackswitcher,
-headerbar .linked,
-.titlebar .linked,
-headerbar .stack-switcher,
-.titlebar .stack-switcher,
-headerbar .stack-switcher.linked,
-.titlebar .stack-switcher.linked {
-  background-color: @view_bg_color;
-  border-radius: 10px;
-  padding: 3px;
-  border: 1px solid @borders;
-}
-
-.linked > button,
-.linked > button:not(:only-child),
-.linked.stack-switcher > button,
-.linked.stack-switcher > button:not(:only-child),
-.stack-switcher > button,
-.stack-switcher > button:not(:only-child),
-stackswitcher > button,
-stackswitcher > button:not(:only-child),
-.linked > button.radio,
-headerbar .linked > button,
-headerbar .linked > button:not(:only-child),
-.titlebar .linked > button,
-.titlebar .linked > button:not(:only-child),
-headerbar .stack-switcher > button,
-.titlebar .stack-switcher > button,
-headerbar .stack-switcher.linked > button,
-.titlebar .stack-switcher.linked > button,
-headerbar .stack-switcher.linked > button:not(:only-child),
-.titlebar .stack-switcher.linked > button:not(:only-child),
-headerbar .linked > button.radio,
-.titlebar .linked > button.radio {
-  background-color: transparent;
-  color: alpha(@window_fg_color, 0.65);
-  border: none;
-  box-shadow: none;
-  border-radius: 7px;
-  padding: 4px 14px;
-}
-
-.linked > button:hover,
-.linked > button:hover:not(:only-child),
-.linked.stack-switcher > button:hover,
-.stack-switcher > button:hover,
-stackswitcher > button:hover,
-headerbar .linked > button:hover,
-headerbar .linked > button:hover:not(:only-child),
-.titlebar .linked > button:hover,
-.titlebar .linked > button:hover:not(:only-child),
-headerbar .stack-switcher > button:hover,
-.titlebar .stack-switcher > button:hover,
-headerbar .stack-switcher.linked > button:hover,
-.titlebar .stack-switcher.linked > button:hover,
-headerbar .stack-switcher.linked > button:hover:not(:only-child),
-.titlebar .stack-switcher.linked > button:hover:not(:only-child) {
-  background-color: alpha(@window_fg_color, 0.08);
-  color: @window_fg_color;
-}
-
-.linked > button:checked,
-.linked > button:active,
-.linked > button:checked:not(:only-child),
-.linked > button:active:not(:only-child),
-.linked.stack-switcher > button:checked,
-.linked.stack-switcher > button:active,
-.stack-switcher > button:checked,
-.stack-switcher > button:active,
-stackswitcher > button:checked,
-stackswitcher > button:active,
-.linked > button.radio:checked,
-.linked > button.radio:active,
-headerbar .linked > button:checked,
-headerbar .linked > button:active,
-headerbar .linked > button:checked:not(:only-child),
-headerbar .linked > button:active:not(:only-child),
-.titlebar .linked > button:checked,
-.titlebar .linked > button:active,
-.titlebar .linked > button:checked:not(:only-child),
-.titlebar .linked > button:active:not(:only-child),
-headerbar .stack-switcher > button:checked,
-headerbar .stack-switcher > button:active,
-.titlebar .stack-switcher > button:checked,
-.titlebar .stack-switcher > button:active,
-headerbar .stack-switcher.linked > button:checked,
-headerbar .stack-switcher.linked > button:active,
-headerbar .stack-switcher.linked > button:checked:not(:only-child),
-headerbar .stack-switcher.linked > button:active:not(:only-child),
-.titlebar .stack-switcher.linked > button:checked:not(:only-child),
-.titlebar .stack-switcher.linked > button:active:not(:only-child),
-headerbar .linked > button.radio:checked,
-.titlebar .linked > button.radio:checked {
-  background-color: {{colors.surface_container.default.hex}};
-  color: @window_fg_color;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
-  border: 1px solid @borders;
-}
-
-/* Headerbar & Titlebar Flat / Clean Buttons */
-headerbar button,
-.titlebar button,
-headerbar menubutton > button,
-.titlebar menubutton > button,
-headerbar button.image-button,
-.titlebar button.image-button,
-headerbar button.flat,
-.titlebar button.flat {
-  background-color: transparent;
-  border: 1px solid transparent;
-  box-shadow: none;
-}
-
-headerbar button:hover,
-.titlebar button:hover,
-headerbar menubutton > button:hover,
-.titlebar menubutton > button:hover {
-  background-color: alpha(@window_fg_color, 0.08);
-}
-
-headerbar button:active,
-headerbar button:checked,
-.titlebar button:active,
-.titlebar button:checked,
-headerbar menubutton > button:checked,
-.titlebar menubutton > button:checked {
-  background-color: alpha(@window_fg_color, 0.15);
-}
-
-/* Titlebuttons (Close / Maximize / Minimize) */
-headerbar button.titlebutton,
-.titlebar button.titlebutton,
-headerbar.default-decoration button.titlebutton,
-.default-decoration.titlebar button.titlebutton {
-  background-color: transparent;
-  border: none;
-  box-shadow: none;
-  border-radius: 50%;
-  padding: 4px;
-  color: alpha(@window_fg_color, 0.7);
-}
-
-headerbar button.titlebutton:hover,
-.titlebar button.titlebutton:hover,
-headerbar.default-decoration button.titlebutton:hover,
-.default-decoration.titlebar button.titlebutton:hover {
-  background-color: alpha(@window_fg_color, 0.12);
-  color: @window_fg_color;
-}
-
 headerbar button.titlebutton.close:hover,
-.titlebar button.titlebutton.close:hover,
 windowcontrols button.close:hover {
   background-color: @destructive_bg_color;
   color: @destructive_fg_color;
@@ -655,8 +389,6 @@ windowcontrols button.close:hover {
 
 headerbar button.titlebutton.maximize:hover,
 headerbar button.titlebutton.minimize:hover,
-.titlebar button.titlebutton.maximize:hover,
-.titlebar button.titlebutton.minimize:hover,
 windowcontrols button.maximize:hover,
 windowcontrols button.minimize:hover {
   background-color: alpha(@window_fg_color, 0.12);
