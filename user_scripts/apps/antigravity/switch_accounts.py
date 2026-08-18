@@ -33,8 +33,8 @@ def resolve_dependencies() -> None:
         return
 
     if not sys.stdout.isatty():
-        print(f"\n[✖] FATAL: Missing dependencies ({', '.join(missing)}) in non-interactive shell.")
-        print("[✖] Cannot invoke pacman/sudo. Please run interactively to bootstrap.")
+        print(f"\n[✗] FATAL: Missing dependencies ({', '.join(missing)}) in non-interactive shell.")
+        print("[✗] Cannot invoke pacman/sudo. Please run interactively to bootstrap.")
         sys.exit(1)
 
     print(f"\n[*] Missing dependencies detected: {', '.join(missing)}")
@@ -69,14 +69,15 @@ def resolve_dependencies() -> None:
             success = (res.returncode == 0)
 
         if not success:
-            print(f"\n[✖] FATAL: Absolute failure resolving '{mod}'.")
+            print(f"\n[✗] FATAL: Absolute failure resolving '{mod}'.")
             sys.exit(1)
 
-    print("\n[✔] Matrix dependencies successfully satisfied. Rebooting manager...\n")
+    print("\n[✓] Dependencies successfully satisfied. Starting manager...\n")
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
 resolve_dependencies()
 
+from rich import box
 from rich.console import Console
 from rich.theme import Theme
 from rich.panel import Panel
@@ -102,8 +103,18 @@ custom_theme = Theme({
 
 console = Console(theme=custom_theme)
 
+custom_qstyle = questionary.Style([
+    ('qmark', 'fg:#c678dd bold'),
+    ('question', 'bold'),
+    ('answer', 'fg:#61afef bold'),
+    ('pointer', 'fg:#c678dd bold'),
+    ('highlighted', 'fg:#c678dd bold'),
+    ('selected', 'fg:#98c379 bold'),
+    ('disabled', 'fg:#5c6370 italic'),
+])
+
 if not os.environ.get("DBUS_SESSION_BUS_ADDRESS"):
-    console.print("[warning]⚠ DBUS_SESSION_BUS_ADDRESS not found. Keyring auth operations may fail.[/warning]")
+    console.print("[warning][!] DBUS_SESSION_BUS_ADDRESS not found. Keyring auth operations may fail.[/warning]")
 
 # ==========================================
 # 3. MODERN TYPE ALIASES (Python 3.12+)
@@ -259,7 +270,7 @@ def refresh_access_token(refresh_token: str) -> dict | None:
         if status != "client-mismatch":
             break
     label = "failed (network)" if last_status == "network" else "rejected"
-    console.print(f"[warning]⚠ Token refresh {label}: {last_reason}[/warning]")
+    console.print(f"[warning]! Token refresh {label}: {last_reason}[/warning]")
     return None
 
 
@@ -341,14 +352,12 @@ def fetch_available_models(access_token: str, timeout_s: int = API_TIMEOUT_S) ->
 
 
 def find_antigravity_executable() -> str | None:
-    """Locate the Antigravity binary (mirrors paths.ts getAntigravityExecutablePath).
+    """Locate the Antigravity launcher or binary.
 
-    Priority: AGM_ANTIGRAVITY_BIN > gui_config.json > PATH (preserves user wrapper
-    flags such as --disable-gpu-sandbox) > known Linux install paths.
+    Priority: AGM_ANTIGRAVITY_BIN > gui_config.json > shutil.which("antigravity")
+    > known Linux install paths.
     """
     env_path = os.environ.get("AGM_ANTIGRAVITY_BIN", "").strip()
-    # A configured-but-missing path falls through, mirroring the project's
-    # getConfiguredAntigravityExecutablePath(requireExists=true) semantics.
     if env_path and os.path.exists(env_path):
         return env_path
     try:
@@ -363,11 +372,12 @@ def find_antigravity_executable() -> str | None:
     if from_path:
         return from_path
     for candidate in (
-        "/usr/bin/antigravity",
-        "/usr/local/bin/antigravity",
-        "/usr/share/antigravity/antigravity",
+        str(Path.home() / ".local" / "bin" / "antigravity"),
+        "/opt/Antigravity-x64/antigravity",
         "/opt/Antigravity/antigravity",
-        "/opt/antigravity/antigravity",
+        "/usr/local/bin/antigravity",
+        "/usr/bin/antigravity",
+        "/usr/share/antigravity/antigravity",
         str(Path.home() / ".local" / "share" / "antigravity" / "antigravity"),
     ):
         if os.path.exists(candidate):
@@ -376,10 +386,10 @@ def find_antigravity_executable() -> str | None:
 
 
 def start_antigravity() -> bool:
-    """Relaunch Antigravity detached (mirrors switchFlow.startAntigravity / cli start_process)."""
+    """Relaunch Antigravity detached from the terminal session."""
     exe = find_antigravity_executable()
     if not exe:
-        console.print("[warning]⚠ Could not locate the Antigravity executable to relaunch.[/warning]")
+        console.print("[warning]! Could not locate the Antigravity executable to relaunch.[/warning]")
         return False
     args: list[str] = []
     try:
@@ -392,14 +402,21 @@ def start_antigravity() -> bool:
     except Exception:
         pass
     try:
+        # start_new_session=True (setsid) & close_fds=True ensures complete terminal detachment
         subprocess.Popen(
-            [exe, *args], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True
+            [exe, *args],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
         )
-        console.print(f"[success]✔ Relaunched Antigravity ({exe}).[/success]")
+        console.print(f"[success]✓ Relaunched Antigravity ({exe}) [detached].[/success]")
         return True
     except Exception as e:
-        console.print(f"[error]✖ Failed to relaunch Antigravity: {e}[/error]")
+        console.print(f"[error]✗ Failed to relaunch Antigravity: {e}[/error]")
         return False
+
 
 # ==========================================
 # 4. CORE MANAGER CLASS
@@ -422,7 +439,7 @@ class ProfileManager:
         try:
             self.profiles_dir.mkdir(parents=True, exist_ok=True)
         except OSError as e:
-            console.print(f"[error]✖ Fatal: Filesystem constraint preventing directory creation in {self.storage_dir}: {e}[/error]")
+            console.print(f"[error]✗ Fatal: Filesystem constraint preventing directory creation in {self.storage_dir}: {e}[/error]")
             sys.exit(1)
 
     @staticmethod
@@ -438,7 +455,7 @@ class ProfileManager:
                 if name and self.is_valid_name(name) and (self.profiles_dir / name).is_dir():
                     return name
             except IOError as e:
-                console.print(f"[warning]⚠ State read error: {e}[/warning]")
+                console.print(f"[warning]! State read error: {e}[/warning]")
         return None
 
     def _read_order(self) -> list[str]:
@@ -459,7 +476,7 @@ class ProfileManager:
         try:
             self.order_file.write_text("\n".join(self.get_all()) + "\n", encoding="utf-8")
         except (IOError, OSError) as e:
-            console.print(f"[warning]⚠ Could not persist profile order: {e}[/warning]")
+            console.print(f"[warning]! Could not persist profile order: {e}[/warning]")
 
     def get_all(self) -> ProfileList:
         try:
@@ -485,7 +502,7 @@ class ProfileManager:
         return txt
 
     def check_running_processes(self) -> ProcList:
-        """Kernel-level mapping with exact basename precision and lineage exclusions."""
+        """Detect active Antigravity processes, excluding this script and shell ancestors."""
         procs: ProcList = []
         current_pid = os.getpid()
         parent_pid = os.getppid()
@@ -496,35 +513,38 @@ class ProfileManager:
             grandparent_pid = -1
             
         exclude_pids = {current_pid, parent_pid, grandparent_pid}
-        target_bins = {"antigravity", "agy", "antigravity-cli", "antigravity-ide"}
+        target_names = {"antigravity", "agy", "antigravity-cli", "antigravity-ide"}
         
-        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'exe']):
             try:
                 if proc.info['pid'] in exclude_pids:
                     continue
                     
                 name = (proc.info['name'] or "").lower()
-                cmdline = proc.info['cmdline'] or []
-                
+                exe_path = (proc.info.get('exe') or "").lower()
+                exe_name = Path(exe_path).name.lower() if exe_path else ""
+                cmdline = proc.info.get('cmdline') or []
+
                 is_match = False
-                
-                if name in target_bins:
+                if name in target_names or exe_name in target_names:
                     is_match = True
-                else:
-                    for arg in cmdline:
-                        base = Path(arg).name.lower()
-                        if base in target_bins and "switch_accounts" not in base:
-                            is_match = True
-                            break
-                            
+                elif "antigravity" in exe_path and not any("switch_accounts" in arg for arg in cmdline):
+                    is_match = True
+                elif cmdline:
+                    first_arg_base = Path(cmdline[0]).name.lower()
+                    if first_arg_base in target_names and "switch_accounts" not in first_arg_base:
+                        is_match = True
+
                 if is_match:
                     procs.append(proc)
             except psutil.Error:
                 pass
         return procs
 
-    def kill_processes(self, processes: ProcList) -> None:
-        """Safely terminate blocking processes with broad exception handling."""
+    def kill_processes(self, processes: ProcList) -> bool:
+        """Safely terminate blocking processes with SIGTERM then SIGKILL."""
+        if not processes:
+            return True
         for proc in processes:
             try:
                 proc.terminate()
@@ -537,67 +557,46 @@ class ProfileManager:
                 proc.kill() 
             except psutil.Error:
                 pass
-                
-        console.print("[success]✔ Conflicting processes resolved.[/success]")
+        console.print(f"[success]✓ Closed {len(processes)} conflicting Antigravity process(es).[/success]")
+        return True
 
     def stash_keyring(self, profile_name: str) -> None:
+        """Save active keyring credentials to the profile directory."""
         try:
             token = keyring.get_password(self.service, self.account)
             token_file = self._get_token_path(profile_name)
             if token:
-                # Pre-create with 0600 so the payload is never world-readable, even briefly
                 token_file.touch(mode=0o600, exist_ok=True)
                 token_file.write_text(token, encoding="utf-8")
-                # Security Override: Force UNIX permissions regardless of existing file state
                 token_file.chmod(0o600)
-                console.print(f"[info]ℹ Secured auth token to '{profile_name}'.[/info]")
+                console.print(f"[info]› Secured auth token to '{profile_name}'.[/info]")
             else:
-                console.print(f"[warning]⚠ OS keyring returned no credentials for {self.service}/{self.account}; nothing stashed.[/warning]")
+                console.print(f"[warning]! OS keyring returned no credentials for {self.service}/{self.account}; nothing stashed.[/warning]")
         except Exception as e:
-            console.print(f"[warning]⚠ Credential stash failure: {e}[/warning]")
+            console.print(f"[warning]! Credential stash failure: {e}[/warning]")
 
     def restore_keyring(self, profile_name: str) -> None:
+        """Inject stored profile credentials into OS keyring (instant local operation)."""
         token_file = self._get_token_path(profile_name)
         if token_file.is_file():
             try:
                 token = token_file.read_text(encoding="utf-8").strip()
                 if not token:
-                    console.print(f"[warning]⚠ Empty credential payload in '{profile_name}'. Skipping restore.[/warning]")
+                    console.print(f"[warning]! Empty credential payload in '{profile_name}'. Skipping restore.[/warning]")
                     return
-                restored = self._maybe_refresh_token(profile_name, token)
-                keyring.set_password(self.service, self.account, restored)
-                if restored != token:
-                    token_file.touch(mode=0o600, exist_ok=True)
-                    token_file.write_text(restored, encoding="utf-8")
-                    token_file.chmod(0o600)
-                    console.print(f"[success]✔ Stash for '{profile_name}' updated with refreshed token.[/success]")
-                read_back = keyring.get_password(self.service, self.account)
-                if read_back != restored:
-                    # Secret Service can briefly return None right after a write;
-                    # retry once before reporting a problem.
-                    time.sleep(0.5)
-                    read_back = keyring.get_password(self.service, self.account)
-                if read_back == restored:
-                    console.print(f"[success]✔ Keyring verified: '{profile_name}' restored, read-back round-trip intact ({len(restored)} bytes).[/success]")
-                else:
-                    console.print(f"[warning]⚠ Keyring read-back mismatch for '{profile_name}': write completed but verification could not be confirmed.[/warning]")
+                keyring.set_password(self.service, self.account, token)
+                console.print(f"[info]✓ Restored auth credentials for '{profile_name}'.[/info]")
             except Exception as e:
-                console.print(f"[error]✖ Credential restore failure: {e}[/error]")
+                console.print(f"[error]✗ Credential restore failure: {e}[/error]")
         else:
             try:
                 keyring.delete_password(self.service, self.account)
-                console.print("[info]ℹ Purged global auth state (profile initialized fresh).[/info]")
+                console.print("[info]› Initialized fresh global auth state.[/info]")
             except Exception:
                 pass 
 
-    def _maybe_refresh_token(self, profile_name: str, raw: str, verify: bool = True) -> str:
-        """Best-effort proactive refresh of an expired access token before injection.
-
-        Borrowed from AntigravityManager's switch workflow (refresh before injection).
-        Format-preserving: only access_token/expiry are touched; id_token, auth_method,
-        token_type and refresh_token are kept intact. Never blocks a switch: on any
-        failure the original payload is returned unchanged, matching the legacy script.
-        """
+    def _maybe_refresh_token(self, profile_name: str, raw: str) -> str:
+        """Helper used exclusively by check_profile to refresh expired tokens for diagnostics."""
         try:
             payload = json.loads(raw)
         except (ValueError, TypeError):
@@ -612,119 +611,119 @@ class ProfileManager:
             return raw
         if not is_token_expired(token.get("expiry")):
             return raw
-        console.print(f"[info]⟳ Refreshing expired token for '{profile_name}'...[/info]")
+        console.print(f"[info]› Refreshing token for '{profile_name}' via Google...[/info]")
         result = refresh_access_token(refresh_token)
         if result is None:
-            console.print(f"[warning]⚠ Could not refresh expired token for '{profile_name}'; using stored token (IDE may re-auth).[/warning]")
+            console.print(f"[warning]! Could not refresh token for '{profile_name}'.[/warning]")
             return raw
         token["access_token"] = result["access_token"]
         token["expiry"] = format_token_expiry(result["expires_in"])
         fresh_id = result.get("id_token")
         if isinstance(fresh_id, str) and fresh_id:
             payload["id_token"] = fresh_id
-        if verify:
-            # Bounded to 5s on the switch path so a quota-API hiccup never stalls
-            # the actual switch (the refresh itself already used its own timeout).
-            verified = fetch_available_models(result["access_token"], timeout_s=5)
-            if "error" in verified:
-                console.print(f"[warning]⚠ Refreshed token could not be verified against Google: {verified['error']}.[/warning]")
-            else:
-                model_count = len(verified["models"])
-                min_pct = min(verified["models"].values()) if verified["models"] else 0
-                console.print(f"[success]✔ Refreshed token verified against Google ({model_count} models, lowest quota {min_pct}%).[/success]")
-        console.print(f"[success]✔ Refreshed expired access token for '{profile_name}'.[/success]")
+        console.print(f"[success]✓ Successfully refreshed token for '{profile_name}'.[/success]")
         return json.dumps(payload, separators=(",", ":"))
 
     def check_profile(self, profile_name: str) -> bool:
-        """Validate a profile's token (refresh if expired) and verify it live against Google."""
+        """Validate a profile's token against Google and display live model quota."""
         token_file = self._get_token_path(profile_name)
         if not token_file.is_file():
-            console.print(f"[error]✖ Profile '{profile_name}' has no stored credentials.[/error]")
+            console.print(f"[error]✗ Profile '{profile_name}' has no stored credentials.[/error]")
             return False
         try:
             raw = token_file.read_text(encoding="utf-8").strip()
-            # verify=False: the table fetch below is the single authoritative check.
-            refreshed = self._maybe_refresh_token(profile_name, raw, verify=False)
+            refreshed = self._maybe_refresh_token(profile_name, raw)
             if refreshed != raw:
                 token_file.touch(mode=0o600, exist_ok=True)
                 token_file.write_text(refreshed, encoding="utf-8")
                 token_file.chmod(0o600)
-                # Keep the OS keyring in sync when the checked profile is the active one;
-                # otherwise the IDE keeps serving the stale token the user just refreshed.
                 if profile_name == self.get_active():
                     keyring.set_password(self.service, self.account, refreshed)
-                console.print(f"[success]✔ Stash for '{profile_name}' updated with refreshed token.[/success]")
+                console.print(f"[success]✓ Stash for '{profile_name}' updated with refreshed token.[/success]")
             payload = json.loads(refreshed)
             token = payload.get("token") if isinstance(payload, dict) else None
             access_token = token.get("access_token") if isinstance(token, dict) else None
             if not isinstance(access_token, str) or not access_token:
-                console.print(f"[error]✖ No access token available for '{profile_name}'.[/error]")
+                console.print(f"[error]✗ No access token available for '{profile_name}'.[/error]")
                 return False
             result = fetch_available_models(access_token)
             if "error" in result:
                 if result.get("auth"):
-                    console.print(f"[error]✖ Token rejected by Google for '{profile_name}': {result['error']}[/error]")
+                    console.print(f"[error]✗ Token rejected by Google for '{profile_name}': {result['error']}[/error]")
                     return False
-                console.print(f"[warning]⚠ Could not reach Google's quota API for '{profile_name}' ({result['error']}); token status unknown.[/warning]")
+                console.print(f"[warning]! Could not reach Google's quota API for '{profile_name}' ({result['error']}); token status unknown.[/warning]")
                 return True
             models = result["models"]
             if not models:
-                console.print(f"[warning]⚠ '{profile_name}' verified but returned no model quota info.[/warning]")
+                console.print(f"[warning]! '{profile_name}' verified but returned no model quota info.[/warning]")
                 return True
-            table = Table(title=f"Live Quota — {profile_name}", border_style="cyan", expand=True)
-            table.add_column("Model", style="cyan")
+            table = Table(title=f"Live Quota: {profile_name}", title_style="bold magenta", border_style="cyan", box=box.ROUNDED, expand=False, padding=(0, 2))
+            table.add_column("Model", style="bold cyan")
             table.add_column("Remaining", justify="right")
             for name in sorted(models):
                 pct = models[name]
                 style = "bold green" if pct >= 50 else ("bold yellow" if pct >= 20 else "bold red")
                 table.add_row(name, Text(f"{pct}%", style=style))
-            console.print(table)
-            console.print(f"[success]✔ '{profile_name}' verified against Google.[/success]")
+            console.print("")
+            console.print(Align.center(table))
+            console.print("")
+            console.print(f"[success]✓ '{profile_name}' verified against Google.[/success]")
             return True
         except Exception as e:
-            console.print(f"[error]✖ Verification error for '{profile_name}': {e}[/error]")
+            console.print(f"[error]✗ Verification error for '{profile_name}': {e}[/error]")
             return False
 
     def switch(self, target_profile: str) -> bool:
+        """Switch to the specified profile. Instantaneous and non-blocking."""
         if not self.is_valid_name(target_profile):
-            console.print(f"[error]✖ Error: Invalid profile syntax '{target_profile}'.[/error]")
+            console.print(f"[error]✗ Error: Invalid profile syntax '{target_profile}'.[/error]")
             return False
 
         current_profile = self.get_active()
         if current_profile == target_profile:
-            console.print(f"[info]ℹ State unchanged. Already on '{target_profile}'.[/info]")
+            console.print(f"[info]› State unchanged. Already on '{target_profile}'.[/info]")
             if self.restart_mode:
                 start_antigravity()
             return True
 
         running_procs = self.check_running_processes()
+        should_relaunch = self.restart_mode
+
         if running_procs:
             if self.restart_mode:
-                console.print(f"[warning]⚠ {len(running_procs)} Antigravity process(es) running — closing gracefully for restart...[/warning]")
+                console.print(f"[warning]! {len(running_procs)} Antigravity process(es) running — closing for restart...[/warning]")
                 self.kill_processes(running_procs)
+                should_relaunch = True
             elif self.force_mode:
-                console.print("[warning]⚠ Force override active: Bypassing process collision checks.[/warning]")
+                console.print("[warning]! Force override active: Bypassing process collision checks.[/warning]")
             elif not sys.stdin.isatty():
-                console.print(f"\n[error]✖ Active Antigravity processes detected in non-interactive mode. Aborting switch to prevent background hang. Use -f/--force to override.[/error]")
+                console.print("\n[error]✗ Active Antigravity processes detected in non-interactive mode. Aborting switch to prevent background hang. Use -f/--force or -r/--restart.[/error]")
                 return False
             else:
-                console.print(f"\n[warning]⚠ {len(running_procs)} Active Antigravity process(es) detected![/warning]")
+                console.print(f"\n[warning]! {len(running_procs)} Active Antigravity process(es) detected![/warning]")
                 action = questionary.select(
                     "Resolve collision:",
                     choices=[
+                        questionary.Choice("Kill & Relaunch (Recommended)", value="kill_relaunch"),
+                        questionary.Choice("Kill without Relaunch", value="kill"),
+                        questionary.Choice("Ignore & Proceed (Risky)", value="ignore"),
                         questionary.Choice("Abort (Safe)", value="cancel"),
-                        questionary.Choice("SIGKILL & Proceed", value="kill"),
-                        questionary.Choice("Ignore & Proceed (Risky)", value="ignore")
                     ],
-                    style=questionary.Style([('pointer', 'fg:ansiyellow bold')])
+                    default="kill_relaunch",
+                    pointer="❯",
+                    style=custom_qstyle
                 ).ask()
                 
                 match action:
                     case "cancel" | None:
                         console.print("[error]Operation aborted.[/error]")
                         return False
+                    case "kill_relaunch":
+                        self.kill_processes(running_procs)
+                        should_relaunch = True
                     case "kill":
                         self.kill_processes(running_procs)
+                        should_relaunch = False
                     case "ignore":
                         console.print("[warning]Proceeding with collision risk...[/warning]")
 
@@ -737,140 +736,158 @@ class ProfileManager:
             self.restore_keyring(target_profile)
             self.active_profile_file.write_text(target_profile, encoding="utf-8")
         except IOError as e:
-            console.print(f"[error]✖ IO fault during state switch: {e}[/error]")
+            console.print(f"[error]✗ IO fault during state switch: {e}[/error]")
             return False
             
-        console.print(f"\n[success]✔ Switched to isolated profile: '{target_profile}'.[/success]")
-        if self.restart_mode:
+        console.print(f"\n[success]✓ Switched to profile: '{target_profile}'.[/success]")
+        if should_relaunch:
             start_antigravity()
         return True
 
     def cycle_next(self) -> bool:
         profiles = self.get_all()
         if not profiles:
-            console.print("[error]✖ Error: Array is empty. No profiles to cycle.[/error]")
+            console.print("[error]✗ Error: Array is empty. No profiles to cycle.[/error]")
             return False
             
         active = self.get_active()
         next_profile = profiles[0] if active not in profiles else profiles[(profiles.index(active) + 1) % len(profiles)]
             
-        console.print(f"\n[info]⟳ Iterating to next sequential profile...[/info]")
+        console.print(f"\n[info]› Iterating to next profile ({next_profile})...[/info]")
         return self.switch(next_profile)
 
-    def create(self, name: str) -> None:
+    def create(self, name: str, switch_now: bool | None = None) -> bool:
         if not self.is_valid_name(name):
-            console.print("[error]✖ Syntax Error: Alphanumeric, dash, and underscores exclusively.[/error]")
-            return
+            console.print("[error]✗ Syntax Error: Alphanumeric, dash, and underscores exclusively.[/error]")
+            return False
             
         profile_path = self.profiles_dir / name
         if profile_path.is_dir():
-            console.print(f"[error]✖ Collision: Profile '{name}' already exists.[/error]")
-            return
+            console.print(f"[error]✗ Collision: Profile '{name}' already exists.[/error]")
+            return False
             
         try:
             profile_path.mkdir(parents=True)
-            console.print(f"[success]✔ Initialized isolated context: '{name}'.[/success]")
+            console.print(f"[success]✓ Initialized isolated context: '{name}'.[/success]")
             self._persist_order()
-            if questionary.confirm("Execute context switch to new profile now?").ask():
+            should_switch = switch_now if switch_now is not None else (
+                sys.stdin.isatty() and questionary.confirm("Execute context switch to new profile now?", style=custom_qstyle).ask()
+            )
+            if should_switch:
                 self.switch(name)
+            return True
         except OSError as e:
-            console.print(f"[error]✖ IO Error during initialization: {e}[/error]")
+            console.print(f"[error]✗ IO Error during initialization: {e}[/error]")
+            return False
 
-    def delete(self, name: str) -> None:
+    def delete(self, name: str, confirm: bool | None = None) -> bool:
         if name == self.get_active():
-            console.print("[error]✖ State lock: Cannot wipe the active profile. Cycle first.[/error]")
-            return
+            console.print("[error]✗ State lock: Cannot delete the active profile. Cycle first.[/error]")
+            return False
             
         profile_path = self.profiles_dir / name
         if not profile_path.is_dir():
-            console.print(f"[error]✖ Missing Reference: '{name}' does not exist.[/error]")
-            return
+            console.print(f"[error]✗ Missing Reference: '{name}' does not exist.[/error]")
+            return False
             
-        if questionary.confirm(f"Permanently wipe '{name}' and all isolated data?").ask():
+        should_delete = confirm if confirm is not None else (
+            sys.stdin.isatty() and questionary.confirm(f"Permanently wipe '{name}' and all isolated data?", style=custom_qstyle).ask()
+        )
+        if should_delete:
             try:
                 shutil.rmtree(profile_path)
-                console.print(f"[success]✔ Profile '{name}' successfully eradicated.[/success]")
+                console.print(f"[success]✓ Profile '{name}' removed.[/success]")
                 self._persist_order()
+                return True
             except OSError as e:
-                console.print(f"[error]✖ IO Fault during deletion: {e}[/error]")
+                console.print(f"[error]✗ IO Fault during deletion: {e}[/error]")
+                return False
+        return False
 
     def rename(self, old_name: str, new_name: str) -> bool:
         """Rename a saved profile (directory plus active marker if applicable)."""
         if old_name == new_name:
-            console.print(f"[info]ℹ New name identical to current name.[/info]")
+            console.print(f"[info]› New name identical to current name.[/info]")
             return False
         if not self.is_valid_name(old_name) or not self.is_valid_name(new_name):
-            console.print("[error]✖ Syntax Error: Alphanumeric, dash, and underscores exclusively.[/error]")
+            console.print("[error]✗ Syntax Error: Alphanumeric, dash, and underscores exclusively.[/error]")
             return False
         old_path = self.profiles_dir / old_name
         if not old_path.is_dir():
-            console.print(f"[error]✖ Missing Reference: '{old_name}' does not exist.[/error]")
+            console.print(f"[error]✗ Missing Reference: '{old_name}' does not exist.[/error]")
             return False
         new_path = self.profiles_dir / new_name
         if new_path.is_dir():
-            console.print(f"[error]✖ Collision: Profile '{new_name}' already exists.[/error]")
+            console.print(f"[error]✗ Collision: Profile '{new_name}' already exists.[/error]")
             return False
-        # Capture active state BEFORE renaming: get_active() validates that the
-        # profile directory exists, so it returns None once the dir is renamed.
+            
         was_active = self.get_active() == old_name
         ordered = self._read_order()
         try:
             old_path.rename(new_path)
             if was_active:
                 self.active_profile_file.write_text(new_name, encoding="utf-8")
-            # Preserve the profile's position in the display/cycle order
             if ordered:
                 if old_name in ordered:
                     ordered = [new_name if name == old_name else name for name in ordered]
                 else:
                     ordered = ordered + [new_name]
                 self.order_file.write_text("\n".join(ordered) + "\n", encoding="utf-8")
-            console.print(f"[success]✔ Profile '{old_name}' renamed to '{new_name}'.[/success]")
+            console.print(f"[success]✓ Profile '{old_name}' renamed to '{new_name}'.[/success]")
             return True
         except OSError as e:
-            console.print(f"[error]✖ IO Fault during rename: {e}[/error]")
+            console.print(f"[error]✗ IO Fault during rename: {e}[/error]")
             return False
 
     def reorder(self, name: str, direction: str) -> bool:
         """Move a profile up or down in the display/cycle order."""
         profiles = self.get_all()
         if name not in profiles:
-            console.print(f"[error]✖ Missing Reference: '{name}' does not exist.[/error]")
+            console.print(f"[error]✗ Missing Reference: '{name}' does not exist.[/error]")
             return False
         if len(profiles) < 2:
-            console.print("[info]ℹ Need at least two profiles to reorder.[/info]")
+            console.print("[info]› Need at least two profiles to reorder.[/info]")
             return False
         idx = profiles.index(name)
         if direction == "up":
             if idx == 0:
-                console.print(f"[info]ℹ '{name}' is already at the top.[/info]")
+                console.print(f"[info]› '{name}' is already at the top.[/info]")
                 return False
             profiles[idx], profiles[idx - 1] = profiles[idx - 1], profiles[idx]
         elif direction == "down":
             if idx == len(profiles) - 1:
-                console.print(f"[info]ℹ '{name}' is already at the bottom.[/info]")
+                console.print(f"[info]› '{name}' is already at the bottom.[/info]")
                 return False
             profiles[idx], profiles[idx + 1] = profiles[idx + 1], profiles[idx]
         else:
-            console.print(f"[error]✖ Invalid direction: '{direction}'. Use 'up' or 'down'.[/error]")
+            console.print(f"[error]✗ Invalid direction: '{direction}'. Use 'up' or 'down'.[/error]")
             return False
         try:
             self.order_file.write_text("\n".join(profiles) + "\n", encoding="utf-8")
-            console.print(f"[success]✔ Moved '{name}' {direction} (now position {profiles.index(name) + 1}).[/success]")
+            console.print(f"[success]✓ Moved '{name}' {direction} (position {profiles.index(name) + 1}).[/success]")
             return True
         except (IOError, OSError) as e:
-            console.print(f"[error]✖ IO Fault during reorder: {e}[/error]")
+            console.print(f"[error]✗ IO Fault during reorder: {e}[/error]")
             return False
 
     def render_dashboard(self) -> None:
         active = self.get_active()
         profiles = self.get_all()
         
-        table = Table(title="Local Isolation Matrix", title_style="highlight", border_style="magenta", expand=True)
-        table.add_column("Index", justify="right", style="cyan", no_wrap=True)
-        table.add_column("State", justify="center", no_wrap=True)
-        table.add_column("Profile Name", style="success")
-        table.add_column("Login Status", justify="center", no_wrap=True)
+        table = Table(
+            title="Local Isolation Matrix",
+            title_style="bold magenta",
+            border_style="magenta",
+            header_style="bold cyan",
+            box=box.ROUNDED,
+            padding=(0, 2),
+            collapse_padding=True,
+            show_lines=False,
+        )
+        table.add_column("#", justify="right", style="dim cyan", no_wrap=True)
+        table.add_column("State", justify="left", no_wrap=True)
+        table.add_column("Profile Name", style="bold white", no_wrap=True)
+        table.add_column("Status", justify="center", no_wrap=True)
         
         for idx, p in enumerate(profiles, start=1):
             is_active = p == active
@@ -879,58 +896,67 @@ class ProfileManager:
             token_file = self._get_token_path(p)
             auth_state = Text("Void", style="dim yellow")
             if token_file.is_file() and token_file.stat().st_size > 0:
-                try:
-                    payload = json.loads(token_file.read_text(encoding="utf-8"))
-                    token_info = payload.get("token") if isinstance(payload, dict) else None
-                    expiry = token_info.get("expiry") if isinstance(token_info, dict) else None
-                    if is_token_expired(expiry):
-                        auth_state = Text("Secured (Expired)", style="bold yellow")
-                    else:
-                        auth_state = Text("Secured (Valid)", style="bold cyan")
-                except Exception:
-                    auth_state = Text("Secured", style="bold cyan")
+                auth_state = Text("Secured", style="bold cyan")
             
             table.add_row(str(idx), status_text, p, auth_state)
             
-        console.print(Rule(style="dim magenta"))
         if not profiles:
             console.print(Align.center("[muted]No profiles found. Create a profile to begin.[/muted]"))
         else:
-            console.print(table)
-        console.print(Rule(style="dim magenta"))
+            console.print(Align.center(table))
+
 
 # ==========================================
 # 5. ROUTER & EVENT LOOP
 # ==========================================
-# questionary returns the choice *title* when its value is None (documented
-# behavior), so every action/cancel choice must carry an explicit value.
-# These two labels can never collide with a profile name (names are
-# [a-zA-Z0-9_-] only).
-CANCEL_VALUE = "↩ Cancel / Go Back"
-DONE_VALUE = "↩ Done"
+CANCEL_VALUE = "← Cancel / Go Back"
+DONE_VALUE = "✓ Done"
 
 
-def build_profile_choices(profiles: ProfileList, active_profile: str | None = None, lock_active: bool = False) -> list[questionary.Choice]:
+def build_profile_choices(
+    profiles: ProfileList,
+    active_profile: str | None = None,
+    lock_active: bool = False,
+    indicate_active: bool = True
+) -> list[questionary.Choice]:
     choices = []
     for p in profiles:
-        if lock_active and p == active_profile:
+        is_active = (p == active_profile)
+        if lock_active and is_active:
             choices.append(questionary.Choice(f"{p} (Active - Locked)", value=p, disabled="Cannot delete active profile"))
+        elif indicate_active and is_active:
+            choices.append(questionary.Choice(f"{p} (Active)", value=p))
         else:
             choices.append(questionary.Choice(p, value=p))
     choices.append(questionary.Choice(CANCEL_VALUE, value=CANCEL_VALUE))
     return choices
 
+
+def render_screen(manager: ProfileManager) -> None:
+    """Clear screen and display the centered header and compact dashboard."""
+    console.clear()
+    title = Text("◆ Antigravity Profile Manager", style="bold magenta")
+    subtitle = Text("Account Isolation & Credentials Switcher", style="dim cyan")
+    header = Panel(
+        Align.center(Text.assemble(title, "\n", subtitle)),
+        border_style="magenta",
+        box=box.ROUNDED,
+        expand=False,
+        padding=(0, 3)
+    )
+    console.print("")
+    console.print(Align.center(header))
+    console.print("")
+    manager.render_dashboard()
+    console.print("")
+
+
 def interactive_tui(manager: ProfileManager) -> None:
     while True:
-        console.clear()
-        
-        title = Text("🚀 Antigravity Profile Manager", style="bold magenta")
-        subtitle = Text("Account Isolation & Credentials Switcher", style="italic cyan")
-        console.print(Panel(Align.center(Text.assemble(title, "\n", subtitle)), border_style="magenta"))
-        
-        manager.render_dashboard()
+        render_screen(manager)
         
         profiles = manager.get_all()
+        active = manager.get_active()
         main_choices = []
         
         if profiles:
@@ -939,11 +965,12 @@ def interactive_tui(manager: ProfileManager) -> None:
             main_choices.append(questionary.Choice("Check Profile Quota", value="check"))
         
         main_choices.extend([
+            questionary.Choice("Relaunch Antigravity", value="relaunch"),
             questionary.Choice("Create New Profile", value="create"),
-            questionary.Choice("Delete Profile", value="delete", disabled="No profiles created" if not profiles else ("Cannot delete the only active profile" if len(profiles) == 1 and manager.get_active() in profiles else None)),
+            questionary.Choice("Delete Profile", value="delete", disabled="No profiles created" if not profiles else ("Cannot delete the only active profile" if len(profiles) == 1 and active in profiles else None)),
             questionary.Choice("Rename Profile", value="rename", disabled="No profiles created" if not profiles else None),
             questionary.Choice("Reorder Profiles", value="reorder", disabled="Need at least two profiles" if len(profiles) < 2 else None),
-            questionary.Choice("Backup/Save Credentials", value="stash", disabled="No active profile" if not manager.get_active() else None),
+            questionary.Choice("Backup/Save Credentials", value="stash", disabled="No active profile" if not active else None),
             questionary.Choice("Quit", value="quit")
         ])
 
@@ -951,9 +978,8 @@ def interactive_tui(manager: ProfileManager) -> None:
             action = questionary.select(
                 "Select Action:",
                 choices=main_choices,
-                use_indicator=True,
                 pointer="❯",
-                style=questionary.Style([('pointer', 'fg:ansimagenta bold')])
+                style=custom_qstyle
             ).ask()
         except KeyboardInterrupt:
             console.print("\n[info]Session terminated via interrupt.[/info]")
@@ -966,70 +992,84 @@ def interactive_tui(manager: ProfileManager) -> None:
         console.print("")
         
         try:
+            active = manager.get_active()
             match action:
                 case "switch":
                     target = questionary.select(
                         "Select profile to switch to:", 
-                        choices=build_profile_choices(profiles),
-                        style=questionary.Style([('pointer', 'fg:ansimagenta bold')])
+                        choices=build_profile_choices(profiles, active_profile=active),
+                        default=active if active in profiles else None,
+                        pointer="❯",
+                        style=custom_qstyle
                     ).ask()
                     
                     if target and target != CANCEL_VALUE:
                         if manager.switch(target):
-                            # A successful switch is the natural end of the task: return to the shell.
                             break
-                        questionary.press_any_key_to_continue("\nPress any key to return...").ask()
+                        questionary.press_any_key_to_continue("\nPress any key to return...", style=custom_qstyle).ask()
                 case "cycle":
                     if manager.cycle_next():
                         break
-                    questionary.press_any_key_to_continue("\nPress any key to return...").ask()
+                    questionary.press_any_key_to_continue("\nPress any key to return...", style=custom_qstyle).ask()
                 case "check":
                     target = questionary.select(
                         "Select profile to check quota:", 
-                        choices=build_profile_choices(profiles),
-                        style=questionary.Style([('pointer', 'fg:ansimagenta bold')])
+                        choices=build_profile_choices(profiles, active_profile=active),
+                        default=active if active in profiles else None,
+                        pointer="❯",
+                        style=custom_qstyle
                     ).ask()
                     
                     if target and target != CANCEL_VALUE:
                         manager.check_profile(target)
-                        questionary.press_any_key_to_continue("\nPress any key to return...").ask()
+                        questionary.press_any_key_to_continue("\nPress any key to return...", style=custom_qstyle).ask()
+                case "relaunch":
+                    start_antigravity()
+                    questionary.press_any_key_to_continue("\nPress any key to return...", style=custom_qstyle).ask()
                 case "create":
-                    name = questionary.text("Enter name for new profile (leave blank to cancel):").ask()
+                    name = questionary.text("Enter name for new profile (leave blank to cancel):", style=custom_qstyle).ask()
                     
                     if name and name.strip(): 
                         manager.create(name.strip())
-                        questionary.press_any_key_to_continue("\nPress any key to return...").ask()
+                        questionary.press_any_key_to_continue("\nPress any key to return...", style=custom_qstyle).ask()
                 case "delete":
                     target = questionary.select(
                         "Select profile to delete:", 
-                        choices=build_profile_choices(profiles, manager.get_active(), lock_active=True),
-                        style=questionary.Style([('pointer', 'fg:ansimagenta bold')])
+                        choices=build_profile_choices(profiles, active_profile=active, lock_active=True),
+                        default=next((p for p in profiles if p != active), None),
+                        pointer="❯",
+                        style=custom_qstyle
                     ).ask()
                     
                     if target and target != CANCEL_VALUE: 
                         manager.delete(target)
-                        questionary.press_any_key_to_continue("\nPress any key to return...").ask()
+                        questionary.press_any_key_to_continue("\nPress any key to return...", style=custom_qstyle).ask()
                 case "rename":
                     target = questionary.select(
                         "Select profile to rename:", 
-                        choices=build_profile_choices(profiles),
-                        style=questionary.Style([('pointer', 'fg:ansimagenta bold')])
+                        choices=build_profile_choices(profiles, active_profile=active),
+                        default=active if active in profiles else None,
+                        pointer="❯",
+                        style=custom_qstyle
                     ).ask()
                     
                     if target and target != CANCEL_VALUE:
                         new_name = questionary.text(
                             "Enter new name for profile (leave blank to cancel):",
                             validate=lambda v: v.strip() == "" or manager.is_valid_name(v.strip())
-                            or "Invalid name: alphanumeric, dashes, and underscores only"
+                            or "Invalid name: alphanumeric, dashes, and underscores only",
+                            style=custom_qstyle
                         ).ask()
                         if new_name and new_name.strip():
                             manager.rename(target, new_name.strip())
-                        questionary.press_any_key_to_continue("\nPress any key to return...").ask()
+                        questionary.press_any_key_to_continue("\nPress any key to return...", style=custom_qstyle).ask()
                 case "reorder":
                     target = questionary.select(
                         "Select profile to move:", 
-                        choices=build_profile_choices(profiles),
-                        style=questionary.Style([('pointer', 'fg:ansimagenta bold')])
+                        choices=build_profile_choices(profiles, active_profile=active),
+                        default=active if active in profiles else None,
+                        pointer="❯",
+                        style=custom_qstyle
                     ).ask()
                     
                     if target and target != CANCEL_VALUE:
@@ -1037,30 +1077,25 @@ def interactive_tui(manager: ProfileManager) -> None:
                             move_action = questionary.select(
                                 f"Move '{target}' where?",
                                 choices=[
-                                    questionary.Choice("▲ Move Up", value="up"),
-                                    questionary.Choice("▼ Move Down", value="down"),
+                                    questionary.Choice("↑ Move Up", value="up"),
+                                    questionary.Choice("↓ Move Down", value="down"),
                                     questionary.Choice(DONE_VALUE, value=DONE_VALUE)
                                 ],
-                                style=questionary.Style([('pointer', 'fg:ansimagenta bold')])
+                                pointer="❯",
+                                style=custom_qstyle
                             ).ask()
                             if move_action is None or move_action == DONE_VALUE:
                                 break
                             if manager.reorder(target, move_action):
-                                # Live feedback: repaint so the new position is visible
-                                # before the next move decision.
-                                console.clear()
-                                title = Text("🚀 Antigravity Profile Manager", style="bold magenta")
-                                subtitle = Text("Account Isolation & Credentials Switcher", style="italic cyan")
-                                console.print(Panel(Align.center(Text.assemble(title, "\n", subtitle)), border_style="magenta"))
-                                manager.render_dashboard()
-                        questionary.press_any_key_to_continue("\nPress any key to return...").ask()
+                                render_screen(manager)
                 case "stash":
                     active_profile = manager.get_active()
                     if active_profile:
                         manager.stash_keyring(active_profile)
-                        questionary.press_any_key_to_continue("\nPress any key to return...").ask()
+                        questionary.press_any_key_to_continue("\nPress any key to return...", style=custom_qstyle).ask()
         except KeyboardInterrupt:
             continue
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Antigravity Profile Manager & Credentials Switcher")
@@ -1068,19 +1103,23 @@ def main() -> None:
     parser.add_argument("-l", "--list", action="store_true", help="List all available profiles and exit")
     parser.add_argument("-n", "--next", action="store_true", help="Cycle to the next profile and exit")
     parser.add_argument("-f", "--force", action="store_true", help="Bypass running process check and force switch non-interactively")
-    parser.add_argument("-r", "--restart", action="store_true", help="Gracefully close Antigravity if running, switch, then relaunch it — starts it even if it was not running (mirrors the AntigravityManager switch flow)")
-    parser.add_argument("-c", "--check", nargs="?", const="__active__", metavar="PROFILE", help="Validate a profile's token (refresh if expired) and verify it live against Google (defaults to active profile)")
+    parser.add_argument("-r", "--restart", action="store_true", help="Close Antigravity if running, switch profile, then relaunch it detached")
+    parser.add_argument("-c", "--check", nargs="?", const="__active__", metavar="PROFILE", help="Validate a profile's token and verify live quota against Google (defaults to active profile)")
+    parser.add_argument("--launch", "--relaunch", action="store_true", help="Launch or relaunch Antigravity detached from the terminal and exit")
     
     args = parser.parse_args()
 
     manager = ProfileManager(force_mode=args.force, restart_mode=args.restart)
 
-    if args.list:
+    if args.launch or getattr(args, 'relaunch', False):
+        if not start_antigravity():
+            sys.exit(1)
+    elif args.list:
         manager.render_dashboard()
     elif args.check is not None:
         target = args.check if args.check != "__active__" else (args.profile or manager.get_active())
         if not target:
-            console.print("[error]✖ No active profile to check.[/error]")
+            console.print("[error]✗ No active profile to check.[/error]")
             sys.exit(1)
         if not manager.check_profile(target):
             sys.exit(1)
@@ -1092,9 +1131,10 @@ def main() -> None:
             sys.exit(1)
     else:
         if not sys.stdin.isatty():
-            console.print("[error]✖ Interactive mode requires a terminal. Use -l, -n, -f, -r, -c, or a profile name instead.[/error]")
+            console.print("[error]✗ Interactive mode requires a terminal. Use -l, -n, -f, -r, -c, --launch, or a profile name instead.[/error]")
             sys.exit(1)
         interactive_tui(manager)
+
 
 if __name__ == "__main__":
     try:
