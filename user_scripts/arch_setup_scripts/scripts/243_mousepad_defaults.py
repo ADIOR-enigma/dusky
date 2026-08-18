@@ -33,7 +33,7 @@ org.xfce.mousepad.preferences.file monitor-changes true
 org.xfce.mousepad.preferences.file monitor-disabling-timer uint32 500
 org.xfce.mousepad.preferences.file session-restore 'after-a-crash'
 org.xfce.mousepad.preferences.view auto-indent false
-org.xfce.mousepad.preferences.view color-scheme 'none'
+org.xfce.mousepad.preferences.view color-scheme 'matugen'
 org.xfce.mousepad.preferences.view font-name 'Monospace 10'
 org.xfce.mousepad.preferences.view highlight-current-line false
 org.xfce.mousepad.preferences.view indent-on-tab true

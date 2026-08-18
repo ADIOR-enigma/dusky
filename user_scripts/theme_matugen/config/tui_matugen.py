@@ -99,6 +99,15 @@ SCHEMA: dict[int, list[ConfigItem]] = {
             extended_help="**GTK 4 / Libadwaita Generation**\n\nGenerates `gtk-4.css` and links libadwaita styling to `~/.config/gtk-4.0/`."
         ),
         ConfigItem(
+            label="GtkSourceView (Mousepad)",
+            key="gtksourceview",
+            scope="DEFAULT",
+            type_="bool",
+            default=True,
+            group="GTK Theming",
+            extended_help="**GtkSourceView / Mousepad Syntax & Gutter Scheme**\n\nGenerates `matugen.xml` style scheme for Mousepad, Gedit, and GtkSourceView editors."
+        ),
+        ConfigItem(
             label="Icon Theme",
             key="icon_theme",
             scope="DEFAULT",

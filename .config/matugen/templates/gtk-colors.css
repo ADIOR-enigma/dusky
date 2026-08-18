@@ -165,5 +165,19 @@ tooltip * {
   color: @dialog_fg_color;
 }
 
+/* GtkTextView & GtkSourceView Line Numbers & Gutters */
+textview border,
+textview border.left,
+textview border.right,
+textview border.top,
+textview border.bottom,
+sourceview gutter,
+gutter,
+gutter.left {
+  background-color: @sidebar_bg_color;
+  color: alpha(@window_fg_color, 0.4);
+  border-color: @sidebar_border_color;
+}
+
 
 

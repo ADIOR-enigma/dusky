@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Dynamic Material You GtkSourceView Style Scheme
+  Generated with Matugen
+-->
+<style-scheme id="matugen" _name="Matugen" version="1.0">
+  <author>Dusky Matugen</author>
+  <_description>Dynamic Material You dark color scheme</_description>
+
+  <!-- Palette -->
+  <color name="bg_main"        value="{{colors.surface_container_lowest.default.hex}}"/>
+  <color name="bg_dim"         value="{{colors.surface_dim.default.hex}}"/>
+  <color name="bg_gutter"      value="{{colors.surface_container_lowest.default.hex}}"/>
+  <color name="fg_main"        value="{{colors.on_surface.default.hex}}"/>
+  <color name="fg_gutter"      value="{{colors.outline.default.hex}}"/>
+  <color name="primary"        value="{{colors.primary.default.hex}}"/>
+  <color name="primary_dim"    value="{{colors.primary_fixed_dim.default.hex}}"/>
+  <color name="secondary"      value="{{colors.secondary.default.hex}}"/>
+  <color name="tertiary"       value="{{colors.tertiary.default.hex}}"/>
+  <color name="error"          value="{{colors.error.default.hex}}"/>
+  <color name="selection"      value="{{colors.primary_container.default.hex}}"/>
+  <color name="on_selection"   value="{{colors.on_primary_container.default.hex}}"/>
+  <color name="current_line"   value="{{colors.surface_container_low.default.hex}}"/>
+
+  <!-- Global Settings -->
+  <style name="text"                foreground="fg_main" background="bg_main"/>
+  <style name="selection"           foreground="on_selection" background="selection"/>
+  <style name="cursor"              foreground="primary"/>
+  <style name="current-line"        background="current_line"/>
+  <style name="line-numbers"        foreground="fg_gutter" background="bg_gutter"/>
+  <style name="current-line-number" foreground="primary" background="bg_gutter"/>
+  <style name="draw-spaces"         foreground="fg_gutter"/>
+  <style name="background-pattern"  background="bg_dim"/>
+
+  <!-- Syntax Highlighting -->
+  <style name="def:comment"         foreground="fg_gutter" italic="true"/>
+  <style name="def:string"          foreground="tertiary"/>
+  <style name="def:keyword"         foreground="primary" bold="true"/>
+  <style name="def:type"            foreground="primary_dim"/>
+  <style name="def:function"        foreground="secondary"/>
+  <style name="def:constant"        foreground="secondary"/>
+  <style name="def:number"          foreground="tertiary"/>
+  <style name="def:statement"       foreground="primary" bold="true"/>
+  <style name="def:preprocessor"    foreground="secondary"/>
+  <style name="def:error"           foreground="error" bold="true"/>
+</style-scheme>

@@ -26,6 +26,16 @@ post_hook   = '''
   ln -nfs "/usr/share/themes/adw-gtk3-dark/gtk-4.0/libadwaita-tweaks.css" "$HOME/.config/gtk-4.0/libadwaita-tweaks.css"
 '''
 
+[templates.gtksourceview]
+input_path  = '~/.config/matugen/templates/gtksourceview.xml'
+output_path = '~/.config/matugen/generated/gtksourceview.xml'
+post_hook   = '''
+  mkdir -p "$HOME/.local/share/gtksourceview-4/styles" "$HOME/.local/share/gtksourceview-3.0/styles" "$HOME/.local/share/gtksourceview-5/styles"
+  ln -nfs "$HOME/.config/matugen/generated/gtksourceview.xml" "$HOME/.local/share/gtksourceview-4/styles/matugen.xml"
+  ln -nfs "$HOME/.config/matugen/generated/gtksourceview.xml" "$HOME/.local/share/gtksourceview-3.0/styles/matugen.xml"
+  ln -nfs "$HOME/.config/matugen/generated/gtksourceview.xml" "$HOME/.local/share/gtksourceview-5/styles/matugen.xml"
+'''
+
 [templates.icon_theme]
 input_path  = '/dev/null'
 output_path = '/dev/null'
