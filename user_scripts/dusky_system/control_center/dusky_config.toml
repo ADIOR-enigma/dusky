@@ -1322,8 +1322,9 @@ title = "Shazam"
 icon = "media-record-symbolic"
 [pages.layout.items.on_press]
 type = "exec"
-command = "$HOME/user_scripts/music/music_recognition.sh"
+command = "$HOME/user_scripts/music/music_recognition.py"
 terminal = false
+
 
 [[pages.layout.items]]
 type = "toggle_card"

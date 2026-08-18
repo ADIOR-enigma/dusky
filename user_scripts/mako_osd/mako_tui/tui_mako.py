@@ -608,6 +608,28 @@ SCHEMA = {
         ConfigItem(label="Text", key="text-color", scope="app-name=dusky-recorder-status", type_="color", default="{{colors.on_surface.default.hex}}", options=COLOR_OPTIONS, hints=COLOR_HINTS, parent_ref="menu_recorder", extended_help="**Recorder Text Color**" + ALPHA_HELP),
         ConfigItem(label="Border", key="border-color", scope="app-name=dusky-recorder-status", type_="color", default="{{colors.primary.default.hex}}66", options=COLOR_OPTIONS, hints=COLOR_HINTS, parent_ref="menu_recorder", extended_help="**Recorder Border Color**" + ALPHA_HELP),
 
+        ConfigItem(
+            label="Music Recog", key="menu_music_recognition", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Apps",
+            extended_help="**Dusky Music Recognition Overlay**\n\nControls the popup notification when identifying songs via Shazam/SongRec. Targets notifications pushed with `app-name=dusky-music-recognition`."
+        ),
+        ConfigItem(label="Anchor", key="anchor", scope="app-name=dusky-music-recognition", type_="cycle", default="bottom-center", options=["top-right", "top-center", "top-left", "bottom-right", "bottom-center", "bottom-left", "center-right", "center-left", "center"], parent_ref="menu_music_recognition", extended_help="**Music Recognition Anchor**\n\nWhere the music recognition notification anchors on screen."),
+        ConfigItem(label="Layer", key="layer", scope="app-name=dusky-music-recognition", type_="cycle", default="overlay", options=["background", "bottom", "top", "overlay"], parent_ref="menu_music_recognition", extended_help="**Music Recognition Layer**\n\nArranges the notification at a specific Wayland surface layer."),
+        ConfigItem(label="Width", key="width", scope="app-name=dusky-music-recognition", type_="int", default=520, min_val=50, max_val=800, step=5, parent_ref="menu_music_recognition", extended_help="**Music Recognition Box Width**\n\nTotal width allocated for the song notification pill."),
+        ConfigItem(label="Height", key="height", scope="app-name=dusky-music-recognition", type_="int", default=64, min_val=10, max_val=200, step=2, parent_ref="menu_music_recognition", extended_help="**Music Recognition Box Height**\n\nTotal height allocated for the song notification pill."),
+        ConfigItem(label="Margin", key="margin", scope="app-name=dusky-music-recognition", type_="string", default="0,0,30,0", parent_ref="menu_music_recognition", extended_help="**Music Recognition Margin**\n\nSpacing pushing the notification away from screen boundaries."),
+        ConfigItem(label="Padding", key="padding", scope="app-name=dusky-music-recognition", type_="string", default="6,16", parent_ref="menu_music_recognition", extended_help="**Music Recognition Internal Padding**\n\nInternal spacing separating text/icons from borders."),
+        ConfigItem(label="Radius", key="border-radius", scope="app-name=dusky-music-recognition", type_="int", default=22, min_val=0, max_val=50, step=1, parent_ref="menu_music_recognition", extended_help="**Music Recognition Corner Smoothing**\n\nApplies rounded arcs to the notification pill."),
+        ConfigItem(label="Size", key="border-size", scope="app-name=dusky-music-recognition", type_="int", default=0, min_val=0, max_val=10, step=1, parent_ref="menu_music_recognition", extended_help="**Music Recognition Border Stroke**\n\nThickness of the outer border ring."),
+        ConfigItem(label="Icons", key="icons", scope="app-name=dusky-music-recognition", type_="bool", default=True, parent_ref="menu_music_recognition", extended_help="**Music Recognition Icon Toggle**\n\nEnables display of album artwork icon."),
+        ConfigItem(label="Align", key="text-alignment", scope="app-name=dusky-music-recognition", type_="cycle", default="center", options=["left", "center", "right"], parent_ref="menu_music_recognition", extended_help="**Music Recognition Alignment**\n\nJustification of text inside the notification pill."),
+        ConfigItem(label="Timeout", key="default-timeout", scope="app-name=dusky-music-recognition", type_="int", default=8000, min_val=0, max_val=20000, step=500, parent_ref="menu_music_recognition", extended_help="**Music Recognition Lifespan**\n\nMilliseconds the notification stays visible."),
+        ConfigItem(label="Background", key="background-color", scope="app-name=dusky-music-recognition", type_="color", default="#00000000", options=COLOR_OPTIONS, hints=COLOR_HINTS, parent_ref="menu_music_recognition", extended_help="**Music Recognition Fill Color**" + ALPHA_HELP),
+        ConfigItem(label="Text", key="text-color", scope="app-name=dusky-music-recognition", type_="color", default="{{colors.on_surface.default.hex}}", options=COLOR_OPTIONS, hints=COLOR_HINTS, parent_ref="menu_music_recognition", extended_help="**Music Recognition Text Color**" + ALPHA_HELP),
+        ConfigItem(label="Border", key="border-color", scope="app-name=dusky-music-recognition", type_="color", default="#00000000", options=COLOR_OPTIONS, hints=COLOR_HINTS, parent_ref="menu_music_recognition", extended_help="**Music Recognition Border Color**" + ALPHA_HELP),
+
+
+
+
         # =====================================================================
         # GROUP: OSD (On-Screen Display for Volume/Brightness)
         # =====================================================================

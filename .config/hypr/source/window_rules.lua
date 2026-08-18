@@ -1419,12 +1419,13 @@ hl.window_rule({
 
 --- music recognition script ---
 hl.window_rule({
-    name = "music_recognition.sh",
-    match = { class = "^(music_recognition.sh)$" },
+    name = "music_recognition.py",
+    match = { class = "^(music_recognition.py)$" },
     float = true,
-    size = {409, 147},
+    size = {614, 253}, -- set absolute window size in pixels
     center = true
 })
+
 
 --- dusky_hyprlock_switcher.sh script ---
 hl.window_rule({
