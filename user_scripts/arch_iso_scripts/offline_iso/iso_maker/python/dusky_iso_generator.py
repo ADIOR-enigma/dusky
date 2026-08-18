@@ -199,7 +199,7 @@ ALL_GROUPS: Dict[str, List[str]] = {
         "thunar-shares-plugin", "thunar-vcs-plugin", "tumbler", "ffmpegthumbnailer",
         "webp-pixbuf-loader", "poppler-glib", "libgsf", "libgepub", "libopenraw", "resvg",
         "gvfs", "gvfs-mtp", "gvfs-nfs", "gvfs-smb", "gvfs-gphoto2", "gvfs-afc", "gvfs-dnssd",
-        "catfish", "gnome-keyring", "meld", "xreader", "imagemagick",
+        "catfish", "gnome-keyring", "meld", "xreader", "imagemagick", "kio-admin",
     ],
     "network": [
         "networkmanager", "wireless-regdb", "iwd", "nm-connection-editor", "inetutils", "wget",
