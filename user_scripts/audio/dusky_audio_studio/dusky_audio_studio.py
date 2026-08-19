@@ -261,14 +261,14 @@ class AudioConfig:
 
     # Vocoder & Voice Character Stack
     vocoder_on: bool = False
-    vocoder_mix: int = 70  # 0..100%
+    vocoder_mix: int = 0  # 0..100%
     vocoder_carrier_hz: int = 110  # 50..440 Hz
     vocoder_attack_ms: int = 5  # 1..100 ms
     vocoder_release_ms: int = 30  # 5..500 ms
     vocoder_detune: int = 20  # 0..200 per-mille
     vocoder_follow: bool = True
     vocoder_pitch_shift: int = 0  # -24..+24 semitones
-    vocoder_matrix: int = 50  # 0..100%
+    vocoder_matrix: int = 0  # 0..100%
 
     # Pitch & Modulation
     pitch_shift: int = 0  # -2400..+2400 centisemitones (-24..+24 st)
@@ -297,7 +297,7 @@ class AudioConfig:
     eq_on: bool = False
     eq_post_gain: int = 0  # -3600..+3600 centi-dB (±36 dB line translation)
     eq_gains: list[int] = field(
-        default_factory=lambda: [0, 300, 0, -200, 0, 300, 0, 200, 0]
+        default_factory=lambda: [0, 0, 0, 0, 0, 0, 0, 0, 0]
     )
 
 
@@ -1861,6 +1861,27 @@ def run_gtk_app() -> None:
                 if not self._updating_ui:
                     callback(s)
 
+            def on_scroll(w: Gtk.Widget, event: Gdk.EventScroll) -> bool:
+                # Forward mouse wheel scroll event to parent ScrolledWindow so it scrolls the page
+                # rather than accidentally adjusting the slider.
+                parent = w.get_parent()
+                while parent:
+                    if isinstance(parent, Gtk.ScrolledWindow):
+                        adj = parent.get_vadjustment()
+                        if adj:
+                            step = adj.get_step_increment() or 20.0
+                            if event.direction == Gdk.ScrollDirection.UP:
+                                adj.set_value(max(adj.get_lower(), adj.get_value() - step * 2))
+                            elif event.direction == Gdk.ScrollDirection.DOWN:
+                                adj.set_value(min(adj.get_upper() - adj.get_page_size(), adj.get_value() + step * 2))
+                            elif event.direction == Gdk.ScrollDirection.SMOOTH:
+                                _, _, dy = event.get_scroll_deltas()
+                                adj.set_value(max(adj.get_lower(), min(adj.get_upper() - adj.get_page_size(), adj.get_value() + dy * step * 2)))
+                        return True
+                    parent = parent.get_parent()
+                return True
+
+            scale.connect("scroll-event", on_scroll)
             scale.connect("value-changed", on_val)
             box.pack_start(scale, False, False, 0)
             box._scale = scale  # type: ignore
@@ -2176,12 +2197,7 @@ def run_gtk_app() -> None:
             send_desktop_notification("Dusky Audio Studio", "All audio processing reset to clean factory defaults.")
 
         def reset_voice_fx(self, *_: Any) -> None:
-            self._updating_ui = True
-            self._reset_voice_state()
-            save_config(self.cfg)
-            sync_config_to_daemon(self.cfg)
-            self._refresh_voice_ui()
-            self._updating_ui = False
+            self.apply_preset_by_name("Natural Clean")
 
         def reset_spatial_dsp(self, *_: Any) -> None:
             self._updating_ui = True
@@ -2210,8 +2226,8 @@ def run_gtk_app() -> None:
             self.cfg.vocoder_release_ms = 30
             self.cfg.vocoder_follow = True
             self.cfg.vocoder_pitch_shift = 0
-            self.cfg.vocoder_matrix = 50
-            self.cfg.vocoder_mix = 70
+            self.cfg.vocoder_matrix = 0
+            self.cfg.vocoder_mix = 0
 
         def _reset_spatial_state(self) -> None:
             self.cfg.delay_on = False
