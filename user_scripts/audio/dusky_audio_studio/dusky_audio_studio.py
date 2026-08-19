@@ -1322,7 +1322,7 @@ def run_gtk_app() -> None:
 
             # --- Footer ---
             footer_lbl = Gtk.Label(
-                label="Virtual Audio Device: G-Helper Microphone (PipeWire RT Low-Latency DSP)",
+                label="Virtual Audio Device: Dusky Mic & Dusky Audio (PipeWire RT Low-Latency DSP)",
                 xalign=0.5,
             )
             footer_lbl.get_style_context().add_class("footer-info")

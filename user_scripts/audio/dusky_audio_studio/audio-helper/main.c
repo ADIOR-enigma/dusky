@@ -2142,7 +2142,7 @@ static int create_sink_out_stream(struct app *app, const char *target)
         PW_KEY_MEDIA_CATEGORY, "Playback",
         PW_KEY_MEDIA_ROLE, "Communication",
         PW_KEY_NODE_NAME, "ghelper-audio-sink-out",
-        PW_KEY_NODE_DESCRIPTION, "G-Helper Clean Output playback",
+        PW_KEY_NODE_DESCRIPTION, "Dusky Audio playback",
         PW_KEY_NODE_AUTOCONNECT, "true",
         PW_KEY_NODE_DONT_RECONNECT, has_target ? "true" : "false",
         /* Must share link-group with sink_in so WirePlumber routes
@@ -2709,8 +2709,8 @@ int main(int argc, char *argv[])
         PW_KEY_MEDIA_CATEGORY, "Playback",
         PW_KEY_MEDIA_ROLE, "Communication",
         PW_KEY_NODE_NAME, "ghelper-audio",
-        PW_KEY_NODE_NICK, "G-Helper Mic",
-        PW_KEY_NODE_DESCRIPTION, "G-Helper Microphone (Noise Suppressed)",
+        PW_KEY_NODE_NICK, "Dusky Mic",
+        PW_KEY_NODE_DESCRIPTION, "Dusky Mic",
         PW_KEY_MEDIA_CLASS, "Audio/Source",
         PW_KEY_NODE_VIRTUAL, "true",
         "audio.channels", "1",
@@ -2753,7 +2753,7 @@ int main(int argc, char *argv[])
         PW_KEY_MEDIA_CATEGORY, "Playback",
         PW_KEY_MEDIA_ROLE, "Communication",
         PW_KEY_NODE_NAME, "ghelper-audio-monitor",
-        PW_KEY_NODE_DESCRIPTION, "G-Helper Audio monitor",
+        PW_KEY_NODE_DESCRIPTION, "Dusky Audio monitor",
         NULL);
 
     app->mon_stream = pw_stream_new_simple(
@@ -2781,8 +2781,8 @@ int main(int argc, char *argv[])
         PW_KEY_MEDIA_CATEGORY, "Capture",
         PW_KEY_MEDIA_ROLE, "Communication",
         PW_KEY_NODE_NAME, "ghelper-audio-sink",
-        PW_KEY_NODE_NICK, "G-Helper Clean Output",
-        PW_KEY_NODE_DESCRIPTION, "G-Helper Clean Output (Two-Way RT DSP)",
+        PW_KEY_NODE_NICK, "Dusky Audio",
+        PW_KEY_NODE_DESCRIPTION, "Dusky Audio",
         PW_KEY_MEDIA_CLASS, "Audio/Sink",
         PW_KEY_NODE_VIRTUAL, "true",
         "audio.channels", "2",

@@ -24,12 +24,12 @@ get_device_desc() {
 
     # Known virtual nodes - keep them clean and succinct
     case "$raw_name" in
-        "ghelper-audio-sink"|"ghelper-audio-sink-out")
-            echo "G-Helper Clean Output"
+        "ghelper-audio-sink"|"ghelper-audio-sink-out"|"dusky-audio-sink"|"dusky-audio-sink-out")
+            echo "Dusky Audio"
             return
             ;;
-        "ghelper-audio"|"ghelper-audio-capture")
-            echo "G-Helper Microphone"
+        "ghelper-audio"|"ghelper-audio-capture"|"dusky-audio"|"dusky-audio-capture")
+            echo "Dusky Mic"
             return
             ;;
     esac
