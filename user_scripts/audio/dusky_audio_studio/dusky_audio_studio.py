@@ -162,6 +162,59 @@ window.panel-window {
     border-color: alpha(@theme_selected_bg_color, 0.45);
 }
 
+.segmented-group {
+    background-color: alpha(@theme_fg_color, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 10px;
+    padding: 3px;
+}
+
+.segmented-btn {
+    border-radius: 7px;
+    padding: 6px 16px;
+    font-weight: 700;
+    font-size: 11px;
+    background-color: transparent;
+    border: 1px solid transparent;
+    color: alpha(@theme_fg_color, 0.7);
+    transition: all 150ms ease;
+}
+
+.segmented-btn:hover {
+    background-color: alpha(@theme_selected_bg_color, 0.15);
+    color: @theme_selected_bg_color;
+}
+
+.segmented-btn.active-preset {
+    background-color: @theme_selected_bg_color;
+    color: @theme_selected_fg_color;
+    border-color: @theme_selected_bg_color;
+    font-weight: 800;
+}
+
+.preset-chip {
+    border-radius: 6px;
+    padding: 3px 8px;
+    font-weight: 600;
+    font-size: 10px;
+    background-color: alpha(@theme_fg_color, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.04);
+    color: alpha(@theme_fg_color, 0.85);
+    transition: all 120ms ease;
+}
+
+.preset-chip:hover {
+    background-color: alpha(@theme_selected_bg_color, 0.2);
+    color: @theme_selected_bg_color;
+}
+
+.preset-chip.active-preset {
+    background-color: @theme_selected_bg_color;
+    color: @theme_selected_fg_color;
+    border-color: @theme_selected_bg_color;
+    font-weight: 700;
+}
+
 notebook header {
     background-color: transparent;
     border-bottom: 1px solid alpha(@theme_fg_color, 0.08);
@@ -304,12 +357,51 @@ class AudioConfig:
     reverb_width: int = 80  # 0..100%
     reverb_mix: int = 35  # 0..100%
 
-    # 9-Band EQ gains (-1200..+1200 centi-dB -> -12dB..+12dB)
+    # Microphone 9-Band EQ gains (-1200..+1200 centi-dB -> -12dB..+12dB)
     eq_on: bool = False
     eq_post_gain: int = 0  # -3600..+3600 centi-dB (±36 dB line translation)
     eq_gains: list[int] = field(
         default_factory=lambda: [0, 0, 0, 0, 0, 0, 0, 0, 0]
     )
+
+    # Playback / Output 9-Band Stereo EQ gains
+    out_eq_on: bool = False
+    out_eq_post_gain: int = 0  # -3600..+3600 centi-dB
+    out_eq_gains: list[int] = field(
+        default_factory=lambda: [0, 0, 0, 0, 0, 0, 0, 0, 0]
+    )
+
+    # Playback / Output Vocoder & Carrier
+    out_vocoder_on: bool = False
+    out_vocoder_mix: int = 70  # 0..100%
+    out_vocoder_carrier_hz: int = 110  # 50..880 Hz
+    out_vocoder_attack_ms: int = 5  # 1..100 ms
+    out_vocoder_release_ms: int = 30  # 5..500 ms
+    out_vocoder_detune: int = 20  # 0..200 per-mille
+    out_vocoder_follow: bool = True
+    out_vocoder_pitch_shift: int = 0  # -24..+24 semitones
+    out_vocoder_matrix: int = 0  # 0..100%
+
+    # Playback / Output Pitch & Modulation
+    out_pitch_shift: int = 0  # -2400..+2400 centisemitones
+    out_autotune_on: bool = False
+    out_autotune_target_hz: int = 0
+    out_bitcrush_bits: int = 0
+    out_bitcrush_downsample: int = 1
+    out_bandpass_hpf_hz: int = 0
+    out_bandpass_lpf_hz: int = 0
+    out_stutter_hz: int = 0
+
+    # Playback / Output Delay & Reverb
+    out_delay_on: bool = False
+    out_delay_ms: int = 250
+    out_delay_feedback: int = 35
+    out_delay_mix: int = 30
+    out_reverb_on: bool = False
+    out_reverb_room: int = 70
+    out_reverb_damp: int = 50
+    out_reverb_width: int = 80
+    out_reverb_mix: int = 35
 
 
 @dataclass(slots=True)
@@ -321,6 +413,56 @@ class AudioTelemetry:
     rms_out_db: float = -80.0
     noise_reduction_db: float = 0.0
     tracked_pitch_hz: float = 0.0
+
+
+# Microphone / Input Equalizer Presets
+INPUT_EQ_PRESETS: Final[dict[str, dict[str, Any]]] = {
+    "Flat (0 dB)": {
+        "post_gain": 0,
+        "gains": [0, 0, 0, 0, 0, 0, 0, 0, 0],
+    },
+    "Broadcast Warmth": {
+        "post_gain": 0,
+        "gains": [0, 300, 0, -200, 0, 300, 0, 200, 0],
+    },
+    "Vocal Presence": {
+        "post_gain": 0,
+        "gains": [-300, 0, 0, -100, 200, 400, 300, 200, 100],
+    },
+    "Crisp & Clean": {
+        "post_gain": 0,
+        "gains": [-600, -200, -100, -200, 100, 300, 400, 500, 300],
+    },
+}
+
+
+# Output / Playback Equalizer Presets
+OUTPUT_EQ_PRESETS: Final[dict[str, dict[str, Any]]] = {
+    "Flat (0 dB)": {
+        "post_gain": 0,
+        "gains": [0, 0, 0, 0, 0, 0, 0, 0, 0],
+    },
+    "Bass Boost": {
+        "post_gain": 0,
+        "gains": [600, 500, 300, 100, 0, 0, 0, 0, 0],
+    },
+    "V-Shape (Loudness)": {
+        "post_gain": 0,
+        "gains": [500, 400, 200, -100, -200, 100, 300, 400, 500],
+    },
+    "Vocal Clarity": {
+        "post_gain": 0,
+        "gains": [-300, -100, 0, 100, 400, 500, 300, 100, 0],
+    },
+    "Treble Boost": {
+        "post_gain": 0,
+        "gains": [-200, -100, 0, 0, 100, 300, 500, 600, 600],
+    },
+    "Gaming (Footsteps)": {
+        "post_gain": 0,
+        "gains": [-400, -200, 100, 200, 300, 600, 500, 200, -100],
+    },
+}
 
 
 # Comprehensive Voice Presets Palette (Aligned with C# Ground Truth)
@@ -1056,7 +1198,7 @@ class AudioDspServer:
         self.send_cmd(f"RVB {1 if (cfg.enabled and cfg.reverb_on) else 0}")
         self.send_cmd(f"RVP {cfg.reverb_room * 10} {cfg.reverb_damp * 10} {cfg.reverb_width * 10} {cfg.reverb_mix * 10}")
 
-        # 9-Band EQ & Uniform Post-Gain
+        # 9-Band EQ & Uniform Post-Gain (Microphone Input)
         self.send_cmd(f"EQ {1 if (cfg.enabled and cfg.eq_on) else 0}")
         self.send_cmd(f"EGN {cfg.eq_post_gain}")
         eq_types = [3, 1, 0, 0, 0, 0, 0, 2, 0]
@@ -1064,6 +1206,33 @@ class AudioDspServer:
         eq_q = [707, 707, 1000, 1000, 1000, 700, 1000, 700, 1000]
         for idx, gain in enumerate(cfg.eq_gains):
             self.send_cmd(f"EQB {idx} {eq_types[idx]} {eq_freqs[idx]} {eq_q[idx]} {gain}")
+
+        # Stereo 9-Band EQ & Uniform Post-Gain (Playback Output)
+        self.send_cmd(f"OUT_EQ {1 if (cfg.enabled and cfg.out_eq_on) else 0}")
+        self.send_cmd(f"OUT_EGN {cfg.out_eq_post_gain}")
+        for idx, gain in enumerate(cfg.out_eq_gains):
+            self.send_cmd(f"OUT_EQB {idx} {eq_types[idx]} {eq_freqs[idx]} {eq_q[idx]} {gain}")
+
+        # Output Playback Stereo Voice Transformers
+        self.send_cmd(f"OUT_VOC {1 if (cfg.enabled and cfg.out_vocoder_on) else 0}")
+        self.send_cmd(
+            f"OUT_VOP {cfg.out_vocoder_mix * 10} {cfg.out_vocoder_carrier_hz} {cfg.out_vocoder_attack_ms} {cfg.out_vocoder_release_ms} {cfg.out_vocoder_detune} {1 if cfg.out_vocoder_follow else 0} {cfg.out_vocoder_pitch_shift}"
+        )
+        self.send_cmd(f"OUT_MTX {cfg.out_vocoder_matrix * 10}")
+        self.send_cmd(f"OUT_PSH {cfg.out_pitch_shift if cfg.enabled else 0}")
+        self.send_cmd(f"OUT_ATN {1 if (cfg.enabled and cfg.out_autotune_on) else 0}")
+        self.send_cmd(f"OUT_ATT {cfg.out_autotune_target_hz if cfg.enabled else 0}")
+        self.send_cmd(f"OUT_BCR {cfg.out_bitcrush_bits if cfg.enabled else 0} {cfg.out_bitcrush_downsample}")
+        self.send_cmd(f"OUT_BPF {cfg.out_bandpass_hpf_hz if cfg.enabled else 0} {cfg.out_bandpass_lpf_hz if cfg.enabled else 0}")
+        self.send_cmd(f"OUT_STT {cfg.out_stutter_hz if cfg.enabled else 0} 500")
+
+        # Output Playback Stereo Delay
+        self.send_cmd(f"OUT_DLY {1 if (cfg.enabled and cfg.out_delay_on) else 0}")
+        self.send_cmd(f"OUT_DLP {cfg.out_delay_ms} {cfg.out_delay_feedback * 10} {cfg.out_delay_mix * 10}")
+
+        # Output Playback Stereo Reverb
+        self.send_cmd(f"OUT_RVB {1 if (cfg.enabled and cfg.out_reverb_on) else 0}")
+        self.send_cmd(f"OUT_RVP {cfg.out_reverb_room * 10} {cfg.out_reverb_damp * 10} {cfg.out_reverb_width * 10} {cfg.out_reverb_mix * 10}")
 
 
 # --- Client Communication Helpers ---
@@ -1262,6 +1431,10 @@ def run_gtk_app() -> None:
             self.sinks = enumerate_sinks()
             self._updating_ui = False
             self.preset_buttons: dict[str, Gtk.Button] = {}
+            self.current_voice_target = "mic"
+            self.current_spatial_target = "mic"
+            self.current_eq_target = "mic"
+            self.eq_preset_buttons: dict[str, Gtk.Button] = {}
 
             main_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
             self.add(main_vbox)
@@ -1572,15 +1745,34 @@ def run_gtk_app() -> None:
             self.add_notebook_tab(scrolled, "audio-input-microphone-symbolic", "Noise & Level")
 
         # ---------------------------------------------------------------------
-        # Tab 2: Voice FX & Transformers
+        # ---------------------------------------------------------------------
+        # Tab 2: Voice FX & Transformers (Microphone & Playback)
         # ---------------------------------------------------------------------
         def build_tab_voice_fx(self) -> None:
             vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
             vbox.set_border_width(12)
 
+            # Target Mode Switcher: Input (Mic) vs Output (Playback)
+            target_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            target_box.set_halign(Gtk.Align.CENTER)
+            target_box.get_style_context().add_class("segmented-group")
+
+            self.btn_voice_target_mic = Gtk.Button(label="🎙 Microphone Voice FX (Input)")
+            self.btn_voice_target_mic.get_style_context().add_class("segmented-btn")
+            self.btn_voice_target_mic.get_style_context().add_class("active-preset")
+            self.btn_voice_target_mic.connect("clicked", lambda _: self.set_voice_target("mic"))
+
+            self.btn_voice_target_out = Gtk.Button(label="󰓃 Playback Voice FX (Output)")
+            self.btn_voice_target_out.get_style_context().add_class("segmented-btn")
+            self.btn_voice_target_out.connect("clicked", lambda _: self.set_voice_target("out"))
+
+            target_box.pack_start(self.btn_voice_target_mic, True, True, 0)
+            target_box.pack_start(self.btn_voice_target_out, True, True, 0)
+            vbox.pack_start(target_box, False, False, 2)
+
             preset_hdr = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-            preset_lbl = Gtk.Label(label="Voice FX Character Presets", xalign=0)
-            preset_lbl.get_style_context().add_class("section-label")
+            self.voice_hdr_lbl = Gtk.Label(label="Voice FX Character Presets (Microphone Input)", xalign=0)
+            self.voice_hdr_lbl.get_style_context().add_class("section-label")
             btn_reset_voice = self.create_icon_button(
                 "edit-undo-symbolic",
                 "Reset Voice (Clean)",
@@ -1588,7 +1780,7 @@ def run_gtk_app() -> None:
                 "reset-btn",
                 self.reset_voice_fx,
             )
-            preset_hdr.pack_start(preset_lbl, True, True, 0)
+            preset_hdr.pack_start(self.voice_hdr_lbl, True, True, 0)
             preset_hdr.pack_end(btn_reset_voice, False, False, 0)
             vbox.pack_start(preset_hdr, False, False, 0)
 
@@ -1715,16 +1907,34 @@ def run_gtk_app() -> None:
             self.add_notebook_tab(scrolled, "applications-multimedia-symbolic", "Voice FX")
 
         # ---------------------------------------------------------------------
-        # Tab 3: Spatial DSP (Delay & Reverb)
+        # Tab 3: Spatial DSP (Microphone & Playback)
         # ---------------------------------------------------------------------
         def build_tab_spatial_dsp(self) -> None:
             vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
             vbox.set_border_width(12)
 
+            # Target Mode Switcher: Input (Mic) vs Output (Playback)
+            target_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            target_box.set_halign(Gtk.Align.CENTER)
+            target_box.get_style_context().add_class("segmented-group")
+
+            self.btn_spatial_target_mic = Gtk.Button(label="🎙 Microphone Spatial FX (Input)")
+            self.btn_spatial_target_mic.get_style_context().add_class("segmented-btn")
+            self.btn_spatial_target_mic.get_style_context().add_class("active-preset")
+            self.btn_spatial_target_mic.connect("clicked", lambda _: self.set_spatial_target("mic"))
+
+            self.btn_spatial_target_out = Gtk.Button(label="󰓃 Playback Spatial FX (Output)")
+            self.btn_spatial_target_out.get_style_context().add_class("segmented-btn")
+            self.btn_spatial_target_out.connect("clicked", lambda _: self.set_spatial_target("out"))
+
+            target_box.pack_start(self.btn_spatial_target_mic, True, True, 0)
+            target_box.pack_start(self.btn_spatial_target_out, True, True, 0)
+            vbox.pack_start(target_box, False, False, 2)
+
             # Header + Reset Spatial FX Button
             spat_top = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-            spat_title = Gtk.Label(label="Spatial FX (Tape Delay & Algorithmic Reverb)", xalign=0)
-            spat_title.get_style_context().add_class("section-label")
+            self.spatial_hdr_lbl = Gtk.Label(label="Spatial FX (Tape Delay & Algorithmic Reverb)", xalign=0)
+            self.spatial_hdr_lbl.get_style_context().add_class("section-label")
             btn_reset_spatial = self.create_icon_button(
                 "edit-undo-symbolic",
                 "Reset Delay & Reverb",
@@ -1732,19 +1942,19 @@ def run_gtk_app() -> None:
                 "reset-btn",
                 self.reset_spatial_dsp,
             )
-            spat_top.pack_start(spat_title, True, True, 0)
+            spat_top.pack_start(self.spatial_hdr_lbl, True, True, 0)
             spat_top.pack_end(btn_reset_spatial, False, False, 0)
             vbox.pack_start(spat_top, False, False, 0)
 
             # Delay Header
             dly_hdr = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-            dly_lbl = Gtk.Label(label="Stereo Tape Echo / Delay", xalign=0)
-            dly_lbl.get_style_context().add_class("section-label")
+            self.spatial_dly_lbl = Gtk.Label(label="Stereo Tape Echo / Delay (Microphone Input)", xalign=0)
+            self.spatial_dly_lbl.get_style_context().add_class("section-label")
             self.dly_switch = Gtk.Switch()
             self.dly_switch.get_style_context().add_class("compact-switch")
             self.dly_switch.set_active(self.cfg.delay_on)
             self.dly_switch.connect("notify::active", self.on_delay_toggled)
-            dly_hdr.pack_start(dly_lbl, True, True, 0)
+            dly_hdr.pack_start(self.spatial_dly_lbl, True, True, 0)
             dly_hdr.pack_end(self.dly_switch, False, False, 0)
             vbox.pack_start(dly_hdr, False, False, 0)
 
@@ -1760,13 +1970,13 @@ def run_gtk_app() -> None:
 
             # Reverb Header
             rvb_hdr = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-            rvb_lbl = Gtk.Label(label="Schroeder Algorithmic Reverb Tank", xalign=0)
-            rvb_lbl.get_style_context().add_class("section-label")
+            self.spatial_rvb_lbl = Gtk.Label(label="Schroeder Algorithmic Reverb Tank (Microphone Input)", xalign=0)
+            self.spatial_rvb_lbl.get_style_context().add_class("section-label")
             self.rvb_switch = Gtk.Switch()
             self.rvb_switch.get_style_context().add_class("compact-switch")
             self.rvb_switch.set_active(self.cfg.reverb_on)
             self.rvb_switch.connect("notify::active", self.on_reverb_toggled)
-            rvb_hdr.pack_start(rvb_lbl, True, True, 0)
+            rvb_hdr.pack_start(self.spatial_rvb_lbl, True, True, 0)
             rvb_hdr.pack_end(self.rvb_switch, False, False, 0)
             vbox.pack_start(rvb_hdr, False, False, 0)
 
@@ -1786,15 +1996,34 @@ def run_gtk_app() -> None:
             self.add_notebook_tab(scrolled, "audio-speakers-symbolic", "Delay & Reverb")
 
         # ---------------------------------------------------------------------
-        # Tab 4: 9-Band Studio EQ
+        # Tab 4: 9-Band Studio EQ (Microphone & Playback)
         # ---------------------------------------------------------------------
         def build_tab_equalizer(self) -> None:
             vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
             vbox.set_border_width(12)
 
+            # Target Mode Switcher: Input (Mic) vs Output (Playback)
+            target_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            target_box.set_halign(Gtk.Align.CENTER)
+            target_box.get_style_context().add_class("segmented-group")
+
+            self.btn_eq_target_mic = Gtk.Button(label="🎙 Microphone EQ (Input)")
+            self.btn_eq_target_mic.get_style_context().add_class("segmented-btn")
+            self.btn_eq_target_mic.get_style_context().add_class("active-preset")
+            self.btn_eq_target_mic.connect("clicked", lambda _: self.set_eq_target("mic"))
+
+            self.btn_eq_target_out = Gtk.Button(label="󰓃 Playback EQ (Output)")
+            self.btn_eq_target_out.get_style_context().add_class("segmented-btn")
+            self.btn_eq_target_out.connect("clicked", lambda _: self.set_eq_target("out"))
+
+            target_box.pack_start(self.btn_eq_target_mic, True, True, 0)
+            target_box.pack_start(self.btn_eq_target_out, True, True, 0)
+            vbox.pack_start(target_box, False, False, 2)
+
+            # EQ Header (Label, Reset Button, Master Toggle)
             eq_hdr = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-            eq_lbl = Gtk.Label(label="9-Band Studio Parametric EQ", xalign=0)
-            eq_lbl.get_style_context().add_class("section-label")
+            self.eq_lbl = Gtk.Label(label="9-Band Studio Parametric EQ (Microphone Input)", xalign=0)
+            self.eq_lbl.get_style_context().add_class("section-label")
             self.eq_switch = Gtk.Switch()
             self.eq_switch.get_style_context().add_class("compact-switch")
             self.eq_switch.set_active(self.cfg.eq_on)
@@ -1803,15 +2032,24 @@ def run_gtk_app() -> None:
             btn_reset_eq = self.create_icon_button(
                 "edit-undo-symbolic",
                 "Reset EQ (Flat 0 dB)",
-                "Zero out all 9 EQ bands (0.0 dB) and reset post gain offset",
+                "Zero out active EQ bands (0.0 dB) and reset post gain offset",
                 "reset-btn",
                 self.reset_eq_flat,
             )
 
-            eq_hdr.pack_start(eq_lbl, True, True, 0)
+            eq_hdr.pack_start(self.eq_lbl, True, True, 0)
             eq_hdr.pack_end(btn_reset_eq, False, False, 0)
             eq_hdr.pack_end(self.eq_switch, False, False, 0)
             vbox.pack_start(eq_hdr, False, False, 0)
+
+            # Presets Chips Row
+            self.eq_presets_box = Gtk.FlowBox()
+            self.eq_presets_box.set_selection_mode(Gtk.SelectionMode.NONE)
+            self.eq_presets_box.set_max_children_per_line(6)
+            self.eq_presets_box.set_row_spacing(4)
+            self.eq_presets_box.set_column_spacing(6)
+            self._populate_eq_presets_chips()
+            vbox.pack_start(self.eq_presets_box, False, False, 2)
 
             # Uniform Post-EQ Line Translation Gain
             self.eq_post_row = self.create_slider_row(
@@ -2032,162 +2270,391 @@ def run_gtk_app() -> None:
             save_config(self.cfg)
             send_daemon_cmd(f"OUT_AGG {val * 10}")
 
+        def set_voice_target(self, target: str) -> None:
+            if self.current_voice_target == target:
+                return
+            self.current_voice_target = target
+            if target == "mic":
+                self.btn_voice_target_mic.get_style_context().add_class("active-preset")
+                self.btn_voice_target_out.get_style_context().remove_class("active-preset")
+                self.voice_hdr_lbl.set_text("Voice FX Character Presets (Microphone Input)")
+            else:
+                self.btn_voice_target_out.get_style_context().add_class("active-preset")
+                self.btn_voice_target_mic.get_style_context().remove_class("active-preset")
+                self.voice_hdr_lbl.set_text("Voice FX Character Presets (Playback Output)")
+            self._refresh_voice_ui()
+
+        def set_spatial_target(self, target: str) -> None:
+            if self.current_spatial_target == target:
+                return
+            self.current_spatial_target = target
+            if target == "mic":
+                self.btn_spatial_target_mic.get_style_context().add_class("active-preset")
+                self.btn_spatial_target_out.get_style_context().remove_class("active-preset")
+                self.spatial_dly_lbl.set_text("Stereo Tape Echo / Delay (Microphone Input)")
+                self.spatial_rvb_lbl.set_text("Stereo Schroeder Reverb (Microphone Input)")
+            else:
+                self.btn_spatial_target_out.get_style_context().add_class("active-preset")
+                self.btn_spatial_target_mic.get_style_context().remove_class("active-preset")
+                self.spatial_dly_lbl.set_text("Stereo Tape Echo / Delay (Playback Output)")
+                self.spatial_rvb_lbl.set_text("Stereo Schroeder Reverb (Playback Output)")
+            self._refresh_spatial_ui()
+
         def on_pitch_changed(self, scale: Gtk.Scale) -> None:
             val = int(scale.get_value())
-            self.cfg.pitch_shift = val * 100
+            if self.current_voice_target == "mic":
+                self.cfg.pitch_shift = val * 100
+                send_daemon_cmd(f"PSH {self.cfg.pitch_shift if self.cfg.enabled else 0}")
+            else:
+                self.cfg.out_pitch_shift = val * 100
+                send_daemon_cmd(f"OUT_PSH {self.cfg.out_pitch_shift if self.cfg.enabled else 0}")
             save_config(self.cfg)
             self._clear_active_preset_highlight()
-            send_daemon_cmd(f"PSH {self.cfg.pitch_shift if self.cfg.enabled else 0}")
 
         def on_vocoder_toggled(self, switch: Gtk.Switch, _g: Any) -> None:
             active = switch.get_active()
-            self.cfg.vocoder_on = active
+            if self.current_voice_target == "mic":
+                self.cfg.vocoder_on = active
+                send_daemon_cmd(f"VOC {1 if (self.cfg.enabled and active) else 0}")
+            else:
+                self.cfg.out_vocoder_on = active
+                send_daemon_cmd(f"OUT_VOC {1 if (self.cfg.enabled and active) else 0}")
             save_config(self.cfg)
             self._clear_active_preset_highlight()
-            send_daemon_cmd(f"VOC {1 if (self.cfg.enabled and active) else 0}")
 
         def on_follow_toggled(self, check: Gtk.CheckButton) -> None:
             active = check.get_active()
-            self.cfg.vocoder_follow = active
+            is_mic = (self.current_voice_target == "mic")
+            if is_mic:
+                self.cfg.vocoder_follow = active
+                c_shift = self.cfg.vocoder_pitch_shift
+                c_hz = self.cfg.vocoder_carrier_hz
+                mix = self.cfg.vocoder_mix
+                atk = self.cfg.vocoder_attack_ms
+                rel = self.cfg.vocoder_release_ms
+                det = self.cfg.vocoder_detune
+            else:
+                self.cfg.out_vocoder_follow = active
+                c_shift = self.cfg.out_vocoder_pitch_shift
+                c_hz = self.cfg.out_vocoder_carrier_hz
+                mix = self.cfg.out_vocoder_mix
+                atk = self.cfg.out_vocoder_attack_ms
+                rel = self.cfg.out_vocoder_release_ms
+                det = self.cfg.out_vocoder_detune
+
             save_config(self.cfg)
             self._clear_active_preset_highlight()
 
-            # Reshape carrier slider dynamically between Transpose (-24..+24 st) and Fixed Hz (50..440 Hz)
             self._updating_ui = True
             if active:
                 self.carrier_row._scale.set_range(-24, 24)  # type: ignore
-                self.carrier_row._scale.set_value(self.cfg.vocoder_pitch_shift)  # type: ignore
+                self.carrier_row._scale.set_value(c_shift)  # type: ignore
                 self.carrier_row._title_lbl.set_text("Carrier Pitch Transposition")  # type: ignore
-                self.carrier_row._val_lbl.set_text(f"{self.cfg.vocoder_pitch_shift:+d} st")  # type: ignore
+                self.carrier_row._val_lbl.set_text(f"{c_shift:+d} st")  # type: ignore
             else:
                 self.carrier_row._scale.set_range(50, 440)  # type: ignore
-                self.carrier_row._scale.set_value(self.cfg.vocoder_carrier_hz)  # type: ignore
+                self.carrier_row._scale.set_value(c_hz)  # type: ignore
                 self.carrier_row._title_lbl.set_text("Carrier Frequency")  # type: ignore
-                self.carrier_row._val_lbl.set_text(f"{self.cfg.vocoder_carrier_hz} Hz")  # type: ignore
+                self.carrier_row._val_lbl.set_text(f"{c_hz} Hz")  # type: ignore
             self._updating_ui = False
 
-            send_daemon_cmd(
-                f"VOP {self.cfg.vocoder_mix * 10} {self.cfg.vocoder_carrier_hz} {self.cfg.vocoder_attack_ms} {self.cfg.vocoder_release_ms} {self.cfg.vocoder_detune} {1 if active else 0} {self.cfg.vocoder_pitch_shift}"
-            )
+            prefix = "VOP" if is_mic else "OUT_VOP"
+            send_daemon_cmd(f"{prefix} {mix * 10} {c_hz} {atk} {rel} {det} {1 if active else 0} {c_shift}")
 
         def on_carrier_changed(self, scale: Gtk.Scale) -> None:
             val = int(scale.get_value())
-            if self.cfg.vocoder_follow:
-                self.cfg.vocoder_pitch_shift = val
+            is_mic = (self.current_voice_target == "mic")
+            if is_mic:
+                if self.cfg.vocoder_follow:
+                    self.cfg.vocoder_pitch_shift = val
+                else:
+                    self.cfg.vocoder_carrier_hz = val
+                c_shift = self.cfg.vocoder_pitch_shift
+                c_hz = self.cfg.vocoder_carrier_hz
+                follow = self.cfg.vocoder_follow
+                mix = self.cfg.vocoder_mix
+                atk = self.cfg.vocoder_attack_ms
+                rel = self.cfg.vocoder_release_ms
+                det = self.cfg.vocoder_detune
             else:
-                self.cfg.vocoder_carrier_hz = val
+                if self.cfg.out_vocoder_follow:
+                    self.cfg.out_vocoder_pitch_shift = val
+                else:
+                    self.cfg.out_vocoder_carrier_hz = val
+                c_shift = self.cfg.out_vocoder_pitch_shift
+                c_hz = self.cfg.out_vocoder_carrier_hz
+                follow = self.cfg.out_vocoder_follow
+                mix = self.cfg.out_vocoder_mix
+                atk = self.cfg.out_vocoder_attack_ms
+                rel = self.cfg.out_vocoder_release_ms
+                det = self.cfg.out_vocoder_detune
+
             save_config(self.cfg)
             self._clear_active_preset_highlight()
-            send_daemon_cmd(
-                f"VOP {self.cfg.vocoder_mix * 10} {self.cfg.vocoder_carrier_hz} {self.cfg.vocoder_attack_ms} {self.cfg.vocoder_release_ms} {self.cfg.vocoder_detune} {1 if self.cfg.vocoder_follow else 0} {self.cfg.vocoder_pitch_shift}"
-            )
+            prefix = "VOP" if is_mic else "OUT_VOP"
+            send_daemon_cmd(f"{prefix} {mix * 10} {c_hz} {atk} {rel} {det} {1 if follow else 0} {c_shift}")
 
         def on_voc_mix_changed(self, scale: Gtk.Scale) -> None:
             val = int(scale.get_value())
-            self.cfg.vocoder_mix = val
+            is_mic = (self.current_voice_target == "mic")
+            if is_mic:
+                self.cfg.vocoder_mix = val
+                c_shift = self.cfg.vocoder_pitch_shift
+                c_hz = self.cfg.vocoder_carrier_hz
+                follow = self.cfg.vocoder_follow
+                atk = self.cfg.vocoder_attack_ms
+                rel = self.cfg.vocoder_release_ms
+                det = self.cfg.vocoder_detune
+            else:
+                self.cfg.out_vocoder_mix = val
+                c_shift = self.cfg.out_vocoder_pitch_shift
+                c_hz = self.cfg.out_vocoder_carrier_hz
+                follow = self.cfg.out_vocoder_follow
+                atk = self.cfg.out_vocoder_attack_ms
+                rel = self.cfg.out_vocoder_release_ms
+                det = self.cfg.out_vocoder_detune
+
             save_config(self.cfg)
             self._clear_active_preset_highlight()
-            send_daemon_cmd(
-                f"VOP {val * 10} {self.cfg.vocoder_carrier_hz} {self.cfg.vocoder_attack_ms} {self.cfg.vocoder_release_ms} {self.cfg.vocoder_detune} {1 if self.cfg.vocoder_follow else 0} {self.cfg.vocoder_pitch_shift}"
-            )
+            prefix = "VOP" if is_mic else "OUT_VOP"
+            send_daemon_cmd(f"{prefix} {val * 10} {c_hz} {atk} {rel} {det} {1 if follow else 0} {c_shift}")
 
         def on_matrix_changed(self, scale: Gtk.Scale) -> None:
             val = int(scale.get_value())
-            self.cfg.vocoder_matrix = val
+            if self.current_voice_target == "mic":
+                self.cfg.vocoder_matrix = val
+                send_daemon_cmd(f"MTX {val * 10}")
+            else:
+                self.cfg.out_vocoder_matrix = val
+                send_daemon_cmd(f"OUT_MTX {val * 10}")
             save_config(self.cfg)
             self._clear_active_preset_highlight()
-            send_daemon_cmd(f"MTX {val * 10}")
 
         def on_autotune_toggled(self, switch: Gtk.Switch, _g: Any) -> None:
             active = switch.get_active()
-            self.cfg.autotune_on = active
+            if self.current_voice_target == "mic":
+                self.cfg.autotune_on = active
+                send_daemon_cmd(f"ATN {1 if (self.cfg.enabled and active) else 0}")
+                send_daemon_cmd(f"ATT {self.cfg.autotune_target_hz if self.cfg.enabled else 0}")
+            else:
+                self.cfg.out_autotune_on = active
+                send_daemon_cmd(f"OUT_ATN {1 if (self.cfg.enabled and active) else 0}")
+                send_daemon_cmd(f"OUT_ATT {self.cfg.out_autotune_target_hz if self.cfg.enabled else 0}")
             save_config(self.cfg)
             self._clear_active_preset_highlight()
-            send_daemon_cmd(f"ATN {1 if (self.cfg.enabled and active) else 0}")
-            send_daemon_cmd(f"ATT {self.cfg.autotune_target_hz if self.cfg.enabled else 0}")
 
         def on_bitcrush_changed(self, scale: Gtk.Scale) -> None:
             val = int(scale.get_value())
-            self.cfg.bitcrush_bits = val
+            if self.current_voice_target == "mic":
+                self.cfg.bitcrush_bits = val
+                send_daemon_cmd(f"BCR {val if self.cfg.enabled else 0} {self.cfg.bitcrush_downsample}")
+            else:
+                self.cfg.out_bitcrush_bits = val
+                send_daemon_cmd(f"OUT_BCR {val if self.cfg.enabled else 0} {self.cfg.out_bitcrush_downsample}")
             save_config(self.cfg)
             self._clear_active_preset_highlight()
-            send_daemon_cmd(f"BCR {val if self.cfg.enabled else 0} {self.cfg.bitcrush_downsample}")
 
         def on_stutter_changed(self, scale: Gtk.Scale) -> None:
             val = int(scale.get_value())
-            self.cfg.stutter_hz = val
+            if self.current_voice_target == "mic":
+                self.cfg.stutter_hz = val
+                send_daemon_cmd(f"STT {val if self.cfg.enabled else 0} 500")
+            else:
+                self.cfg.out_stutter_hz = val
+                send_daemon_cmd(f"OUT_STT {val if self.cfg.enabled else 0} 500")
             save_config(self.cfg)
             self._clear_active_preset_highlight()
-            send_daemon_cmd(f"STT {val if self.cfg.enabled else 0} 500")
 
         def on_delay_toggled(self, switch: Gtk.Switch, _g: Any) -> None:
             active = switch.get_active()
-            self.cfg.delay_on = active
+            if self.current_spatial_target == "mic":
+                self.cfg.delay_on = active
+                send_daemon_cmd(f"DLY {1 if (self.cfg.enabled and active) else 0}")
+            else:
+                self.cfg.out_delay_on = active
+                send_daemon_cmd(f"OUT_DLY {1 if (self.cfg.enabled and active) else 0}")
             save_config(self.cfg)
-            send_daemon_cmd(f"DLY {1 if (self.cfg.enabled and active) else 0}")
 
         def on_delay_time_changed(self, scale: Gtk.Scale) -> None:
-            self.cfg.delay_ms = int(scale.get_value())
+            val = int(scale.get_value())
+            if self.current_spatial_target == "mic":
+                self.cfg.delay_ms = val
+                send_daemon_cmd(f"DLP {self.cfg.delay_ms} {self.cfg.delay_feedback * 10} {self.cfg.delay_mix * 10}")
+            else:
+                self.cfg.out_delay_ms = val
+                send_daemon_cmd(f"OUT_DLP {self.cfg.out_delay_ms} {self.cfg.out_delay_feedback * 10} {self.cfg.out_delay_mix * 10}")
             save_config(self.cfg)
-            send_daemon_cmd(f"DLP {self.cfg.delay_ms} {self.cfg.delay_feedback * 10} {self.cfg.delay_mix * 10}")
 
         def on_delay_fb_changed(self, scale: Gtk.Scale) -> None:
-            self.cfg.delay_feedback = int(scale.get_value())
+            val = int(scale.get_value())
+            if self.current_spatial_target == "mic":
+                self.cfg.delay_feedback = val
+                send_daemon_cmd(f"DLP {self.cfg.delay_ms} {self.cfg.delay_feedback * 10} {self.cfg.delay_mix * 10}")
+            else:
+                self.cfg.out_delay_feedback = val
+                send_daemon_cmd(f"OUT_DLP {self.cfg.out_delay_ms} {self.cfg.out_delay_feedback * 10} {self.cfg.out_delay_mix * 10}")
             save_config(self.cfg)
-            send_daemon_cmd(f"DLP {self.cfg.delay_ms} {self.cfg.delay_feedback * 10} {self.cfg.delay_mix * 10}")
 
         def on_delay_mix_changed(self, scale: Gtk.Scale) -> None:
-            self.cfg.delay_mix = int(scale.get_value())
+            val = int(scale.get_value())
+            if self.current_spatial_target == "mic":
+                self.cfg.delay_mix = val
+                send_daemon_cmd(f"DLP {self.cfg.delay_ms} {self.cfg.delay_feedback * 10} {self.cfg.delay_mix * 10}")
+            else:
+                self.cfg.out_delay_mix = val
+                send_daemon_cmd(f"OUT_DLP {self.cfg.out_delay_ms} {self.cfg.out_delay_feedback * 10} {self.cfg.out_delay_mix * 10}")
             save_config(self.cfg)
-            send_daemon_cmd(f"DLP {self.cfg.delay_ms} {self.cfg.delay_feedback * 10} {self.cfg.delay_mix * 10}")
 
         def on_reverb_toggled(self, switch: Gtk.Switch, _g: Any) -> None:
             active = switch.get_active()
-            self.cfg.reverb_on = active
+            if self.current_spatial_target == "mic":
+                self.cfg.reverb_on = active
+                send_daemon_cmd(f"RVB {1 if (self.cfg.enabled and active) else 0}")
+            else:
+                self.cfg.out_reverb_on = active
+                send_daemon_cmd(f"OUT_RVB {1 if (self.cfg.enabled and active) else 0}")
             save_config(self.cfg)
-            send_daemon_cmd(f"RVB {1 if (self.cfg.enabled and active) else 0}")
 
         def on_reverb_room_changed(self, scale: Gtk.Scale) -> None:
-            self.cfg.reverb_room = int(scale.get_value())
+            val = int(scale.get_value())
+            if self.current_spatial_target == "mic":
+                self.cfg.reverb_room = val
+                send_daemon_cmd(f"RVP {self.cfg.reverb_room * 10} {self.cfg.reverb_damp * 10} {self.cfg.reverb_width * 10} {self.cfg.reverb_mix * 10}")
+            else:
+                self.cfg.out_reverb_room = val
+                send_daemon_cmd(f"OUT_RVP {self.cfg.out_reverb_room * 10} {self.cfg.out_reverb_damp * 10} {self.cfg.out_reverb_width * 10} {self.cfg.out_reverb_mix * 10}")
             save_config(self.cfg)
-            send_daemon_cmd(f"RVP {self.cfg.reverb_room * 10} {self.cfg.reverb_damp * 10} {self.cfg.reverb_width * 10} {self.cfg.reverb_mix * 10}")
 
         def on_reverb_damp_changed(self, scale: Gtk.Scale) -> None:
-            self.cfg.reverb_damp = int(scale.get_value())
+            val = int(scale.get_value())
+            if self.current_spatial_target == "mic":
+                self.cfg.reverb_damp = val
+                send_daemon_cmd(f"RVP {self.cfg.reverb_room * 10} {self.cfg.reverb_damp * 10} {self.cfg.reverb_width * 10} {self.cfg.reverb_mix * 10}")
+            else:
+                self.cfg.out_reverb_damp = val
+                send_daemon_cmd(f"OUT_RVP {self.cfg.out_reverb_room * 10} {self.cfg.out_reverb_damp * 10} {self.cfg.out_reverb_width * 10} {self.cfg.out_reverb_mix * 10}")
             save_config(self.cfg)
-            send_daemon_cmd(f"RVP {self.cfg.reverb_room * 10} {self.cfg.reverb_damp * 10} {self.cfg.reverb_width * 10} {self.cfg.reverb_mix * 10}")
 
         def on_reverb_width_changed(self, scale: Gtk.Scale) -> None:
-            self.cfg.reverb_width = int(scale.get_value())
+            val = int(scale.get_value())
+            if self.current_spatial_target == "mic":
+                self.cfg.reverb_width = val
+                send_daemon_cmd(f"RVP {self.cfg.reverb_room * 10} {self.cfg.reverb_damp * 10} {self.cfg.reverb_width * 10} {self.cfg.reverb_mix * 10}")
+            else:
+                self.cfg.out_reverb_width = val
+                send_daemon_cmd(f"OUT_RVP {self.cfg.out_reverb_room * 10} {self.cfg.out_reverb_damp * 10} {self.cfg.out_reverb_width * 10} {self.cfg.out_reverb_mix * 10}")
             save_config(self.cfg)
-            send_daemon_cmd(f"RVP {self.cfg.reverb_room * 10} {self.cfg.reverb_damp * 10} {self.cfg.reverb_width * 10} {self.cfg.reverb_mix * 10}")
 
         def on_reverb_mix_changed(self, scale: Gtk.Scale) -> None:
-            self.cfg.reverb_mix = int(scale.get_value())
+            val = int(scale.get_value())
+            if self.current_spatial_target == "mic":
+                self.cfg.reverb_mix = val
+                send_daemon_cmd(f"RVP {self.cfg.reverb_room * 10} {self.cfg.reverb_damp * 10} {self.cfg.reverb_width * 10} {self.cfg.reverb_mix * 10}")
+            else:
+                self.cfg.out_reverb_mix = val
+                send_daemon_cmd(f"OUT_RVP {self.cfg.out_reverb_room * 10} {self.cfg.out_reverb_damp * 10} {self.cfg.out_reverb_width * 10} {self.cfg.out_reverb_mix * 10}")
             save_config(self.cfg)
-            send_daemon_cmd(f"RVP {self.cfg.reverb_room * 10} {self.cfg.reverb_damp * 10} {self.cfg.reverb_width * 10} {self.cfg.reverb_mix * 10}")
+
+        def set_eq_target(self, target: str) -> None:
+            if self.current_eq_target == target:
+                return
+            self.current_eq_target = target
+            if target == "mic":
+                self.btn_eq_target_mic.get_style_context().add_class("active-preset")
+                self.btn_eq_target_out.get_style_context().remove_class("active-preset")
+                self.eq_lbl.set_text("9-Band Studio Parametric EQ (Microphone Input)")
+            else:
+                self.btn_eq_target_out.get_style_context().add_class("active-preset")
+                self.btn_eq_target_mic.get_style_context().remove_class("active-preset")
+                self.eq_lbl.set_text("9-Band Stereo Parametric EQ (Playback & Speakers)")
+            self._populate_eq_presets_chips()
+            self._refresh_eq_ui()
+
+        def _populate_eq_presets_chips(self) -> None:
+            for child in self.eq_presets_box.get_children():
+                self.eq_presets_box.remove(child)
+            self.eq_preset_buttons.clear()
+
+            presets_dict = INPUT_EQ_PRESETS if self.current_eq_target == "mic" else OUTPUT_EQ_PRESETS
+            for name, data in presets_dict.items():
+                btn = Gtk.Button(label=name)
+                btn.get_style_context().add_class("preset-chip")
+                btn.connect("clicked", lambda _, n=name, d=data: self.apply_eq_preset(n, d))
+                self.eq_presets_box.add(btn)
+                self.eq_preset_buttons[name] = btn
+            self.eq_presets_box.show_all()
+
+        def apply_eq_preset(self, name: str, data: dict[str, Any]) -> None:
+            self._updating_ui = True
+            post_gain = data.get("post_gain", 0)
+            gains = list(data.get("gains", [0] * 9))
+            eq_types = [3, 1, 0, 0, 0, 0, 0, 2, 0]
+            eq_freqs = [80, 120, 250, 400, 1500, 3500, 6000, 9000, 12000]
+            eq_q = [707, 707, 1000, 1000, 1000, 700, 1000, 700, 1000]
+
+            if self.current_eq_target == "mic":
+                self.cfg.eq_post_gain = post_gain
+                self.cfg.eq_gains = gains
+                send_daemon_cmd(f"EGN {post_gain}")
+                for idx, g in enumerate(gains):
+                    send_daemon_cmd(f"EQB {idx} {eq_types[idx]} {eq_freqs[idx]} {eq_q[idx]} {g}")
+            else:
+                self.cfg.out_eq_post_gain = post_gain
+                self.cfg.out_eq_gains = gains
+                send_daemon_cmd(f"OUT_EGN {post_gain}")
+                for idx, g in enumerate(gains):
+                    send_daemon_cmd(f"OUT_EQB {idx} {eq_types[idx]} {eq_freqs[idx]} {eq_q[idx]} {g}")
+            save_config(self.cfg)
+            self._refresh_eq_ui()
+            self._updating_ui = False
+            for btn_name, btn in self.eq_preset_buttons.items():
+                if btn_name == name:
+                    btn.get_style_context().add_class("active-preset")
+                else:
+                    btn.get_style_context().remove_class("active-preset")
+
+        def _clear_active_eq_preset_highlight(self) -> None:
+            for btn in self.eq_preset_buttons.values():
+                btn.get_style_context().remove_class("active-preset")
 
         def on_eq_toggled(self, switch: Gtk.Switch, _g: Any) -> None:
             active = switch.get_active()
-            self.cfg.eq_on = active
+            if self.current_eq_target == "mic":
+                self.cfg.eq_on = active
+                send_daemon_cmd(f"EQ {1 if (self.cfg.enabled and active) else 0}")
+            else:
+                self.cfg.out_eq_on = active
+                send_daemon_cmd(f"OUT_EQ {1 if (self.cfg.enabled and active) else 0}")
             save_config(self.cfg)
-            send_daemon_cmd(f"EQ {1 if (self.cfg.enabled and active) else 0}")
 
         def on_eq_post_gain_changed(self, scale: Gtk.Scale) -> None:
             val = int(scale.get_value()) * 100
-            self.cfg.eq_post_gain = val
+            if self.current_eq_target == "mic":
+                self.cfg.eq_post_gain = val
+                send_daemon_cmd(f"EGN {val}")
+            else:
+                self.cfg.out_eq_post_gain = val
+                send_daemon_cmd(f"OUT_EGN {val}")
             save_config(self.cfg)
-            send_daemon_cmd(f"EGN {val}")
+            self._clear_active_eq_preset_highlight()
 
         def on_eq_band_changed(self, idx: int, scale: Gtk.Scale) -> None:
             val = int(scale.get_value()) * 100
-            if idx < len(self.cfg.eq_gains):
-                self.cfg.eq_gains[idx] = val
-                save_config(self.cfg)
-                eq_types = [3, 1, 0, 0, 0, 0, 0, 2, 0]
-                eq_freqs = [80, 120, 250, 400, 1500, 3500, 6000, 9000, 12000]
-                eq_q = [707, 707, 1000, 1000, 1000, 700, 1000, 700, 1000]
-                send_daemon_cmd(f"EQB {idx} {eq_types[idx]} {eq_freqs[idx]} {eq_q[idx]} {val}")
+            eq_types = [3, 1, 0, 0, 0, 0, 0, 2, 0]
+            eq_freqs = [80, 120, 250, 400, 1500, 3500, 6000, 9000, 12000]
+            eq_q = [707, 707, 1000, 1000, 1000, 700, 1000, 700, 1000]
+
+            if self.current_eq_target == "mic":
+                if idx < len(self.cfg.eq_gains):
+                    self.cfg.eq_gains[idx] = val
+                    save_config(self.cfg)
+                    send_daemon_cmd(f"EQB {idx} {eq_types[idx]} {eq_freqs[idx]} {eq_q[idx]} {val}")
+            else:
+                if idx < len(self.cfg.out_eq_gains):
+                    self.cfg.out_eq_gains[idx] = val
+                    save_config(self.cfg)
+                    send_daemon_cmd(f"OUT_EQB {idx} {eq_types[idx]} {eq_freqs[idx]} {eq_q[idx]} {val}")
+            self._clear_active_eq_preset_highlight()
 
         def on_monitor_toggled(self, check: Gtk.CheckButton) -> None:
             active = check.get_active()
@@ -2221,7 +2688,26 @@ def run_gtk_app() -> None:
 
         def reset_spatial_dsp(self, *_: Any) -> None:
             self._updating_ui = True
-            self._reset_spatial_state()
+            if self.current_spatial_target == "mic":
+                self.cfg.delay_on = False
+                self.cfg.delay_ms = 250
+                self.cfg.delay_feedback = 35
+                self.cfg.delay_mix = 30
+                self.cfg.reverb_on = False
+                self.cfg.reverb_room = 70
+                self.cfg.reverb_damp = 50
+                self.cfg.reverb_width = 80
+                self.cfg.reverb_mix = 35
+            else:
+                self.cfg.out_delay_on = False
+                self.cfg.out_delay_ms = 250
+                self.cfg.out_delay_feedback = 35
+                self.cfg.out_delay_mix = 30
+                self.cfg.out_reverb_on = False
+                self.cfg.out_reverb_room = 70
+                self.cfg.out_reverb_damp = 50
+                self.cfg.out_reverb_width = 80
+                self.cfg.out_reverb_mix = 35
             save_config(self.cfg)
             sync_config_to_daemon(self.cfg)
             self._refresh_spatial_ui()
@@ -2229,10 +2715,18 @@ def run_gtk_app() -> None:
 
         def reset_eq_flat(self, *_: Any) -> None:
             self._updating_ui = True
-            self._reset_eq_state()
+            if self.current_eq_target == "mic":
+                self.cfg.eq_on = False
+                self.cfg.eq_post_gain = 0
+                self.cfg.eq_gains = [0, 0, 0, 0, 0, 0, 0, 0, 0]
+            else:
+                self.cfg.out_eq_on = False
+                self.cfg.out_eq_post_gain = 0
+                self.cfg.out_eq_gains = [0, 0, 0, 0, 0, 0, 0, 0, 0]
             save_config(self.cfg)
             sync_config_to_daemon(self.cfg)
             self._refresh_eq_ui()
+            self._clear_active_eq_preset_highlight()
             self._updating_ui = False
 
         def _reset_voice_state(self) -> None:
@@ -2240,6 +2734,9 @@ def run_gtk_app() -> None:
             for k, v in clean.items():
                 if hasattr(self.cfg, k):
                     setattr(self.cfg, k, v)
+                out_k = f"out_{k}"
+                if hasattr(self.cfg, out_k):
+                    setattr(self.cfg, out_k, v)
             self.cfg.vocoder_carrier_hz = 110
             self.cfg.vocoder_detune = 20
             self.cfg.vocoder_attack_ms = 5
@@ -2248,6 +2745,14 @@ def run_gtk_app() -> None:
             self.cfg.vocoder_pitch_shift = 0
             self.cfg.vocoder_matrix = 0
             self.cfg.vocoder_mix = 0
+            self.cfg.out_vocoder_carrier_hz = 110
+            self.cfg.out_vocoder_detune = 20
+            self.cfg.out_vocoder_attack_ms = 5
+            self.cfg.out_vocoder_release_ms = 30
+            self.cfg.out_vocoder_follow = True
+            self.cfg.out_vocoder_pitch_shift = 0
+            self.cfg.out_vocoder_matrix = 0
+            self.cfg.out_vocoder_mix = 0
 
         def _reset_spatial_state(self) -> None:
             self.cfg.delay_on = False
@@ -2259,11 +2764,23 @@ def run_gtk_app() -> None:
             self.cfg.reverb_damp = 50
             self.cfg.reverb_width = 80
             self.cfg.reverb_mix = 35
+            self.cfg.out_delay_on = False
+            self.cfg.out_delay_ms = 250
+            self.cfg.out_delay_feedback = 35
+            self.cfg.out_delay_mix = 30
+            self.cfg.out_reverb_on = False
+            self.cfg.out_reverb_room = 70
+            self.cfg.out_reverb_damp = 50
+            self.cfg.out_reverb_width = 80
+            self.cfg.out_reverb_mix = 35
 
         def _reset_eq_state(self) -> None:
             self.cfg.eq_on = False
             self.cfg.eq_post_gain = 0
             self.cfg.eq_gains = [0, 0, 0, 0, 0, 0, 0, 0, 0]
+            self.cfg.out_eq_on = False
+            self.cfg.out_eq_post_gain = 0
+            self.cfg.out_eq_gains = [0, 0, 0, 0, 0, 0, 0, 0, 0]
 
         def _refresh_all_ui(self) -> None:
             self.vol_row._scale.set_value(self.cfg.volume)  # type: ignore
@@ -2283,46 +2800,89 @@ def run_gtk_app() -> None:
             self._refresh_eq_ui()
 
         def _refresh_voice_ui(self) -> None:
-            self.voc_switch.set_active(self.cfg.vocoder_on)
-            self.atn_switch.set_active(self.cfg.autotune_on)
-            self.check_follow.set_active(self.cfg.vocoder_follow)
-            if self.cfg.vocoder_follow:
+            is_mic = (self.current_voice_target == "mic")
+            voc_on = self.cfg.vocoder_on if is_mic else self.cfg.out_vocoder_on
+            atn_on = self.cfg.autotune_on if is_mic else self.cfg.out_autotune_on
+            follow = self.cfg.vocoder_follow if is_mic else self.cfg.out_vocoder_follow
+            pshift = self.cfg.pitch_shift if is_mic else self.cfg.out_pitch_shift
+            c_shift = self.cfg.vocoder_pitch_shift if is_mic else self.cfg.out_vocoder_pitch_shift
+            c_hz = self.cfg.vocoder_carrier_hz if is_mic else self.cfg.out_vocoder_carrier_hz
+            matrix = self.cfg.vocoder_matrix if is_mic else self.cfg.out_vocoder_matrix
+            mix = self.cfg.vocoder_mix if is_mic else self.cfg.out_vocoder_mix
+            bc_bits = self.cfg.bitcrush_bits if is_mic else self.cfg.out_bitcrush_bits
+            st_hz = self.cfg.stutter_hz if is_mic else self.cfg.out_stutter_hz
+
+            self.voc_switch.set_active(voc_on)
+            self.atn_switch.set_active(atn_on)
+            self.check_follow.set_active(follow)
+            if follow:
                 self.carrier_row._scale.set_range(-24, 24)  # type: ignore
-                self.carrier_row._scale.set_value(self.cfg.vocoder_pitch_shift)  # type: ignore
+                self.carrier_row._scale.set_value(c_shift)  # type: ignore
                 self.carrier_row._title_lbl.set_text("Carrier Pitch Transposition")  # type: ignore
-                self.carrier_row._val_lbl.set_text(f"{self.cfg.vocoder_pitch_shift:+d} st")  # type: ignore
+                self.carrier_row._val_lbl.set_text(f"{c_shift:+d} st")  # type: ignore
             else:
                 self.carrier_row._scale.set_range(50, 440)  # type: ignore
-                self.carrier_row._scale.set_value(self.cfg.vocoder_carrier_hz)  # type: ignore
+                self.carrier_row._scale.set_value(c_hz)  # type: ignore
                 self.carrier_row._title_lbl.set_text("Carrier Frequency")  # type: ignore
-                self.carrier_row._val_lbl.set_text(f"{self.cfg.vocoder_carrier_hz} Hz")  # type: ignore
-            self.pitch_row._scale.set_value(int(self.cfg.pitch_shift / 100))  # type: ignore
-            self.matrix_row._scale.set_value(self.cfg.vocoder_matrix)  # type: ignore
-            self.voc_mix_row._scale.set_value(self.cfg.vocoder_mix)  # type: ignore
-            self.bitcrush_row._scale.set_value(self.cfg.bitcrush_bits)  # type: ignore
-            self.stutter_row._scale.set_value(self.cfg.stutter_hz)  # type: ignore
+                self.carrier_row._val_lbl.set_text(f"{c_hz} Hz")  # type: ignore
+            self.pitch_row._scale.set_value(int(pshift / 100))  # type: ignore
+            self.matrix_row._scale.set_value(matrix)  # type: ignore
+            self.voc_mix_row._scale.set_value(mix)  # type: ignore
+            self.bitcrush_row._scale.set_value(bc_bits)  # type: ignore
+            self.stutter_row._scale.set_value(st_hz)  # type: ignore
             self._clear_active_preset_highlight()
-            if not self.cfg.vocoder_on and self.cfg.pitch_shift == 0 and not self.cfg.autotune_on:
-                if "Natural Clean" in self.preset_buttons:
-                    self.preset_buttons["Natural Clean"].get_style_context().add_class("active-preset")
+
+            for p_name, p_data in PRESETS.items():
+                match = True
+                for k, v in p_data.items():
+                    val = getattr(self.cfg, k if is_mic else f"out_{k}", None)
+                    if val != v:
+                        match = False
+                        break
+                if match:
+                    if p_name in self.preset_buttons:
+                        self.preset_buttons[p_name].get_style_context().add_class("active-preset")
+                    break
 
         def _refresh_spatial_ui(self) -> None:
-            self.dly_switch.set_active(self.cfg.delay_on)
-            self.dly_time_row._scale.set_value(self.cfg.delay_ms)  # type: ignore
-            self.dly_fb_row._scale.set_value(self.cfg.delay_feedback)  # type: ignore
-            self.dly_mix_row._scale.set_value(self.cfg.delay_mix)  # type: ignore
-            self.rvb_switch.set_active(self.cfg.reverb_on)
-            self.rvb_room_row._scale.set_value(self.cfg.reverb_room)  # type: ignore
-            self.rvb_damp_row._scale.set_value(self.cfg.reverb_damp)  # type: ignore
-            self.rvb_width_row._scale.set_value(self.cfg.reverb_width)  # type: ignore
-            self.rvb_mix_row._scale.set_value(self.cfg.reverb_mix)  # type: ignore
+            is_mic = (self.current_spatial_target == "mic")
+            d_on = self.cfg.delay_on if is_mic else self.cfg.out_delay_on
+            d_ms = self.cfg.delay_ms if is_mic else self.cfg.out_delay_ms
+            d_fb = self.cfg.delay_feedback if is_mic else self.cfg.out_delay_feedback
+            d_mix = self.cfg.delay_mix if is_mic else self.cfg.out_delay_mix
+
+            r_on = self.cfg.reverb_on if is_mic else self.cfg.out_reverb_on
+            r_room = self.cfg.reverb_room if is_mic else self.cfg.out_reverb_room
+            r_damp = self.cfg.reverb_damp if is_mic else self.cfg.out_reverb_damp
+            r_width = self.cfg.reverb_width if is_mic else self.cfg.out_reverb_width
+            r_mix = self.cfg.reverb_mix if is_mic else self.cfg.out_reverb_mix
+
+            self.dly_switch.set_active(d_on)
+            self.dly_time_row._scale.set_value(d_ms)  # type: ignore
+            self.dly_fb_row._scale.set_value(d_fb)  # type: ignore
+            self.dly_mix_row._scale.set_value(d_mix)  # type: ignore
+
+            self.rvb_switch.set_active(r_on)
+            self.rvb_room_row._scale.set_value(r_room)  # type: ignore
+            self.rvb_damp_row._scale.set_value(r_damp)  # type: ignore
+            self.rvb_width_row._scale.set_value(r_width)  # type: ignore
+            self.rvb_mix_row._scale.set_value(r_mix)  # type: ignore
 
         def _refresh_eq_ui(self) -> None:
-            self.eq_switch.set_active(self.cfg.eq_on)
-            self.eq_post_row._scale.set_value(int(self.cfg.eq_post_gain / 100))  # type: ignore
-            for idx, row in enumerate(self.eq_band_rows):
-                val = int(self.cfg.eq_gains[idx] / 100) if idx < len(self.cfg.eq_gains) else 0
-                row._scale.set_value(val)  # type: ignore
+            if self.current_eq_target == "mic":
+                self.eq_lbl.set_text("9-Band Studio Parametric EQ (Microphone Input)")
+                self.eq_switch.set_active(self.cfg.eq_on)
+                self.eq_post_row._scale.set_value(int(self.cfg.eq_post_gain / 100))  # type: ignore
+                for idx, row in enumerate(self.eq_band_rows):
+                    val = int(self.cfg.eq_gains[idx] / 100) if idx < len(self.cfg.eq_gains) else 0
+                    row._scale.set_value(val)  # type: ignore
+            else:
+                self.eq_lbl.set_text("9-Band Stereo Parametric EQ (Playback & Speakers)")
+                self.eq_switch.set_active(self.cfg.out_eq_on)
+                self.eq_post_row._scale.set_value(int(self.cfg.out_eq_post_gain / 100))  # type: ignore
+                for idx, row in enumerate(self.eq_band_rows):
+                    val = int(self.cfg.out_eq_gains[idx] / 100) if idx < len(self.cfg.out_eq_gains) else 0
+                    row._scale.set_value(val)  # type: ignore
 
         def _clear_active_preset_highlight(self) -> None:
             for btn in self.preset_buttons.values():
@@ -2334,9 +2894,37 @@ def run_gtk_app() -> None:
                 return
 
             self._updating_ui = True
-            for k, v in p.items():
-                if hasattr(self.cfg, k):
-                    setattr(self.cfg, k, v)
+            is_mic = (self.current_voice_target == "mic")
+            if is_mic:
+                for k, v in p.items():
+                    if hasattr(self.cfg, k):
+                        setattr(self.cfg, k, v)
+                self.cfg.vocoder_carrier_hz = p.get("vocoder_carrier_hz", 110)
+                self.cfg.vocoder_detune = p.get("vocoder_detune", 20)
+                self.cfg.vocoder_attack_ms = p.get("vocoder_attack_ms", 5)
+                self.cfg.vocoder_release_ms = p.get("vocoder_release_ms", 30)
+                self.cfg.vocoder_follow = p.get("vocoder_follow", True)
+                self.cfg.vocoder_pitch_shift = p.get("vocoder_pitch_shift", 0)
+                self.cfg.vocoder_matrix = p.get("vocoder_matrix", 0)
+                self.cfg.bitcrush_downsample = p.get("bitcrush_downsample", 1)
+                self.cfg.bandpass_hpf_hz = p.get("bandpass_hpf_hz", 0)
+                self.cfg.bandpass_lpf_hz = p.get("bandpass_lpf_hz", 0)
+            else:
+                for k, v in p.items():
+                    out_k = f"out_{k}"
+                    if hasattr(self.cfg, out_k):
+                        setattr(self.cfg, out_k, v)
+                self.cfg.out_vocoder_carrier_hz = p.get("vocoder_carrier_hz", 110)
+                self.cfg.out_vocoder_detune = p.get("vocoder_detune", 20)
+                self.cfg.out_vocoder_attack_ms = p.get("vocoder_attack_ms", 5)
+                self.cfg.out_vocoder_release_ms = p.get("vocoder_release_ms", 30)
+                self.cfg.out_vocoder_follow = p.get("vocoder_follow", True)
+                self.cfg.out_vocoder_pitch_shift = p.get("vocoder_pitch_shift", 0)
+                self.cfg.out_vocoder_matrix = p.get("vocoder_matrix", 0)
+                self.cfg.out_bitcrush_downsample = p.get("bitcrush_downsample", 1)
+                self.cfg.out_bandpass_hpf_hz = p.get("bandpass_hpf_hz", 0)
+                self.cfg.out_bandpass_lpf_hz = p.get("bandpass_lpf_hz", 0)
+
             save_config(self.cfg)
             sync_config_to_daemon(self.cfg)
             self._refresh_voice_ui()
@@ -2420,9 +3008,31 @@ def main() -> None:
             cfg.eq_on = False
             cfg.eq_post_gain = 0
             cfg.eq_gains = [0, 0, 0, 0, 0, 0, 0, 0, 0]
+            cfg.out_eq_on = False
+            cfg.out_eq_post_gain = 0
+            cfg.out_eq_gains = [0, 0, 0, 0, 0, 0, 0, 0, 0]
             save_config(cfg)
             sync_config_to_daemon(cfg)
-            print("Parametric EQ reset to Flat 0 dB.")
+            print("Microphone & Playback Parametric EQ reset to Flat 0 dB.")
+        case "--out-eq" if len(args) > 1:
+            action = args[1].lower()
+            if action == "on":
+                cfg.out_eq_on = True
+                save_config(cfg)
+                send_daemon_cmd("OUT_EQ 1")
+                print("Playback Parametric EQ: ON")
+            elif action == "off":
+                cfg.out_eq_on = False
+                save_config(cfg)
+                send_daemon_cmd("OUT_EQ 0")
+                print("Playback Parametric EQ: OFF")
+            elif action == "toggle":
+                cfg.out_eq_on = not cfg.out_eq_on
+                save_config(cfg)
+                send_daemon_cmd(f"OUT_EQ {1 if cfg.out_eq_on else 0}")
+                print(f"Playback Parametric EQ: {'ON' if cfg.out_eq_on else 'OFF'}")
+            else:
+                print("Usage: --out-eq <on|off|toggle>", file=sys.stderr)
         case "--reset-spatial":
             cfg.delay_on = False
             cfg.delay_ms = 250

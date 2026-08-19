@@ -33,6 +33,7 @@
 #define GHA_FLAG_MONITOR_ON     (1u << 4)
 #define GHA_FLAG_VOCODER_ON     (1u << 5)
 #define GHA_FLAG_OUT_RNNOISE_ON (1u << 6)
+#define GHA_FLAG_OUT_EQ_ON      (1u << 7)
 
 #pragma pack(push, 4)
 

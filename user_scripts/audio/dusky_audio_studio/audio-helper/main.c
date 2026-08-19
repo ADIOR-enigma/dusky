@@ -139,6 +139,43 @@ static struct
 
     struct eq_band eq[GHA_EQ_BANDS];
 
+    /* Output Playback Stereo Parametric Equalizer */
+    _Atomic int out_eq_on;
+    _Atomic int out_eq_gain_centidb;
+    struct eq_band out_eq[GHA_EQ_BANDS];
+
+    /* Output Playback Stereo Voice FX & Modulation */
+    _Atomic int out_vocoder_on;
+    _Atomic int out_vocoder_mix;
+    _Atomic int out_vocoder_carrier_hz;
+    _Atomic int out_vocoder_attack_ms;
+    _Atomic int out_vocoder_release_ms;
+    _Atomic int out_vocoder_detune;
+    _Atomic int out_vocoder_follow;
+    _Atomic int out_vocoder_shift_semis;
+    _Atomic int out_matrix_intensity_mille;
+    _Atomic int out_pitch_shift_centisemis;
+    _Atomic int out_autotune_on;
+    _Atomic int out_voice_autotune_target_hz;
+    _Atomic int out_bitcrush_bits;
+    _Atomic int out_bitcrush_downsample;
+    _Atomic int out_voice_bpf_hpf_hz;
+    _Atomic int out_voice_bpf_lpf_hz;
+    _Atomic int out_voice_stutter_hz;
+    _Atomic int out_voice_stutter_duty_mille;
+
+    /* Output Playback Stereo Delay & Reverb */
+    _Atomic int out_delay_on;
+    _Atomic int out_delay_ms;
+    _Atomic int out_delay_feedback;
+    _Atomic int out_delay_mix;
+
+    _Atomic int out_reverb_on;
+    _Atomic int out_reverb_room;
+    _Atomic int out_reverb_damp;
+    _Atomic int out_reverb_width;
+    _Atomic int out_reverb_mix;
+
     _Atomic int delay_ms;       /* 0..1000 */
     _Atomic int delay_feedback; /* 0..1000 (per-mille) */
     _Atomic int delay_mix;      /* 0..1000 (per-mille) */
@@ -154,10 +191,42 @@ static void params_init(void)
     atomic_store(&g_params.rnnoise_on, 1);
     atomic_store(&g_params.out_rnnoise_on, 0); /* Default OFF */
     atomic_store(&g_params.out_rnn_aggressiveness, 700);
+    atomic_store(&g_params.out_eq_on, 0);      /* Output EQ default OFF */
+    atomic_store(&g_params.out_eq_gain_centidb, 0);
     atomic_store(&g_params.eq_on, 0);
     atomic_store(&g_params.delay_on, 0);
     atomic_store(&g_params.reverb_on, 0);
     atomic_store(&g_params.monitor_on, 0);
+
+    atomic_store(&g_params.out_vocoder_on, 0);
+    atomic_store(&g_params.out_vocoder_mix, 700);
+    atomic_store(&g_params.out_vocoder_carrier_hz, 110);
+    atomic_store(&g_params.out_vocoder_attack_ms, 5);
+    atomic_store(&g_params.out_vocoder_release_ms, 30);
+    atomic_store(&g_params.out_vocoder_detune, 20);
+    atomic_store(&g_params.out_vocoder_follow, 1);
+    atomic_store(&g_params.out_vocoder_shift_semis, 0);
+    atomic_store(&g_params.out_matrix_intensity_mille, 0);
+    atomic_store(&g_params.out_pitch_shift_centisemis, 0);
+    atomic_store(&g_params.out_autotune_on, 0);
+    atomic_store(&g_params.out_voice_autotune_target_hz, 0);
+    atomic_store(&g_params.out_bitcrush_bits, 0);
+    atomic_store(&g_params.out_bitcrush_downsample, 1);
+    atomic_store(&g_params.out_voice_bpf_hpf_hz, 0);
+    atomic_store(&g_params.out_voice_bpf_lpf_hz, 0);
+    atomic_store(&g_params.out_voice_stutter_hz, 0);
+    atomic_store(&g_params.out_voice_stutter_duty_mille, 500);
+
+    atomic_store(&g_params.out_delay_on, 0);
+    atomic_store(&g_params.out_delay_ms, 250);
+    atomic_store(&g_params.out_delay_feedback, 350);
+    atomic_store(&g_params.out_delay_mix, 300);
+
+    atomic_store(&g_params.out_reverb_on, 0);
+    atomic_store(&g_params.out_reverb_room, 700);
+    atomic_store(&g_params.out_reverb_damp, 500);
+    atomic_store(&g_params.out_reverb_width, 800);
+    atomic_store(&g_params.out_reverb_mix, 350);
 
     /* Default EQ: gentle voice shaping (similar to user's existing
      * easyeffects preset). Extra parking slots at 250 / 1500 / 6000 Hz are
@@ -185,6 +254,11 @@ static void params_init(void)
         atomic_store(&g_params.eq[i].freq_hz, defaults[i].hz);
         atomic_store(&g_params.eq[i].q_mille, defaults[i].q);
         atomic_store(&g_params.eq[i].gain_centidb, defaults[i].g);
+
+        atomic_store(&g_params.out_eq[i].type, defaults[i].type);
+        atomic_store(&g_params.out_eq[i].freq_hz, defaults[i].hz);
+        atomic_store(&g_params.out_eq[i].q_mille, defaults[i].q);
+        atomic_store(&g_params.out_eq[i].gain_centidb, 0); /* Output EQ flat 0 dB */
     }
 
     atomic_store(&g_params.delay_ms, 250);
@@ -1184,6 +1258,30 @@ static void rt_refresh_eq(void)
     }
 }
 
+static struct biquad g_sink_eq_l[GHA_EQ_BANDS];
+static struct biquad g_sink_eq_r[GHA_EQ_BANDS];
+static int g_sink_eq_seq[GHA_EQ_BANDS];
+
+static void rt_refresh_sink_eq(void)
+{
+    for (int i = 0; i < GHA_EQ_BANDS; i++)
+    {
+        int h = eq_hash(&g_params.out_eq[i]);
+        if (h != g_sink_eq_seq[i])
+        {
+            int type = atomic_load(&g_params.out_eq[i].type);
+            float f = (float)atomic_load(&g_params.out_eq[i].freq_hz);
+            float q = atomic_load(&g_params.out_eq[i].q_mille) * 0.001f;
+            float gd = atomic_load(&g_params.out_eq[i].gain_centidb) * 0.01f;
+            if (q < 0.1f)
+                q = 0.1f;
+            biquad_design(&g_sink_eq_l[i], type, (float)SAMPLE_RATE, f, q, gd);
+            biquad_design(&g_sink_eq_r[i], type, (float)SAMPLE_RATE, f, q, gd);
+            g_sink_eq_seq[i] = h;
+        }
+    }
+}
+
 /* Lazy redesign of the voice-stage band-pass biquads. Called once per
  * capture callback so a preset change that drops a new HPF / LPF cutoff
  * is picked up on the next sample without paying biquad_design cost
@@ -1209,6 +1307,52 @@ static void rt_refresh_voice_bpf(void)
                           (float)lpf, 0.707f, 0.0f);
         }
         g_rt.voice_lpf_designed_hz = lpf;
+    }
+}
+
+struct sink_rt_state
+{
+    struct delay_state delay_l, delay_r;
+    struct reverb_state reverb_l, reverb_r;
+    struct pitch_shifter psh_l, psh_r;
+    struct pitch_tracker pitch;
+    struct vocoder_state vocoder_l, vocoder_r;
+    struct bitcrusher bitcrusher_l, bitcrusher_r;
+    struct biquad voice_hpf_l, voice_hpf_r;
+    struct biquad voice_lpf_l, voice_lpf_r;
+    int voice_hpf_designed_hz;
+    int voice_lpf_designed_hz;
+    float autotune_ratio_smooth;
+    float stutter_phase;
+    float stutter_gain;
+};
+static struct sink_rt_state g_sink_rt;
+
+static void rt_refresh_sink_voice_bpf(void)
+{
+    int hpf = atomic_load(&g_params.out_voice_bpf_hpf_hz);
+    int lpf = atomic_load(&g_params.out_voice_bpf_lpf_hz);
+    if (hpf != g_sink_rt.voice_hpf_designed_hz)
+    {
+        if (hpf > 0)
+        {
+            biquad_design(&g_sink_rt.voice_hpf_l, 3 /* HPF */, (float)SAMPLE_RATE,
+                          (float)hpf, 0.707f, 0.0f);
+            biquad_design(&g_sink_rt.voice_hpf_r, 3 /* HPF */, (float)SAMPLE_RATE,
+                          (float)hpf, 0.707f, 0.0f);
+        }
+        g_sink_rt.voice_hpf_designed_hz = hpf;
+    }
+    if (lpf != g_sink_rt.voice_lpf_designed_hz)
+    {
+        if (lpf > 0)
+        {
+            biquad_design(&g_sink_rt.voice_lpf_l, 4 /* LPF */, (float)SAMPLE_RATE,
+                          (float)lpf, 0.707f, 0.0f);
+            biquad_design(&g_sink_rt.voice_lpf_r, 4 /* LPF */, (float)SAMPLE_RATE,
+                          (float)lpf, 0.707f, 0.0f);
+        }
+        g_sink_rt.voice_lpf_designed_hz = lpf;
     }
 }
 
@@ -1867,8 +2011,64 @@ static void cb_sink_in_process(void *userdata)
     uint32_t n_samples = buf->datas[0].chunk->size / stride;
     const float *in = buf->datas[0].data;
 
+    rt_refresh_sink_eq();
+    rt_refresh_sink_voice_bpf();
+
     int rnn_on = atomic_load(&g_params.out_rnnoise_on);
     int aggro = atomic_load(&g_params.out_rnn_aggressiveness);
+    int out_eq_on = atomic_load(&g_params.out_eq_on);
+    float out_eq_post_gain = powf(10.0f,
+                                  (float)atomic_load(&g_params.out_eq_gain_centidb) / 100.0f / 20.0f);
+
+    int out_delay_on = atomic_load(&g_params.out_delay_on);
+    int d_samples = (atomic_load(&g_params.out_delay_ms) * SAMPLE_RATE) / 1000;
+    float d_fb = atomic_load(&g_params.out_delay_feedback) * 0.001f;
+    float d_mix = atomic_load(&g_params.out_delay_mix) * 0.001f;
+
+    int out_reverb_on = atomic_load(&g_params.out_reverb_on);
+    float r_room = atomic_load(&g_params.out_reverb_room) * 0.001f;
+    float r_damp = atomic_load(&g_params.out_reverb_damp) * 0.001f;
+    float r_width = atomic_load(&g_params.out_reverb_width) * 0.001f;
+    float r_mix = atomic_load(&g_params.out_reverb_mix) * 0.001f;
+
+    int out_voc_on = atomic_load(&g_params.out_vocoder_on);
+    int out_voc_carrier_hz = atomic_load(&g_params.out_vocoder_carrier_hz);
+    int out_voc_detune = atomic_load(&g_params.out_vocoder_detune);
+    int out_voc_attack_ms = atomic_load(&g_params.out_vocoder_attack_ms);
+    int out_voc_release_ms = atomic_load(&g_params.out_vocoder_release_ms);
+    float out_voc_mix = atomic_load(&g_params.out_vocoder_mix) * 0.001f;
+    int out_voc_follow = atomic_load(&g_params.out_vocoder_follow);
+    int out_voc_shift = atomic_load(&g_params.out_vocoder_shift_semis);
+    int out_matrix_mille = atomic_load(&g_params.out_matrix_intensity_mille);
+
+    int out_psh_centisemis = atomic_load(&g_params.out_pitch_shift_centisemis);
+    int out_autotune_on = atomic_load(&g_params.out_autotune_on);
+    int out_atn_target_hz = atomic_load(&g_params.out_voice_autotune_target_hz);
+    int out_bitcrush_bits = atomic_load(&g_params.out_bitcrush_bits);
+    int out_bitcrush_ds = atomic_load(&g_params.out_bitcrush_downsample);
+    int out_voice_hpf_hz = atomic_load(&g_params.out_voice_bpf_hpf_hz);
+    int out_voice_lpf_hz = atomic_load(&g_params.out_voice_bpf_lpf_hz);
+    int out_stutter_hz = atomic_load(&g_params.out_voice_stutter_hz);
+    int out_stutter_duty = atomic_load(&g_params.out_voice_stutter_duty_mille);
+
+    if (g_sink_rt.vocoder_l.designed_attack_ms != out_voc_attack_ms ||
+        g_sink_rt.vocoder_l.designed_release_ms != out_voc_release_ms)
+    {
+        vocoder_design(&g_sink_rt.vocoder_l, (float)SAMPLE_RATE,
+                       out_voc_attack_ms, out_voc_release_ms);
+        vocoder_design(&g_sink_rt.vocoder_r, (float)SAMPLE_RATE,
+                       out_voc_attack_ms, out_voc_release_ms);
+    }
+
+    float target_ratio = 1.0f;
+    if (out_autotune_on)
+    {
+        target_ratio = autotune_ratio_for(g_sink_rt.pitch.tracked_hz, out_atn_target_hz);
+    }
+    else if (out_psh_centisemis != 0)
+    {
+        target_ratio = powf(2.0f, (float)out_psh_centisemis / 1200.0f);
+    }
 
     uint32_t lhead = atomic_load_explicit(&g_sink_l.head, memory_order_relaxed);
     uint32_t rhead = atomic_load_explicit(&g_sink_r.head, memory_order_relaxed);
@@ -1878,10 +2078,88 @@ static void cb_sink_in_process(void *userdata)
         float l = in[i * 2 + 0];
         float r = in[i * 2 + 1];
 
+        /* 1. Two-Way RNNoise */
         if (rnn_on)
         {
             l = sink_channel_tick(&g_sink_ch_l, l, aggro);
             r = sink_channel_tick(&g_sink_ch_r, r, aggro);
+        }
+
+        /* 2. Stereo Pitch Shifter & Autotune */
+        float mono_mid = 0.5f * (l + r);
+        pitch_tracker_push(&g_sink_rt.pitch, mono_mid, (float)SAMPLE_RATE);
+        g_sink_rt.autotune_ratio_smooth += 0.05f * (target_ratio - g_sink_rt.autotune_ratio_smooth);
+        l = psh_tick(&g_sink_rt.psh_l, l, g_sink_rt.autotune_ratio_smooth);
+        r = psh_tick(&g_sink_rt.psh_r, r, g_sink_rt.autotune_ratio_smooth);
+
+        /* 3. Stereo Vocoder (Independent L/R Carrier and Filterbanks) */
+        if (out_voc_on)
+        {
+            l = vocoder_tick(&g_sink_rt.vocoder_l, l, (float)SAMPLE_RATE,
+                             out_voc_carrier_hz, out_voc_detune, out_voc_mix,
+                             g_sink_rt.pitch.tracked_hz, out_voc_follow, out_voc_shift,
+                             out_matrix_mille);
+            r = vocoder_tick(&g_sink_rt.vocoder_r, r, (float)SAMPLE_RATE,
+                             out_voc_carrier_hz, out_voc_detune, out_voc_mix,
+                             g_sink_rt.pitch.tracked_hz, out_voc_follow, out_voc_shift,
+                             out_matrix_mille);
+        }
+
+        /* 4. Bitcrusher */
+        if (out_bitcrush_bits > 0 || out_bitcrush_ds > 1)
+        {
+            l = bitcrush_tick(&g_sink_rt.bitcrusher_l, l, out_bitcrush_bits, out_bitcrush_ds);
+            r = bitcrush_tick(&g_sink_rt.bitcrusher_r, r, out_bitcrush_bits, out_bitcrush_ds);
+        }
+
+        /* 5. 9-Band Stereo Parametric EQ */
+        if (out_eq_on)
+        {
+            for (int bi = 0; bi < GHA_EQ_BANDS; bi++)
+            {
+                l = biquad_tick(&g_sink_eq_l[bi], l);
+                r = biquad_tick(&g_sink_eq_r[bi], r);
+            }
+            l *= out_eq_post_gain;
+            r *= out_eq_post_gain;
+        }
+
+        /* 6. Voice Bandpass (HPF & LPF) */
+        if (out_voice_hpf_hz > 0)
+        {
+            l = biquad_tick(&g_sink_rt.voice_hpf_l, l);
+            r = biquad_tick(&g_sink_rt.voice_hpf_r, r);
+        }
+        if (out_voice_lpf_hz > 0)
+        {
+            l = biquad_tick(&g_sink_rt.voice_lpf_l, l);
+            r = biquad_tick(&g_sink_rt.voice_lpf_r, r);
+        }
+
+        /* 7. Stutter Gate */
+        if (out_stutter_hz > 0)
+        {
+            g_sink_rt.stutter_phase += (float)out_stutter_hz / (float)SAMPLE_RATE;
+            if (g_sink_rt.stutter_phase >= 1.0f)
+                g_sink_rt.stutter_phase -= 1.0f;
+            float target_gate = (g_sink_rt.stutter_phase < (float)out_stutter_duty * 0.001f) ? 1.0f : 0.0f;
+            g_sink_rt.stutter_gain += 0.05f * (target_gate - g_sink_rt.stutter_gain);
+            l *= g_sink_rt.stutter_gain;
+            r *= g_sink_rt.stutter_gain;
+        }
+
+        /* 8. Stereo Tape Delay */
+        if (out_delay_on)
+        {
+            l = delay_tick(&g_sink_rt.delay_l, l, d_samples, d_fb, d_mix);
+            r = delay_tick(&g_sink_rt.delay_r, r, d_samples, d_fb, d_mix);
+        }
+
+        /* 9. Stereo Schroeder Reverb */
+        if (out_reverb_on)
+        {
+            l = reverb_tick(&g_sink_rt.reverb_l, l, r_room, r_damp, r_width, r_mix);
+            r = reverb_tick(&g_sink_rt.reverb_r, r, r_room, r_damp, r_width, r_mix);
         }
 
         lhead = ring_push(&g_sink_l, lhead, l);
@@ -2310,6 +2588,145 @@ static void parse_cmd(char *line)
     {
         atomic_store(&g_params.eq_on, atoi(line + 3) ? 1 : 0);
     }
+    else if (!strncmp(line, "OUT_EQ ", 7))
+    {
+        atomic_store(&g_params.out_eq_on, atoi(line + 7) ? 1 : 0);
+    }
+    else if (!strncmp(line, "OUT_EGN ", 8))
+    {
+        int v = atoi(line + 8);
+        if (v < -3600) v = -3600;
+        if (v > 3600) v = 3600;
+        atomic_store(&g_params.out_eq_gain_centidb, v);
+    }
+    else if (!strncmp(line, "OUT_EQB ", 8))
+    {
+        int idx, type, hz, q, g;
+        if (sscanf(line + 8, "%d %d %d %d %d", &idx, &type, &hz, &q, &g) == 5 && idx >= 0 && idx < GHA_EQ_BANDS)
+        {
+            atomic_store(&g_params.out_eq[idx].type, type);
+            atomic_store(&g_params.out_eq[idx].freq_hz, hz);
+            atomic_store(&g_params.out_eq[idx].q_mille, q);
+            atomic_store(&g_params.out_eq[idx].gain_centidb, g);
+        }
+    }
+    else if (!strncmp(line, "OUT_VOC ", 8))
+    {
+        atomic_store(&g_params.out_vocoder_on, atoi(line + 8) ? 1 : 0);
+    }
+    else if (!strncmp(line, "OUT_VOP ", 8))
+    {
+        int mix, hz, atk, rel, det, follow, shift;
+        if (sscanf(line + 8, "%d %d %d %d %d %d %d",
+                   &mix, &hz, &atk, &rel, &det, &follow, &shift) == 7)
+        {
+            if (hz < 50) hz = 50;
+            if (hz > 880) hz = 880;
+            if (atk < 1) atk = 1;
+            if (atk > 200) atk = 200;
+            if (rel < 5) rel = 5;
+            if (rel > 500) rel = 500;
+            if (shift < -24) shift = -24;
+            if (shift > 24) shift = 24;
+            atomic_store(&g_params.out_vocoder_mix, mix);
+            atomic_store(&g_params.out_vocoder_carrier_hz, hz);
+            atomic_store(&g_params.out_vocoder_attack_ms, atk);
+            atomic_store(&g_params.out_vocoder_release_ms, rel);
+            atomic_store(&g_params.out_vocoder_detune, det);
+            atomic_store(&g_params.out_vocoder_follow, follow ? 1 : 0);
+            atomic_store(&g_params.out_vocoder_shift_semis, shift);
+        }
+    }
+    else if (!strncmp(line, "OUT_MTX ", 8))
+    {
+        int v = atoi(line + 8);
+        if (v < 0) v = 0;
+        if (v > 1000) v = 1000;
+        atomic_store(&g_params.out_matrix_intensity_mille, v);
+    }
+    else if (!strncmp(line, "OUT_PSH ", 8))
+    {
+        int v = atoi(line + 8);
+        if (v < -2400) v = -2400;
+        if (v > 2400) v = 2400;
+        atomic_store(&g_params.out_pitch_shift_centisemis, v);
+    }
+    else if (!strncmp(line, "OUT_ATN ", 8))
+    {
+        atomic_store(&g_params.out_autotune_on, atoi(line + 8) ? 1 : 0);
+    }
+    else if (!strncmp(line, "OUT_ATT ", 8))
+    {
+        atomic_store(&g_params.out_voice_autotune_target_hz, atoi(line + 8));
+    }
+    else if (!strncmp(line, "OUT_BCR ", 8))
+    {
+        int bits = 0, ds = 1;
+        if (sscanf(line + 8, "%d %d", &bits, &ds) >= 1)
+        {
+            if (bits < 0) bits = 0;
+            if (bits > 15) bits = 15;
+            if (ds < 1) ds = 1;
+            if (ds > 64) ds = 64;
+            atomic_store(&g_params.out_bitcrush_bits, bits);
+            atomic_store(&g_params.out_bitcrush_downsample, ds);
+        }
+    }
+    else if (!strncmp(line, "OUT_BPF ", 8))
+    {
+        int hpf = 0, lpf = 0;
+        if (sscanf(line + 8, "%d %d", &hpf, &lpf) >= 1)
+        {
+            if (hpf < 0) hpf = 0;
+            if (hpf > 2000) hpf = 2000;
+            if (lpf < 0) lpf = 0;
+            if (lpf > 20000) lpf = 20000;
+            atomic_store(&g_params.out_voice_bpf_hpf_hz, hpf);
+            atomic_store(&g_params.out_voice_bpf_lpf_hz, lpf);
+        }
+    }
+    else if (!strncmp(line, "OUT_STT ", 8))
+    {
+        int hz = 0, duty = 500;
+        if (sscanf(line + 8, "%d %d", &hz, &duty) >= 1)
+        {
+            if (hz < 0) hz = 0;
+            if (hz > 40) hz = 40;
+            if (duty < 50) duty = 50;
+            if (duty > 950) duty = 950;
+            atomic_store(&g_params.out_voice_stutter_hz, hz);
+            atomic_store(&g_params.out_voice_stutter_duty_mille, duty);
+        }
+    }
+    else if (!strncmp(line, "OUT_DLY ", 8))
+    {
+        atomic_store(&g_params.out_delay_on, atoi(line + 8) ? 1 : 0);
+    }
+    else if (!strncmp(line, "OUT_DLP ", 8))
+    {
+        int ms, fb, mix;
+        if (sscanf(line + 8, "%d %d %d", &ms, &fb, &mix) == 3)
+        {
+            atomic_store(&g_params.out_delay_ms, ms);
+            atomic_store(&g_params.out_delay_feedback, fb);
+            atomic_store(&g_params.out_delay_mix, mix);
+        }
+    }
+    else if (!strncmp(line, "OUT_RVB ", 8))
+    {
+        atomic_store(&g_params.out_reverb_on, atoi(line + 8) ? 1 : 0);
+    }
+    else if (!strncmp(line, "OUT_RVP ", 8))
+    {
+        int rm, dp, wd, mx;
+        if (sscanf(line + 8, "%d %d %d %d", &rm, &dp, &wd, &mx) == 4)
+        {
+            atomic_store(&g_params.out_reverb_room, rm);
+            atomic_store(&g_params.out_reverb_damp, dp);
+            atomic_store(&g_params.out_reverb_width, wd);
+            atomic_store(&g_params.out_reverb_mix, mx);
+        }
+    }
     else if (!strncmp(line, "DLY ", 4))
     {
         atomic_store(&g_params.delay_on, atoi(line + 4) ? 1 : 0);
@@ -2667,6 +3084,24 @@ int main(int argc, char *argv[])
     g_sink_ch_r.vad_ema = 0.0f;
     g_sink_ch_r.hangover_left = 0;
 
+    /* ---- Output Playback DSP RT State Initialization ---- */
+    for (int i = 0; i < GHA_EQ_BANDS; i++)
+        g_sink_eq_seq[i] = -1;
+    rt_refresh_sink_eq();
+
+    g_sink_rt.autotune_ratio_smooth = 1.0f;
+    g_sink_rt.voice_hpf_designed_hz = -1;
+    g_sink_rt.voice_lpf_designed_hz = -1;
+    g_sink_rt.stutter_gain = 1.0f;
+    g_sink_rt.stutter_phase = 0.0f;
+
+    vocoder_design(&g_sink_rt.vocoder_l, (float)SAMPLE_RATE,
+                   atomic_load(&g_params.out_vocoder_attack_ms),
+                   atomic_load(&g_params.out_vocoder_release_ms));
+    vocoder_design(&g_sink_rt.vocoder_r, (float)SAMPLE_RATE,
+                   atomic_load(&g_params.out_vocoder_attack_ms),
+                   atomic_load(&g_params.out_vocoder_release_ms));
+
     struct app *app = &g_app;
     memset(app, 0, sizeof(*app));
     app->loop = pw_main_loop_new(NULL);
@@ -2738,6 +3173,7 @@ int main(int argc, char *argv[])
         PW_KEY_MEDIA_ROLE, "Communication",
         PW_KEY_NODE_NAME, "ghelper-audio-monitor",
         PW_KEY_NODE_DESCRIPTION, "Dusky Audio monitor",
+        "node.link-group", "ghelper-sink-group",
         NULL);
 
     app->mon_stream = pw_stream_new_simple(
