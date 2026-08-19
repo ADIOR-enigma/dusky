@@ -317,7 +317,7 @@ def probe_cpu_cache_sizes(target_core: str = "0") -> tuple[int, int, int]:
                     unit = (m.group(2) or "K").upper()
                     kb = val * 1024 if unit == "M" else (val * 1024 * 1024 if unit == "G" else val)
 
-                    if level == "1" and ctype.lower() == "data":
+                    if level == "1" and ctype.lower() in ["data", "unified"]:
                         l1_kb = kb
                     elif level == "2":
                         l2_kb = kb
@@ -491,9 +491,12 @@ def set_cpu_performance():
             except Exception:
                 pass
 
+    original_sigint = signal.getsignal(signal.SIGINT)
+    original_sigterm = signal.getsignal(signal.SIGTERM)
+
     def restore_state(*_):
         apply_values(state_map)
-        sys.exit(1)
+        sys.exit(130)
 
     signal.signal(signal.SIGINT, restore_state)
     signal.signal(signal.SIGTERM, restore_state)
@@ -506,8 +509,8 @@ def set_cpu_performance():
     try:
         yield
     finally:
-        signal.signal(signal.SIGINT, signal.SIG_DFL)
-        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        signal.signal(signal.SIGINT, original_sigint)
+        signal.signal(signal.SIGTERM, original_sigterm)
         apply_values(state_map)
 
 
@@ -1301,6 +1304,242 @@ def render_results_table(results: list[TestResult], specs: HardwareSpecs):
     console.print(panel)
 
 
+HISTORY_DIR = Path.home() / ".config" / "dusky" / "settings" / "ram_test"
+HISTORY_FILE = HISTORY_DIR / "history.json"
+
+
+def save_run_to_history(
+    specs: HardwareSpecs,
+    cache_hierarchy: CacheHierarchyResult | None,
+    results: list[TestResult],
+    args: argparse.Namespace,
+) -> None:
+    """Save benchmark run state to ~/.config/dusky/settings/ram_test/ for multi-run comparison."""
+    try:
+        HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        history = load_history()
+
+        now_ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        time_short = time.strftime("%H:%M:%S")
+        date_short = time.strftime("%m-%d")
+        run_id = f"run_{time.strftime('%Y%m%d_%H%M%S')}"
+
+        metrics_map: dict[str, float] = {}
+        for r in results:
+            if r.name == "Random Memory Latency" and r.latency_ns:
+                metrics_map["Random Memory Latency (ns)"] = r.latency_ns
+            elif r.name != "Random Memory Latency" and r.throughput_gb_s > 0:
+                metrics_map[r.name] = r.throughput_gb_s
+
+        entry = {
+            "id": run_id,
+            "timestamp": now_ts,
+            "time_short": time_short,
+            "date_short": date_short,
+            "bench": getattr(args, "bench", "all"),
+            "hugepages": bool(getattr(args, "hugepages", False)),
+            "workers": getattr(args, "workers", None) or specs.online_cpus,
+            "cores": getattr(args, "cores", None),
+            "time_sec": getattr(args, "time", 10),
+            "optimal_core": specs.optimal_p_core,
+            "cpu_model": specs.cpu_model,
+            "mem_type": specs.mem_type,
+            "configured_speed_mts": specs.configured_speed_mts,
+            "cache": {
+                "l1_ns": cache_hierarchy.l1_ns if cache_hierarchy else None,
+                "l2_ns": cache_hierarchy.l2_ns if cache_hierarchy else None,
+                "l3_ns": cache_hierarchy.l3_ns if cache_hierarchy else None,
+                "dram_ns": cache_hierarchy.dram_ns if cache_hierarchy else None,
+            } if cache_hierarchy else None,
+            "metrics": metrics_map,
+            "results_raw": [asdict(r) for r in results],
+            "initial_temps": specs.initial_dram_temps,
+            "final_temps": specs.final_dram_temps or probe_dram_temperatures(),
+        }
+
+        history.append(entry)
+        if len(history) > 100:
+            history = history[-100:]
+
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(history, f, indent=2)
+
+        snapshot_file = HISTORY_DIR / f"{run_id}.json"
+        with open(snapshot_file, "w", encoding="utf-8") as f:
+            json.dump(entry, f, indent=2)
+    except Exception as e:
+        eprint(f"[Warning] Failed to save history to {HISTORY_FILE}: {e}")
+
+
+def load_history() -> list[dict]:
+    """Load historical benchmark runs from ~/.config/dusky/settings/ram_test/history.json."""
+    if not HISTORY_FILE.exists():
+        return []
+    try:
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, list):
+                return data
+    except Exception:
+        pass
+    return []
+
+
+def clear_history() -> None:
+    """Clear all saved benchmark history files in ~/.config/dusky/settings/ram_test/."""
+    if HISTORY_DIR.exists():
+        for p in HISTORY_DIR.glob("*.json"):
+            with contextlib.suppress(OSError):
+                p.unlink()
+    msg = "Cleared all benchmark history in ~/.config/dusky/settings/ram_test/"
+    if RICH_AVAILABLE:
+        console.print(f"[bold green]󰄬 {msg}[/bold green]")
+    else:
+        print(msg)
+
+
+def generate_sparkline(values: list[float], mode: str = "bandwidth") -> str:
+    """Render a colored Unicode sparkline trend curve from a sequence of numeric data points."""
+    if not values or len(values) < 2:
+        return "[dim]—[/dim]"
+    min_v = min(values)
+    max_v = max(values)
+    blocks = [" ", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
+    res = ""
+    span = max_v - min_v if max_v != min_v else 1.0
+    for v in values:
+        if max_v == min_v:
+            idx = 3
+            color = "bright_cyan"
+        else:
+            idx = int(round(((v - min_v) / span) * (len(blocks) - 1)))
+            idx = max(0, min(len(blocks) - 1, idx))
+            if mode == "latency":
+                color = "bright_green" if idx <= 2 else ("bright_yellow" if idx <= 5 else "bright_red")
+            else:
+                color = "bright_green" if idx >= 5 else ("bright_yellow" if idx >= 2 else "bright_cyan")
+        char = blocks[idx]
+        res += f"[{color}]{char}[/{color}]"
+    return res
+
+
+def render_history_comparison(history: list[dict], count: int = 7) -> None:
+    """Render a side-by-side comparison table of the last N benchmark runs with sparklines and delta calculations."""
+    if not history:
+        msg = "No previous benchmark history found in ~/.config/dusky/settings/ram_test/"
+        if RICH_AVAILABLE:
+            console.print(f"[bold yellow]󰘓 {msg}[/bold yellow]")
+        else:
+            print(msg)
+        return
+
+    runs = history[-count:]
+    if not runs:
+        return
+
+    w = console.width if console and console.width else 120
+    is_compact = (w < 115)
+
+    metrics_meta = [
+        ("DRAM Latency (ns)" if is_compact else "Random DRAM Latency (ns)", "latency", lambda r: r.get("metrics", {}).get("Random Memory Latency (ns)") or (r.get("cache") or {}).get("dram_ns")),
+        ("L1 Cache (ns)" if is_compact else "L1 Data Cache (ns)", "latency", lambda r: (r.get("cache") or {}).get("l1_ns")),
+        ("L2 Cache (ns)" if is_compact else "L2 Dedicated Cache (ns)", "latency", lambda r: (r.get("cache") or {}).get("l2_ns")),
+        ("L3 Cache (ns)" if is_compact else "L3 Smart Cache (ns)", "latency", lambda r: (r.get("cache") or {}).get("l3_ns")),
+        ("Single-Core (GB/s)" if is_compact else "Single-Core Copy (GB/s)", "bandwidth", lambda r: r.get("metrics", {}).get("Single-Core Copy (1 Core)")),
+        ("Pure Read (GB/s)" if is_compact else "Pure Read Multi-Core (GB/s)", "bandwidth", lambda r: r.get("metrics", {}).get("Pure Read (Multi-Thread)")),
+        ("Pure Write (GB/s)" if is_compact else "Pure Write Multi-Core (GB/s)", "bandwidth", lambda r: r.get("metrics", {}).get("Pure Write (Multi-Thread)")),
+        ("STREAM Copy (GB/s)" if is_compact else "STREAM Copy Multi-Core (GB/s)", "bandwidth", lambda r: r.get("metrics", {}).get("Stream Copy (Multi-Thread)")),
+    ]
+
+    if not RICH_AVAILABLE:
+        print(f"\n=== MULTI-RUN BENCHMARK COMPARISON (Last {len(runs)} Runs) ===")
+        header_cols = [f"{'Metric':<28s}"]
+        for i, r in enumerate(runs):
+            t_short = r.get("time_short", r.get("timestamp", "").split()[-1] if "timestamp" in r else "?")
+            header_cols.append(f"R{i+1} ({t_short:>8s})")
+        header_cols.extend([" Min / Max  ", " Δ vs Base "])
+        header = " | ".join(header_cols)
+        print(header)
+        print("-" * len(header))
+        for label, mode, extractor in metrics_meta:
+            vals = [extractor(r) for r in runs if extractor(r) is not None]
+            if not vals:
+                continue
+            row_items = [f"{label:<28s}"]
+            for r in runs:
+                v = extractor(r)
+                if v is not None:
+                    row_items.append(f"{v:>12.2f}" if v < 100 else f"{v:>12.1f}")
+                else:
+                    row_items.append(f"{'—':^12s}")
+            min_max = f"{min(vals):.1f}/{max(vals):.1f}"
+            delta_str = "—"
+            if len(vals) >= 2 and vals[0] != 0:
+                pct_diff = ((vals[-1] - vals[0]) / vals[0]) * 100.0
+                delta_str = f"{pct_diff:+.1f}%"
+            row_items.append(f"{min_max:^12s}")
+            row_items.append(f"{delta_str:>11s}")
+            print(" | ".join(row_items))
+        return
+
+    t = Table(
+        box=box.ROUNDED,
+        header_style="bold cyan",
+        show_header=True,
+        pad_edge=False,
+    )
+    metric_title = "Metric" if is_compact else "Benchmark Metric"
+    t.add_column(metric_title, style="bold white")
+
+    for i, r in enumerate(runs):
+        is_latest = (i == len(runs) - 1)
+        tag = "★" if (is_latest and is_compact) else ("[bold green]★ Latest[/bold green]" if is_latest else f"R{i+1}")
+        hp = "*" if (r.get("hugepages") and is_compact) else (" [dim](THP)[/dim]" if r.get("hugepages") else "")
+        raw_t = r.get("time_short", r.get("timestamp", "").split()[-1] if "timestamp" in r else "")
+        t_short = ":".join(raw_t.split(":")[:2]) if is_compact else raw_t
+        t.add_column(f"{tag}{hp}\n[dim]{t_short}[/dim]", justify="right")
+
+    t.add_column("Trend", justify="center")
+    if not is_compact:
+        t.add_column("Min / Max", justify="center", style="bold white")
+    t.add_column("Δ Base" if is_compact else "Δ vs Baseline", justify="right", style="bold cyan")
+
+    for label, mode, extractor in metrics_meta:
+        vals = [extractor(r) for r in runs if extractor(r) is not None]
+        if not vals:
+            continue
+        row = [label]
+        for r in runs:
+            v = extractor(r)
+            if v is not None:
+                formatted = f"{v:.2f}" if v < 10 else f"{v:.1f}"
+                row.append(formatted)
+            else:
+                row.append("[dim]—[/dim]")
+
+        spark = generate_sparkline(vals, mode=mode)
+        min_max = f"{min(vals):.1f} / {max(vals):.1f}"
+        delta_str = "—"
+        if len(vals) >= 2 and vals[0] != 0:
+            pct_diff = ((vals[-1] - vals[0]) / vals[0]) * 100.0
+            if mode == "latency":
+                color = "bright_green" if pct_diff < 0 else ("bright_red" if pct_diff > 0 else "white")
+                arrow = "▼" if pct_diff < 0 else ("▲" if pct_diff > 0 else "")
+            else:
+                color = "bright_green" if pct_diff > 0 else ("bright_red" if pct_diff < 0 else "white")
+                arrow = "▲" if pct_diff > 0 else ("▼" if pct_diff < 0 else "")
+            delta_str = f"[{color}]{pct_diff:+.1f}%{arrow}[/{color}]"
+
+        if not is_compact:
+            row.extend([spark, min_max, delta_str])
+        else:
+            row.extend([spark, delta_str])
+        t.add_row(*row)
+
+    console.print(f"\n[bold cyan]󰓅 Multi-Run Benchmark Comparison & Trend History (Last {len(runs)} Runs)[/bold cyan]")
+    console.print(t)
+
+
 def export_report(
     filename: str,
     specs: HardwareSpecs,
@@ -1403,11 +1642,33 @@ def main() -> int:
         help="Path to export benchmark results in JSON or CSV format (e.g. --export report.json).",
     )
     parser.add_argument(
+        "--compare",
+        "--history",
+        dest="compare",
+        nargs="?",
+        const=7,
+        type=int,
+        help="Compare results from the last N runs side-by-side with trend graphs (default: 7).",
+    )
+    parser.add_argument(
+        "--clear-history",
+        action="store_true",
+        help="Clear all saved history state files in ~/.config/dusky/settings/ram_test/.",
+    )
+    parser.add_argument(
         "--no-governor",
         action="store_true",
         help="Skip optimizing CPU performance governor.",
     )
     args = parser.parse_args()
+
+    if args.clear_history:
+        clear_history()
+        return 0
+
+    if args.compare is not None and "--bench" not in sys.argv:
+        render_history_comparison(load_history(), count=args.compare)
+        return 0
 
     try:
         has_sudo = cache_sudo_privileges()
@@ -1504,6 +1765,14 @@ def main() -> int:
                 render_cache_hierarchy_table(cache_hierarchy)
             if results:
                 render_results_table(results, specs)
+
+            # Persist run to ~/.config/dusky/settings/ram_test/
+            save_run_to_history(specs, cache_hierarchy, results, args)
+
+            # Show multi-run trend comparison if historical runs exist
+            hist = load_history()
+            if len(hist) >= 2:
+                render_history_comparison(hist, count=args.compare or 7)
 
             if args.export:
                 export_report(args.export, specs, cache_hierarchy, results)
