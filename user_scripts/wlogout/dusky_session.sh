@@ -31,7 +31,7 @@ case "$ACTION" in
 esac
 
 # 3. State management clean-up (non-fatal)
-STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/dusky"
 if [[ -d "$STATE_DIR" ]]; then
   rm -f -- "$STATE_DIR"/re*-required 2>/dev/null || :
 fi

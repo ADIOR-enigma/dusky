@@ -84,7 +84,7 @@ a schema must not pre-create them.
 - Speed tests with the app suspend the TUI and launch `engines/rich_speedtest.py`
   `<mode>` — a Rich-based helper invoked as a subprocess, NOT an engine — then
   read `~/.cache/dusky_tui/speedtest_last.json`. Headless: uses
-  `omarchy-network-speedtest` (PATH + `/mnt/zram1/...`) or a native Cloudflare
+  `dusky-network-speedtest` (PATH) or a native Cloudflare
   speed test. A running test rejects new starts.
 - Reference schema sets `ENABLE_USER_PRESETS = False` and
   `CUSTOM_VIEWS = {2: {"view": render_network_dashboard_view, "interval": 1.0}}`.

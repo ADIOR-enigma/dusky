@@ -11,6 +11,8 @@ import threading
 import select
 import termios
 import tty
+import urllib.parse
+import concurrent.futures
 from pathlib import Path
 from typing import Any
 
@@ -19,13 +21,50 @@ from python.frontend.core_types import BaseEngine, ConfigItem
 logger = logging.getLogger("dusky_network_engine")
 
 # =============================================================================
-#  NMCLI OUTPUT PARSER
+#  NMCLI OUTPUT PARSER & DECODERS
 # =============================================================================
 _NMCLI_FIELD_SPLIT = re.compile(r'(?<!\\):')
 
 def _split_nmcli_line(line: str) -> list[str]:
     """Split an nmcli -t output line by unescaped colons, then unescape fields."""
     return [f.replace("\\:", ":") for f in _NMCLI_FIELD_SPLIT.split(line)]
+
+def decode_iw_ssid(value: str) -> str:
+    """
+    Decodes raw hex byte escape sequences from `iw` output (e.g. \\xe2\\x80\\x99 -> ’,
+    \\xf0\\x9f\\x98\\x80 -> 😀, \\x20 -> space, \\x5c -> \\) into clean UTF-8.
+    Preserves ASCII control characters (< 32 or 127) as escapes to prevent terminal issues.
+    """
+    raw = str(value or "")
+    if "\\x" not in raw:
+        return raw
+
+    try:
+        encoded = ""
+        i = 0
+        n = len(raw)
+        while i < n:
+            if raw[i] == "\\" and i + 3 < n and raw[i + 1] == "x":
+                hex_str = raw[i + 2:i + 4]
+                try:
+                    byte_val = int(hex_str, 16)
+                    if byte_val < 32 or byte_val == 127:
+                        encoded += urllib.parse.quote(raw[i:i + 4])
+                    else:
+                        encoded += f"%{hex_str}"
+                    i += 4
+                    continue
+                except ValueError:
+                    pass
+            encoded += urllib.parse.quote(raw[i])
+            i += 1
+
+        try:
+            return urllib.parse.unquote(encoded, errors="strict")
+        except UnicodeDecodeError:
+            return raw
+    except Exception:
+        return raw
 
 # =============================================================================
 #  PURE MODEL FUNCTIONS (Ported directly from Model.js)
@@ -44,7 +83,7 @@ def parse_network_status(raw: str) -> dict[str, Any]:
         "kind": kind,
         "label": label,
         "signal_strength": signal_strength,
-        "frequency": frequency,
+        "frequency": frequency
     }
 
 def wifi_icon_for(strength: int) -> str:
@@ -88,6 +127,64 @@ def format_header_freq(mhz: str | int | float) -> str:
         return "60ghz"
     ghz = v / 1000.0
     return f"{ghz:.0f}ghz" if ghz % 1 == 0 else f"{ghz:.1f}ghz"
+
+def band_for_freq(mhz: str | int | float) -> str:
+    """Classifies frequency in MHz into band: '2.4', '5', '6', '60' or ''."""
+    try:
+        s = str(mhz).split()[0]
+        v = float(s)
+    except (ValueError, TypeError, IndexError):
+        return ""
+    if not v or v <= 0:
+        return ""
+    if 2400 <= v < 2500:
+        return "2.4"
+    if 4900 <= v < 5925:
+        return "5"
+    if 5925 <= v < 7125:
+        return "6"
+    if 57000 <= v < 71000:
+        return "60"
+    return ""
+
+def nm_band_for(band_str: str) -> str:
+    """Maps human-readable band string to NetworkManager 802-11-wireless.band value."""
+    b = str(band_str).lower().replace("ghz", "").strip()
+    if b == "2.4":
+        return "bg"
+    elif b == "5":
+        return "a"
+    elif b == "6":
+        return "6GHz"
+    elif b in ("auto", "none", ""):
+        return ""
+    return ""
+
+def band_from_nm(nm_band: str) -> str:
+    """Maps NetworkManager 802-11-wireless.band value to human-readable band string."""
+    b = str(nm_band or "").strip()
+    if b == "bg":
+        return "2.4"
+    elif b == "a":
+        return "5"
+    elif b in ("6GHz", "6"):
+        return "6"
+    return "auto"
+
+def band_label(band: str) -> str:
+    """Formats band string for UI display."""
+    b = str(band or "").strip().lower()
+    if b in ("auto", ""):
+        return "Auto"
+    return f"{b} GHz"
+
+def band_section_title(selected: str, current: str) -> str:
+    if selected != "auto":
+        return "WI-FI BAND"
+    lbl = band_label(current)
+    if not lbl or lbl == "Auto":
+        return "WI-FI BAND"
+    return f"WI-FI BAND: {lbl.upper()}"
 
 def header_detail(info: dict[str, Any]) -> str:
     val = info or {}
@@ -301,8 +398,11 @@ def wifi_section_title(wifi_networks: list[dict[str, Any]], index: int) -> str:
         return "OTHER NETWORKS"
     return ""
 
-def is_protected(security: str, open_security: str = "Open") -> bool:
-    return security != open_security and security not in ("--", "", "None")
+def is_protected(security: str, open_security: str = "Open", owe_security: str = "OWE") -> bool:
+    sec = str(security or "").strip().upper()
+    if sec in (open_security.upper(), owe_security.upper(), "NOPASS", "NONE", "--", ""):
+        return False
+    return True
 
 def network_failure_reason(reason: str, reasons: dict[str, str] | None = None) -> str:
     r = reasons or {}
@@ -324,6 +424,12 @@ wifiIconFor = wifi_icon_for
 connectionIcon = connection_icon
 formatHeaderSpeed = format_header_speed
 formatHeaderFreq = format_header_freq
+bandForFreq = band_for_freq
+nmBandFor = nm_band_for
+bandFromNm = band_from_nm
+bandLabel = band_label
+bandSectionTitle = band_section_title
+decodeIwSsid = decode_iw_ssid
 headerDetail = header_detail
 parseKeyValue = parse_key_value
 throughputState = throughput_state
@@ -696,6 +802,13 @@ class NetworkManagerEngine(BaseEngine):
         active = self._get_active_wifi_connection()
         state["hotspot/hotspot_status_info"] = "Active" if active and active.get("mode") == "ap" else "Inactive"
 
+        # Active Wi-Fi band state
+        if active:
+            band_res = self._run_cmd(["nmcli", "-e", "no", "-g", "802-11-wireless.band", "connection", "show", active["uuid"]]).strip()
+            state["status_action/wifi_band"] = band_label(band_from_nm(band_res))
+        else:
+            state["status_action/wifi_band"] = "Auto"
+
         # Trigger bools
         state["network/rescan"] = "false"
         state["hotspot/start_hotspot_24"] = "false"
@@ -774,11 +887,11 @@ class NetworkManagerEngine(BaseEngine):
 
         # ---- Saved profile actions ----
         if target_scope == "saved_action":
-            return self._handle_saved_action(target_key)
+            return self._handle_saved_action(target_key, new_value)
 
         # ---- Status tab actions ----
         if target_scope == "status_action":
-            return self._handle_status_action(target_key)
+            return self._handle_status_action(target_key, new_value)
 
         # ---- Speed Test tab actions ----
         if target_scope == "speedtest_action":
@@ -899,9 +1012,17 @@ class NetworkManagerEngine(BaseEngine):
                 return False, f"Failed: {res.stderr.strip()}", res.stderr
             return False, "Connection not found.", ""
 
+        if key.startswith("band__"):
+            ssid = key[6:]
+            saved = self._get_saved_wifi()
+            match = [c for c in saved if c["name"] == ssid]
+            target_id = match[0]["uuid"] if match else ssid
+            ok, msg = self.set_wifi_band_with_rollback(target_id, value)
+            return ok, msg, ""
+
         return True, "OK", ""
 
-    def _handle_saved_action(self, key: str) -> tuple[bool, str, str]:
+    def _handle_saved_action(self, key: str, value: str = "") -> tuple[bool, str, str]:
         if key.startswith("cn__"):
             uuid = key[4:]
             threading.Thread(target=self._async_connect_saved, args=(uuid, uuid), daemon=True).start()
@@ -935,9 +1056,14 @@ class NetworkManagerEngine(BaseEngine):
                 return True, "Deleted.", ""
             return False, f"Failed: {res.stderr.strip()}", res.stderr
 
+        if key.startswith("band__"):
+            uuid = key[6:]
+            ok, msg = self.set_wifi_band_with_rollback(uuid, value)
+            return ok, msg, ""
+
         return True, "OK", ""
 
-    def _handle_status_action(self, key: str) -> tuple[bool, str, str]:
+    def _handle_status_action(self, key: str, value: str = "") -> tuple[bool, str, str]:
         if key == "disconnect":
             active = self._get_active_wifi_connection()
             if active:
@@ -958,6 +1084,13 @@ class NetworkManagerEngine(BaseEngine):
                 ssid, pw, sec, hid = self._get_wifi_credentials(active["uuid"])
                 return self._trigger_qr_viewer(ssid or active["ssid"], pw, sec, hid)
             return False, "No active Wi-Fi connection to share.", ""
+
+        if key == "wifi_band":
+            active = self._get_active_wifi_connection()
+            if active:
+                ok, msg = self.set_wifi_band_with_rollback(active["uuid"], value)
+                return ok, msg, ""
+            return False, "No active Wi-Fi connection to set band.", ""
 
         if key == "restart_nm":
             res = subprocess.run(
@@ -1183,9 +1316,13 @@ class NetworkManagerEngine(BaseEngine):
                         for line in iw_out.splitlines():
                             line_str = line.strip()
                             if line_str.startswith("SSID:"):
-                                enriched["ssid"] = line_str.split("SSID:", 1)[1].strip()
+                                enriched["ssid"] = decode_iw_ssid(line_str.split("SSID:", 1)[1].strip())
                             elif line_str.startswith("freq:"):
-                                enriched["freq"] = line_str.split("freq:", 1)[1].strip()
+                                freq_val = line_str.split("freq:", 1)[1].strip()
+                                enriched["freq"] = freq_val
+                                b = band_for_freq(freq_val)
+                                if b:
+                                    enriched["band"] = b
                             elif "tx bitrate:" in line_str:
                                 parts = line_str.split("tx bitrate:", 1)[1].strip().split()
                                 if len(parts) >= 2:
@@ -1193,24 +1330,34 @@ class NetworkManagerEngine(BaseEngine):
                 except Exception:
                     pass
 
-        # 6. Router ping fallback if missing
+        # 6. Concurrent dual ping for router gateway and 1.1.1.1
         gw = enriched.get("gateway")
+        ping_targets: list[tuple[str, str]] = []
         if gw and "router_ping_ms" not in enriched:
-            try:
-                ping_out = self._run_cmd(["ping", "-n", "-c", "1", "-W", "1", gw])
-                m = re.search(r"time[=<]([\d.]+)", ping_out)
-                if m:
-                    enriched["router_ping_ms"] = m.group(1)
-            except Exception:
-                pass
-
-        # 7. Internet ping (1.1.1.1) fallback if missing
+            ping_targets.append(("router_ping_ms", gw))
         if "internet_ping_ms" not in enriched:
+            ping_targets.append(("internet_ping_ms", "1.1.1.1"))
+
+        if ping_targets:
+            def _probe_ping(target_host: str) -> str | None:
+                try:
+                    p_res = subprocess.run(
+                        ["ping", "-n", "-c", "1", "-W", "1", target_host],
+                        capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=2
+                    )
+                    m = re.search(r"time[=<]([\d.]+)", p_res.stdout)
+                    return m.group(1) if m else None
+                except Exception:
+                    return None
+
             try:
-                ping_out = self._run_cmd(["ping", "-n", "-c", "1", "-W", "1", "1.1.1.1"])
-                m = re.search(r"time[=<]([\d.]+)", ping_out)
-                if m:
-                    enriched["internet_ping_ms"] = m.group(1)
+                with concurrent.futures.ThreadPoolExecutor(max_workers=len(ping_targets)) as executor:
+                    future_to_key = {executor.submit(_probe_ping, host): key for key, host in ping_targets}
+                    for fut in concurrent.futures.as_completed(future_to_key):
+                        key = future_to_key[fut]
+                        val = fut.result()
+                        if val:
+                            enriched[key] = val
             except Exception:
                 pass
 
@@ -1233,13 +1380,8 @@ class NetworkManagerEngine(BaseEngine):
                 active = self._get_active_wifi_connection()
                 active_uuid = active["uuid"] if active else None
 
-                # Poll verbose status using omarchy-network-status --verbose if available
-                status_script = self._find_script("omarchy-network-status")
-                raw_verbose = self._run_cmd([status_script, "--verbose"], timeout=5) if shutil.which("omarchy-network-status") or Path(status_script).exists() else ""
-                verbose_info = parse_key_value(raw_verbose)
-
-                # Enrich status with physical interface & real gateway detection & live throughput
-                enriched_info = self._enrich_network_status(verbose_info, active)
+                # Enrich status with physical interface & real gateway detection & live throughput natively
+                enriched_info = self._enrich_network_status({}, active)
                 self._verbose_info = enriched_info
 
                 # Update live throughput state
@@ -1276,9 +1418,9 @@ class NetworkManagerEngine(BaseEngine):
     def _async_run_speedtest(self, mode: str) -> None:
         self._speedtest_running = True
         env = self._get_exec_env()
-        speedtest_script = self._find_script("omarchy-network-speedtest")
+        speedtest_script = self._find_script("dusky-network-speedtest")
 
-        if not shutil.which("omarchy-network-speedtest") and not Path(speedtest_script).exists():
+        if not shutil.which("dusky-network-speedtest") and not Path(speedtest_script).exists():
             self._run_native_speedtest(mode)
             self._speedtest_status = "Test Completed"
             self._speedtest_running = False
@@ -1482,6 +1624,15 @@ class NetworkManagerEngine(BaseEngine):
         if not ssid:
             return False, "No SSID specified for QR code.", ""
 
+        if any(term in security.lower() for term in ("eap", "802-1x", "ieee8021x")):
+            if self.app:
+                self._safe_call_from_thread(
+                    self.app.notify_status,
+                    f"Enterprise 802.1X Wi-Fi ({ssid}) cannot be shared via standard QR code."
+                )
+                self._safe_call_from_thread(self.app.play_reset_sound)
+            return False, "Enterprise 802.1X Wi-Fi cannot be shared via standard QR code.", ""
+
         if self.app:
             def run_interactive_qr():
                 try:
@@ -1503,11 +1654,11 @@ class NetworkManagerEngine(BaseEngine):
         res = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=30)
         if self.app:
             if res.returncode == 0:
-                self.app.call_from_thread(self.app.notify_status, f"Connected to {ssid}!")
+                self._safe_call_from_thread(self.app.notify_status, f"Connected to {ssid}!")
             else:
                 err = res.stderr.strip().split("\n")[0][:50]
-                self.app.call_from_thread(self.app.notify_status, f"Failed: {err}")
-                self.app.call_from_thread(self.app.play_reset_sound)
+                self._safe_call_from_thread(self.app.notify_status, f"Failed: {err}")
+                self._safe_call_from_thread(self.app.play_reset_sound)
         self.rescan_event.set()
 
     def _async_connect_saved(self, label: str, uuid: str) -> None:
@@ -1517,11 +1668,11 @@ class NetworkManagerEngine(BaseEngine):
         )
         if self.app:
             if res.returncode == 0:
-                self.app.call_from_thread(self.app.notify_status, f"Connected to {label}!")
+                self._safe_call_from_thread(self.app.notify_status, f"Connected to {label}!")
             else:
                 err = res.stderr.strip().split("\n")[0][:50]
-                self.app.call_from_thread(self.app.notify_status, f"Failed: {err}")
-                self.app.call_from_thread(self.app.play_reset_sound)
+                self._safe_call_from_thread(self.app.notify_status, f"Failed: {err}")
+                self._safe_call_from_thread(self.app.play_reset_sound)
         self.rescan_event.set()
 
     def _async_disconnect(self, label: str, uuid: str) -> None:
@@ -1531,35 +1682,204 @@ class NetworkManagerEngine(BaseEngine):
         )
         if self.app:
             if res.returncode == 0:
-                self.app.call_from_thread(self.app.notify_status, f"Disconnected from {label}.")
+                self._safe_call_from_thread(self.app.notify_status, f"Disconnected from {label}.")
             else:
                 err = res.stderr.strip().split("\n")[0][:50]
-                self.app.call_from_thread(self.app.notify_status, f"Failed: {err}")
-                self.app.call_from_thread(self.app.play_reset_sound)
+                self._safe_call_from_thread(self.app.notify_status, f"Failed: {err}")
+                self._safe_call_from_thread(self.app.play_reset_sound)
         self.rescan_event.set()
 
     def _async_reconnect(self, label: str, uuid: str) -> None:
         if self.app:
-            self.app.call_from_thread(self.app.notify_status, f"Disconnecting from {label}...")
+            self._safe_call_from_thread(self.app.notify_status, f"Disconnecting from {label}...")
         subprocess.run(
             ["nmcli", "connection", "down", "uuid", uuid],
             capture_output=True, stdin=subprocess.DEVNULL, timeout=15
         )
         time.sleep(0.8)
         if self.app:
-            self.app.call_from_thread(self.app.notify_status, f"Reconnecting to {label}...")
+            self._safe_call_from_thread(self.app.notify_status, f"Reconnecting to {label}...")
         res = subprocess.run(
             ["nmcli", "connection", "up", "uuid", uuid],
             capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=30
         )
         if self.app:
             if res.returncode == 0:
-                self.app.call_from_thread(self.app.notify_status, f"Reconnected to {label}!")
+                self._safe_call_from_thread(self.app.notify_status, f"Reconnected to {label}!")
             else:
                 err = res.stderr.strip().split("\n")[0][:50]
-                self.app.call_from_thread(self.app.notify_status, f"Reconnect failed: {err}")
-                self.app.call_from_thread(self.app.play_reset_sound)
+                self._safe_call_from_thread(self.app.notify_status, f"Reconnect failed: {err}")
+                self._safe_call_from_thread(self.app.play_reset_sound)
         self.rescan_event.set()
+
+    def get_available_bands_for_ssid(self, iface: str, ssid: str, current_band: str = "") -> list[str]:
+        """
+        Returns list of available bands ('2.4', '5', '6') the AP is broadcasting on for this SSID,
+        always including current_band so the active operating band is never missing.
+        """
+        bands = set()
+        if current_band:
+            bands.add(current_band)
+
+        if not shutil.which("nmcli"):
+            return sorted(list(bands))
+
+        try:
+            cmd = ["nmcli", "-e", "no", "-g", "FREQ,SSID", "dev", "wifi", "list"]
+            if iface:
+                cmd.extend(["ifname", iface])
+            cmd.extend(["--rescan", "no"])
+
+            res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            for line in res.stdout.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split(":", 1)
+                freq_str = parts[0].strip()
+                line_ssid = decode_iw_ssid(parts[1].strip() if len(parts) > 1 else "")
+                if line_ssid == ssid:
+                    b = band_for_freq(freq_str)
+                    if b:
+                        bands.add(b)
+        except Exception:
+            pass
+
+        def band_sort_key(x: str) -> float:
+            try:
+                return float(x)
+            except ValueError:
+                return 999.0
+
+        return sorted(list(bands), key=band_sort_key)
+
+    def _async_set_wifi_band(self, uuid_or_name: str, target_band_str: str) -> None:
+        if not shutil.which("nmcli"):
+            if self.app:
+                self._safe_call_from_thread(self.app.notify_status, "nmcli command not found.")
+            return
+
+        # Find profile UUID and SSID
+        target_uuid = None
+        target_ssid = None
+        if self._is_uuid(uuid_or_name):
+            target_uuid = uuid_or_name
+            saved = self._get_saved_wifi()
+            match = [c for c in saved if c["uuid"] == target_uuid]
+            if match:
+                target_ssid = match[0]["name"]
+        else:
+            target_ssid = uuid_or_name
+            saved = self._get_saved_wifi()
+            match = [c for c in saved if c["name"] == target_ssid]
+            if match:
+                target_uuid = match[0]["uuid"]
+
+        active = self._get_active_wifi_connection()
+        if not target_uuid and active:
+            target_uuid = active.get("uuid")
+        if not target_ssid and active:
+            target_ssid = active.get("ssid")
+
+        if not target_uuid:
+            if self.app:
+                self._safe_call_from_thread(self.app.notify_status, "No Wi-Fi connection found to set band.")
+            return
+
+        iface = active.get("device", "") if active else self._get_wifi_device()
+
+        # 1. Determine current operating band
+        verb = self._verbose_info
+        current_band = verb.get("band", band_for_freq(verb.get("freq", "")))
+
+        # 2. Check available bands broadcasted by the AP
+        avail_bands = self.get_available_bands_for_ssid(iface, target_ssid or "", current_band)
+        desired_nm = nm_band_for(target_band_str)
+        target_num = target_band_str.lower().replace("ghz", "").strip()
+
+        if target_num not in ("auto", "none", "") and avail_bands and target_num not in avail_bands:
+            avail_str = ", ".join(f"{b} GHz" for b in avail_bands)
+            if self.app:
+                self._safe_call_from_thread(
+                    self.app.notify_status,
+                    f"{target_band_str} is not available for '{target_ssid}' (available: {avail_str})."
+                )
+                self._safe_call_from_thread(self.app.play_reset_sound)
+                self._safe_call_from_thread(self._rebuild_schema)
+            return
+
+        # 3. Read previous band setting safely
+        try:
+            prev_res = subprocess.run(
+                ["nmcli", "-e", "no", "-g", "802-11-wireless.band", "connection", "show", target_uuid],
+                capture_output=True, text=True, check=False
+            )
+            raw_prev = prev_res.stdout.strip()
+            previous = raw_prev if raw_prev in ("bg", "a", "6GHz") else ""
+        except Exception:
+            previous = ""
+
+        if previous == desired_nm:
+            if self.app:
+                self._safe_call_from_thread(self.app.notify_status, f"Wi-Fi band already set to {target_band_str}.")
+            return
+
+        if self.app:
+            self._safe_call_from_thread(self.app.notify_status, f"Setting Wi-Fi band to {target_band_str}...")
+
+        # 4. Modify band on profile
+        try:
+            mod_res = subprocess.run(
+                ["nmcli", "connection", "modify", target_uuid, "802-11-wireless.band", desired_nm],
+                capture_output=True, text=True, check=False
+            )
+            if mod_res.returncode != 0:
+                if self.app:
+                    self._safe_call_from_thread(self.app.notify_status, f"Failed: {mod_res.stderr.strip()[:50]}")
+                    self._safe_call_from_thread(self.app.play_reset_sound)
+                return
+
+            # Bring connection up to reassociate on new band
+            up_res = subprocess.run(
+                ["nmcli", "connection", "up", target_uuid],
+                capture_output=True, text=True, check=False, timeout=20
+            )
+            if up_res.returncode != 0:
+                # ROLLBACK: explicitly revert to previous band (empty string if was Auto)
+                rollback_val = previous if previous in ("bg", "a", "6GHz") else ""
+                subprocess.run(
+                    ["nmcli", "connection", "modify", target_uuid, "802-11-wireless.band", rollback_val],
+                    capture_output=True, text=True, check=False
+                )
+                subprocess.run(
+                    ["nmcli", "connection", "up", target_uuid],
+                    capture_output=True, text=True, check=False, timeout=20
+                )
+                if self.app:
+                    self._safe_call_from_thread(self.app.notify_status, f"Could not connect on {target_band_str}; safely reverted.")
+                    self._safe_call_from_thread(self.app.play_reset_sound)
+            else:
+                if self.app:
+                    self._safe_call_from_thread(self.app.notify_status, f"Wi-Fi band switched to {target_band_str}!")
+
+            self.rescan_event.set()
+            self._safe_call_from_thread(self._rebuild_schema)
+        except Exception as e:
+            rollback_val = previous if previous in ("bg", "a", "6GHz") else ""
+            subprocess.run(
+                ["nmcli", "connection", "modify", target_uuid, "802-11-wireless.band", rollback_val],
+                capture_output=True, text=True, check=False
+            )
+            subprocess.run(["nmcli", "connection", "up", target_uuid], capture_output=True, text=True, check=False)
+            if self.app:
+                self._safe_call_from_thread(self.app.notify_status, f"Error: {e}")
+                self._safe_call_from_thread(self.app.play_reset_sound)
+            self._safe_call_from_thread(self._rebuild_schema)
+
+    def set_wifi_band_with_rollback(self, uuid_or_name: str, target_band_str: str) -> tuple[bool, str]:
+        """Launches non-blocking background worker to switch band safely."""
+        threading.Thread(target=self._async_set_wifi_band, args=(uuid_or_name, target_band_str), daemon=True).start()
+        return True, f"Setting Wi-Fi band to {target_band_str}..."
 
     # =========================================================================
     #  DYNAMIC SCHEMA REBUILDER
@@ -1668,6 +1988,23 @@ class NetworkManagerEngine(BaseEngine):
                         type_="bool", default=False, parent_ref=parent_uid, options=["trigger"],
                         extended_help=f"Displays an interactive QR code to share {ssid} with mobile devices."
                     ))
+                    match_uuid = match[0]["uuid"] if match else (active.get("uuid", "") if active else "")
+                    active_dev = active.get("device", "") if active else ""
+                    current_band = verb.get("band", band_for_freq(verb.get("freq", "")))
+                    avail_b = self.get_available_bands_for_ssid(active_dev, ssid, current_band)
+                    band_opts = ["Auto"] + [f"{b} GHz" for b in avail_b] if avail_b else ["Auto"]
+
+                    pinned_band = "Auto"
+                    if match_uuid:
+                        b_raw = self._run_cmd(["nmcli", "-e", "no", "-g", "802-11-wireless.band", "connection", "show", match_uuid]).strip()
+                        raw_nm = b_raw if b_raw in ("bg", "a", "6GHz") else ""
+                        pinned_band = band_label(band_from_nm(raw_nm))
+                    t0.append(self._make_item(
+                        label=f"Wi-Fi Band: {pinned_band}", key=f"band__{ssid}", scope="network",
+                        type_="cycle", default=pinned_band, options=band_opts,
+                        parent_ref=parent_uid,
+                        extended_help=f"Pins {ssid} to a specific frequency band with auto-rollback on failure."
+                    ))
                 elif is_saved:
                     uuid = match[0]["uuid"]
                     t0.append(self._make_item(
@@ -1747,6 +2084,20 @@ class NetworkManagerEngine(BaseEngine):
                     label="Auto-connect", key=uuid, scope="saved",
                     type_="bool", default=autocon, parent_ref=parent_uid
                 ))
+                active_dev = active.get("device", "") if active else ""
+                current_band = verb.get("band", band_for_freq(verb.get("freq", "")))
+                avail_b = self.get_available_bands_for_ssid(active_dev, name, current_band)
+                band_opts = ["Auto"] + [f"{b} GHz" for b in avail_b] if avail_b else ["Auto"]
+
+                b_raw = self._run_cmd(["nmcli", "-e", "no", "-g", "802-11-wireless.band", "connection", "show", uuid]).strip()
+                raw_nm = b_raw if b_raw in ("bg", "a", "6GHz") else ""
+                pinned_band = band_label(band_from_nm(raw_nm))
+                t1.append(self._make_item(
+                    label=f"Wi-Fi Band: {pinned_band}", key=f"band__{uuid}", scope="saved_action",
+                    type_="cycle", default=pinned_band, options=band_opts,
+                    parent_ref=parent_uid,
+                    extended_help=f"Pins {name} to a specific frequency band with auto-rollback on failure."
+                ))
             else:
                 t1.append(self._make_item(
                     label="▶ Connect", key=f"cn__{uuid}", scope="saved_action",
@@ -1812,6 +2163,22 @@ class NetworkManagerEngine(BaseEngine):
             for item in tab_items:
                 if item.key == "wifi_radio":
                     item.value = radio
+                elif item.key == "wifi_band":
+                    if active:
+                        active_dev = active.get("device", "")
+                        current_band = verb.get("band", band_for_freq(verb.get("freq", "")))
+                        avail_b = self.get_available_bands_for_ssid(active_dev, active["ssid"], current_band)
+                        item.options = ["Auto"] + [f"{b} GHz" for b in avail_b] if avail_b else ["Auto"]
+
+                        b_raw = self._run_cmd(["nmcli", "-e", "no", "-g", "802-11-wireless.band", "connection", "show", active["uuid"]]).strip()
+                        raw_nm = b_raw if b_raw in ("bg", "a", "6GHz") else ""
+                        pinned_band = band_label(band_from_nm(raw_nm))
+                        item.value = pinned_band
+                        item.label = f"Wi-Fi Band: {pinned_band}"
+                    else:
+                        item.options = ["Auto"]
+                        item.value = "Auto"
+                        item.label = "Wi-Fi Band: Auto"
                 elif item.key == "status_type":
                     item.label = f"Connection:   {conn_status_label}"
                 elif item.key == "status_ssid":
@@ -1880,9 +2247,10 @@ class NetworkManagerEngine(BaseEngine):
         if p:
             return p
         candidates = [
-            Path("/mnt/zram1/network") / name,
-            Path("/mnt/zram1/omarchy-quattro/shell/plugins/panels/network") / name,
-            Path("/mnt/zram1/omarchy-quattro/bin") / name,
+            Path.home() / "user_scripts" / "network_manager" / name,
+            Path.home() / ".local" / "bin" / name,
+            Path("/usr/local/bin") / name,
+            Path("/usr/bin") / name,
         ]
         for c in candidates:
             if c.exists():
@@ -1892,12 +2260,10 @@ class NetworkManagerEngine(BaseEngine):
     @staticmethod
     def _get_exec_env() -> dict[str, str]:
         env = os.environ.copy()
-        extra_paths = ["/mnt/zram1/omarchy-quattro/bin", "/mnt/zram1/network"]
+        user_bin = str(Path.home() / ".local" / "bin")
         current_path = env.get("PATH", "")
-        for p in extra_paths:
-            if os.path.exists(p) and p not in current_path:
-                current_path = f"{p}:{current_path}"
-        env["PATH"] = current_path
+        if user_bin not in current_path:
+            env["PATH"] = f"{user_bin}:{current_path}"
         return env
 
     def _run_cmd(self, args: list[str], timeout: int = 5) -> str:
@@ -1926,7 +2292,7 @@ class NetworkManagerEngine(BaseEngine):
                 uuid = parts[1]
                 mode_out = self._run_cmd(["nmcli", "-t", "-f", "802-11-wireless.mode", "connection", "show", uuid])
                 mode = "ap" if "mode:ap" in mode_out.replace(" ", "") else "infra"
-                return {"ssid": parts[0], "uuid": uuid, "device": parts[3], "mode": mode}
+                return {"ssid": decode_iw_ssid(parts[0]), "uuid": uuid, "device": parts[3], "mode": mode}
         return None
 
     def _get_saved_wifi(self) -> list[dict[str, Any]]:
@@ -1936,7 +2302,7 @@ class NetworkManagerEngine(BaseEngine):
                 continue
             parts = _split_nmcli_line(line)
             if len(parts) >= 4 and parts[2] == "802-11-wireless":
-                conns.append({"name": parts[0], "uuid": parts[1], "autoconnect": parts[3] == "yes"})
+                conns.append({"name": decode_iw_ssid(parts[0]), "uuid": parts[1], "autoconnect": parts[3] == "yes"})
         return conns
 
     def _get_scanned_wifi(self) -> list[dict[str, Any]]:
@@ -1949,7 +2315,7 @@ class NetworkManagerEngine(BaseEngine):
             if len(parts) < 4:
                 continue
             in_use = parts[0].strip() == "*"
-            ssid = parts[1]
+            ssid = decode_iw_ssid(parts[1])
             if not ssid or ssid in seen:
                 continue
             seen.add(ssid)

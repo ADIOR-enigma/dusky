@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Rich UI Interactive Speed Test Runner for Dusky Network Manager.
-Executes fast.com speed test via omarchy-network-speedtest for a crisp 10-second duration,
+Executes live network speed measurement for a crisp 10-second duration,
 rendering a clean, unbordered live speed gauge, sparkline graph, and metrics.
 """
 
@@ -40,16 +40,18 @@ def make_sparkline(samples: list[float], width: int = 28) -> str:
 
 def find_speedtest_script() -> str:
     candidates = [
-        "/mnt/zram1/network/omarchy-network-speedtest",
-        "/mnt/zram1/omarchy-quattro/bin/omarchy-network-speedtest",
+        str(Path.home() / ".local" / "bin" / "dusky-network-speedtest"),
+        str(Path.home() / "user_scripts" / "network_manager" / "dusky-network-speedtest"),
+        "/usr/local/bin/dusky-network-speedtest",
+        "/usr/bin/dusky-network-speedtest",
     ]
     for c in candidates:
         if os.access(c, os.X_OK):
             return c
-    found = shutil.which("omarchy-network-speedtest")
+    found = shutil.which("dusky-network-speedtest")
     if found:
         return found
-    return "omarchy-network-speedtest"
+    return "dusky-network-speedtest"
 
 def check_cancel_key() -> bool:
     if not sys.stdin.isatty():
@@ -75,7 +77,9 @@ def run_phase(direction: str, script_path: str, live: Live) -> tuple[float | Non
     user_cancelled = False
 
     env = dict(os.environ)
-    env["PATH"] = f"/mnt/zram1/network:/mnt/zram1/omarchy-quattro/bin:{env.get('PATH', '')}"
+    user_bin = str(Path.home() / ".local" / "bin")
+    if user_bin not in env.get("PATH", ""):
+        env["PATH"] = f"{user_bin}:{env.get('PATH', '')}"
 
     if not os.access(script_path, os.X_OK) and not shutil.which(script_path):
         return run_phase_native(direction, live)
@@ -223,7 +227,7 @@ def run_phase_native(direction: str, live: Live) -> tuple[float | None, bool]:
 
                     grid = Table.grid(expand=True)
                     grid.add_column(justify="center")
-                    grid.add_row(Text(f"🚀 DUSKY {label} SPEED TEST", style=f"bold {color}"))
+                    grid.add_row(Text(f"󰓅 DUSKY {label} SPEED TEST", style=f"bold {color}"))
                     grid.add_row(Text(""))
                     speed_text = Text()
                     speed_text.append(f"{current:.1f}", style=f"bold underline {color}")
@@ -298,7 +302,7 @@ def run_phase_native(direction: str, live: Live) -> tuple[float | None, bool]:
 
                 grid = Table.grid(expand=True)
                 grid.add_column(justify="center")
-                grid.add_row(Text(f"🚀 DUSKY {label} SPEED TEST", style=f"bold {color}"))
+                grid.add_row(Text(f"󰓅 DUSKY {label} SPEED TEST", style=f"bold {color}"))
                 grid.add_row(Text(""))
                 speed_text = Text()
                 speed_text.append(f"{current:.1f}", style=f"bold underline {color}")
@@ -376,9 +380,9 @@ def main():
             summary_grid.add_column(justify="center")
 
             if was_cancelled:
-                summary_grid.add_row(Text("🛑 SPEED TEST CANCELLED BY USER", style="bold red"))
+                summary_grid.add_row(Text("✕ SPEED TEST CANCELLED BY USER", style="bold red"))
             else:
-                summary_grid.add_row(Text("✨ DUSKY SPEED TEST COMPLETE ✨", style="bold green"))
+                summary_grid.add_row(Text("✓ DUSKY SPEED TEST COMPLETE", style="bold green"))
             summary_grid.add_row(Text(""))
 
             summary_table = Table(show_header=True, header_style="bold yellow", show_edge=False, box=None)
@@ -386,9 +390,9 @@ def main():
             summary_table.add_column("Result", justify="right", style="bold cyan")
 
             if down_res is not None:
-                summary_table.add_row("⬇ Download Speed", f"{down_res:.1f} Mbps")
+                summary_table.add_row("↓ Download Speed", f"{down_res:.1f} Mbps")
             if up_res is not None:
-                summary_table.add_row("⬆ Upload Speed", f"{up_res:.1f} Mbps")
+                summary_table.add_row("↑ Upload Speed", f"{up_res:.1f} Mbps")
 
             summary_grid.add_row(Align.center(summary_table))
             summary_grid.add_row(Text(""))

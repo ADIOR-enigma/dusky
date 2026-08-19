@@ -221,11 +221,10 @@ SCHEMA[2].extend([
         scope="clipboard",
         type_="bool",
         default=False,
-        options=["copy"],
         group="Latency & Packet Loss"
     ),
     ConfigItem(
-        label="Disconnect Current Connection",
+        label="✕ Disconnect Current Connection",
         key="disconnect",
         scope="status_action",
         type_="bool",
@@ -235,7 +234,7 @@ SCHEMA[2].extend([
         extended_help="Disconnects the current active WiFi network profile."
     ),
     ConfigItem(
-        label="Reconnect Active Connection",
+        label="⟳ Reconnect Active Connection",
         key="reconnect",
         scope="status_action",
         type_="bool",
@@ -255,6 +254,16 @@ SCHEMA[2].extend([
         extended_help="Displays an interactive QR code to share the active Wi-Fi network with mobile devices."
     ),
     ConfigItem(
+        label="Wi-Fi Band: Auto",
+        key="wifi_band",
+        scope="status_action",
+        type_="cycle",
+        default="Auto",
+        options=["Auto", "2.4 GHz", "5 GHz", "6 GHz"],
+        group="Actions",
+        extended_help="Pins the active Wi-Fi connection to a specific frequency band (2.4, 5, or 6 GHz) with auto-rollback on failure."
+    ),
+    ConfigItem(
         label="Restart NetworkManager Service",
         key="restart_nm",
         scope="status_action",
@@ -265,7 +274,7 @@ SCHEMA[2].extend([
         extended_help="Restarts systemd NetworkManager daemon in case of hangs."
     ),
     ConfigItem(
-        label="Force Wireless Interface Rescan",
+        label="⟳ Force Wireless Interface Rescan",
         key="rescan",
         scope="status_action",
         type_="bool",
@@ -389,7 +398,7 @@ def render_network_dashboard_view(app):
     t_conn.add_row("Gateway:", gw)
     t_conn.add_row("Interface:", iface_str)
     t_conn.add_row("Link Detail:", link_detail)
-    p_conn = Panel(t_conn, title="[bold cyan] 📡 CONNECTION INFORMATION [/bold cyan]", border_style="cyan", expand=True)
+    p_conn = Panel(t_conn, title="[bold cyan] 󰤨 CONNECTION INFORMATION [/bold cyan]", border_style="cyan", expand=True)
 
     # Panel 2: Live Throughput
     t_tp = Table(show_header=False, box=None, padding=(0, 1))
@@ -399,7 +408,7 @@ def render_network_dashboard_view(app):
     t_tp.add_row("Upload Rate:", f"↑ {ul_rate}")
     t_tp.add_row("Total Received:", rx_total)
     t_tp.add_row("Total Sent:", tx_total)
-    p_tp = Panel(t_tp, title="[bold green] 📊 LIVE THROUGHPUT [/bold green]", border_style="green", expand=True)
+    p_tp = Panel(t_tp, title="[bold green] 󰓅 LIVE THROUGHPUT [/bold green]", border_style="green", expand=True)
 
     # Panel 3: Latency & Security
     t_ping = Table(show_header=False, box=None, padding=(0, 1))
@@ -409,7 +418,7 @@ def render_network_dashboard_view(app):
     t_ping.add_row("Internet Ping (1.1.1.1):", internet_ping)
     t_ping.add_row("Packet Loss:", packet_loss)
     t_ping.add_row("Active DNS Provider:", dns_provider)
-    p_ping = Panel(t_ping, title="[bold yellow] ⚡ LATENCY & METRICS [/bold yellow]", border_style="yellow", expand=True)
+    p_ping = Panel(t_ping, title="[bold yellow] 󰛳 LATENCY & METRICS [/bold yellow]", border_style="yellow", expand=True)
 
     right_group = Group(p_tp, p_ping)
 
