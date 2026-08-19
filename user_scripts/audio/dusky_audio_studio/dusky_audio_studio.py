@@ -162,16 +162,27 @@ window.panel-window {
     border-color: alpha(@theme_selected_bg_color, 0.45);
 }
 
+notebook header {
+    background-color: transparent;
+    border-bottom: 1px solid alpha(@theme_fg_color, 0.08);
+}
+
 notebook tab {
-    padding: 6px 14px;
+    padding: 8px 14px;
     font-weight: 700;
     font-size: 12px;
     border-bottom: 2px solid transparent;
+    transition: all 150ms ease;
 }
 
 notebook tab:checked {
     border-bottom: 2px solid @theme_selected_bg_color;
     color: @theme_selected_bg_color;
+    background-color: alpha(@theme_selected_bg_color, 0.06);
+}
+
+notebook tab:hover:not(:checked) {
+    background-color: alpha(@theme_fg_color, 0.04);
 }
 
 scale trough {
@@ -1359,12 +1370,21 @@ def run_gtk_app() -> None:
 
         def create_tab_label(self, icon_name: str, label_text: str) -> Gtk.Box:
             box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            box.set_halign(Gtk.Align.CENTER)
+            box.set_valign(Gtk.Align.CENTER)
+            box.set_hexpand(True)
             icon = Gtk.Image.new_from_icon_name(icon_name, Gtk.IconSize.MENU)
             lbl = Gtk.Label(label=label_text)
             box.pack_start(icon, False, False, 0)
             box.pack_start(lbl, False, False, 0)
             box.show_all()
             return box
+
+        def add_notebook_tab(self, page: Gtk.Widget, icon_name: str, label_text: str) -> None:
+            tab_box = self.create_tab_label(icon_name, label_text)
+            self.notebook.append_page(page, tab_box)
+            self.notebook.child_set_property(page, "tab-expand", True)
+            self.notebook.child_set_property(page, "tab-fill", True)
 
         def create_icon_button(
             self,
@@ -1549,7 +1569,7 @@ def run_gtk_app() -> None:
             scrolled = Gtk.ScrolledWindow()
             scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
             scrolled.add(vbox)
-            self.notebook.append_page(scrolled, self.create_tab_label("audio-input-microphone-symbolic", "Noise & Level"))
+            self.add_notebook_tab(scrolled, "audio-input-microphone-symbolic", "Noise & Level")
 
         # ---------------------------------------------------------------------
         # Tab 2: Voice FX & Transformers
@@ -1692,7 +1712,7 @@ def run_gtk_app() -> None:
             scrolled = Gtk.ScrolledWindow()
             scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
             scrolled.add(vbox)
-            self.notebook.append_page(scrolled, self.create_tab_label("applications-multimedia-symbolic", "Voice FX"))
+            self.add_notebook_tab(scrolled, "applications-multimedia-symbolic", "Voice FX")
 
         # ---------------------------------------------------------------------
         # Tab 3: Spatial DSP (Delay & Reverb)
@@ -1763,7 +1783,7 @@ def run_gtk_app() -> None:
             scrolled = Gtk.ScrolledWindow()
             scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
             scrolled.add(vbox)
-            self.notebook.append_page(scrolled, self.create_tab_label("audio-speakers-symbolic", "Delay & Reverb"))
+            self.add_notebook_tab(scrolled, "audio-speakers-symbolic", "Delay & Reverb")
 
         # ---------------------------------------------------------------------
         # Tab 4: 9-Band Studio EQ
@@ -1828,7 +1848,7 @@ def run_gtk_app() -> None:
             scrolled = Gtk.ScrolledWindow()
             scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
             scrolled.add(vbox)
-            self.notebook.append_page(scrolled, self.create_tab_label("multimedia-volume-control-symbolic", "9-Band EQ"))
+            self.add_notebook_tab(scrolled, "multimedia-volume-control-symbolic", "9-Band EQ")
 
         # ---------------------------------------------------------------------
         # Helper: Create Slider Row
