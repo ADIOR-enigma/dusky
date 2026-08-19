@@ -1228,6 +1228,13 @@ cond_bind(
     { description = "Switch Mic Input", locked = true }
 )
 
+-- Noise Cancellation toggle
+cond_bind(
+    "ALT + N",
+    hl.dsp.exec_cmd(dusky_scripts .. "audio/noise_cancellation/noise_cancel.py --toggle"),
+    { description = "Toggle AI Noise Cancellation", locked = true }
+)
+
 -- Calculator
 hl.bind(
     "XF86Calculator",

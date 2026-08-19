@@ -8,6 +8,7 @@ user_scripts/dusky_system/click_away_to_dismiss/libwaylandgrab.so
 user_scripts/theme_matugen/firefox/config.json
 .config/zellij/themes/matugen.kdl
 .config/foot/foot-colors.ini
+.config/autostart/ghelper.desktop
 
 # Python compilation cache files
 __pycache__/
