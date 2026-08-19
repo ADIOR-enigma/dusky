@@ -474,17 +474,17 @@ CUSTOM_VIEWS = {
 # ============================================================================
 SCHEMA[3].extend([
     ConfigItem(
-        label="▶ Run Full Speed Test (Download + Upload)",
+        label="▶ Run Full Speed Test",
         key="speedtest_full",
         scope="speedtest_action",
         type_="bool",
         default=False,
         options=["trigger"],
         group="Run Test",
-        extended_help="Spawns fast.com download & upload speed test workers."
+        extended_help="Executes download & upload speed test measurements."
     ),
     ConfigItem(
-        label="▶ Run Download Test Only",
+        label="▶ Run Download Test",
         key="speedtest_down",
         scope="speedtest_action",
         type_="bool",
@@ -493,7 +493,7 @@ SCHEMA[3].extend([
         group="Run Test"
     ),
     ConfigItem(
-        label="▶ Run Upload Test Only",
+        label="▶ Run Upload Test",
         key="speedtest_up",
         scope="speedtest_action",
         type_="bool",

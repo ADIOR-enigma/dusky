@@ -392,10 +392,10 @@ def wifi_section_title(wifi_networks: list[dict[str, Any]], index: int) -> str:
     net = networks[index]
     if not net:
         return ""
-    if net.get("known") and index == 0:
-        return "KNOWN NETWORKS"
-    if not net.get("known") and (index == 0 or (index > 0 and networks[index - 1].get("known"))):
-        return "OTHER NETWORKS"
+    if (net.get("known") or net.get("connected")) and index == 0:
+        return "Saved Networks"
+    if not (net.get("known") or net.get("connected")) and (index == 0 or (index > 0 and (networks[index - 1].get("known") or networks[index - 1].get("connected")))):
+        return "Available Networks"
     return ""
 
 def is_protected(security: str, open_security: str = "Open", owe_security: str = "OWE") -> bool:
@@ -1968,8 +1968,7 @@ class NetworkManagerEngine(BaseEngine):
                 else:
                     icon, status_lbl = "○", "New"
 
-                sec_title = wifi_section_title(sorted_rows, idx)
-                group_name = sec_title if sec_title else "Available Networks"
+                group_name = "Saved Networks" if (in_use or is_saved) else "Available Networks"
 
                 label = f"{icon} {status_lbl:<6} {ssid:<24} {security:<10} {signal}% {bar}"
                 pkey = f"net__{ssid}"
