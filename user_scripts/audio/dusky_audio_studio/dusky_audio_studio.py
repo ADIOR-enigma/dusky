@@ -145,6 +145,23 @@ window.panel-window {
     font-weight: 700;
 }
 
+.reset-btn {
+    border-radius: 8px;
+    padding: 3px 10px;
+    font-weight: 600;
+    font-size: 11px;
+    background-color: alpha(@theme_fg_color, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    color: alpha(@theme_fg_color, 0.8);
+    transition: all 150ms ease;
+}
+
+.reset-btn:hover {
+    background-color: alpha(@theme_selected_bg_color, 0.22);
+    color: @theme_selected_bg_color;
+    border-color: alpha(@theme_selected_bg_color, 0.45);
+}
+
 notebook tab {
     padding: 6px 14px;
     font-weight: 700;
@@ -1137,7 +1154,7 @@ def run_gtk_app() -> None:
                     warn_box.pack_start(item_lbl, False, False, 0)
                 main_vbox.pack_start(warn_box, False, False, 0)
 
-            # --- Top Control Strip: Microphone Device & Loopback Monitor ---
+            # --- Top Control Strip: Microphone Device, Monitor & Master Reset ---
             top_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
             self.src_combo = Gtk.ComboBoxText()
             self.src_combo.get_style_context().add_class("device-combo")
@@ -1150,10 +1167,17 @@ def run_gtk_app() -> None:
             self.src_combo.connect("changed", self.on_source_changed)
             top_bar.pack_start(self.src_combo, True, True, 0)
 
-            mon_btn = Gtk.CheckButton(label="Hear Voice")
-            mon_btn.set_active(self.cfg.monitor)
-            mon_btn.connect("toggled", self.on_monitor_toggled)
-            top_bar.pack_end(mon_btn, False, False, 0)
+            self.mon_btn = Gtk.CheckButton(label="Hear Voice")
+            self.mon_btn.set_active(self.cfg.monitor)
+            self.mon_btn.connect("toggled", self.on_monitor_toggled)
+            top_bar.pack_start(self.mon_btn, False, False, 0)
+
+            btn_reset_all = Gtk.Button(label="🔄 Reset All Defaults")
+            btn_reset_all.get_style_context().add_class("reset-btn")
+            btn_reset_all.set_tooltip_text("Reset all noise suppression, voice transformations, spatial effects, and EQ to clean factory defaults")
+            btn_reset_all.connect("clicked", self.reset_all_defaults)
+            top_bar.pack_end(btn_reset_all, False, False, 0)
+
             main_vbox.pack_start(top_bar, False, False, 0)
 
             main_vbox.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 0)
@@ -1190,12 +1214,8 @@ def run_gtk_app() -> None:
             vbox.set_border_width(12)
 
             # Master Output Volume
-            vbox.pack_start(
-                self.create_slider_row("Microphone Output Gain", self.cfg.volume, 0, 200, "%", self.on_volume_changed),
-                False,
-                False,
-                0,
-            )
+            self.vol_row = self.create_slider_row("Microphone Output Gain", self.cfg.volume, 0, 200, "%", self.on_volume_changed)
+            vbox.pack_start(self.vol_row, False, False, 0)
 
             # RNNoise Neural Toggle
             rnn_hdr = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -1210,19 +1230,15 @@ def run_gtk_app() -> None:
             vbox.pack_start(rnn_hdr, False, False, 0)
 
             # Aggressiveness
-            vbox.pack_start(
-                self.create_slider_row(
-                    "Noise Gate Aggressiveness (Silence Attenuation)",
-                    self.cfg.aggressiveness,
-                    0,
-                    100,
-                    "%",
-                    self.on_agg_changed,
-                ),
-                False,
-                False,
+            self.agg_row = self.create_slider_row(
+                "Noise Gate Aggressiveness (Silence Attenuation)",
+                self.cfg.aggressiveness,
                 0,
+                100,
+                "%",
+                self.on_agg_changed,
             )
+            vbox.pack_start(self.agg_row, False, False, 0)
 
             vbox.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 4)
 
@@ -1299,9 +1315,16 @@ def run_gtk_app() -> None:
             vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
             vbox.set_border_width(12)
 
+            preset_hdr = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
             preset_lbl = Gtk.Label(label="Voice FX Character Presets", xalign=0)
             preset_lbl.get_style_context().add_class("section-label")
-            vbox.pack_start(preset_lbl, False, False, 0)
+            btn_reset_voice = Gtk.Button(label="↺ Reset Voice (Clean)")
+            btn_reset_voice.get_style_context().add_class("reset-btn")
+            btn_reset_voice.set_tooltip_text("Reset all voice modulation, pitch shift, autotune, and vocoder effects to Natural Clean")
+            btn_reset_voice.connect("clicked", self.reset_voice_fx)
+            preset_hdr.pack_start(preset_lbl, True, True, 0)
+            preset_hdr.pack_end(btn_reset_voice, False, False, 0)
+            vbox.pack_start(preset_hdr, False, False, 0)
 
             flowbox = Gtk.FlowBox()
             flowbox.set_valign(Gtk.Align.START)
@@ -1432,7 +1455,19 @@ def run_gtk_app() -> None:
             vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
             vbox.set_border_width(12)
 
-            # Delay
+            # Header + Reset Spatial FX Button
+            spat_top = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            spat_title = Gtk.Label(label="Spatial FX (Tape Delay & Algorithmic Reverb)", xalign=0)
+            spat_title.get_style_context().add_class("section-label")
+            btn_reset_spatial = Gtk.Button(label="↺ Reset Delay & Reverb")
+            btn_reset_spatial.get_style_context().add_class("reset-btn")
+            btn_reset_spatial.set_tooltip_text("Disable and reset delay and reverb to clean bypass defaults")
+            btn_reset_spatial.connect("clicked", self.reset_spatial_dsp)
+            spat_top.pack_start(spat_title, True, True, 0)
+            spat_top.pack_end(btn_reset_spatial, False, False, 0)
+            vbox.pack_start(spat_top, False, False, 0)
+
+            # Delay Header
             dly_hdr = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
             dly_lbl = Gtk.Label(label="Stereo Tape Echo / Delay", xalign=0)
             dly_lbl.get_style_context().add_class("section-label")
@@ -1444,13 +1479,17 @@ def run_gtk_app() -> None:
             dly_hdr.pack_end(self.dly_switch, False, False, 0)
             vbox.pack_start(dly_hdr, False, False, 0)
 
-            vbox.pack_start(self.create_slider_row("Delay Time", self.cfg.delay_ms, 10, 1000, " ms", self.on_delay_time_changed), False, False, 0)
-            vbox.pack_start(self.create_slider_row("Delay Feedback", self.cfg.delay_feedback, 0, 95, "%", self.on_delay_fb_changed), False, False, 0)
-            vbox.pack_start(self.create_slider_row("Delay Wet/Dry Mix", self.cfg.delay_mix, 0, 100, "%", self.on_delay_mix_changed), False, False, 0)
+            self.dly_time_row = self.create_slider_row("Delay Time", self.cfg.delay_ms, 10, 1000, " ms", self.on_delay_time_changed)
+            self.dly_fb_row = self.create_slider_row("Delay Feedback", self.cfg.delay_feedback, 0, 95, "%", self.on_delay_fb_changed)
+            self.dly_mix_row = self.create_slider_row("Delay Wet/Dry Mix", self.cfg.delay_mix, 0, 100, "%", self.on_delay_mix_changed)
+
+            vbox.pack_start(self.dly_time_row, False, False, 0)
+            vbox.pack_start(self.dly_fb_row, False, False, 0)
+            vbox.pack_start(self.dly_mix_row, False, False, 0)
 
             vbox.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 4)
 
-            # Reverb
+            # Reverb Header
             rvb_hdr = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
             rvb_lbl = Gtk.Label(label="Schroeder Algorithmic Reverb Tank", xalign=0)
             rvb_lbl.get_style_context().add_class("section-label")
@@ -1462,10 +1501,15 @@ def run_gtk_app() -> None:
             rvb_hdr.pack_end(self.rvb_switch, False, False, 0)
             vbox.pack_start(rvb_hdr, False, False, 0)
 
-            vbox.pack_start(self.create_slider_row("Reverb Room Size", self.cfg.reverb_room, 0, 100, "%", self.on_reverb_room_changed), False, False, 0)
-            vbox.pack_start(self.create_slider_row("Reverb Dampening", self.cfg.reverb_damp, 0, 100, "%", self.on_reverb_damp_changed), False, False, 0)
-            vbox.pack_start(self.create_slider_row("Reverb Stereo Width", self.cfg.reverb_width, 0, 100, "%", self.on_reverb_width_changed), False, False, 0)
-            vbox.pack_start(self.create_slider_row("Reverb Wet/Dry Mix", self.cfg.reverb_mix, 0, 100, "%", self.on_reverb_mix_changed), False, False, 0)
+            self.rvb_room_row = self.create_slider_row("Reverb Room Size", self.cfg.reverb_room, 0, 100, "%", self.on_reverb_room_changed)
+            self.rvb_damp_row = self.create_slider_row("Reverb Dampening", self.cfg.reverb_damp, 0, 100, "%", self.on_reverb_damp_changed)
+            self.rvb_width_row = self.create_slider_row("Reverb Stereo Width", self.cfg.reverb_width, 0, 100, "%", self.on_reverb_width_changed)
+            self.rvb_mix_row = self.create_slider_row("Reverb Wet/Dry Mix", self.cfg.reverb_mix, 0, 100, "%", self.on_reverb_mix_changed)
+
+            vbox.pack_start(self.rvb_room_row, False, False, 0)
+            vbox.pack_start(self.rvb_damp_row, False, False, 0)
+            vbox.pack_start(self.rvb_width_row, False, False, 0)
+            vbox.pack_start(self.rvb_mix_row, False, False, 0)
 
             scrolled = Gtk.ScrolledWindow()
             scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
@@ -1486,24 +1530,27 @@ def run_gtk_app() -> None:
             self.eq_switch.get_style_context().add_class("compact-switch")
             self.eq_switch.set_active(self.cfg.eq_on)
             self.eq_switch.connect("notify::active", self.on_eq_toggled)
+
+            btn_reset_eq = Gtk.Button(label="↺ Reset EQ (Flat 0 dB)")
+            btn_reset_eq.get_style_context().add_class("reset-btn")
+            btn_reset_eq.set_tooltip_text("Zero out all 9 EQ bands (0.0 dB) and reset post gain offset")
+            btn_reset_eq.connect("clicked", self.reset_eq_flat)
+
             eq_hdr.pack_start(eq_lbl, True, True, 0)
+            eq_hdr.pack_end(btn_reset_eq, False, False, 0)
             eq_hdr.pack_end(self.eq_switch, False, False, 0)
             vbox.pack_start(eq_hdr, False, False, 0)
 
             # Uniform Post-EQ Line Translation Gain
-            vbox.pack_start(
-                self.create_slider_row(
-                    "Uniform Post-EQ Gain Offset",
-                    int(self.cfg.eq_post_gain / 100),
-                    -36,
-                    36,
-                    " dB",
-                    self.on_eq_post_gain_changed,
-                ),
-                False,
-                False,
-                0,
+            self.eq_post_row = self.create_slider_row(
+                "Uniform Post-EQ Gain Offset",
+                int(self.cfg.eq_post_gain / 100),
+                -36,
+                36,
+                " dB",
+                self.on_eq_post_gain_changed,
             )
+            vbox.pack_start(self.eq_post_row, False, False, 0)
 
             vbox.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 2)
 
@@ -1519,9 +1566,11 @@ def run_gtk_app() -> None:
                 ("12.0 kHz (Brilliance)", 8),
             ]
 
+            self.eq_band_rows = []
             for name, idx in bands:
                 val = self.cfg.eq_gains[idx] / 100 if idx < len(self.cfg.eq_gains) else 0
                 row = self.create_slider_row(name, int(val), -12, 12, " dB", lambda s, i=idx: self.on_eq_band_changed(i, s))
+                self.eq_band_rows.append(row)
                 vbox.pack_start(row, False, False, 0)
 
             scrolled = Gtk.ScrolledWindow()
@@ -1829,6 +1878,129 @@ def run_gtk_app() -> None:
             save_config(self.cfg)
             send_daemon_cmd(f"MON {1 if active else 0}")
 
+        # ---------------------------------------------------------------------
+        # Reset Routines
+        # ---------------------------------------------------------------------
+        def reset_all_defaults(self, *_: Any) -> None:
+            self._updating_ui = True
+            self.cfg.volume = 100
+            self.cfg.rnnoise_on = True
+            self.cfg.aggressiveness = 70
+            self.cfg.monitor = False
+            self._reset_voice_state()
+            self._reset_spatial_state()
+            self._reset_eq_state()
+            save_config(self.cfg)
+            sync_config_to_daemon(self.cfg)
+            self._refresh_all_ui()
+            self._updating_ui = False
+            send_desktop_notification("Dusky Audio Studio", "All audio processing reset to clean factory defaults.")
+
+        def reset_voice_fx(self, *_: Any) -> None:
+            self._updating_ui = True
+            self._reset_voice_state()
+            save_config(self.cfg)
+            sync_config_to_daemon(self.cfg)
+            self._refresh_voice_ui()
+            self._updating_ui = False
+
+        def reset_spatial_dsp(self, *_: Any) -> None:
+            self._updating_ui = True
+            self._reset_spatial_state()
+            save_config(self.cfg)
+            sync_config_to_daemon(self.cfg)
+            self._refresh_spatial_ui()
+            self._updating_ui = False
+
+        def reset_eq_flat(self, *_: Any) -> None:
+            self._updating_ui = True
+            self._reset_eq_state()
+            save_config(self.cfg)
+            sync_config_to_daemon(self.cfg)
+            self._refresh_eq_ui()
+            self._updating_ui = False
+
+        def _reset_voice_state(self) -> None:
+            clean = PRESETS["Natural Clean"]
+            for k, v in clean.items():
+                if hasattr(self.cfg, k):
+                    setattr(self.cfg, k, v)
+            self.cfg.vocoder_carrier_hz = 110
+            self.cfg.vocoder_detune = 20
+            self.cfg.vocoder_attack_ms = 5
+            self.cfg.vocoder_release_ms = 30
+            self.cfg.vocoder_follow = True
+            self.cfg.vocoder_pitch_shift = 0
+            self.cfg.vocoder_matrix = 50
+            self.cfg.vocoder_mix = 70
+
+        def _reset_spatial_state(self) -> None:
+            self.cfg.delay_on = False
+            self.cfg.delay_ms = 250
+            self.cfg.delay_feedback = 35
+            self.cfg.delay_mix = 30
+            self.cfg.reverb_on = False
+            self.cfg.reverb_room = 70
+            self.cfg.reverb_damp = 50
+            self.cfg.reverb_width = 80
+            self.cfg.reverb_mix = 35
+
+        def _reset_eq_state(self) -> None:
+            self.cfg.eq_on = False
+            self.cfg.eq_post_gain = 0
+            self.cfg.eq_gains = [0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+        def _refresh_all_ui(self) -> None:
+            self.vol_row._scale.set_value(self.cfg.volume)  # type: ignore
+            self.rnn_switch.set_active(self.cfg.rnnoise_on)
+            self.agg_row._scale.set_value(self.cfg.aggressiveness)  # type: ignore
+            self.mon_btn.set_active(self.cfg.monitor)
+            self._refresh_voice_ui()
+            self._refresh_spatial_ui()
+            self._refresh_eq_ui()
+
+        def _refresh_voice_ui(self) -> None:
+            self.voc_switch.set_active(self.cfg.vocoder_on)
+            self.atn_switch.set_active(self.cfg.autotune_on)
+            self.check_follow.set_active(self.cfg.vocoder_follow)
+            if self.cfg.vocoder_follow:
+                self.carrier_row._scale.set_range(-24, 24)  # type: ignore
+                self.carrier_row._scale.set_value(self.cfg.vocoder_pitch_shift)  # type: ignore
+                self.carrier_row._title_lbl.set_text("Carrier Pitch Transposition")  # type: ignore
+                self.carrier_row._val_lbl.set_text(f"{self.cfg.vocoder_pitch_shift:+d} st")  # type: ignore
+            else:
+                self.carrier_row._scale.set_range(50, 440)  # type: ignore
+                self.carrier_row._scale.set_value(self.cfg.vocoder_carrier_hz)  # type: ignore
+                self.carrier_row._title_lbl.set_text("Carrier Frequency")  # type: ignore
+                self.carrier_row._val_lbl.set_text(f"{self.cfg.vocoder_carrier_hz} Hz")  # type: ignore
+            self.pitch_row._scale.set_value(int(self.cfg.pitch_shift / 100))  # type: ignore
+            self.matrix_row._scale.set_value(self.cfg.vocoder_matrix)  # type: ignore
+            self.voc_mix_row._scale.set_value(self.cfg.vocoder_mix)  # type: ignore
+            self.bitcrush_row._scale.set_value(self.cfg.bitcrush_bits)  # type: ignore
+            self.stutter_row._scale.set_value(self.cfg.stutter_hz)  # type: ignore
+            self._clear_active_preset_highlight()
+            if not self.cfg.vocoder_on and self.cfg.pitch_shift == 0 and not self.cfg.autotune_on:
+                if "Natural Clean" in self.preset_buttons:
+                    self.preset_buttons["Natural Clean"].get_style_context().add_class("active-preset")
+
+        def _refresh_spatial_ui(self) -> None:
+            self.dly_switch.set_active(self.cfg.delay_on)
+            self.dly_time_row._scale.set_value(self.cfg.delay_ms)  # type: ignore
+            self.dly_fb_row._scale.set_value(self.cfg.delay_feedback)  # type: ignore
+            self.dly_mix_row._scale.set_value(self.cfg.delay_mix)  # type: ignore
+            self.rvb_switch.set_active(self.cfg.reverb_on)
+            self.rvb_room_row._scale.set_value(self.cfg.reverb_room)  # type: ignore
+            self.rvb_damp_row._scale.set_value(self.cfg.reverb_damp)  # type: ignore
+            self.rvb_width_row._scale.set_value(self.cfg.reverb_width)  # type: ignore
+            self.rvb_mix_row._scale.set_value(self.cfg.reverb_mix)  # type: ignore
+
+        def _refresh_eq_ui(self) -> None:
+            self.eq_switch.set_active(self.cfg.eq_on)
+            self.eq_post_row._scale.set_value(int(self.cfg.eq_post_gain / 100))  # type: ignore
+            for idx, row in enumerate(self.eq_band_rows):
+                val = int(self.cfg.eq_gains[idx] / 100) if idx < len(self.cfg.eq_gains) else 0
+                row._scale.set_value(val)  # type: ignore
+
         def _clear_active_preset_highlight(self) -> None:
             for btn in self.preset_buttons.values():
                 btn.get_style_context().remove_class("active-preset")
@@ -1844,35 +2016,10 @@ def run_gtk_app() -> None:
                     setattr(self.cfg, k, v)
             save_config(self.cfg)
             sync_config_to_daemon(self.cfg)
-
-            # Sync All UI Controls
-            self.voc_switch.set_active(self.cfg.vocoder_on)
-            self.atn_switch.set_active(self.cfg.autotune_on)
-            self.check_follow.set_active(self.cfg.vocoder_follow)
-
-            # Reconfigure carrier row
-            if self.cfg.vocoder_follow:
-                self.carrier_row._scale.set_range(-24, 24)  # type: ignore
-                self.carrier_row._scale.set_value(self.cfg.vocoder_pitch_shift)  # type: ignore
-                self.carrier_row._title_lbl.set_text("Carrier Pitch Transposition")  # type: ignore
-                self.carrier_row._val_lbl.set_text(f"{self.cfg.vocoder_pitch_shift:+d} st")  # type: ignore
-            else:
-                self.carrier_row._scale.set_range(50, 440)  # type: ignore
-                self.carrier_row._scale.set_value(self.cfg.vocoder_carrier_hz)  # type: ignore
-                self.carrier_row._title_lbl.set_text("Carrier Frequency")  # type: ignore
-                self.carrier_row._val_lbl.set_text(f"{self.cfg.vocoder_carrier_hz} Hz")  # type: ignore
-
-            self.pitch_row._scale.set_value(int(self.cfg.pitch_shift / 100))  # type: ignore
-            self.matrix_row._scale.set_value(self.cfg.vocoder_matrix)  # type: ignore
-            self.voc_mix_row._scale.set_value(self.cfg.vocoder_mix)  # type: ignore
-            self.bitcrush_row._scale.set_value(self.cfg.bitcrush_bits)  # type: ignore
-            self.stutter_row._scale.set_value(self.cfg.stutter_hz)  # type: ignore
-
-            # Highlight clicked preset
+            self._refresh_voice_ui()
             self._clear_active_preset_highlight()
             if name in self.preset_buttons:
                 self.preset_buttons[name].get_style_context().add_class("active-preset")
-
             self._updating_ui = False
 
     win = AudioStudioWindow()
@@ -1921,6 +2068,47 @@ def main() -> None:
                 save_config(cfg)
                 start_daemon(cfg)
                 print("🎙️ Dusky Audio DSP turned ON.")
+        case "--reset" | "--reset-all" | "-r":
+            cfg = AudioConfig(enabled=cfg.enabled, source=cfg.source)
+            save_config(cfg)
+            sync_config_to_daemon(cfg)
+            print("🔄 All audio DSP settings reset to factory defaults.")
+        case "--reset-voice":
+            clean = PRESETS["Natural Clean"]
+            for k, v in clean.items():
+                if hasattr(cfg, k):
+                    setattr(cfg, k, v)
+            cfg.vocoder_carrier_hz = 110
+            cfg.vocoder_detune = 20
+            cfg.vocoder_attack_ms = 5
+            cfg.vocoder_release_ms = 30
+            cfg.vocoder_follow = True
+            cfg.vocoder_pitch_shift = 0
+            cfg.vocoder_matrix = 50
+            cfg.vocoder_mix = 70
+            save_config(cfg)
+            sync_config_to_daemon(cfg)
+            print("↺ Voice FX reset to Natural Clean.")
+        case "--reset-eq":
+            cfg.eq_on = False
+            cfg.eq_post_gain = 0
+            cfg.eq_gains = [0, 0, 0, 0, 0, 0, 0, 0, 0]
+            save_config(cfg)
+            sync_config_to_daemon(cfg)
+            print("↺ Parametric EQ reset to Flat 0 dB.")
+        case "--reset-spatial":
+            cfg.delay_on = False
+            cfg.delay_ms = 250
+            cfg.delay_feedback = 35
+            cfg.delay_mix = 30
+            cfg.reverb_on = False
+            cfg.reverb_room = 70
+            cfg.reverb_damp = 50
+            cfg.reverb_width = 80
+            cfg.reverb_mix = 35
+            save_config(cfg)
+            sync_config_to_daemon(cfg)
+            print("↺ Delay and Reverb reset to default bypass.")
         case "--status" | "-s" | "status":
             pid = get_daemon_pid()
             tele = fetch_telemetry_from_daemon()
@@ -1972,6 +2160,10 @@ Commands:
   --toggle, -t              Toggle Audio DSP / Noise Cancellation ON / OFF
   --on                      Turn Audio DSP ON
   --off                     Turn Audio DSP OFF
+  --reset, -r               Reset all audio settings to clean factory defaults
+  --reset-voice             Reset voice character effects to Natural Clean
+  --reset-eq                Reset 9-Band EQ to Flat 0 dB
+  --reset-spatial           Reset Delay & Reverb to clean bypass
   --status, -s              Print current status and live telemetry
   --preset, -p <name>       Apply voice preset (e.g. "Daft Punk", "Darth Vader", "Sci-Fi Alien")
   --set-agg <0-100>         Set RNNoise suppression aggressiveness (0 to 100%)
