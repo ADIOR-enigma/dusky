@@ -106,10 +106,10 @@ CSS_FILENAME: Final[str] = "dusky_style.css"
 SCRIPT_DIR: Final[Path] = Path(__file__).resolve().parent
 
 # UI Layout Constants
-WINDOW_DEFAULT_WIDTH: Final[int] = 615
+WINDOW_DEFAULT_WIDTH: Final[int] = 639
 WINDOW_DEFAULT_HEIGHT: Final[int] = 800
-SIDEBAR_MIN_WIDTH: Final[int] = 160
-SIDEBAR_MAX_WIDTH: Final[int] = 160
+SIDEBAR_MIN_WIDTH: Final[int] = 154
+SIDEBAR_MAX_WIDTH: Final[int] = 154
 SIDEBAR_WIDTH_FRACTION: Final[float] = 0.25
 
 # Page Identifiers

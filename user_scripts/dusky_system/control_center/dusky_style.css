@@ -48,14 +48,35 @@ scrollbar:backdrop slider {
    SIDEBAR — Navigation Panel
    Translucent layered surface with refined selection states.
    ───────────────────────────────────────────────────────────────────────────── */
+.sidebar-pane,
+.sidebar-pane:dir(ltr),
+.sidebar-pane:dir(rtl),
+.sidebar-pane banner > revealer > widget,
+.content-pane,
+.content-pane:dir(ltr),
+.content-pane:dir(rtl),
+overlay-split-view > border,
+overlay-split-view > shadow,
+overlay-split-view > outline {
+    box-shadow: none;
+    border: none;
+    border-right: none;
+    border-left: none;
+    background-image: none;
+}
+
 .sidebar-container {
     background-color: alpha(@card_bg_color, 0.30);
-    border-right: 1px solid alpha(@borders, 0.12);
+    border: none;
+    border-right: none;
+    box-shadow: none;
 }
 
 .sidebar-container:backdrop {
     background-color: alpha(@card_bg_color, 0.20);
-    border-right-color: alpha(@borders, 0.06);
+    border: none;
+    border-right: none;
+    box-shadow: none;
 }
 
 .sidebar-container scrollbar {
