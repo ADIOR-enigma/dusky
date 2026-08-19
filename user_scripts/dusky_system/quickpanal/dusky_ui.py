@@ -36,7 +36,8 @@ class QuickIconToggle(Gtk.Overlay):
         self.btn_box = Gtk.Button()
         self.btn_box.set_relief(Gtk.ReliefStyle.NONE)
         _add_css_class(self.btn_box, 'quick-icon-toggle')
-        self.btn_box.set_tooltip_text(tooltip)
+        if tooltip:
+            self.btn_box.set_tooltip_text(str(tooltip).replace('\\n', '\n'))
         self._icon = Gtk.Image.new_from_icon_name(icon_name, Gtk.IconSize.LARGE_TOOLBAR)
         self._icon.set_pixel_size(20)
         self._icon.set_halign(Gtk.Align.CENTER)
@@ -60,7 +61,10 @@ class QuickIconToggle(Gtk.Overlay):
     def _on_clicked(self, widget: Gtk.Widget, event: Gdk.EventButton) -> bool:
         if (cmd := self.cmds.get(event.button)):
             if callable(self.on_execute):
-                self.on_execute(cmd)
+                try:
+                    self.on_execute(cmd, event.button)
+                except TypeError:
+                    self.on_execute(cmd)
             else:
                 execute_cmd(cmd)
         return True
@@ -70,7 +74,7 @@ class QuickIconToggle(Gtk.Overlay):
             self._icon.set_from_icon_name(icon, Gtk.IconSize.LARGE_TOOLBAR)
             self._icon.set_pixel_size(20)
         if tooltip:
-            self.btn_box.set_tooltip_text(tooltip)
+            self.btn_box.set_tooltip_text(str(tooltip).replace('\\n', '\n'))
         if css_class:
             for cls in ['normal', 'active', 'dnd-active', 'power-saver-active']:
                 _remove_css_class(self.btn_box, cls)
@@ -87,7 +91,8 @@ class MetricPill(Gtk.EventBox):
         super().__init__()
         self.on_execute = on_execute
         self._on_click_cmd = on_click
-        self.set_tooltip_text(tooltip)
+        if tooltip:
+            self.set_tooltip_text(str(tooltip).replace('\\n', '\n'))
         self.set_hexpand(True)
         self.set_visible_window(False)
         if on_click:

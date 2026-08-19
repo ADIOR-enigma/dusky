@@ -977,7 +977,7 @@ def start_daemon(cfg: AudioConfig | None = None) -> bool:
     missing = check_system_dependencies()
     if missing:
         err_msg = "Dusky Audio Studio cannot start due to missing dependencies:\n\n" + "\n".join(f"• {m}" for m in missing)
-        print(f"\n❌ [Dusky Audio Error]\n{err_msg}\n", file=sys.stderr)
+        print(f"\n[Dusky Audio Error]\n{err_msg}\n", file=sys.stderr)
         send_desktop_notification("Dusky Audio Studio — Missing Dependency", "\n".join(f"• {m}" for m in missing), "critical")
         return False
 
@@ -1145,9 +1145,13 @@ def run_gtk_app() -> None:
             if missing:
                 warn_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
                 warn_box.get_style_context().add_class("warning-banner")
-                warn_title = Gtk.Label(label="⚠️ Missing System Audio Dependencies:", xalign=0)
+                warn_title_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                warn_icon = Gtk.Image.new_from_icon_name("dialog-warning-symbolic", Gtk.IconSize.MENU)
+                warn_title = Gtk.Label(label="Missing System Audio Dependencies:", xalign=0)
                 warn_title.get_style_context().add_class("warning-text")
-                warn_box.pack_start(warn_title, False, False, 0)
+                warn_title_box.pack_start(warn_icon, False, False, 0)
+                warn_title_box.pack_start(warn_title, False, False, 0)
+                warn_box.pack_start(warn_title_box, False, False, 0)
                 for m in missing:
                     item_lbl = Gtk.Label(label=f"  • {m}", xalign=0)
                     item_lbl.get_style_context().add_class("footer-info")
@@ -1172,10 +1176,13 @@ def run_gtk_app() -> None:
             self.mon_btn.connect("toggled", self.on_monitor_toggled)
             top_bar.pack_start(self.mon_btn, False, False, 0)
 
-            btn_reset_all = Gtk.Button(label="🔄 Reset All Defaults")
-            btn_reset_all.get_style_context().add_class("reset-btn")
-            btn_reset_all.set_tooltip_text("Reset all noise suppression, voice transformations, spatial effects, and EQ to clean factory defaults")
-            btn_reset_all.connect("clicked", self.reset_all_defaults)
+            btn_reset_all = self.create_icon_button(
+                "view-refresh-symbolic",
+                "Reset All Defaults",
+                "Reset all noise suppression, voice transformations, spatial effects, and EQ to clean factory defaults",
+                "reset-btn",
+                self.reset_all_defaults,
+            )
             top_bar.pack_end(btn_reset_all, False, False, 0)
 
             main_vbox.pack_start(top_bar, False, False, 0)
@@ -1205,6 +1212,38 @@ def run_gtk_app() -> None:
 
             # Start 30 Hz Telemetry Polling Timer
             GLib.timeout_add(33, self.poll_telemetry)
+
+        def create_tab_label(self, icon_name: str, label_text: str) -> Gtk.Box:
+            box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            icon = Gtk.Image.new_from_icon_name(icon_name, Gtk.IconSize.MENU)
+            lbl = Gtk.Label(label=label_text)
+            box.pack_start(icon, False, False, 0)
+            box.pack_start(lbl, False, False, 0)
+            box.show_all()
+            return box
+
+        def create_icon_button(
+            self,
+            icon_name: str,
+            label_text: str,
+            tooltip: str = "",
+            css_class: str = "",
+            callback: Any = None,
+        ) -> Gtk.Button:
+            btn = Gtk.Button()
+            box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            icon = Gtk.Image.new_from_icon_name(icon_name, Gtk.IconSize.MENU)
+            lbl = Gtk.Label(label=label_text)
+            box.pack_start(icon, False, False, 0)
+            box.pack_start(lbl, False, False, 0)
+            btn.add(box)
+            if css_class:
+                btn.get_style_context().add_class(css_class)
+            if tooltip:
+                btn.set_tooltip_text(tooltip)
+            if callback:
+                btn.connect("clicked", callback)
+            return btn
 
         # ---------------------------------------------------------------------
         # Tab 1: Noise & Telemetry
@@ -1306,7 +1345,7 @@ def run_gtk_app() -> None:
             scrolled = Gtk.ScrolledWindow()
             scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
             scrolled.add(vbox)
-            self.notebook.append_page(scrolled, Gtk.Label(label="🎙️ Noise & Level"))
+            self.notebook.append_page(scrolled, self.create_tab_label("audio-input-microphone-symbolic", "Noise & Level"))
 
         # ---------------------------------------------------------------------
         # Tab 2: Voice FX & Transformers
@@ -1318,10 +1357,13 @@ def run_gtk_app() -> None:
             preset_hdr = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
             preset_lbl = Gtk.Label(label="Voice FX Character Presets", xalign=0)
             preset_lbl.get_style_context().add_class("section-label")
-            btn_reset_voice = Gtk.Button(label="↺ Reset Voice (Clean)")
-            btn_reset_voice.get_style_context().add_class("reset-btn")
-            btn_reset_voice.set_tooltip_text("Reset all voice modulation, pitch shift, autotune, and vocoder effects to Natural Clean")
-            btn_reset_voice.connect("clicked", self.reset_voice_fx)
+            btn_reset_voice = self.create_icon_button(
+                "edit-undo-symbolic",
+                "Reset Voice (Clean)",
+                "Reset all voice modulation, pitch shift, autotune, and vocoder effects to Natural Clean",
+                "reset-btn",
+                self.reset_voice_fx,
+            )
             preset_hdr.pack_start(preset_lbl, True, True, 0)
             preset_hdr.pack_end(btn_reset_voice, False, False, 0)
             vbox.pack_start(preset_hdr, False, False, 0)
@@ -1446,7 +1488,7 @@ def run_gtk_app() -> None:
             scrolled = Gtk.ScrolledWindow()
             scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
             scrolled.add(vbox)
-            self.notebook.append_page(scrolled, Gtk.Label(label="🤖 Voice FX"))
+            self.notebook.append_page(scrolled, self.create_tab_label("applications-multimedia-symbolic", "Voice FX"))
 
         # ---------------------------------------------------------------------
         # Tab 3: Spatial DSP (Delay & Reverb)
@@ -1459,10 +1501,13 @@ def run_gtk_app() -> None:
             spat_top = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
             spat_title = Gtk.Label(label="Spatial FX (Tape Delay & Algorithmic Reverb)", xalign=0)
             spat_title.get_style_context().add_class("section-label")
-            btn_reset_spatial = Gtk.Button(label="↺ Reset Delay & Reverb")
-            btn_reset_spatial.get_style_context().add_class("reset-btn")
-            btn_reset_spatial.set_tooltip_text("Disable and reset delay and reverb to clean bypass defaults")
-            btn_reset_spatial.connect("clicked", self.reset_spatial_dsp)
+            btn_reset_spatial = self.create_icon_button(
+                "edit-undo-symbolic",
+                "Reset Delay & Reverb",
+                "Disable and reset delay and reverb to clean bypass defaults",
+                "reset-btn",
+                self.reset_spatial_dsp,
+            )
             spat_top.pack_start(spat_title, True, True, 0)
             spat_top.pack_end(btn_reset_spatial, False, False, 0)
             vbox.pack_start(spat_top, False, False, 0)
@@ -1514,7 +1559,7 @@ def run_gtk_app() -> None:
             scrolled = Gtk.ScrolledWindow()
             scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
             scrolled.add(vbox)
-            self.notebook.append_page(scrolled, Gtk.Label(label="🎛️ Delay & Reverb"))
+            self.notebook.append_page(scrolled, self.create_tab_label("audio-speakers-symbolic", "Delay & Reverb"))
 
         # ---------------------------------------------------------------------
         # Tab 4: 9-Band Studio EQ
@@ -1531,10 +1576,13 @@ def run_gtk_app() -> None:
             self.eq_switch.set_active(self.cfg.eq_on)
             self.eq_switch.connect("notify::active", self.on_eq_toggled)
 
-            btn_reset_eq = Gtk.Button(label="↺ Reset EQ (Flat 0 dB)")
-            btn_reset_eq.get_style_context().add_class("reset-btn")
-            btn_reset_eq.set_tooltip_text("Zero out all 9 EQ bands (0.0 dB) and reset post gain offset")
-            btn_reset_eq.connect("clicked", self.reset_eq_flat)
+            btn_reset_eq = self.create_icon_button(
+                "edit-undo-symbolic",
+                "Reset EQ (Flat 0 dB)",
+                "Zero out all 9 EQ bands (0.0 dB) and reset post gain offset",
+                "reset-btn",
+                self.reset_eq_flat,
+            )
 
             eq_hdr.pack_start(eq_lbl, True, True, 0)
             eq_hdr.pack_end(btn_reset_eq, False, False, 0)
@@ -1576,7 +1624,7 @@ def run_gtk_app() -> None:
             scrolled = Gtk.ScrolledWindow()
             scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
             scrolled.add(vbox)
-            self.notebook.append_page(scrolled, Gtk.Label(label="📊 9-Band EQ"))
+            self.notebook.append_page(scrolled, self.create_tab_label("multimedia-volume-control-symbolic", "9-Band EQ"))
 
         # ---------------------------------------------------------------------
         # Helper: Create Slider Row
@@ -2050,29 +2098,33 @@ def main() -> None:
             cfg.enabled = True
             save_config(cfg)
             start_daemon(cfg)
-            print("🎙️ Dusky Audio DSP turned ON (PipeWire RT Low-Latency).")
+            send_desktop_notification("Dusky Audio Studio", "Voice DSP & Noise Cancellation turned ON.")
+            print("Dusky Audio DSP turned ON (PipeWire RT Low-Latency).")
         case "--off" | "-0" | "off":
             cfg.enabled = False
             save_config(cfg)
             stop_daemon()
-            print("🔇 Dusky Audio DSP turned OFF (Direct Hardware Bypass).")
+            send_desktop_notification("Dusky Audio Studio", "Voice DSP turned OFF (Direct Hardware Bypass).")
+            print("Dusky Audio DSP turned OFF (Direct Hardware Bypass).")
         case "--toggle" | "-t" | "toggle":
             is_on = bool(get_daemon_pid())
             if is_on:
                 cfg.enabled = False
                 save_config(cfg)
                 stop_daemon()
-                print("🔇 Dusky Audio DSP turned OFF.")
+                send_desktop_notification("Dusky Audio Studio", "Voice DSP turned OFF (Direct Hardware Bypass).")
+                print("Dusky Audio DSP turned OFF.")
             else:
                 cfg.enabled = True
                 save_config(cfg)
                 start_daemon(cfg)
-                print("🎙️ Dusky Audio DSP turned ON.")
+                send_desktop_notification("Dusky Audio Studio", "Voice DSP & Noise Cancellation turned ON.")
+                print("Dusky Audio DSP turned ON.")
         case "--reset" | "--reset-all" | "-r":
             cfg = AudioConfig(enabled=cfg.enabled, source=cfg.source)
             save_config(cfg)
             sync_config_to_daemon(cfg)
-            print("🔄 All audio DSP settings reset to factory defaults.")
+            print("All audio DSP settings reset to factory defaults.")
         case "--reset-voice":
             clean = PRESETS["Natural Clean"]
             for k, v in clean.items():
@@ -2088,14 +2140,14 @@ def main() -> None:
             cfg.vocoder_mix = 70
             save_config(cfg)
             sync_config_to_daemon(cfg)
-            print("↺ Voice FX reset to Natural Clean.")
+            print("Voice FX reset to Natural Clean.")
         case "--reset-eq":
             cfg.eq_on = False
             cfg.eq_post_gain = 0
             cfg.eq_gains = [0, 0, 0, 0, 0, 0, 0, 0, 0]
             save_config(cfg)
             sync_config_to_daemon(cfg)
-            print("↺ Parametric EQ reset to Flat 0 dB.")
+            print("Parametric EQ reset to Flat 0 dB.")
         case "--reset-spatial":
             cfg.delay_on = False
             cfg.delay_ms = 250
@@ -2108,7 +2160,7 @@ def main() -> None:
             cfg.reverb_mix = 35
             save_config(cfg)
             sync_config_to_daemon(cfg)
-            print("↺ Delay and Reverb reset to default bypass.")
+            print("Delay and Reverb reset to default bypass.")
         case "--status" | "-s" | "status":
             pid = get_daemon_pid()
             tele = fetch_telemetry_from_daemon()
@@ -2130,7 +2182,7 @@ def main() -> None:
                         setattr(cfg, k, v)
                 save_config(cfg)
                 sync_config_to_daemon(cfg)
-                print(f"✨ Applied Character Preset: {match_key}")
+                print(f"Applied Character Preset: {match_key}")
             else:
                 print(f"Preset '{p_name}' not found. Available: {', '.join(PRESETS.keys())}")
         case ("--set-agg" | "--agg") if len(args) > 1:

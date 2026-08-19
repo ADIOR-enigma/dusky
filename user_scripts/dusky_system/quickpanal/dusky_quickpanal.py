@@ -54,7 +54,7 @@ except (OSError, AttributeError, ImportError):
     LIBGRAB = None
 CONFIG_DIR: Final[Path] = Path(HOME) / '.config' / 'dusky' / 'quickpanal'
 CONFIG_FILE: Final[Path] = CONFIG_DIR / 'config.toml'
-DEFAULT_TOML_CONFIG: Final[str] = '[layout]\nshow_weather = true\nshow_metrics = true\nshow_quick_toggles = true\nshow_power_profiles = true\nshow_sliders = true\nshow_notifications = true\nshow_media = false\n\n[[toggles]]\nid = "wifi"\nicon = "network-wireless-symbolic"\nlabel = "Wi-Fi"\ntooltip = "Wi-Fi\\nLMB: Network Manager"\non_left = "foot --app-id=dusky_tui python ~/user_scripts/dusky_tui/python/main/main.py ~/user_scripts/network_manager/tui_dusky_network.py"\n\n[[toggles]]\nid = "idle"\nicon = "timer-symbolic"\nlabel = "Hypridle"\ntooltip = "Hypridle\\nLMB: Toggle | RMB: Lock Screen"\non_left = "~/user_scripts/waybar/toggle_hypridle.sh"\non_right = "~/user_scripts/hyprlock/lock.sh"\n\n[[toggles]]\nid = "blur"\nicon = "preferences-desktop-appearance-symbolic"\nlabel = "Visuals"\ntooltip = "Visuals\\nLMB: Toggle Blur/Shadow"\non_left = "~/user_scripts/hypr/hypr_blur_opacity_shadow_toggle.sh toggle"\n\n[[toggles]]\nid = "updates"\nicon = "folder-download-symbolic"\nlabel = "Updates"\ntooltip = "Updates\\nLMB: System Update | RMB: Dusky Update"\non_left = "dusky-run kitty --class system_update.sh --hold sh -c \'~/user_scripts/update_dusky/system_update.sh --all\'"\non_right = "dusky-run kitty --class update_dusky.py --hold sh -c \'~/user_scripts/update_dusky/python/update_dusky.py\'"\n\n[[toggles]]\nid = "dnd"\nicon = "notification-symbolic"\nlabel = "Notifications"\ntooltip = "Notifications\\nLMB: Rofi Menu | MMB: Clear | RMB: Toggle DND"\non_left = "~/user_scripts/rofi/rofi_mako.sh"\non_middle = "~/user_scripts/waybar/mako.sh --clear && pkill -RTMIN+8 waybar"\non_right = "makoctl mode -t do-not-disturb && pkill -RTMIN+8 waybar"\n'
+DEFAULT_TOML_CONFIG: Final[str] = '[layout]\nshow_weather = true\nshow_metrics = true\nshow_quick_toggles = true\nshow_power_profiles = true\nshow_sliders = true\nshow_notifications = true\nshow_media = false\n\n[[toggles]]\nid = "wifi"\nicon = "network-wireless-symbolic"\nlabel = "Wi-Fi"\ntooltip = "Wi-Fi\\nLMB: Network Manager"\non_left = "foot --app-id=dusky_tui python ~/user_scripts/dusky_tui/python/main/main.py ~/user_scripts/network_manager/tui_dusky_network.py"\n\n[[toggles]]\nid = "idle"\nicon = "timer-symbolic"\nlabel = "Hypridle"\ntooltip = "Hypridle\\nLMB: Toggle | RMB: Lock Screen"\non_left = "~/user_scripts/waybar/toggle_hypridle.sh"\non_right = "~/user_scripts/hyprlock/lock.sh"\n\n[[toggles]]\nid = "blur"\nicon = "preferences-desktop-appearance-symbolic"\nlabel = "Visuals"\ntooltip = "Visuals\\nLMB: Toggle Blur/Shadow"\non_left = "~/user_scripts/hypr/hypr_blur_opacity_shadow_toggle.sh toggle"\n\n[[toggles]]\nid = "updates"\nicon = "folder-download-symbolic"\nlabel = "Updates"\ntooltip = "Updates\\nLMB: System Update | RMB: Dusky Update"\non_left = "dusky-run kitty --class system_update.sh --hold sh -c \'~/user_scripts/update_dusky/system_update.sh --all\'"\non_right = "dusky-run kitty --class update_dusky.py --hold sh -c \'~/user_scripts/update_dusky/python/update_dusky.py\'"\n\n[[toggles]]\nid = "audio"\nicon = "audio-input-microphone-symbolic"\nlabel = "Voice DSP"\ntooltip = "Voice DSP & Noise Cancellation\\nLMB: Open Studio | RMB: Toggle ON/OFF"\non_left = "python3 ~/user_scripts/audio/dusky_audio_studio/dusky_audio_studio.py"\non_right = "python3 ~/user_scripts/audio/dusky_audio_studio/dusky_audio_studio.py --toggle"\n'
 
 def load_or_create_config() -> dict[str, Any]:
     if not CONFIG_FILE.exists():
@@ -216,7 +216,7 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
             self.flow.set_column_spacing(10)
             self.flow.set_row_spacing(10)
             for t_conf in self.config.get('toggles', []):
-                tg = QuickIconToggle(icon_name=t_conf.get('icon', 'applications-system-symbolic'), tooltip=t_conf.get('tooltip', ''), on_left=t_conf.get('on_left', ''), on_middle=t_conf.get('on_middle', ''), on_right=t_conf.get('on_right', ''), on_execute=self.hide_and_execute)
+                tg = QuickIconToggle(icon_name=t_conf.get('icon', 'applications-system-symbolic'), tooltip=t_conf.get('tooltip', ''), on_left=t_conf.get('on_left', ''), on_middle=t_conf.get('on_middle', ''), on_right=t_conf.get('on_right', ''), on_execute=self.handle_toggle_execute)
                 self.flow.add(tg)
                 if (t_id := t_conf.get('id')):
                     self.dynamic_toggles[t_id] = tg
@@ -322,6 +322,7 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
         self.lbl_time.set_label(now.strftime('%I:%M'))
         self.lbl_date.set_label(now.strftime('%A, %B %d'))
         self.pool.submit(self._fetch_weather)
+        self.pool.submit(self._fetch_audio)
         self.pool.submit(self._fetch_mako)
         self.pool.submit(self._fetch_idle)
         self.pool.submit(self._fetch_blur)
@@ -335,6 +336,37 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
         if hasattr(self, 'notifications_module'):
             self.notifications_module.refresh_async()
         return GLib.SOURCE_CONTINUE
+
+    def _fetch_audio(self) -> None:
+        if not self.dynamic_toggles.get('audio'):
+            return
+        pid_file = Path(HOME) / '.config' / 'dusky_audio_studio' / 'daemon.pid'
+        is_active = False
+        if pid_file.exists():
+            try:
+                pid = int(pid_file.read_text().strip())
+                os.kill(pid, 0)
+                is_active = True
+            except (ValueError, OSError):
+                is_active = False
+        GLib.idle_add(self._apply_audio, is_active)
+
+    def _apply_audio(self, is_active: bool) -> None:
+        tg = self.dynamic_toggles.get('audio')
+        if not tg:
+            return
+        if is_active:
+            tg.update_state(
+                icon='audio-input-microphone-symbolic',
+                css_class='active',
+                tooltip='Voice DSP: ON (PipeWire RT)\nLMB: Open Studio | RMB: Turn OFF'
+            )
+        else:
+            tg.update_state(
+                icon='audio-input-microphone-muted-symbolic',
+                css_class='normal',
+                tooltip='Voice DSP: OFF (Hardware Bypass)\nLMB: Open Studio | RMB: Turn ON'
+            )
 
     def _fetch_weather(self) -> None:
         if not self.layout_cfg.get('show_weather', True):
@@ -369,7 +401,7 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
         css = data.get('class', 'empty')
         badge_match = _RE_MAKO_BADGE.search(text)
         badge = badge_match.group(0) if badge_match else ''
-        final_tt = data.get('tooltip', 'Notifications') + '\\nLMB: Open | MMB: Clear | RMB: Toggle DND'
+        final_tt = data.get('tooltip', 'Notifications') + '\nLMB: Open | MMB: Clear | RMB: Toggle DND'
         if css in ('dnd', 'dnd-pending'):
             tg.update_state(icon='notifications-disabled-symbolic', css_class='dnd-active', tooltip=final_tt, badge=badge)
         else:
@@ -386,9 +418,9 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
         if not tg:
             return
         if is_active:
-            tg.update_state(icon='timer-symbolic', css_class='normal', tooltip='Idle Allowed (Timer Active)\\nLMB: Toggle | RMB: Lock Screen')
+            tg.update_state(icon='timer-symbolic', css_class='normal', tooltip='Idle Allowed (Timer Active)\nLMB: Toggle | RMB: Lock Screen')
         else:
-            tg.update_state(icon='view-reveal-symbolic', css_class='active', tooltip='Idle Inhibited (Awake)\\nLMB: Toggle | RMB: Lock Screen')
+            tg.update_state(icon='view-reveal-symbolic', css_class='active', tooltip='Idle Inhibited (Awake)\nLMB: Toggle | RMB: Lock Screen')
 
     def _fetch_blur(self) -> None:
         if not self.dynamic_toggles.get('blur'):
@@ -405,9 +437,9 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
         if not tg:
             return
         if is_active:
-            tg.update_state(icon='applications-graphics-symbolic', css_class='active', tooltip='Visuals: Blur & Shadow ON\\nLMB: Toggle')
+            tg.update_state(icon='applications-graphics-symbolic', css_class='active', tooltip='Visuals: Blur & Shadow ON\nLMB: Toggle')
         else:
-            tg.update_state(icon='preferences-desktop-appearance-symbolic', css_class='normal', tooltip='Visuals: Performance Mode\\nLMB: Toggle')
+            tg.update_state(icon='preferences-desktop-appearance-symbolic', css_class='normal', tooltip='Visuals: Performance Mode\nLMB: Toggle')
 
     @staticmethod
     def _is_bt_rfkill_blocked() -> bool:
@@ -591,7 +623,7 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
         if not tg:
             return
         css = data.get('class', 'updated')
-        final_tt = f"{data.get('tooltip', 'Updates')}\\n\\nLMB: System Update | RMB: Dusky Update"
+        final_tt = f"{data.get('tooltip', 'Updates')}\n\nLMB: System Update | RMB: Dusky Update"
         if css == 'pending':
             match = _RE_UPDATES_TOTAL.search(data.get('tooltip', ''))
             tg.update_state(icon='folder-download-symbolic', css_class='normal', tooltip=final_tt, badge=match.group(1) if match else '!')
@@ -610,6 +642,16 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
         if LIBGRAB and self._grab_active:
             LIBGRAB.destroy_wayland_grab()
             self._grab_active = False
+
+    def handle_toggle_execute(self, cmd: str, button: int = 1) -> None:
+        if not cmd:
+            return
+        if button == 1:
+            self.hide()
+            execute_cmd(cmd)
+        else:
+            execute_cmd(cmd)
+            GLib.timeout_add(150, self._update_ui_state)
 
     def hide_and_execute(self, cmd: str) -> None:
         if not cmd:

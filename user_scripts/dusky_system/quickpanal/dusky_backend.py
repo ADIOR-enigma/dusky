@@ -284,7 +284,9 @@ def run_command(
 def execute_cmd(cmd: str) -> None:
     if not cmd:
         return
-    expanded = os.path.expanduser(cmd)
+    expanded = os.path.expanduser(cmd.strip())
+    if expanded.startswith("dusky-run "):
+        expanded = expanded[10:].strip()
     try:
         if shutil.which("dusky-run") is not None:
             subprocess.Popen(
