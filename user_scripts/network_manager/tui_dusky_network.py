@@ -35,42 +35,74 @@ SCHEMA[0].append(ConfigItem(
 ))
 
 cache_path = Path.home() / ".cache" / "dusky_tui" / "wifi_cache.json"
+_scans = []
 if cache_path.exists():
     try:
         with open(cache_path, "r", encoding="utf-8") as f:
             _scans = json.load(f)
-        for _net in _scans:
-            _ssid = _net.get("ssid", "")
-            _signal = _net.get("signal", 0)
-            _security = _net.get("security", "Open")
-            _in_use = _net.get("in_use", False)
+    except Exception:
+        _scans = []
 
-            def _bar(s):
-                if s >= 80: return "▂▄▆█"
-                if s >= 60: return "▂▄▆_"
-                if s >= 40: return "▂▄__"
-                if s >= 20: return "▂___"
-                return "____"
-
-            _icon = "●" if _in_use else "○"
-            _status = "Active" if _in_use else "New"
-            _label = f"{_icon} {_status:<6} {_ssid:<24} {_security:<10} {_signal}% {_bar(_signal)}"
-            _pkey = f"net__{_ssid}"
-
-            _item = ConfigItem(
-                label=_label,
-                key=_pkey,
-                scope="network",
-                type_="menu",
-                is_parent=True,
-                expanded=_in_use,
-                group="Available Networks"
-            )
-            _item.exists_in_target = True
-            _item._initial_loaded = True
-            SCHEMA[0].append(_item)
+if not _scans:
+    try:
+        p = subprocess.run(
+            ["nmcli", "-t", "-f", "IN-USE,SSID,SECURITY,SIGNAL", "device", "wifi", "list", "--rescan", "no"],
+            capture_output=True, text=True, timeout=2
+        )
+        seen = set()
+        for line in p.stdout.splitlines():
+            if not line:
+                continue
+            parts = line.split(":")
+            if len(parts) >= 4:
+                in_use = parts[0].strip() == "*"
+                ssid = parts[1].strip()
+                if ssid and ssid not in seen:
+                    seen.add(ssid)
+                    sec = parts[2] if parts[2] and parts[2] != "--" else "Open"
+                    try:
+                        sig = int(parts[3])
+                    except ValueError:
+                        sig = 0
+                    _scans.append({"in_use": in_use, "ssid": ssid, "security": sec, "signal": sig})
+        if _scans:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(cache_path, "w", encoding="utf-8") as f:
+                json.dump(_scans, f)
     except Exception:
         pass
+
+for _net in _scans:
+    _ssid = _net.get("ssid", "")
+    _signal = _net.get("signal", 0)
+    _security = _net.get("security", "Open")
+    _in_use = _net.get("in_use", False)
+
+    def _bar(s):
+        if s >= 80: return "▂▄▆█"
+        if s >= 60: return "▂▄▆_"
+        if s >= 40: return "▂▄__"
+        if s >= 20: return "▂___"
+        return "____"
+
+    _icon = "●" if _in_use else "○"
+    _status = "Active" if _in_use else "New"
+    _label = f"{_icon} {_status:<6} {_ssid:<24} {_security:<10} {_signal}% {_bar(_signal)}"
+    _pkey = f"net__{_ssid}"
+
+    _item = ConfigItem(
+        label=_label,
+        key=_pkey,
+        scope="network",
+        type_="menu",
+        default=None,
+        is_parent=True,
+        expanded=_in_use,
+        group="Available Networks"
+    )
+    _item.exists_in_target = True
+    _item._initial_loaded = True
+    SCHEMA[0].append(_item)
 
 if len(SCHEMA[0]) <= 1:
     SCHEMA[0].append(ConfigItem(

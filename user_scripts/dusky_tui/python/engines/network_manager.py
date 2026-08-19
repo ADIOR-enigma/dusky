@@ -770,12 +770,24 @@ class NetworkManagerEngine(BaseEngine):
             except Exception as e:
                 logger.error(f"Error loading wifi cache: {e}")
 
+        if not self._cached_scans:
+            self._cached_scans = self._get_scanned_wifi()
+            if self._cached_scans:
+                try:
+                    with open(self._target_path, "w", encoding="utf-8") as f:
+                        json.dump(self._cached_scans, f)
+                except Exception:
+                    pass
+
         # Start background loop
         self._bg_thread = threading.Thread(target=self._background_loop, daemon=True)
         self._bg_thread.start()
 
     def set_app(self, app) -> None:
         self.app = app
+        if not self._cached_scans:
+            self._cached_scans = self._get_scanned_wifi()
+        self._rebuild_schema()
         self.rescan_event.set()
 
     @property
@@ -1893,6 +1905,7 @@ class NetworkManagerEngine(BaseEngine):
         radio = self._run_cmd(["nmcli", "radio", "wifi"]).strip() == "enabled"
         active = self._get_active_wifi_connection()
         saved = self._get_saved_wifi()
+        verb = self._verbose_info
 
         expanded = set()
         collapsed = set()
@@ -2227,8 +2240,10 @@ class NetworkManagerEngine(BaseEngine):
             self.app._option_cache.clear()
 
         # Rebuild indexes and refresh UI
-        self.app._rebuild_indexes()
-        self.app._refresh_all_ui()
+        if hasattr(self.app, "_rebuild_indexes"):
+            self.app._rebuild_indexes()
+        if hasattr(self.app, "_refresh_all_ui"):
+            self.app._refresh_all_ui()
 
     # =========================================================================
     #  ITEM FACTORY & HELPER METHODS
@@ -2308,7 +2323,7 @@ class NetworkManagerEngine(BaseEngine):
     def _get_scanned_wifi(self) -> list[dict[str, Any]]:
         scans = []
         seen: set[str] = set()
-        for line in self._run_cmd(["nmcli", "-t", "-f", "IN-USE,SSID,SECURITY,SIGNAL", "device", "wifi", "list"]).splitlines():
+        for line in self._run_cmd(["nmcli", "-t", "-f", "IN-USE,SSID,SECURITY,SIGNAL", "device", "wifi", "list", "--rescan", "no"]).splitlines():
             if not line:
                 continue
             parts = _split_nmcli_line(line)
