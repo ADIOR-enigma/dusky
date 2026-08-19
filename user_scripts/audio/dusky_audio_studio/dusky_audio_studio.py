@@ -247,6 +247,7 @@ class AudioConfig:
     # Master
     enabled: bool = False
     source: str = "default"
+    sink: str = "default"
     volume: int = 100  # 0..200%
     monitor: bool = False
 
@@ -684,6 +685,47 @@ def enumerate_sources() -> list[tuple[str, str]]:
     return sources
 
 
+def enumerate_sinks() -> list[tuple[str, str]]:
+    """Enumerate physical audio output sinks, filtering out virtual/loopback nodes."""
+    sinks: list[tuple[str, str]] = [("default", "Default System Output (Auto-Detected)")]
+    seen_names: set[str] = {"default"}
+    try:
+        out = subprocess.check_output(
+            ["pw-cli", "ls", "Node"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            env=COMMAND_ENV,
+        )
+        blocks = out.split("\tid ")
+        for b in blocks:
+            if 'media.class = "Audio/Sink"' in b:
+                name_m = re.search(r'node\.name = "([^"]+)"', b)
+                desc_m = re.search(r'node\.description = "([^"]+)"', b)
+                name = name_m.group(1) if name_m else None
+                desc = desc_m.group(1) if desc_m else None
+
+                if not name:
+                    continue
+
+                lower_name = name.lower()
+                lower_desc = (desc or "").lower()
+                # Filter out our own virtual sink and loopback nodes
+                if (
+                    lower_name.startswith(("ghelper", "dusky", "rnnoise"))
+                    or "clean output" in lower_desc
+                    or "loopback" in lower_name
+                    or lower_name.endswith(".monitor")
+                ):
+                    continue
+
+                if name not in seen_names:
+                    seen_names.add(name)
+                    sinks.append((name, desc or name))
+    except Exception:
+        pass
+    return sinks
+
+
 def resolve_hardware_source(requested: str = "default") -> str:
     """
     Resolves the physical microphone node name to prevent WirePlumber feedback loops.
@@ -725,6 +767,55 @@ def resolve_hardware_source(requested: str = "default") -> str:
         if node != "default" and not node.startswith(("ghelper", "dusky")):
             return node
     return "default"
+
+
+def resolve_hardware_sink(requested: str = "default") -> str:
+    """
+    Resolves the physical speaker/headphone node name to prevent WirePlumber feedback loops.
+    If 'default' is requested, picks the active physical playback hardware node.
+    """
+    if requested != "default" and requested.strip():
+        return requested.strip()
+
+    # 1. Try to query the active default sink from wpctl status
+    try:
+        out = subprocess.check_output(["wpctl", "status"], text=True, stderr=subprocess.DEVNULL, env=COMMAND_ENV)
+        in_sinks = False
+        default_id: str | None = None
+        for line in out.splitlines():
+            if "Sinks:" in line:
+                in_sinks = True
+                continue
+            if in_sinks:
+                if line.strip().startswith(("├─", "└─", "Sources:", "Filters:", "Streams:")):
+                    break
+                m = re.search(r"\*\s+(\d+)\.", line)
+                if m:
+                    default_id = m.group(1)
+                    break
+        if default_id:
+            info = subprocess.check_output(["pw-cli", "info", default_id], text=True, stderr=subprocess.DEVNULL, env=COMMAND_ENV)
+            name_m = re.search(r'node\.name = "([^"]+)"', info)
+            if name_m:
+                node_name = name_m.group(1)
+                lower = node_name.lower()
+                if (
+                    not lower.startswith(("ghelper", "dusky", "rnnoise"))
+                    and not lower.endswith(".monitor")
+                    and "loopback" not in lower
+                    and "clean output" not in lower
+                ):
+                    return node_name
+    except Exception:
+        pass
+
+    # 2. Fallback to first non-virtual sink in enumerated sinks
+    sinks = enumerate_sinks()
+    for node, _ in sinks:
+        if node != "default" and not node.startswith(("ghelper", "dusky")):
+            return node
+    return "default"
+
 
 
 # -----------------------------------------------------------------------------
@@ -894,9 +985,11 @@ class AudioDspServer:
             pass
 
     def _apply_full_config(self, cfg: AudioConfig) -> None:
-        # Hardware source resolution (eliminates feedback loops)
+        # Hardware source & sink resolution (eliminates feedback loops)
         target_src = resolve_hardware_source(cfg.source)
         self.send_cmd(f"SRC {target_src}")
+        target_sink = resolve_hardware_sink(cfg.sink)
+        self.send_cmd(f"SINK_TGT {target_sink}")
         self.send_cmd(f"VOL {cfg.volume * 10}")
         self.send_cmd(f"MON {1 if cfg.monitor else 0}")
 
@@ -1132,6 +1225,7 @@ def run_gtk_app() -> None:
 
             self.cfg = cfg
             self.sources = enumerate_sources()
+            self.sinks = enumerate_sinks()
             self._updating_ui = False
             self.preset_buttons: dict[str, Gtk.Button] = {}
 
@@ -1327,6 +1421,23 @@ def run_gtk_app() -> None:
             )
             out_desc.get_style_context().add_class("dim-label")
             vbox.pack_start(out_desc, False, False, 0)
+
+            # Output Device Combo
+            sink_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            sink_lbl = Gtk.Label(label="Physical Playback Device:", xalign=0)
+            sink_lbl.get_style_context().add_class("section-label")
+            self.sink_combo = Gtk.ComboBoxText()
+            self.sink_combo.get_style_context().add_class("device-combo")
+            sink_active_idx = 0
+            for idx, (node, desc) in enumerate(self.sinks):
+                self.sink_combo.append(node, desc)
+                if node == self.cfg.sink:
+                    sink_active_idx = idx
+            self.sink_combo.set_active(sink_active_idx)
+            self.sink_combo.connect("changed", self.on_sink_changed)
+            sink_box.pack_start(sink_lbl, False, False, 0)
+            sink_box.pack_start(self.sink_combo, True, True, 0)
+            vbox.pack_start(sink_box, False, False, 0)
 
             out_rnn_hdr = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
             out_rnn_lbl = Gtk.Label(label="Output RNNoise Suppression", xalign=0)
@@ -1808,12 +1919,24 @@ def run_gtk_app() -> None:
                 stop_daemon()
 
         def on_source_changed(self, combo: Gtk.ComboBoxText) -> None:
+            if self._updating_ui:
+                return
             node = combo.get_active_id()
             if node:
                 self.cfg.source = node
                 save_config(self.cfg)
                 target = resolve_hardware_source(node)
                 send_daemon_cmd(f"SRC {target}")
+
+        def on_sink_changed(self, combo: Gtk.ComboBoxText) -> None:
+            if self._updating_ui:
+                return
+            node = combo.get_active_id()
+            if node:
+                self.cfg.sink = node
+                save_config(self.cfg)
+                target = resolve_hardware_sink(node)
+                send_daemon_cmd(f"SINK_TGT {target}")
 
         def on_volume_changed(self, scale: Gtk.Scale) -> None:
             val = int(scale.get_value())
@@ -2016,6 +2139,9 @@ def run_gtk_app() -> None:
             self.cfg.volume = 100
             self.cfg.rnnoise_on = True
             self.cfg.aggressiveness = 70
+            self.cfg.out_rnnoise_on = False
+            self.cfg.out_aggressiveness = 70
+            self.cfg.sink = "default"
             self.cfg.monitor = False
             self._reset_voice_state()
             self._reset_spatial_state()
@@ -2084,6 +2210,14 @@ def run_gtk_app() -> None:
             self.vol_row._scale.set_value(self.cfg.volume)  # type: ignore
             self.rnn_switch.set_active(self.cfg.rnnoise_on)
             self.agg_row._scale.set_value(self.cfg.aggressiveness)  # type: ignore
+            self.out_rnn_switch.set_active(self.cfg.out_rnnoise_on)
+            self.out_agg_row._scale.set_value(self.cfg.out_aggressiveness)  # type: ignore
+            sink_idx = 0
+            for idx, (node, _) in enumerate(self.sinks):
+                if node == self.cfg.sink:
+                    sink_idx = idx
+                    break
+            self.sink_combo.set_active(sink_idx)
             self.mon_btn.set_active(self.cfg.monitor)
             self._refresh_voice_ui()
             self._refresh_spatial_ui()
@@ -2203,7 +2337,7 @@ def main() -> None:
                 send_desktop_notification("Dusky Audio Studio", "Voice DSP & Noise Cancellation turned ON.")
                 print("Dusky Audio DSP turned ON.")
         case "--reset" | "--reset-all" | "-r":
-            cfg = AudioConfig(enabled=cfg.enabled, source=cfg.source)
+            cfg = AudioConfig(enabled=cfg.enabled, source=cfg.source, sink=cfg.sink)
             save_config(cfg)
             sync_config_to_daemon(cfg)
             print("All audio DSP settings reset to factory defaults.")
@@ -2267,6 +2401,20 @@ def main() -> None:
                 print(f"Applied Character Preset: {match_key}")
             else:
                 print(f"Preset '{p_name}' not found. Available: {', '.join(PRESETS.keys())}")
+        case ("--set-source" | "--source" | "--src") if len(args) > 1:
+            val = " ".join(args[1:])
+            cfg.source = val
+            save_config(cfg)
+            target = resolve_hardware_source(val)
+            send_daemon_cmd(f"SRC {target}")
+            print(f"Set Input Microphone Source to '{val}' (target: {target})")
+        case ("--set-sink" | "--sink") if len(args) > 1:
+            val = " ".join(args[1:])
+            cfg.sink = val
+            save_config(cfg)
+            target = resolve_hardware_sink(val)
+            send_daemon_cmd(f"SINK_TGT {target}")
+            print(f"Set Output Playback Device to '{val}' (target: {target})")
         case ("--set-agg" | "--agg") if len(args) > 1:
             try:
                 val = max(0, min(100, int(args[1])))
@@ -2328,6 +2476,8 @@ Commands:
   --reset-spatial           Reset Delay & Reverb to clean bypass
   --status, -s              Print current status and live telemetry
   --preset, -p <name>       Apply voice preset (e.g. "Daft Punk", "Darth Vader", "Sci-Fi Alien")
+  --set-source <node>       Set hardware capture microphone source
+  --set-sink <node>         Set physical playback output device (speakers/headphones)
   --set-agg <0-100>         Set input RNNoise suppression aggressiveness (0 to 100%)
   --set-vol <0-200>         Set microphone volume/gain (0 to 200%)
   --out-noise <on|off|toggle>  Toggle output noise cancellation (Two-Way)

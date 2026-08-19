@@ -65,6 +65,11 @@ struct gha_frame
  *                       node. "default" or empty arg = let wireplumber
  *                       choose (PW_ID_ANY).
  *
+ *   SINK_TGT <pw-node-name|default>
+ *                       point the sink playback stream at a specific physical
+ *                       output sink (speakers, headphones, bluetooth).
+ *                       "default" or empty arg = let wireplumber choose.
+ *
  *   MON <0|1>           monitor: when 1, route processed audio to the
  *                       default sink so the user can hear what their
  *                       virtual mic sounds like.

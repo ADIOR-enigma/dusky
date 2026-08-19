@@ -1231,11 +1231,14 @@ struct app
     /* Pending capture-source change requested from the main loop.
      * mon_pending: 0=no change, 1=connect monitor, 2=disconnect monitor.
      * src_pending: 0=no change, 1=apply src_pending_target.
-     * sink_pending: 0=no change, 1=connect sink pipeline, 2=disconnect. */
+     * sink_pending: 0=no change, 1=connect sink pipeline, 2=disconnect.
+     * sink_tgt_pending: 0=no change, 1=retarget sink_out to sink_pending_target. */
     _Atomic int src_pending;
     _Atomic int mon_pending;
     _Atomic int sink_pending;
+    _Atomic int sink_tgt_pending;
     char src_pending_target[256];
+    char sink_pending_target[256];
 };
 static struct app g_app;
 
@@ -1481,7 +1484,7 @@ static void cb_in_process(void *userdata)
             const float open_th = 0.50f;
             const float close_th = 0.15f;
             const int hangover_samples = SAMPLE_RATE / 4; /* 250 ms */
-            const float close_target = 1.0f - 0.94f * aggro;
+            const float close_target = 1.0f - 0.98f * aggro;
             /* One-pole coefficient for a ~5 ms time constant: gain
              * reaches 63% of its new target in 5 ms, fully there in
              * ~20 ms. Short enough to feel instant, long enough to
@@ -1516,7 +1519,12 @@ static void cb_in_process(void *userdata)
                             g_rt.hangover_left--;
                     }
                     g_rt.gate_gain += gain_coeff * (target - g_rt.gate_gain);
-                    s *= g_rt.gate_gain;
+
+                    /* Continuous dry/wet blend: at aggro=0, 100% raw audio passes through.
+                     * At aggro=1.0, 100% denoised + gated audio passes through. */
+                    float raw = g_rt.rn_in[k] * (1.0f / 32768.0f);
+                    float processed = s * g_rt.gate_gain;
+                    s = (1.0f - aggro) * raw + aggro * processed;
                 }
 
                 int next = (g_rt.rn_out_head + 1) % RING_CAP;
@@ -1792,7 +1800,7 @@ static void sink_channel_process_frame(struct sink_channel_state *ch, int aggro_
     const float open_th = 0.50f;
     const float close_th = 0.15f;
     const int hangover_samples = SAMPLE_RATE / 4; /* 250 ms */
-    const float close_target = 1.0f - 0.94f * aggro;
+    const float close_target = 1.0f - 0.98f * aggro;
     const float gain_coeff = 1.0f - expf(-1.0f / (SAMPLE_RATE * 0.005f));
 
     for (int k = 0; k < RNN_FRAME; k++)
@@ -1817,7 +1825,12 @@ static void sink_channel_process_frame(struct sink_channel_state *ch, int aggro_
                 ch->hangover_left--;
         }
         ch->gate_gain += gain_coeff * (target - ch->gate_gain);
-        s *= ch->gate_gain;
+
+        /* Continuous dry/wet blend: at aggro=0, 100% raw audio passes through.
+         * At aggro=1.0, 100% denoised + gated audio passes through. */
+        float raw = ch->rn_in[k] * (1.0f / 32768.0f);
+        float processed = s * ch->gate_gain;
+        s = (1.0f - aggro) * raw + aggro * processed;
 
         int next = (ch->rn_out_head + 1) % RING_CAP;
         if (next != ch->rn_out_tail)
@@ -2114,23 +2127,39 @@ static void apply_pending_monitor(struct app *app)
     }
 }
 
-/* Connect or disconnect the output sink pipeline (Two-Way Noise Cancellation).
- * When connecting, the sink_out_stream (playback to real speakers) is linked
- * to the default output device. The sink_in_stream (virtual sink) is always
- * connected from startup - it just passes audio through or denoises based
- * on the out_rnnoise_on flag. This function handles the playback side. */
-static void apply_pending_sink(struct app *app)
+/* Create (or recreate) the sink output stream targeting a specific physical
+ * output device. When target is non-NULL and not "default", PW_KEY_TARGET_OBJECT
+ * pins the stream to that device and NODE_DONT_RECONNECT prevents WirePlumber
+ * from overriding it. For "default" (NULL / "" / "default") WirePlumber picks
+ * the default sink. Both cases share the same link-group as sink_in to prevent
+ * feedback loops. */
+static int create_sink_out_stream(struct app *app, const char *target)
 {
-    int p = atomic_exchange(&app->sink_pending, 0);
-    if (p == 0)
-        return;
+    int has_target = (target && target[0] && strcmp(target, "default") != 0);
 
-    if (p == 2)
-    {
-        pw_stream_disconnect(app->sink_out_stream);
-        fprintf(stderr, "[ghelper-audio] sink-out disconnected\n");
-        return;
-    }
+    struct pw_properties *props = pw_properties_new(
+        PW_KEY_MEDIA_TYPE, "Audio",
+        PW_KEY_MEDIA_CATEGORY, "Playback",
+        PW_KEY_MEDIA_ROLE, "Communication",
+        PW_KEY_NODE_NAME, "ghelper-audio-sink-out",
+        PW_KEY_NODE_DESCRIPTION, "G-Helper Clean Output playback",
+        PW_KEY_NODE_AUTOCONNECT, "true",
+        PW_KEY_NODE_DONT_RECONNECT, has_target ? "true" : "false",
+        /* Must share link-group with sink_in so WirePlumber routes
+         * to real hardware, not back into our own virtual sink. */
+        "node.link-group", "ghelper-sink-group",
+        NULL);
+
+    if (has_target)
+        pw_properties_set(props, PW_KEY_TARGET_OBJECT, target);
+
+    app->sink_out_stream = pw_stream_new_simple(
+        pw_main_loop_get_loop(app->loop),
+        "ghelper-audio-sink-out",
+        props,
+        &sink_out_stream_events,
+        &g_sink_out_ctx);
+    g_sink_out_ctx.stream = app->sink_out_stream;
 
     uint8_t pod_buf[1024];
     struct spa_pod_builder b = SPA_POD_BUILDER_INIT(pod_buf, sizeof(pod_buf));
@@ -2140,20 +2169,34 @@ static void apply_pending_sink(struct app *app)
                                                    .format = SPA_AUDIO_FORMAT_F32,
                                                    .channels = 2,
                                                    .rate = SAMPLE_RATE));
-    if (pw_stream_connect(app->sink_out_stream,
-                          PW_DIRECTION_OUTPUT,
-                          PW_ID_ANY,
-                          PW_STREAM_FLAG_AUTOCONNECT |
-                              PW_STREAM_FLAG_MAP_BUFFERS |
-                              PW_STREAM_FLAG_RT_PROCESS,
-                          params, 1) < 0)
-    {
-        fprintf(stderr, "[ghelper-audio] sink-out connect failed\n");
-    }
+
+    return pw_stream_connect(app->sink_out_stream,
+                             PW_DIRECTION_OUTPUT, PW_ID_ANY,
+                             PW_STREAM_FLAG_AUTOCONNECT |
+                                 PW_STREAM_FLAG_MAP_BUFFERS |
+                                 PW_STREAM_FLAG_RT_PROCESS,
+                             params, 1);
+}
+
+/* Retarget the sink output stream to a new physical output device.
+ * Destroys and recreates the stream — same pattern as apply_pending_source. */
+static void apply_pending_sink_target(struct app *app)
+{
+    if (!atomic_load(&app->sink_tgt_pending))
+        return;
+    atomic_store(&app->sink_tgt_pending, 0);
+
+    const char *target = app->sink_pending_target;
+
+    pw_stream_destroy(app->sink_out_stream);
+    app->sink_out_stream = NULL;
+    g_sink_out_ctx.stream = NULL;
+
+    if (create_sink_out_stream(app, target) < 0)
+        fprintf(stderr, "[ghelper-audio] sink-out reconnect to '%s' failed\n", target);
     else
-    {
-        fprintf(stderr, "[ghelper-audio] sink-out connected\n");
-    }
+        fprintf(stderr, "[ghelper-audio] sink-out target set to '%s'\n",
+                target[0] ? target : "default");
 }
 
 static void on_timer(void *userdata, uint64_t expirations)
@@ -2163,7 +2206,7 @@ static void on_timer(void *userdata, uint64_t expirations)
 
     apply_pending_source(app);
     apply_pending_monitor(app);
-    apply_pending_sink(app);
+    apply_pending_sink_target(app);
 
     static uint32_t last_seq = 0;
     uint32_t seq = atomic_load(&g_snap.seq);
@@ -2267,6 +2310,17 @@ static void parse_cmd(char *line)
         if (v < 0) v = 0;
         if (v > 1000) v = 1000;
         atomic_store(&g_params.out_rnn_aggressiveness, v);
+    }
+    else if (!strncmp(line, "SINK_TGT ", 9))
+    {
+        /* Retarget the sink output playback to a specific physical output
+         * device. Same deferred-apply pattern as SRC for input capture. */
+        const char *val = line + 9;
+        while (*val == ' ') val++;
+        snprintf(g_app.sink_pending_target, sizeof(g_app.sink_pending_target),
+                 "%s", val);
+        atomic_store(&g_app.sink_tgt_pending, 1);
+        fprintf(stderr, "[ghelper-audio] sink target pending: '%s'\n", val);
     }
     else if (!strncmp(line, "EQ ", 3))
     {
@@ -2734,6 +2788,11 @@ int main(int argc, char *argv[])
         "audio.channels", "2",
         "audio.position", "FL,FR",
         PW_KEY_PRIORITY_SESSION, "900",
+        /* link-group tells WirePlumber that this sink and its playback
+         * partner (sink_out_stream) form a pair: WP must not route the
+         * playback stream back into this sink (feedback loop). This is
+         * the standard PipeWire pattern for virtual sink + loopback. */
+        "node.link-group", "ghelper-sink-group",
         NULL);
 
     app->sink_in_stream = pw_stream_new_simple(
@@ -2764,38 +2823,9 @@ int main(int argc, char *argv[])
     }
 
     /* Sink playback stream: routes cleaned audio to real speakers/headphones.
-     * Always connected from startup for seamless passthrough/denoise toggle. */
-    struct pw_properties *sink_out_props = pw_properties_new(
-        PW_KEY_MEDIA_TYPE, "Audio",
-        PW_KEY_MEDIA_CATEGORY, "Playback",
-        PW_KEY_MEDIA_ROLE, "Communication",
-        PW_KEY_NODE_NAME, "ghelper-audio-sink-out",
-        PW_KEY_NODE_DESCRIPTION, "G-Helper Clean Output playback",
-        NULL);
-
-    app->sink_out_stream = pw_stream_new_simple(
-        pw_main_loop_get_loop(app->loop),
-        "ghelper-audio-sink-out",
-        sink_out_props,
-        &sink_out_stream_events,
-        &g_sink_out_ctx);
-    g_sink_out_ctx.stream = app->sink_out_stream;
-
-    struct spa_pod_builder b_sink_out = SPA_POD_BUILDER_INIT(pod_buf, sizeof(pod_buf));
-    const struct spa_pod *sink_out_params[1];
-    sink_out_params[0] = spa_format_audio_raw_build(&b_sink_out, SPA_PARAM_EnumFormat,
-                                                    &SPA_AUDIO_INFO_RAW_INIT(
-                                                            .format = SPA_AUDIO_FORMAT_F32,
-                                                            .channels = 2,
-                                                            .rate = SAMPLE_RATE));
-
-    if (pw_stream_connect(app->sink_out_stream,
-                          PW_DIRECTION_OUTPUT,
-                          PW_ID_ANY,
-                          PW_STREAM_FLAG_AUTOCONNECT |
-                              PW_STREAM_FLAG_MAP_BUFFERS |
-                              PW_STREAM_FLAG_RT_PROCESS,
-                          sink_out_params, 1) < 0)
+     * Always connected from startup for seamless passthrough/denoise toggle.
+     * Uses create_sink_out_stream so it supports target retargeting later. */
+    if (create_sink_out_stream(app, "default") < 0)
     {
         fprintf(stderr, "sink_out_stream connect failed\n");
         return 1;
