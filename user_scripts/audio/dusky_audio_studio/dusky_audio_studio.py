@@ -512,6 +512,25 @@ PRESETS: Final[dict[str, dict[str, Any]]] = {
         "stutter_hz": 0,
         "vocoder_matrix": 0,
     },
+    "Megatron": {
+        "vocoder_on": True,
+        "vocoder_mix": 65,
+        "vocoder_carrier_hz": 80,
+        "vocoder_detune": 80,
+        "vocoder_attack_ms": 4,
+        "vocoder_release_ms": 40,
+        "vocoder_follow": False,
+        "vocoder_pitch_shift": 0,
+        "pitch_shift": -700,        # -7 semitones (deep metallic robotic growl)
+        "autotune_on": False,
+        "autotune_target_hz": 0,
+        "bitcrush_bits": 0,
+        "bitcrush_downsample": 1,
+        "bandpass_hpf_hz": 90,      # Low-cut handling sub-rumble
+        "bandpass_lpf_hz": 4000,    # Resonant metallic presence
+        "stutter_hz": 0,
+        "vocoder_matrix": 65,       # 65% metallic ring modulation + tanh saturation
+    },
 }
 
 
