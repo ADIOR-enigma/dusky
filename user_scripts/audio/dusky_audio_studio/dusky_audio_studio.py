@@ -3102,6 +3102,33 @@ def main() -> None:
                 print(f"Set Output Gain to {val}%")
             except ValueError:
                 print("Invalid value for volume (0-200).", file=sys.stderr)
+        case "--noise" if len(args) > 1:
+            action = args[1].lower()
+            if action == "on":
+                cfg.rnnoise_on = True
+                save_config(cfg)
+                send_daemon_cmd("RNN 1")
+                print("Input Noise Cancellation: ON")
+            elif action == "off":
+                cfg.rnnoise_on = False
+                save_config(cfg)
+                send_daemon_cmd("RNN 0")
+                print("Input Noise Cancellation: OFF")
+            elif action == "toggle":
+                cfg.rnnoise_on = not cfg.rnnoise_on
+                save_config(cfg)
+                send_daemon_cmd(f"RNN {1 if cfg.rnnoise_on else 0}")
+                print(f"Input Noise Cancellation: {'ON' if cfg.rnnoise_on else 'OFF'}")
+            else:
+                print("Usage: --noise <on|off|toggle>", file=sys.stderr)
+        case "--noise-state" | "--noise-status":
+            print("yes" if cfg.rnnoise_on else "no")
+        case "--out-noise-state" | "--out-noise-status":
+            print("yes" if cfg.out_rnnoise_on else "no")
+        case "--get-agg":
+            print(cfg.aggressiveness)
+        case "--get-out-agg":
+            print(cfg.out_aggressiveness)
         case "--out-noise" if len(args) > 1:
             action = args[1].lower()
             if action == "on":

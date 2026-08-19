@@ -1303,6 +1303,38 @@ title = "Quick Audio"
 [[pages.layout.items]]
 type = "toggle_card"
 [pages.layout.items.properties]
+title = "Dusky Audio"
+icon = "audio-headset-symbolic"
+state_command = "python3 $HOME/user_scripts/audio/dusky_audio_studio/dusky_audio_studio.py --status | grep -q '^ON' && echo yes || echo no"
+interval = 3
+[pages.layout.items.on_toggle.enabled]
+type = "exec"
+command = "python3 $HOME/user_scripts/audio/dusky_audio_studio/dusky_audio_studio.py --on"
+terminal = false
+[pages.layout.items.on_toggle.disabled]
+type = "exec"
+command = "python3 $HOME/user_scripts/audio/dusky_audio_studio/dusky_audio_studio.py --off"
+terminal = false
+
+[[pages.layout.items]]
+type = "toggle_card"
+[pages.layout.items.properties]
+title = "Denoise"
+icon = "audio-input-microphone-symbolic"
+state_command = "python3 $HOME/user_scripts/audio/dusky_audio_studio/dusky_audio_studio.py --noise-state"
+interval = 3
+[pages.layout.items.on_toggle.enabled]
+type = "exec"
+command = "python3 $HOME/user_scripts/audio/dusky_audio_studio/dusky_audio_studio.py --noise on"
+terminal = false
+[pages.layout.items.on_toggle.disabled]
+type = "exec"
+command = "python3 $HOME/user_scripts/audio/dusky_audio_studio/dusky_audio_studio.py --noise off"
+terminal = false
+
+[[pages.layout.items]]
+type = "toggle_card"
+[pages.layout.items.properties]
 title = "Mono Audio"
 icon = "audio-card-symbolic"
 key = "mono_audio"
@@ -1324,7 +1356,6 @@ icon = "media-record-symbolic"
 type = "exec"
 command = "$HOME/user_scripts/music/music_recognition.py"
 terminal = false
-
 
 [[pages.layout.items]]
 type = "toggle_card"
@@ -1355,6 +1386,123 @@ terminal = false
 [pages.layout.items.on_toggle.disabled]
 type = "exec"
 command = "$HOME/user_scripts/external/usb_sound_toggle.py --off"
+terminal = false
+
+[[pages.layout]]
+type = "section"
+[pages.layout.properties]
+title = "Dusky Audio Studio & DSP"
+icon = "applications-multimedia-symbolic"
+description = "Real-Time Vocoder, 9-Band EQ, Spatial DSP & Two-Way Denoise"
+
+[[pages.layout.items]]
+type = "button"
+[pages.layout.items.properties]
+title = "Open Audio Studio"
+button_text = "Launch Studio"
+description = "Full 4-Tab GUI: Noise, Voice FX, Delay/Reverb & 9-Band Parametric EQ"
+icon = "applications-multimedia-symbolic"
+style = "suggested"
+[pages.layout.items.on_press]
+type = "exec"
+command = "python3 $HOME/user_scripts/audio/dusky_audio_studio/dusky_audio_studio.py --gui"
+terminal = false
+
+[[pages.layout.items]]
+type = "slider"
+[pages.layout.items.properties]
+title = "Noise Suppression Aggressiveness"
+icon = "audio-input-microphone-symbolic"
+min = 0.0
+max = 100.0
+step = 5.0
+default = 100.0
+debounce = false
+value_command = "python3 $HOME/user_scripts/audio/dusky_audio_studio/dusky_audio_studio.py --get-agg"
+interval = 3
+[pages.layout.items.on_change]
+type = "exec"
+command = "python3 $HOME/user_scripts/audio/dusky_audio_studio/dusky_audio_studio.py --set-agg {value}"
+
+[[pages.layout.items]]
+type = "selection"
+[pages.layout.items.properties]
+title = "Voice Character Preset"
+description = "Real-time vocal transformation"
+icon = "microphone-sensitivity-high-symbolic"
+options = [
+  "Natural Clean",
+  "Daft Punk",
+  "Darth Vader",
+  "T-Pain Autotune",
+  "Cylon Robot",
+  "Matrix Agent",
+  "Sci-Fi Alien",
+  "Robot Phone",
+  "Megatron",
+  "Stephen Hawking",
+  "Kraftwerk",
+  "Chipmunk"
+]
+[pages.layout.items.on_change."Natural Clean"]
+type = "exec"
+command = "python3 $HOME/user_scripts/audio/dusky_audio_studio/dusky_audio_studio.py --preset \"Natural Clean\""
+[pages.layout.items.on_change."Daft Punk"]
+type = "exec"
+command = "python3 $HOME/user_scripts/audio/dusky_audio_studio/dusky_audio_studio.py --preset \"Daft Punk\""
+[pages.layout.items.on_change."Darth Vader"]
+type = "exec"
+command = "python3 $HOME/user_scripts/audio/dusky_audio_studio/dusky_audio_studio.py --preset \"Darth Vader\""
+[pages.layout.items.on_change."T-Pain Autotune"]
+type = "exec"
+command = "python3 $HOME/user_scripts/audio/dusky_audio_studio/dusky_audio_studio.py --preset \"T-Pain Autotune\""
+[pages.layout.items.on_change."Cylon Robot"]
+type = "exec"
+command = "python3 $HOME/user_scripts/audio/dusky_audio_studio/dusky_audio_studio.py --preset \"Cylon Robot\""
+[pages.layout.items.on_change."Matrix Agent"]
+type = "exec"
+command = "python3 $HOME/user_scripts/audio/dusky_audio_studio/dusky_audio_studio.py --preset \"Matrix Agent\""
+[pages.layout.items.on_change."Sci-Fi Alien"]
+type = "exec"
+command = "python3 $HOME/user_scripts/audio/dusky_audio_studio/dusky_audio_studio.py --preset \"Sci-Fi Alien\""
+[pages.layout.items.on_change."Robot Phone"]
+type = "exec"
+command = "python3 $HOME/user_scripts/audio/dusky_audio_studio/dusky_audio_studio.py --preset \"Robot Phone\""
+[pages.layout.items.on_change.Megatron]
+type = "exec"
+command = "python3 $HOME/user_scripts/audio/dusky_audio_studio/dusky_audio_studio.py --preset \"Megatron\""
+[pages.layout.items.on_change."Stephen Hawking"]
+type = "exec"
+command = "python3 $HOME/user_scripts/audio/dusky_audio_studio/dusky_audio_studio.py --preset \"Stephen Hawking\""
+[pages.layout.items.on_change.Kraftwerk]
+type = "exec"
+command = "python3 $HOME/user_scripts/audio/dusky_audio_studio/dusky_audio_studio.py --preset \"Kraftwerk\""
+[pages.layout.items.on_change.Chipmunk]
+type = "exec"
+command = "python3 $HOME/user_scripts/audio/dusky_audio_studio/dusky_audio_studio.py --preset \"Chipmunk\""
+
+[[pages.layout.items]]
+type = "button"
+[pages.layout.items.properties]
+title = "Reset Voice FX"
+button_text = "Clean"
+description = "Reset pitch shift, vocoder and autotune to Natural Clean"
+icon = "edit-undo-symbolic"
+[pages.layout.items.on_press]
+type = "exec"
+command = "python3 $HOME/user_scripts/audio/dusky_audio_studio/dusky_audio_studio.py --reset-voice"
+terminal = false
+
+[[pages.layout.items]]
+type = "button"
+[pages.layout.items.properties]
+title = "Reset 9-Band EQ"
+button_text = "Flat 0 dB"
+description = "Zero out all parametric equalizer bands (Input & Output)"
+icon = "edit-undo-symbolic"
+[pages.layout.items.on_press]
+type = "exec"
+command = "python3 $HOME/user_scripts/audio/dusky_audio_studio/dusky_audio_studio.py --reset-eq"
 terminal = false
 
 [[pages.layout]]
