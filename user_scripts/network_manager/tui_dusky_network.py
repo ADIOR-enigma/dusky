@@ -63,7 +63,7 @@ if cache_path.exists():
                 scope="network",
                 type_="menu",
                 is_parent=True,
-                expanded=False,
+                expanded=_in_use,
                 group="Available Networks"
             )
             _item.exists_in_target = True
@@ -233,6 +233,26 @@ SCHEMA[2].extend([
         options=["trigger"],
         group="Actions",
         extended_help="Disconnects the current active WiFi network profile."
+    ),
+    ConfigItem(
+        label="Reconnect Active Connection",
+        key="reconnect",
+        scope="status_action",
+        type_="bool",
+        default=False,
+        options=["trigger"],
+        group="Actions",
+        extended_help="Disconnects and immediately reconnects the current active Wi-Fi connection."
+    ),
+    ConfigItem(
+        label="󰐳 Share Active Wi-Fi via QR Code",
+        key="qr_active",
+        scope="status_action",
+        type_="bool",
+        default=False,
+        options=["trigger"],
+        group="Actions",
+        extended_help="Displays an interactive QR code to share the active Wi-Fi network with mobile devices."
     ),
     ConfigItem(
         label="Restart NetworkManager Service",
@@ -519,6 +539,16 @@ SCHEMA[4].extend([
         options=["trigger"],
         group="Hotspot Actions",
         extended_help="Stops the active broadcast on the wireless adapter."
+    ),
+    ConfigItem(
+        label="󰐳 Share Hotspot via QR Code",
+        key="qr_hotspot",
+        scope="hotspot",
+        type_="bool",
+        default=False,
+        options=["trigger"],
+        group="Hotspot Actions",
+        extended_help="Displays an interactive QR code for mobile devices to join the hotspot."
     ),
     ConfigItem(
         label="Status: Inactive",

@@ -8,6 +8,9 @@ import shutil
 import logging
 import subprocess
 import threading
+import select
+import termios
+import tty
 from pathlib import Path
 from typing import Any
 
@@ -341,6 +344,281 @@ networkFailureReason = network_failure_reason
 
 
 # =============================================================================
+#  WI-FI QR CODE SHARING GENERATOR & INTERACTIVE RUNNER
+# =============================================================================
+
+def escape_wifi_str(s: str) -> str:
+    """Escape special characters per Wi-Fi QR code standard (MECARD format)."""
+    out = []
+    for ch in str(s):
+        if ch in ('\\', ';', ',', ':', '"'):
+            out.append('\\' + ch)
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def build_wifi_payload(ssid: str, password: str = "", security: str = "WPA", hidden: bool = False) -> str:
+    """Builds standard Wi-Fi QR code payload string."""
+    sec_upper = security.upper()
+    if not password and (sec_upper in ("OPEN", "NONE", "--", "") or "NOPASS" in sec_upper):
+        sec_type = "nopass"
+    elif "WEP" in sec_upper:
+        sec_type = "WEP"
+    else:
+        sec_type = "WPA"
+
+    parts = [f"S:{escape_wifi_str(ssid)}", f"T:{sec_type}"]
+    if sec_type != "nopass" and password:
+        parts.append(f"P:{escape_wifi_str(password)}")
+    if hidden:
+        parts.append("H:true")
+
+    return f"WIFI:{';'.join(parts)};;"
+
+
+def generate_qr_text(payload: str) -> str:
+    """Generates a UTF-8 block QR code string using qrencode."""
+    if shutil.which("qrencode"):
+        try:
+            res = subprocess.run(
+                ["qrencode", "-m", "2", "-t", "UTF8", payload],
+                capture_output=True, text=True, timeout=5
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                return res.stdout
+        except Exception:
+            pass
+    return ""
+
+
+def copy_to_clipboard(text: str) -> bool:
+    """Copies given text to system clipboard via wl-copy or xclip."""
+    if not text:
+        return False
+    try:
+        subprocess.run(["wl-copy", text], stdin=subprocess.DEVNULL, capture_output=True, timeout=3)
+        return True
+    except FileNotFoundError:
+        try:
+            subprocess.run(["xclip", "-selection", "clipboard"], input=text.encode(), capture_output=True, timeout=3)
+            return True
+        except FileNotFoundError:
+            return False
+
+
+def save_qr_image(payload: str, ssid: str) -> str | None:
+    """Saves QR code as PNG image to ~/Pictures/."""
+    if not shutil.which("qrencode"):
+        return None
+
+    safe_ssid = "".join(c for c in ssid if c.isalnum() or c in ('-', '_')).strip() or "wifi"
+    out_dir = Path.home() / "Pictures"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_file = out_dir / f"wifi_qr_{safe_ssid}.png"
+
+    try:
+        res = subprocess.run(
+            ["qrencode", "-s", "10", "-m", "4", "-o", str(out_file), payload],
+            capture_output=True, timeout=5
+        )
+        if res.returncode == 0 and out_file.exists():
+            return str(out_file)
+    except Exception:
+        pass
+    return None
+
+
+def _read_qr_keypress() -> str | None:
+    """Non-blocking single keypress reader."""
+    if not sys.stdin.isatty():
+        return None
+    try:
+        r, _, _ = select.select([sys.stdin], [], [], 0.05)
+        if r:
+            ch = sys.stdin.read(1)
+            if ch == "\x1b":
+                r2, _, _ = select.select([sys.stdin], [], [], 0.02)
+                if r2:
+                    sys.stdin.read(2)
+                return "\x1b"
+            return ch
+    except Exception:
+        pass
+    return None
+
+
+def show_wifi_qr_interactive(ssid: str, password: str = "", security: str = "WPA", hidden: bool = False, interactive: bool = True) -> None:
+    """Renders the interactive QR code viewer directly using Rich."""
+    from rich.console import Console
+    from rich.live import Live
+    from rich.text import Text
+    from rich.table import Table
+    from rich.panel import Panel
+    from rich.align import Align
+
+    console = Console()
+    payload = build_wifi_payload(ssid, password, security, hidden)
+    qr_text = generate_qr_text(payload)
+
+    if not interactive or not sys.stdin.isatty():
+        # Non-interactive / headless fallback: print once and return
+        grid = Table.grid(expand=True)
+        grid.add_column(justify="center")
+        grid.add_row(Text("󰐳 WI-FI SHARING QR CODE", style="bold cyan"))
+        grid.add_row(Text("Scan this QR code with a phone or mobile device to join instantly.", style="dim italic"))
+        grid.add_row(Text(""))
+        if qr_text:
+            qr_panel = Panel(
+                Text(qr_text, style="white on black", justify="center"),
+                title="[bold yellow] 󰤨 Scan to Connect [/bold yellow]",
+                border_style="bright_blue",
+                expand=False
+            )
+            grid.add_row(Align.center(qr_panel))
+        else:
+            grid.add_row(Text("[!] qrencode not found. Install 'qrencode' to render visual QR code.", style="bold red"))
+        grid.add_row(Text(""))
+        info_table = Table(show_header=False, show_edge=False, box=None, padding=(0, 2))
+        info_table.add_column(style="dim", justify="right")
+        info_table.add_column(style="bold white", justify="left")
+        info_table.add_row("Network (SSID):", ssid)
+        info_table.add_row("Security:", security)
+        if password:
+            info_table.add_row("Password:", password)
+        else:
+            info_table.add_row("Password:", "[italic green]None (Open Network)[/italic green]")
+        if hidden:
+            info_table.add_row("Hidden SSID:", "Yes")
+        grid.add_row(Align.center(info_table))
+        console.print(grid)
+        return
+
+    show_password = True
+    status_msg = ""
+    status_time = 0.0
+
+    old_settings = None
+    try:
+        old_settings = termios.tcgetattr(sys.stdin)
+        tty.setcbreak(sys.stdin.fileno())
+    except Exception:
+        old_settings = None
+
+    try:
+        with Live(console=console, refresh_per_second=10) as live:
+            while True:
+                now = time.time()
+                key = _read_qr_keypress()
+
+                if key in ("q", "Q", "\x1b", "\r", "\n", " "):
+                    break
+
+                elif key in ("p", "P"):
+                    show_password = not show_password
+                    status_msg = "Password visibility toggled."
+                    status_time = now
+
+                elif key in ("c", "C"):
+                    if password:
+                        if copy_to_clipboard(password):
+                            status_msg = "Password copied to clipboard!"
+                        else:
+                            status_msg = "Clipboard tool (wl-copy/xclip) not found."
+                    else:
+                        status_msg = "No password required (Open network)."
+                    status_time = now
+
+                elif key in ("w", "W"):
+                    if copy_to_clipboard(payload):
+                        status_msg = "Wi-Fi connect string copied to clipboard!"
+                    else:
+                        status_msg = "Clipboard tool (wl-copy/xclip) not found."
+                    status_time = now
+
+                elif key in ("s", "S"):
+                    if not shutil.which("qrencode"):
+                        status_msg = "'qrencode' not found. Install qrencode to export PNG."
+                    else:
+                        saved_path = save_qr_image(payload, ssid)
+                        if saved_path:
+                            status_msg = f"Saved PNG to: {saved_path}"
+                        else:
+                            status_msg = "Failed to save PNG image."
+                    status_time = now
+
+                if status_msg and (now - status_time > 3.0):
+                    status_msg = ""
+
+                grid = Table.grid(expand=True)
+                grid.add_column(justify="center")
+
+                grid.add_row(Text("󰐳 WI-FI SHARING QR CODE", style="bold cyan"))
+                grid.add_row(Text("Scan this QR code with a phone or mobile device to join instantly.", style="dim italic"))
+                grid.add_row(Text(""))
+
+                if qr_text:
+                    qr_panel = Panel(
+                        Text(qr_text, style="white on black", justify="center"),
+                        title="[bold yellow] 󰤨 Scan to Connect [/bold yellow]",
+                        border_style="bright_blue",
+                        expand=False
+                    )
+                    grid.add_row(Align.center(qr_panel))
+                else:
+                    grid.add_row(Text("[!] qrencode not found. Install 'qrencode' to render visual QR code.", style="bold red"))
+
+                grid.add_row(Text(""))
+
+                info_table = Table(show_header=False, show_edge=False, box=None, padding=(0, 2))
+                info_table.add_column(style="dim", justify="right")
+                info_table.add_column(style="bold white", justify="left")
+
+                info_table.add_row("Network (SSID):", ssid)
+                info_table.add_row("Security:", security)
+
+                if password:
+                    disp_pw = password if show_password else "•" * len(password)
+                    info_table.add_row("Password:", disp_pw)
+                else:
+                    info_table.add_row("Password:", "[italic green]None (Open Network)[/italic green]")
+
+                if hidden:
+                    info_table.add_row("Hidden SSID:", "Yes")
+
+                grid.add_row(Align.center(info_table))
+                grid.add_row(Text(""))
+
+                if status_msg:
+                    grid.add_row(Text(f"  {status_msg}  ", style="bold green on black"))
+                    grid.add_row(Text(""))
+
+                footer_text = Text()
+                footer_text.append("[p] ", style="bold yellow")
+                footer_text.append("Toggle Password  •  ", style="dim")
+                footer_text.append("[c] ", style="bold yellow")
+                footer_text.append("Copy Password  •  ", style="dim")
+                footer_text.append("[w] ", style="bold yellow")
+                footer_text.append("Copy Wi-Fi String  •  ", style="dim")
+                footer_text.append("[s] ", style="bold yellow")
+                footer_text.append("Save PNG  •  ", style="dim")
+                footer_text.append("[q/Esc] ", style="bold yellow")
+                footer_text.append("Return", style="dim")
+
+                grid.add_row(Align.center(footer_text))
+
+                live.update(grid)
+                time.sleep(0.08)
+
+    finally:
+        if old_settings and sys.stdin.isatty():
+            try:
+                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+            except Exception:
+                pass
+
+
+# =============================================================================
 #  ENGINE IMPLEMENTATION
 # =============================================================================
 class NetworkManagerEngine(BaseEngine):
@@ -423,7 +701,10 @@ class NetworkManagerEngine(BaseEngine):
         state["hotspot/start_hotspot_24"] = "false"
         state["hotspot/start_hotspot_5"] = "false"
         state["hotspot/stop_hotspot"] = "false"
+        state["hotspot/qr_hotspot"] = "false"
         state["status_action/disconnect"] = "false"
+        state["status_action/reconnect"] = "false"
+        state["status_action/qr_active"] = "false"
         state["status_action/restart_nm"] = "false"
         state["status_action/rescan"] = "false"
 
@@ -554,6 +835,9 @@ class NetworkManagerEngine(BaseEngine):
                 return True, "Hotspot stopped.", ""
             return False, f"Failed: {res.stderr.strip()}", res.stderr
 
+        if key == "qr_hotspot":
+            return self._trigger_qr_viewer(self._hotspot_ssid, self._hotspot_password, "WPA2", False)
+
         return True, "OK", ""
 
     def _handle_network_action(self, key: str, value: str) -> tuple[bool, str, str]:
@@ -573,6 +857,24 @@ class NetworkManagerEngine(BaseEngine):
             else:
                 threading.Thread(target=self._async_connect, args=(ssid, None), daemon=True).start()
             return True, f"Connecting to {ssid}...", ""
+
+        if key.startswith("rc__"):
+            ssid = key[4:]
+            active = self._get_active_wifi_connection()
+            if active and active["ssid"] == ssid:
+                threading.Thread(target=self._async_reconnect, args=(ssid, active["uuid"]), daemon=True).start()
+                return True, f"Reconnecting to {ssid}...", ""
+            saved = self._get_saved_wifi()
+            match = [c for c in saved if c["name"] == ssid]
+            if match:
+                threading.Thread(target=self._async_reconnect, args=(ssid, match[0]["uuid"]), daemon=True).start()
+                return True, f"Reconnecting to {ssid}...", ""
+            return False, "Cannot reconnect: network not connected or saved.", ""
+
+        if key.startswith("qr_net__"):
+            ssid = key[8:]
+            ssid_val, pw, sec, hid = self._get_wifi_credentials(ssid)
+            return self._trigger_qr_viewer(ssid_val or ssid, pw, sec, hid)
 
         if key.startswith("dc__"):
             ssid = key[4:]
@@ -605,6 +907,18 @@ class NetworkManagerEngine(BaseEngine):
             threading.Thread(target=self._async_connect_saved, args=(uuid, uuid), daemon=True).start()
             return True, "Connecting...", ""
 
+        if key.startswith("rc__"):
+            uuid = key[4:]
+            saved = self._get_saved_wifi()
+            name = next((c["name"] for c in saved if c["uuid"] == uuid), uuid)
+            threading.Thread(target=self._async_reconnect, args=(name, uuid), daemon=True).start()
+            return True, f"Reconnecting to {name}...", ""
+
+        if key.startswith("qr_prof__"):
+            uuid = key[9:]
+            ssid, pw, sec, hid = self._get_wifi_credentials(uuid)
+            return self._trigger_qr_viewer(ssid or uuid, pw, sec, hid)
+
         if key.startswith("dc__"):
             uuid = key[4:]
             threading.Thread(target=self._async_disconnect, args=(uuid, uuid), daemon=True).start()
@@ -630,6 +944,20 @@ class NetworkManagerEngine(BaseEngine):
                 threading.Thread(target=self._async_disconnect, args=(active["ssid"], active["uuid"]), daemon=True).start()
                 return True, "Disconnecting...", ""
             return False, "No active connection.", ""
+
+        if key == "reconnect":
+            active = self._get_active_wifi_connection()
+            if active:
+                threading.Thread(target=self._async_reconnect, args=(active["ssid"], active["uuid"]), daemon=True).start()
+                return True, f"Reconnecting to {active['ssid']}...", ""
+            return False, "No active Wi-Fi connection to reconnect.", ""
+
+        if key == "qr_active":
+            active = self._get_active_wifi_connection()
+            if active:
+                ssid, pw, sec, hid = self._get_wifi_credentials(active["uuid"])
+                return self._trigger_qr_viewer(ssid or active["ssid"], pw, sec, hid)
+            return False, "No active Wi-Fi connection to share.", ""
 
         if key == "restart_nm":
             res = subprocess.run(
@@ -781,9 +1109,6 @@ class NetworkManagerEngine(BaseEngine):
             self._safe_call_from_thread(self._rebuild_schema)
         except Exception as e:
             logger.error(f"Async Wi-Fi scan error: {e}")
-
-    def _enrich_network_status(self, verb: dict[str, str], active_wifi: dict[str, Any] | None) -> dict[str, Any]:
-        enriched = dict(verb)
 
     def _enrich_network_status(self, verb: dict[str, str], active_wifi: dict[str, Any] | None) -> dict[str, Any]:
         enriched = dict(verb)
@@ -1083,8 +1408,93 @@ class NetworkManagerEngine(BaseEngine):
         return down_mbps, up_mbps
 
     # =========================================================================
-    #  ASYNC CONNECTION HELPERS
+    #  ASYNC CONNECTION HELPERS & QR VIEWER
     # =========================================================================
+
+    def _get_wifi_credentials(self, uuid_or_ssid: str) -> tuple[str, str, str, bool]:
+        """
+        Retrieves (ssid, password, security_type, is_hidden) for a given UUID or SSID.
+        Queries NetworkManager via nmcli -s -g with fallbacks.
+        """
+        target_uuid = None
+        target_ssid = uuid_or_ssid
+
+        if self._is_uuid(uuid_or_ssid):
+            target_uuid = uuid_or_ssid
+        else:
+            saved = self._get_saved_wifi()
+            for conn in saved:
+                if conn["name"] == uuid_or_ssid:
+                    target_uuid = conn["uuid"]
+                    break
+
+        if not target_uuid:
+            active = self._get_active_wifi_connection()
+            if active and (active["ssid"] == uuid_or_ssid or active["uuid"] == uuid_or_ssid):
+                target_uuid = active["uuid"]
+                target_ssid = active["ssid"]
+
+        if not target_uuid:
+            return target_ssid, "", "Open", False
+
+        fields = [
+            "802-11-wireless.ssid",
+            "802-11-wireless-security.key-mgmt",
+            "802-11-wireless-security.psk",
+            "802-11-wireless-security.wep-key0",
+            "802-11-wireless.hidden",
+            "connection.id"
+        ]
+        cmd = ["nmcli", "-s", "-g", ",".join(fields), "connection", "show", target_uuid]
+        out = self._run_cmd(cmd)
+        lines = out.splitlines()
+
+        ssid = lines[0].strip() if len(lines) > 0 and lines[0].strip() else target_ssid
+        key_mgmt = lines[1].strip() if len(lines) > 1 else ""
+        psk = lines[2].strip() if len(lines) > 2 else ""
+        wep_key = lines[3].strip() if len(lines) > 3 else ""
+        hidden_str = lines[4].strip() if len(lines) > 4 else "no"
+        conn_id = lines[5].strip() if len(lines) > 5 and lines[5].strip() else ssid
+
+        if not ssid:
+            ssid = conn_id
+
+        password = psk or wep_key
+
+        if not key_mgmt:
+            if wep_key:
+                sec_type = "WEP"
+            elif psk:
+                sec_type = "WPA"
+            else:
+                sec_type = "Open"
+        elif "wpa" in key_mgmt.lower() or "sae" in key_mgmt.lower() or "psk" in key_mgmt.lower() or "802-1x" in key_mgmt.lower():
+            sec_type = key_mgmt.upper()
+        elif "wep" in key_mgmt.lower():
+            sec_type = "WEP"
+        else:
+            sec_type = key_mgmt.upper()
+
+        is_hidden = hidden_str.lower() in ("yes", "true", "1")
+        return ssid, password, sec_type, is_hidden
+
+    def _trigger_qr_viewer(self, ssid: str, password: str = "", security: str = "WPA", hidden: bool = False) -> tuple[bool, str, str]:
+        if not ssid:
+            return False, "No SSID specified for QR code.", ""
+
+        if self.app:
+            def run_interactive_qr():
+                try:
+                    with self.app.suspend():
+                        show_wifi_qr_interactive(ssid, password, security, hidden, interactive=True)
+                finally:
+                    self._rebuild_schema()
+
+            self.app.call_from_thread(run_interactive_qr)
+            return True, f"Opened QR share for {ssid}.", ""
+
+        show_wifi_qr_interactive(ssid, password, security, hidden, interactive=False)
+        return True, f"Opened QR share for {ssid}.", ""
 
     def _async_connect(self, ssid: str, password: str | None) -> None:
         cmd = ["nmcli", "device", "wifi", "connect", ssid]
@@ -1128,12 +1538,35 @@ class NetworkManagerEngine(BaseEngine):
                 self.app.call_from_thread(self.app.play_reset_sound)
         self.rescan_event.set()
 
+    def _async_reconnect(self, label: str, uuid: str) -> None:
+        if self.app:
+            self.app.call_from_thread(self.app.notify_status, f"Disconnecting from {label}...")
+        subprocess.run(
+            ["nmcli", "connection", "down", "uuid", uuid],
+            capture_output=True, stdin=subprocess.DEVNULL, timeout=15
+        )
+        time.sleep(0.8)
+        if self.app:
+            self.app.call_from_thread(self.app.notify_status, f"Reconnecting to {label}...")
+        res = subprocess.run(
+            ["nmcli", "connection", "up", "uuid", uuid],
+            capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=30
+        )
+        if self.app:
+            if res.returncode == 0:
+                self.app.call_from_thread(self.app.notify_status, f"Reconnected to {label}!")
+            else:
+                err = res.stderr.strip().split("\n")[0][:50]
+                self.app.call_from_thread(self.app.notify_status, f"Reconnect failed: {err}")
+                self.app.call_from_thread(self.app.play_reset_sound)
+        self.rescan_event.set()
+
     # =========================================================================
     #  DYNAMIC SCHEMA REBUILDER
     # =========================================================================
 
     def _rebuild_schema(self) -> None:
-        """Rebuilds tabs 0 & 1 in-place. Updates live traffic, ping, DNS & speed test labels."""
+        """Rebuilds tabs 0 & 1 in-place. Updates live traffic, ping, DNS, speed test & hotspot labels."""
         if not self.app or not self.app.schema:
             return
 
@@ -1142,11 +1575,15 @@ class NetworkManagerEngine(BaseEngine):
         saved = self._get_saved_wifi()
 
         expanded = set()
+        collapsed = set()
         for tab_idx in (0, 1):
             for item in self.app.schema.get(tab_idx, []):
-                if item.is_parent and item.expanded:
+                if item.is_parent:
                     uid = f"{item.scope}.{item.key}" if item.scope and item.scope != "DEFAULT" else item.key
-                    expanded.add(uid)
+                    if item.expanded:
+                        expanded.add(uid)
+                    else:
+                        collapsed.add(uid)
 
         # ----- Tab 0: Networks -----
         t0 = []
@@ -1204,10 +1641,11 @@ class NetworkManagerEngine(BaseEngine):
                 label = f"{icon} {status_lbl:<6} {ssid:<24} {security:<10} {signal}% {bar}"
                 pkey = f"net__{ssid}"
                 parent_uid = f"network.{pkey}"
+                is_expanded = (parent_uid in expanded) if parent_uid in expanded else (in_use and parent_uid not in collapsed)
 
                 t0.append(self._make_item(
                     label=label, key=pkey, scope="network", type_="menu", default=None,
-                    is_parent=True, expanded=(parent_uid in expanded), group=group_name
+                    is_parent=True, expanded=is_expanded, group=group_name
                 ))
 
                 if in_use:
@@ -1216,9 +1654,19 @@ class NetworkManagerEngine(BaseEngine):
                         type_="bool", default=False, parent_ref=parent_uid, options=["trigger"]
                     ))
                     t0.append(self._make_item(
-                        label="✕ Forget", key=f"fg__{ssid}", scope="network",
+                        label="󰆴 Forget", key=f"fg__{ssid}", scope="network",
                         type_="bool", default=False, parent_ref=parent_uid, options=["trigger"],
                         confirm_message=f"Permanently delete saved profile for **{ssid}**?"
+                    ))
+                    t0.append(self._make_item(
+                        label="⟳ Reconnect", key=f"rc__{ssid}", scope="network",
+                        type_="bool", default=False, parent_ref=parent_uid, options=["trigger"],
+                        extended_help=f"Disconnects and immediately reconnects to {ssid}."
+                    ))
+                    t0.append(self._make_item(
+                        label="󰐳 Share via QR Code", key=f"qr_net__{ssid}", scope="network",
+                        type_="bool", default=False, parent_ref=parent_uid, options=["trigger"],
+                        extended_help=f"Displays an interactive QR code to share {ssid} with mobile devices."
                     ))
                 elif is_saved:
                     uuid = match[0]["uuid"]
@@ -1227,9 +1675,14 @@ class NetworkManagerEngine(BaseEngine):
                         type_="bool", default=False, parent_ref=parent_uid, options=["trigger"]
                     ))
                     t0.append(self._make_item(
-                        label="✕ Forget", key=f"fg__{ssid}", scope="network",
+                        label="󰆴 Forget", key=f"fg__{ssid}", scope="network",
                         type_="bool", default=False, parent_ref=parent_uid, options=["trigger"],
                         confirm_message=f"Permanently delete saved profile for **{ssid}**?"
+                    ))
+                    t0.append(self._make_item(
+                        label="󰐳 Share via QR Code", key=f"qr_net__{ssid}", scope="network",
+                        type_="bool", default=False, parent_ref=parent_uid, options=["trigger"],
+                        extended_help=f"Displays an interactive QR code to share {ssid} with mobile devices."
                     ))
                     t0.append(self._make_item(
                         label="Auto-connect", key=uuid, scope="saved",
@@ -1246,6 +1699,11 @@ class NetworkManagerEngine(BaseEngine):
                             label="▶ Connect (Open)", key=f"cn__{ssid}", scope="network",
                             type_="bool", default=False, parent_ref=parent_uid, options=["trigger"]
                         ))
+                        t0.append(self._make_item(
+                            label="󰐳 Share via QR Code", key=f"qr_net__{ssid}", scope="network",
+                            type_="bool", default=False, parent_ref=parent_uid, options=["trigger"],
+                            extended_help=f"Displays an interactive QR code to share {ssid} with mobile devices."
+                        ))
 
         self.app.schema[0] = t0
 
@@ -1257,10 +1715,11 @@ class NetworkManagerEngine(BaseEngine):
             indicator = "●" if is_active else "◉"
             pkey = f"prof__{uuid}"
             parent_uid = f"saved.{pkey}"
+            is_expanded = (parent_uid in expanded) if parent_uid in expanded else (is_active and parent_uid not in collapsed)
 
             t1.append(self._make_item(
                 label=f"{indicator} {name}", key=pkey, scope="saved", type_="menu",
-                default=None, is_parent=True, expanded=(parent_uid in expanded),
+                default=None, is_parent=True, expanded=is_expanded,
                 group="Saved Connections"
             ))
 
@@ -1269,25 +1728,48 @@ class NetworkManagerEngine(BaseEngine):
                     label="✕ Disconnect", key=f"dc__{uuid}", scope="saved_action",
                     type_="bool", default=False, parent_ref=parent_uid, options=["trigger"]
                 ))
+                t1.append(self._make_item(
+                    label="󰆴 Forget", key=f"fg__{uuid}", scope="saved_action",
+                    type_="bool", default=False, parent_ref=parent_uid, options=["trigger"],
+                    confirm_message=f"Permanently delete **{name}**?"
+                ))
+                t1.append(self._make_item(
+                    label="⟳ Reconnect", key=f"rc__{uuid}", scope="saved_action",
+                    type_="bool", default=False, parent_ref=parent_uid, options=["trigger"],
+                    extended_help=f"Disconnects and immediately reconnects to {name}."
+                ))
+                t1.append(self._make_item(
+                    label="󰐳 Share via QR Code", key=f"qr_prof__{uuid}", scope="saved_action",
+                    type_="bool", default=False, parent_ref=parent_uid, options=["trigger"],
+                    extended_help=f"Displays an interactive QR code to share {name} with mobile devices."
+                ))
+                t1.append(self._make_item(
+                    label="Auto-connect", key=uuid, scope="saved",
+                    type_="bool", default=autocon, parent_ref=parent_uid
+                ))
             else:
                 t1.append(self._make_item(
                     label="▶ Connect", key=f"cn__{uuid}", scope="saved_action",
                     type_="bool", default=False, parent_ref=parent_uid, options=["trigger"]
                 ))
-
-            t1.append(self._make_item(
-                label="Auto-connect", key=uuid, scope="saved",
-                type_="bool", default=autocon, parent_ref=parent_uid
-            ))
-            t1.append(self._make_item(
-                label="✕ Forget", key=f"fg__{uuid}", scope="saved_action",
-                type_="bool", default=False, parent_ref=parent_uid, options=["trigger"],
-                confirm_message=f"Permanently delete **{name}**?"
-            ))
+                t1.append(self._make_item(
+                    label="󰆴 Forget", key=f"fg__{uuid}", scope="saved_action",
+                    type_="bool", default=False, parent_ref=parent_uid, options=["trigger"],
+                    confirm_message=f"Permanently delete **{name}**?"
+                ))
+                t1.append(self._make_item(
+                    label="󰐳 Share via QR Code", key=f"qr_prof__{uuid}", scope="saved_action",
+                    type_="bool", default=False, parent_ref=parent_uid, options=["trigger"],
+                    extended_help=f"Displays an interactive QR code to share {name} with mobile devices."
+                ))
+                t1.append(self._make_item(
+                    label="Auto-connect", key=uuid, scope="saved",
+                    type_="bool", default=autocon, parent_ref=parent_uid
+                ))
 
         self.app.schema[1] = t1
 
-        # ----- Tab 2: Status & Live Traffic (update labels) -----
+        # ----- Update dynamic labels across all tabs -----
         verb = self._verbose_info
         iface_name = verb.get("iface", "")
         conn_type = verb.get("type", "disconnected" if not iface_name else "ethernet")
@@ -1317,8 +1799,17 @@ class NetworkManagerEngine(BaseEngine):
         internet_ping_str = format_ping_latency(self._ping_state.get("internet_ping_latency"))
         packet_loss_str = format_packet_loss(self._ping_state.get("internet_ping_packet_loss", 0))
 
-        if len(self.app.schema) > 2:
-            for item in self.app.schema[2]:
+        if active and active.get("mode") == "ap":
+            status_text = "Active"
+            clients = self._get_hotspot_clients(active.get("device"))
+            clients_text = f"{clients} connected"
+        else:
+            status_text = "Inactive"
+            clients_text = "N/A"
+
+        # Update all tabs agnostic of exact tab index
+        for tab_items in self.app.schema.values():
+            for item in tab_items:
                 if item.key == "wifi_radio":
                     item.value = radio
                 elif item.key == "status_type":
@@ -1347,35 +1838,15 @@ class NetworkManagerEngine(BaseEngine):
                     item.label = f"Internet Ping (1.1.1.1): {internet_ping_str}"
                 elif item.key == "ping_packet_loss":
                     item.label = f"Packet Loss:         {packet_loss_str}"
-
-        # ----- Tab 3: DNS (update labels) -----
-        if len(self.app.schema) > 3:
-            for item in self.app.schema[3]:
-                if item.key == "dns_current":
+                elif item.key == "dns_current":
                     item.label = f"Current DNS Provider: {self._dns_provider}"
-
-        # ----- Tab 4: Speed Test (update labels) -----
-        if len(self.app.schema) > 4:
-            for item in self.app.schema[4]:
-                if item.key == "speedtest_status":
+                elif item.key == "speedtest_status":
                     item.label = f"Status: {self._speedtest_status}"
                 elif item.key == "speedtest_down_result":
                     item.label = f"Download Speed: {self._speedtest_down_val}"
                 elif item.key == "speedtest_up_result":
                     item.label = f"Upload Speed:   {self._speedtest_up_val}"
-
-        # ----- Tab 5: Hotspot (update labels) -----
-        if len(self.app.schema) > 5:
-            if active and active.get("mode") == "ap":
-                status_text = "Active"
-                clients = self._get_hotspot_clients(active.get("device"))
-                clients_text = f"{clients} connected"
-            else:
-                status_text = "Inactive"
-                clients_text = "N/A"
-
-            for item in self.app.schema[5]:
-                if item.key == "hotspot_status_info":
+                elif item.key == "hotspot_status_info":
                     item.label = f"Status: {status_text}"
                 elif item.key == "hotspot_clients_info":
                     item.label = f"Connected Clients: {clients_text}"

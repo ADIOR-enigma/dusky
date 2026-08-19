@@ -24,12 +24,18 @@ for writes — target presence only affects `[Missing]` rendering.
 | `network` | `rescan` | bool trigger | sets rescan event (same as `status_action/rescan`) |
 | `network` | `net__<ssid>` | menu parent | engine-created per-SSID folder (`type_="menu"`, `is_parent=True`) — never write it |
 | `network` | `cn__<ssid>` | bool trigger | connect: saved profile by name, else open network |
+| `network` | `rc__<ssid>` | bool trigger | reconnect: disconnects and brings connection back up |
+| `network` | `qr_net__<ssid>` | bool trigger | shares network credentials via an interactive QR code |
 | `network` | `pw__<ssid>` | string | connect with password; empty value → `(False, "Password cannot be empty.", "")` |
 | `network` | `dc__<ssid>` | bool trigger | disconnect; `(False, "Not connected to this network.", "")` if not active |
 | `network` | `fg__<ssid>` | bool trigger | forget saved profile by name; `(False, "Connection not found.", "")` if unsaved |
 | `saved` | `<uuid>` | bool | autoconnect toggle — key MUST match strict UUID regex, else falls through to OK |
 | `saved_action` | `cn__<uuid>` / `dc__<uuid>` / `fg__<uuid>` | bool trigger | connect/disconnect/delete saved profile by UUID |
+| `saved_action` | `rc__<uuid>` | bool trigger | reconnect saved profile by UUID |
+| `saved_action` | `qr_prof__<uuid>` | bool trigger | shares saved profile via interactive QR code |
 | `status` | `wifi_radio` | bool | `nmcli radio wifi on/off`; `"true"` → on |
+| `status_action` | `reconnect` | bool trigger | disconnects and reconnects active connection |
+| `status_action` | `qr_active` | bool trigger | shares active Wi-Fi profile via interactive QR code |
 | `status_action` | `disconnect` | bool trigger | disconnect active connection |
 | `status_action` | `restart_nm` | bool trigger | `sudo -n systemctl restart NetworkManager` → may return `AUTH_REQUIRED` |
 | `status_action` | `rescan` | bool trigger | force rescan |
@@ -40,6 +46,7 @@ for writes — target presence only affects `[Missing]` rendering.
 | `hotspot` | `hotspot_password` | string | in-memory password; non-empty must be ≥ 8 chars else `(False, "Password must be at least 8 characters.", "")` |
 | `hotspot` | `start_hotspot_24` / `start_hotspot_5` | bool trigger | `nmcli device wifi hotspot ... band bg\|a` (+ `password` if set) |
 | `hotspot` | `stop_hotspot` | bool trigger | `nmcli device disconnect <wifi-dev>` |
+| `hotspot` | `qr_hotspot` | bool trigger | shares hotspot credentials via interactive QR code |
 | `hotspot` | `hotspot_status_info`, `hotspot_clients_info` | action | read-only label rows |
 | (tab 3, optional) | `dns_current` | action | read-only DNS provider label; **no DNS write scope exists** |
 
