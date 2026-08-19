@@ -308,7 +308,7 @@ switch.compact-switch slider {
 
 @dataclass(slots=True, kw_only=True)
 class AudioConfig:
-    # Master
+    # Master (Disabled by default, opt-in only)
     enabled: bool = False
     source: str = "default"
     sink: str = "default"

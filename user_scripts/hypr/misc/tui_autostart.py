@@ -143,6 +143,15 @@ SCHEMA = {
 
         # --- Daemons & Services ---
         ConfigItem(
+            label="Dusky Audio Studio & Voice DSP",
+            key="dusky_audio",
+            scope="autostart",
+            type_="bool",
+            default=False,
+            group="Daemons & Services",
+            extended_help="**Dusky Audio Studio & Voice DSP Engine**\n\nAutomatically launches Dusky Audio Studio on login, restoring real-time PipeWire vocoder, noise cancellation, spatial DSP, and parametric EQ settings."
+        ),
+        ConfigItem(
             label="Gnome Keyring",
             key="gnome_keyring",
             scope="autostart",

@@ -34,6 +34,7 @@ hl.on("hyprland.start", function()
 
     -- --- BACKGROUND SERVICES ---
     hl.exec_cmd("awww-daemon")           -- Wallpaper engine
+    -- hl.exec_cmd("python3 $HOME/user_scripts/audio/dusky_audio_studio/dusky_audio_studio.py --autostart") -- Dusky Audio Studio & Voice DSP
     -- hl.exec_cmd("$HOME/user_scripts/wayclick/dusky_wayclick.sh") -- Wayclick
 
     -- ---Background wallpaper audio Visvualizer

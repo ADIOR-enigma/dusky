@@ -69,6 +69,11 @@ AUTOSTART_DEFAULTS: dict[str, dict[str, Any]] = {
         "canonical": 'hl.exec_cmd("$HOME/user_scripts/wayclick/dusky_wayclick.sh")',
         "default": False
     },
+    "autostart/dusky_audio": {
+        "pattern": r'dusky_audio_studio\.py.*--autostart',
+        "canonical": 'hl.exec_cmd("python3 $HOME/user_scripts/audio/dusky_audio_studio/dusky_audio_studio.py --autostart")',
+        "default": False
+    },
     "autostart/hyprpm_reload": {
         "pattern": r'hyprpm\s+reload',
         "canonical": 'hl.exec_cmd("hyprpm reload")',
