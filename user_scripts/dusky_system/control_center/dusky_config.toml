@@ -1408,7 +1408,7 @@ description = "Switch between Speakers/Headphones"
 icon = "audio-speakers-symbolic"
 [pages.layout.items.on_press]
 type = "exec"
-command = "$HOME/user_scripts/audio/dusky_output.sh"
+command = "$HOME/user_scripts/audio/dusky_in_out_source.sh --output"
 terminal = false
 
 [[pages.layout.items]]
@@ -1419,7 +1419,7 @@ description = "Switch between Microphones"
 icon = "microphone-sensitivity-high-symbolic"
 [pages.layout.items.on_press]
 type = "exec"
-command = "$HOME/user_scripts/audio/dusky_input.sh"
+command = "$HOME/user_scripts/audio/dusky_in_out_source.sh --input"
 terminal = false
 
 
