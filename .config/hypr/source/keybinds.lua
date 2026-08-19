@@ -1228,11 +1228,11 @@ cond_bind(
     { description = "Switch Mic Input", locked = true }
 )
 
--- Noise Cancellation toggle
-cond_bind(
+-- Dusky Audio Studio GUI
+hl.bind(
     "ALT + N",
-    hl.dsp.exec_cmd(dusky_scripts .. "audio/noise_cancellation/noise_cancel.py --toggle"),
-    { description = "Toggle AI Noise Cancellation", locked = true }
+    hl.dsp.exec_cmd("dusky-run " .. dusky_scripts .. "audio/dusky_audio_studio/dusky_audio_studio.py"),
+    { description = "Dusky Audio Studio & Voice DSP", submap_universal = true }
 )
 
 -- Calculator

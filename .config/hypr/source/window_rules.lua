@@ -1178,6 +1178,20 @@ hl.window_rule({
     focus_on_activate = true
 })
 
+-- Dusky Audio Studio
+hl.window_rule({
+    name = "dusky_audio_studio",
+    match = {
+        class = "^(dusky_audio_studio\\.py|dusky_audio_studio)$",
+    },
+    float = true,
+    size = {630, "(monitor_h*0.90)"},
+    center = true,
+    animation = "slide up",
+    workspace = "unset",
+    focus_on_activate = true
+})
+
 --- Dusky_QuickPanal Script ---
 hl.window_rule({
     name = "dusky_quickpanalpy",
