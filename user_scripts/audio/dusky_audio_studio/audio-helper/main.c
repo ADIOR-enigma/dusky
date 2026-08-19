@@ -216,9 +216,8 @@ static void params_init(void)
      * unchanged until the user drags the response line. */
     atomic_store(&g_params.eq_gain_centidb, 0);
 
-    /* RNNoise aggressiveness defaults to 700 per-mille = a noticeable
-     * but artefact-free extra suppression over the bare model output. */
-    atomic_store(&g_params.rnn_aggressiveness, 700);
+    /* RNNoise aggressiveness defaults to 1000 per-mille = 100% full suppression. */
+    atomic_store(&g_params.rnn_aggressiveness, 1000);
 
     /* Voice effects default to bypass so a fresh install matches the
      * "raw vocoder" feel the previous build had. Presets stamp these. */
@@ -1393,22 +1392,7 @@ static void cb_in_process(void *userdata)
      * blurring the chop). */
     const float stutter_gate_coef = 1.0f - expf(-1.0f / ((float)SAMPLE_RATE * 0.005f));
 
-    /* When the vocoder is off, force all voice-effect stages to their bypass
-     * values. These stages (pitch shifter, autotune, bitcrush, band-pass,
-     * stutter) are part of the vocoder preset stack — their parameters are
-     * stamped by presets and persisted independently, but conceptually they
-     * only make sense as part of the vocoder chain. Without this gate, the
-     * VOC checkbox fails to silence a preset's pitch shift / bitcrush / etc.
-     * because the atomics retain the preset's values after VOC 0. */
-    if (!voc_on)
-    {
-        target_ratio = 1.0f; /* psh_tick has a unity fast-path */
-        bc_bits = 0;
-        bc_ds = 1;
-        voice_hpf_hz = 0;
-        voice_lpf_hz = 0;
-        stutter_hz = 0;
-    }
+
 
     uint32_t phead = atomic_load_explicit(&g_post.head, memory_order_relaxed);
     uint32_t mhead = atomic_load_explicit(&g_mon.head, memory_order_relaxed);

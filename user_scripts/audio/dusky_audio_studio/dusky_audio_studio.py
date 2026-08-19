@@ -253,7 +253,7 @@ class AudioConfig:
 
     # Noise Suppression - Input / Microphone (Enabled by default on fresh install)
     rnnoise_on: bool = True
-    aggressiveness: int = 70  # 0..100%
+    aggressiveness: int = 100  # 0..100%
 
     # Noise Suppression - Output / Speaker & Headphone (Two-Way, OFF by default)
     out_rnnoise_on: bool = False
@@ -598,10 +598,33 @@ def send_desktop_notification(
 
 def check_system_dependencies() -> list[str]:
     missing: list[str] = []
-    if not shutil.which("pw-cli"):
-        missing.append("Package 'pipewire' is missing (install with: sudo pacman -S pipewire wireplumber)")
-    if not find_helper_binary():
-        missing.append("Native Audio DSP engine is missing (~/.cache/dusky_audio_studio/dusky_audio_dsp)")
+    missing_pkgs: list[str] = []
+
+    if not shutil.which("pw-cli") or not shutil.which("wpctl"):
+        missing_pkgs.extend(["pipewire", "wireplumber"])
+
+    bin_path = find_helper_binary()
+    if not bin_path:
+        if not shutil.which("gcc") and not shutil.which("clang") and not shutil.which("cc"):
+            missing_pkgs.append("gcc")
+        if not shutil.which("make"):
+            missing_pkgs.append("make")
+        try:
+            res = subprocess.run(["pkg-config", "--exists", "rnnoise"], capture_output=True)
+            if res.returncode != 0:
+                missing_pkgs.append("rnnoise")
+        except Exception:
+            pass
+
+        unique_pkgs = list(dict.fromkeys(missing_pkgs))
+        if unique_pkgs:
+            missing.append(f"Install required packages: sudo pacman -S {' '.join(unique_pkgs)}")
+        else:
+            missing.append("Native Audio DSP engine failed to compile (~/user_scripts/audio/dusky_audio_studio/audio-helper)")
+    elif missing_pkgs:
+        unique_pkgs = list(dict.fromkeys(missing_pkgs))
+        missing.append(f"Install required packages: sudo pacman -S {' '.join(unique_pkgs)}")
+
     return missing
 
 
@@ -2138,7 +2161,7 @@ def run_gtk_app() -> None:
             self._updating_ui = True
             self.cfg.volume = 100
             self.cfg.rnnoise_on = True
-            self.cfg.aggressiveness = 70
+            self.cfg.aggressiveness = 100
             self.cfg.out_rnnoise_on = False
             self.cfg.out_aggressiveness = 70
             self.cfg.sink = "default"
