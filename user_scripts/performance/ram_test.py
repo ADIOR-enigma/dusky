@@ -1057,6 +1057,8 @@ def build_gauge(pct: float | None, width: int = 12, mode: str = "bandwidth") -> 
         return "[dim]—[/dim]"
     clamped = max(0.0, min(100.0, pct))
     filled = int(round((clamped / 100.0) * width))
+    if clamped > 0.0 and filled == 0:
+        filled = 1
     empty = width - filled
 
     if mode == "latency":
@@ -1120,12 +1122,17 @@ def render_header(specs: HardwareSpecs, governor_active: bool = True):
 
     temp_rich = f"[bold yellow]{temp_str}[/bold yellow]" if specs.initial_dram_temps else "[dim]No Sensor Data[/dim]"
 
-    table = Table(show_header=False, box=box.ROUNDED, expand=True)
-    table.add_column("Property", style="bold cyan", width=26)
-    table.add_column("System Specifications & Architecture", style="bold white")
+    table = Table(
+        box=box.ROUNDED,
+        show_header=False,
+        border_style="bright_cyan",
+        expand=False,
+    )
+    table.add_column("Property", style="bold bright_cyan", min_width=27, no_wrap=True)
+    table.add_column("System Specifications & Architecture", style="bold bright_white", min_width=62, no_wrap=True)
 
     table.add_row("Processor Model", f"[bold white]{specs.cpu_model}[/bold white]")
-    table.add_row("Logical CPU Cores", f"[bold green]{specs.online_cpus}[/bold green] cores (Optimal Core: Core {specs.optimal_p_core})")
+    table.add_row("Logical CPU Cores", f"[bold bright_green]{specs.online_cpus}[/bold bright_green] cores (Optimal Core: Core {specs.optimal_p_core})")
     table.add_row("NUMA Architecture", numa_str)
     table.add_row("CPU Scaling & Frequency", gov_str)
     table.add_row("Installed Memory Capacity", f"[bold bright_magenta]{ram_cap_str}[/bold bright_magenta]")
@@ -1134,13 +1141,8 @@ def render_header(specs: HardwareSpecs, governor_active: bool = True):
     table.add_row("Memory Thermal Sensors", temp_rich)
     table.add_row("Theoretical Peak Bandwidth", f"[bold bright_green]{max_str}[/bold bright_green]")
 
-    panel = Panel(
-        table,
-        title="[bold white on blue] 󰍛 SYSTEM HARDWARE & MEMORY ARCHITECTURE [/bold white on blue]",
-        border_style="bright_blue",
-        padding=(0, 1),
-    )
-    console.print(panel)
+    console.print("\n[bold bright_cyan] 󰍛 SYSTEM HARDWARE & MEMORY ARCHITECTURE[/bold bright_cyan]")
+    console.print(table)
 
 
 def render_cache_hierarchy_table(result: CacheHierarchyResult | None):
@@ -1153,24 +1155,24 @@ def render_cache_hierarchy_table(result: CacheHierarchyResult | None):
     dram_size_str = f"{result.dram_mb} MB"
 
     if not RICH_AVAILABLE:
-        print("\n=== CPU CACHE & DRAM LATENCY HIERARCHY ===")
-        print(f"L1 Data Cache ({l1_size_str:7s}) : {result.l1_ns:.2f} ns")
-        print(f"L2 Dedicated ({l2_size_str:7s}) : {result.l2_ns:.2f} ns")
-        print(f"L3 Shared LLC ({l3_size_str:7s}) : {result.l3_ns:.2f} ns")
+        print("\n=== CPU CACHE & MEMORY LATENCY HIERARCHY ===")
+        print(f"L1 Data Cache    ({l1_size_str:7s}) : {result.l1_ns:.2f} ns")
+        print(f"L2 Dedicated     ({l2_size_str:7s}) : {result.l2_ns:.2f} ns")
+        print(f"L3 Shared LLC    ({l3_size_str:7s}) : {result.l3_ns:.2f} ns")
         print(f"Main System DRAM ({dram_size_str:7s}): {result.dram_ns:.2f} ns")
         return
 
     table = Table(
-        title="󰔛 CPU Cache & Main Memory Latency Hierarchy",
+        title="[bold bright_cyan]󰔛 CPU Cache & Main Memory Latency Hierarchy[/bold bright_cyan]",
         box=box.ROUNDED,
-        header_style="bold cyan",
+        header_style="bold bright_cyan",
         expand=True,
     )
-    table.add_column("Memory Subsystem Level", style="bold white", width=25)
+    table.add_column("Memory Subsystem Level", style="bold bright_white", width=25)
     table.add_column("Buffer Size", justify="center", style="bold yellow", width=12)
-    table.add_column("Access Delay (ns)", justify="right", style="bold cyan", width=17)
+    table.add_column("Access Delay (ns)", justify="right", style="bold bright_cyan", width=17)
     table.add_column("Relative Delay", justify="center", width=20)
-    table.add_column("Microarchitectural Target & Speedup", style="dim white")
+    table.add_column("Microarchitectural Target & Speedup", style="bright_white")
 
     l1_rel = (result.l1_ns / result.dram_ns) * 100.0 if result.dram_ns > 0 else 0.0
     l2_rel = (result.l2_ns / result.dram_ns) * 100.0 if result.dram_ns > 0 else 0.0
@@ -1185,9 +1187,9 @@ def render_cache_hierarchy_table(result: CacheHierarchyResult | None):
     l3_gauge = build_gauge(l3_rel, width=10, mode="latency")
     dram_gauge = build_gauge(100.0, width=10, mode="latency")
 
-    table.add_row("L1 Data Cache", l1_size_str, f"[bold bright_green]{result.l1_ns:.2f} ns[/bold bright_green]", l1_gauge, f"On-die L1 core data cache ([bold green]{l1_speedup}[/bold green] than DRAM)")
-    table.add_row("L2 Dedicated Cache", l2_size_str, f"[bold bright_green]{result.l2_ns:.2f} ns[/bold bright_green]", l2_gauge, f"Per-core dedicated L2 cache ([bold green]{l2_speedup}[/bold green] than DRAM)")
-    table.add_row("L3 Shared Smart Cache", l3_size_str, f"[bold bright_yellow]{result.l3_ns:.2f} ns[/bold bright_yellow]", l3_gauge, f"Shared LLC Smart Cache ([bold yellow]{l3_speedup}[/bold yellow] than DRAM)")
+    table.add_row("L1 Data Cache", l1_size_str, f"[bold bright_green]{result.l1_ns:.2f} ns[/bold bright_green]", l1_gauge, f"On-die L1 core data cache ([bold bright_green]{l1_speedup}[/bold bright_green] than DRAM)")
+    table.add_row("L2 Dedicated Cache", l2_size_str, f"[bold bright_green]{result.l2_ns:.2f} ns[/bold bright_green]", l2_gauge, f"Per-core dedicated L2 cache ([bold bright_green]{l2_speedup}[/bold bright_green] than DRAM)")
+    table.add_row("L3 Shared Smart Cache", l3_size_str, f"[bold bright_yellow]{result.l3_ns:.2f} ns[/bold bright_yellow]", l3_gauge, f"Shared LLC Smart Cache ([bold bright_yellow]{l3_speedup}[/bold bright_yellow] than DRAM)")
     table.add_row("Main System DRAM", dram_size_str, f"[bold bright_cyan]󰔛 {result.dram_ns:.2f} ns[/bold bright_cyan]", dram_gauge, "Uncached random DRAM pointer-chasing baseline")
 
     console.print(table)
@@ -1206,16 +1208,16 @@ def render_results_table(results: list[TestResult], specs: HardwareSpecs):
         return
 
     table = Table(
-        title="󰓅 RAM Bandwidth & Latency Benchmark Summary",
+        title="[bold bright_cyan]󰓅 RAM Bandwidth & Latency Benchmark Summary[/bold bright_cyan]",
         box=box.ROUNDED,
-        header_style="bold cyan",
+        header_style="bold bright_cyan",
         expand=True,
     )
-    table.add_column("Benchmark Test Mode", style="bold white", width=28)
-    table.add_column("Throughput", justify="right", style="bold green", width=14)
+    table.add_column("Benchmark Test Mode", style="bold bright_white", width=28)
+    table.add_column("Throughput", justify="right", style="bold bright_green", width=14)
     table.add_column("Bus Efficiency", justify="center", width=20)
-    table.add_column("Access Latency", justify="right", style="bold cyan", width=15)
-    table.add_column("Test Configuration & Details", style="dim white")
+    table.add_column("Access Latency", justify="right", style="bold bright_cyan", width=15)
+    table.add_column("Test Configuration & Details", style="bright_white")
 
     for r in results:
         if r.name == "Random Memory Latency":
@@ -1238,68 +1240,68 @@ def render_results_table(results: list[TestResult], specs: HardwareSpecs):
     console.print(table)
 
     note_text = Text()
-    note_text.append("󰨣 Microarchitectural Performance Insights:\n", style="bold yellow")
-    note_text.append(" 󰅂 ", style="cyan")
+    note_text.append("󰨣 Microarchitectural Performance Insights:\n", style="bold bright_yellow")
+    note_text.append(" 󰅂 ", style="bright_cyan")
     if specs.theoretical_max_gb_s:
-        note_text.append(f"Theoretical Max Peak for your memory bus is ", style="white")
-        note_text.append(f"{specs.theoretical_max_gb_s:.2f} GB/s.\n", style="bold green")
+        note_text.append("Theoretical Max Peak for your memory bus is ", style="bright_white")
+        note_text.append(f"{specs.theoretical_max_gb_s:.2f} GB/s.\n", style="bold bright_green")
     else:
         note_text.append(
             "Theoretical Max Peak calculation requires SMBIOS speed & channel data.\n",
-            style="white",
+            style="bright_white",
         )
 
     if specs.configured_speed_mts and specs.factory_speed_mts and specs.factory_speed_mts > specs.configured_speed_mts:
-        note_text.append(" 󰅂 ", style="cyan")
+        note_text.append(" 󰅂 ", style="bright_cyan")
         note_text.append("Frequency Downclocking Detected: ", style="bold bright_white")
         note_text.append(
             f"Installed RAM is factory-rated for {specs.factory_speed_mts} MT/s but currently operating at {specs.configured_speed_mts} MT/s due to CPU memory controller hardware constraints.\n",
-            style="white",
+            style="bright_white",
         )
 
     single_core = next((r for r in results if r.name == "Single-Core Copy (1 Core)"), None)
     latency_res = next((r for r in results if r.name == "Random Memory Latency"), None)
 
-    note_text.append(" 󰅂 ", style="cyan")
+    note_text.append(" 󰅂 ", style="bright_cyan")
     note_text.append("Single-Core Throughput Limit: ", style="bold bright_white")
     if single_core and single_core.throughput_gb_s > 0:
         note_text.append(
             f"Measured single-core copy throughput is {single_core.throughput_gb_s:.1f} GB/s — typically capped well below multi-core saturation by finite per-core Line Fill Buffer (LFB) request queues.\n",
-            style="white",
+            style="bright_white",
         )
     else:
         note_text.append(
             f"A single core (Core {specs.optimal_p_core}) is typically capped well below multi-core saturation by finite per-core Line Fill Buffer (LFB) request queues.\n",
-            style="white",
+            style="bright_white",
         )
-    note_text.append(" 󰅂 ", style="cyan")
+    note_text.append(" 󰅂 ", style="bright_cyan")
     note_text.append("Pure Read / Write Scaling: ", style="bold bright_white")
     peak_str = f"{specs.theoretical_max_gb_s:.1f} GB/s" if specs.theoretical_max_gb_s else "the memory bus peak"
     note_text.append(
         f"To approach {peak_str}, memory requests must be issued in parallel across multiple CPU cores ({specs.online_cpus} active).\n",
-        style="white",
+        style="bright_white",
     )
-    note_text.append(" 󰅂 ", style="cyan")
+    note_text.append(" 󰅂 ", style="bright_cyan")
     note_text.append("Random Access Latency vs Bandwidth: ", style="bold bright_white")
     if latency_res and latency_res.latency_ns:
         note_text.append(
             f"Random latency (measured {latency_res.latency_ns:.1f} ns) uses 128MB pointer chasing beyond L3 to isolate true DRAM access delay; typical range: ~70-90 ns DDR4, ~90-130 ns DDR5. ",
-            style="white",
+            style="bright_white",
         )
     else:
         note_text.append(
             "Random latency is measured via 128MB random pointer chasing beyond L3 to isolate true DRAM access delay. ",
-            style="white",
+            style="bright_white",
         )
     note_text.append(
         "Streaming bandwidth achieves far lower per-line cost via hardware parallelism.",
-        style="white",
+        style="bright_white",
     )
 
     panel = Panel(
         note_text,
-        title="[bold cyan]󰨣 Understanding Single-Thread vs Multi-Thread RAM Bandwidth & Latency[/bold cyan]",
-        border_style="cyan",
+        title="[bold bright_cyan]󰨣 Understanding Single-Thread vs Multi-Thread RAM Bandwidth & Latency[/bold bright_cyan]",
+        border_style="bright_cyan",
     )
     console.print(panel)
 
@@ -1398,33 +1400,55 @@ def clear_history() -> None:
         print(msg)
 
 
-def generate_sparkline(values: list[float], mode: str = "bandwidth") -> str:
-    """Render a colored Unicode sparkline trend curve from a sequence of numeric data points."""
-    if not values or len(values) < 2:
+def generate_sparkline(runs: list[dict], extractor, mode: str = "bandwidth") -> str:
+    """Render a run-aligned colored Unicode sparkline trend curve from historical data points."""
+    run_vals = [extractor(r) for r in runs]
+    valid_vals = [v for v in run_vals if v is not None]
+    if not valid_vals:
         return "[dim]—[/dim]"
-    min_v = min(values)
-    max_v = max(values)
+    if len(valid_vals) == 1:
+        res = ""
+        for v in run_vals:
+            if v is not None:
+                res += "[bold cyan]▄[/bold cyan]"
+            else:
+                res += "[dim bright_black]·[/dim bright_black]"
+        return res
+
+    min_v = min(valid_vals)
+    max_v = max(valid_vals)
+    mean_v = sum(valid_vals) / len(valid_vals)
+    rel_spread = (max_v - min_v) / (mean_v if mean_v > 0 else 1.0)
+
     blocks = [" ", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
     res = ""
-    span = max_v - min_v if max_v != min_v else 1.0
-    for v in values:
-        if max_v == min_v:
-            idx = 3
-            color = "bright_cyan"
-        else:
-            idx = int(round(((v - min_v) / span) * (len(blocks) - 1)))
-            idx = max(0, min(len(blocks) - 1, idx))
-            if mode == "latency":
-                color = "bright_green" if idx <= 2 else ("bright_yellow" if idx <= 5 else "bright_red")
+
+    if rel_spread < 0.03:
+        for v in run_vals:
+            if v is not None:
+                res += "[bright_green]▄[/bright_green]"
             else:
-                color = "bright_green" if idx >= 5 else ("bright_yellow" if idx >= 2 else "bright_cyan")
+                res += "[dim bright_black]·[/dim bright_black]"
+        return res
+
+    span = max_v - min_v if max_v != min_v else 1.0
+    for v in run_vals:
+        if v is None:
+            res += "[dim bright_black]·[/dim bright_black]"
+            continue
+        idx = int(round(((v - min_v) / span) * (len(blocks) - 1)))
+        idx = max(0, min(len(blocks) - 1, idx))
         char = blocks[idx]
+        if mode == "latency":
+            color = "bright_green" if idx <= 2 else ("bright_yellow" if idx <= 5 else "bright_red")
+        else:
+            color = "bright_green" if idx >= 5 else ("bright_yellow" if idx >= 2 else "bright_red")
         res += f"[{color}]{char}[/{color}]"
     return res
 
 
 def render_history_comparison(history: list[dict], count: int = 7) -> None:
-    """Render a side-by-side comparison table of the last N benchmark runs with sparklines and delta calculations."""
+    """Render a side-by-side comparison matrix of recent benchmark runs with best/worst scores highlighted."""
     if not history:
         msg = "No previous benchmark history found in ~/.config/dusky/settings/ram_test/"
         if RICH_AVAILABLE:
@@ -1437,18 +1461,16 @@ def render_history_comparison(history: list[dict], count: int = 7) -> None:
     if not runs:
         return
 
-    w = console.width if console and console.width else 120
-    is_compact = (w < 115)
-
     metrics_meta = [
-        ("DRAM Latency (ns)" if is_compact else "Random DRAM Latency (ns)", "latency", lambda r: r.get("metrics", {}).get("Random Memory Latency (ns)") or (r.get("cache") or {}).get("dram_ns")),
-        ("L1 Cache (ns)" if is_compact else "L1 Data Cache (ns)", "latency", lambda r: (r.get("cache") or {}).get("l1_ns")),
-        ("L2 Cache (ns)" if is_compact else "L2 Dedicated Cache (ns)", "latency", lambda r: (r.get("cache") or {}).get("l2_ns")),
-        ("L3 Cache (ns)" if is_compact else "L3 Smart Cache (ns)", "latency", lambda r: (r.get("cache") or {}).get("l3_ns")),
-        ("Single-Core (GB/s)" if is_compact else "Single-Core Copy (GB/s)", "bandwidth", lambda r: r.get("metrics", {}).get("Single-Core Copy (1 Core)")),
-        ("Pure Read (GB/s)" if is_compact else "Pure Read Multi-Core (GB/s)", "bandwidth", lambda r: r.get("metrics", {}).get("Pure Read (Multi-Thread)")),
-        ("Pure Write (GB/s)" if is_compact else "Pure Write Multi-Core (GB/s)", "bandwidth", lambda r: r.get("metrics", {}).get("Pure Write (Multi-Thread)")),
-        ("STREAM Copy (GB/s)" if is_compact else "STREAM Copy Multi-Core (GB/s)", "bandwidth", lambda r: r.get("metrics", {}).get("Stream Copy (Multi-Thread)")),
+        ("Random DRAM Latency (ns)", "latency", "bold bright_cyan", lambda r: r.get("metrics", {}).get("Random Memory Latency (ns)") or (r.get("cache") or {}).get("dram_ns")),
+        ("L1 Data Cache (ns)", "latency", "bold cyan", lambda r: (r.get("cache") or {}).get("l1_ns")),
+        ("L2 Dedicated Cache (ns)", "latency", "bold cyan", lambda r: (r.get("cache") or {}).get("l2_ns")),
+        ("L3 Smart Cache (ns)", "latency", "bold cyan", lambda r: (r.get("cache") or {}).get("l3_ns")),
+        (None, None, None, None),
+        ("Single-Core Copy (GB/s)", "bandwidth", "bold bright_yellow", lambda r: r.get("metrics", {}).get("Single-Core Copy (1 Core)")),
+        ("Pure Read Multi-Core (GB/s)", "bandwidth", "bold bright_green", lambda r: r.get("metrics", {}).get("Pure Read (Multi-Thread)")),
+        ("Pure Write Multi-Core (GB/s)", "bandwidth", "bold bright_green", lambda r: r.get("metrics", {}).get("Pure Write (Multi-Thread)")),
+        ("STREAM Copy Multi-Core (GB/s)", "bandwidth", "bold bright_green", lambda r: r.get("metrics", {}).get("Stream Copy (Multi-Thread)")),
     ]
 
     if not RICH_AVAILABLE:
@@ -1461,7 +1483,11 @@ def render_history_comparison(history: list[dict], count: int = 7) -> None:
         header = " | ".join(header_cols)
         print(header)
         print("-" * len(header))
-        for label, mode, extractor in metrics_meta:
+        for item in metrics_meta:
+            if item[0] is None:
+                print("-" * len(header))
+                continue
+            label, mode, label_style, extractor = item
             vals = [extractor(r) for r in runs if extractor(r) is not None]
             if not vals:
                 continue
@@ -1472,7 +1498,8 @@ def render_history_comparison(history: list[dict], count: int = 7) -> None:
                     row_items.append(f"{v:>12.2f}" if v < 100 else f"{v:>12.1f}")
                 else:
                     row_items.append(f"{'—':^12s}")
-            min_max = f"{min(vals):.1f}/{max(vals):.1f}"
+            min_v, max_v = min(vals), max(vals)
+            min_max = f"{min_v:.2f} / {max_v:.2f}" if max_v < 10.0 else f"{min_v:.1f} / {max_v:.1f}"
             delta_str = "—"
             if len(vals) >= 2 and vals[0] != 0:
                 pct_diff = ((vals[-1] - vals[0]) / vals[0]) * 100.0
@@ -1484,41 +1511,51 @@ def render_history_comparison(history: list[dict], count: int = 7) -> None:
 
     t = Table(
         box=box.ROUNDED,
-        header_style="bold cyan",
+        header_style="bold bright_cyan",
         show_header=True,
-        pad_edge=False,
+        expand=False,
     )
-    metric_title = "Metric" if is_compact else "Benchmark Metric"
-    t.add_column(metric_title, style="bold white")
+    t.add_column("Benchmark Metric", min_width=27, no_wrap=True)
 
     for i, r in enumerate(runs):
         is_latest = (i == len(runs) - 1)
-        tag = "★" if (is_latest and is_compact) else ("[bold green]★ Latest[/bold green]" if is_latest else f"R{i+1}")
-        hp = "*" if (r.get("hugepages") and is_compact) else (" [dim](THP)[/dim]" if r.get("hugepages") else "")
+        tag = "[bold bright_green]Latest[/bold bright_green]" if is_latest else f"R{i+1}"
+        hp = " [dim](THP)[/dim]" if r.get("hugepages") else ""
         raw_t = r.get("time_short", r.get("timestamp", "").split()[-1] if "timestamp" in r else "")
-        t_short = ":".join(raw_t.split(":")[:2]) if is_compact else raw_t
-        t.add_column(f"{tag}{hp}\n[dim]{t_short}[/dim]", justify="right")
+        t_short = ":".join(raw_t.split(":")[:2])
+        t.add_column(f"{tag}{hp}\n[white]{t_short}[/white]", justify="right", min_width=7, no_wrap=True)
 
-    t.add_column("Trend", justify="center")
-    if not is_compact:
-        t.add_column("Min / Max", justify="center", style="bold white")
-    t.add_column("Δ Base" if is_compact else "Δ vs Baseline", justify="right", style="bold cyan")
+    t.add_column("Min / Max", justify="center", style="bold bright_white", min_width=13, no_wrap=True)
+    t.add_column("Δ Base", justify="right", style="bold bright_cyan", min_width=9, no_wrap=True)
 
-    for label, mode, extractor in metrics_meta:
+    for item in metrics_meta:
+        if item[0] is None:
+            t.add_section()
+            continue
+        label, mode, label_style, extractor = item
         vals = [extractor(r) for r in runs if extractor(r) is not None]
         if not vals:
             continue
-        row = [label]
+        min_v, max_v = min(vals), max(vals)
+        best_v = min_v if mode == "latency" else max_v
+        worst_v = max_v if mode == "latency" else min_v
+
+        row = [f"[{label_style}]{label}[/{label_style}]"]
         for r in runs:
             v = extractor(r)
             if v is not None:
                 formatted = f"{v:.2f}" if v < 10 else f"{v:.1f}"
-                row.append(formatted)
+                if len(vals) > 1 and v == best_v and best_v != worst_v:
+                    cell_str = f"[bold bright_green]{formatted}[/bold bright_green]"
+                elif len(vals) > 1 and v == worst_v and best_v != worst_v:
+                    cell_str = f"[bold bright_red]{formatted}[/bold bright_red]"
+                else:
+                    cell_str = f"[bright_white]{formatted}[/bright_white]"
+                row.append(cell_str)
             else:
                 row.append("[dim]—[/dim]")
 
-        spark = generate_sparkline(vals, mode=mode)
-        min_max = f"{min(vals):.1f} / {max(vals):.1f}"
+        min_max = f"{min_v:.2f} / {max_v:.2f}" if max_v < 10.0 else f"{min_v:.1f} / {max_v:.1f}"
         delta_str = "—"
         if len(vals) >= 2 and vals[0] != 0:
             pct_diff = ((vals[-1] - vals[0]) / vals[0]) * 100.0
@@ -1528,15 +1565,12 @@ def render_history_comparison(history: list[dict], count: int = 7) -> None:
             else:
                 color = "bright_green" if pct_diff > 0 else ("bright_red" if pct_diff < 0 else "white")
                 arrow = "▲" if pct_diff > 0 else ("▼" if pct_diff < 0 else "")
-            delta_str = f"[{color}]{pct_diff:+.1f}%{arrow}[/{color}]"
+            delta_str = f"[{color}]{pct_diff:+.1f}% {arrow}[/{color}]"
 
-        if not is_compact:
-            row.extend([spark, min_max, delta_str])
-        else:
-            row.extend([spark, delta_str])
+        row.extend([min_max, delta_str])
         t.add_row(*row)
 
-    console.print(f"\n[bold cyan]󰓅 Multi-Run Benchmark Comparison & Trend History (Last {len(runs)} Runs)[/bold cyan]")
+    console.print(f"\n[bold bright_cyan] 󰓅 Multi-Run Benchmark Comparison (Last {len(runs)} Runs)[/bold bright_cyan]")
     console.print(t)
 
 
