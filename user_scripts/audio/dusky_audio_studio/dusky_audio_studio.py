@@ -41,8 +41,8 @@ import time
 # --- Constants & Paths ---
 APP_ID: Final[str] = "org.dusky.audio-studio"
 HOME_DIR: Final[Path] = Path.home()
-STATE_DIR: Final[Path] = HOME_DIR / ".config" / "dusky_audio_studio"
-CACHE_DIR: Final[Path] = HOME_DIR / ".cache" / "dusky_audio_studio"
+STATE_DIR: Final[Path] = HOME_DIR / ".config" / "dusky" / "settings" / "dusky_studio"
+CACHE_DIR: Final[Path] = HOME_DIR / ".cache" / "dusky_studio"
 CONFIG_FILE: Final[Path] = STATE_DIR / "config.json"
 SOCK_PATH: Final[Path] = STATE_DIR / "dusky_audio.sock"
 PID_FILE: Final[Path] = STATE_DIR / "daemon.pid"
@@ -794,6 +794,21 @@ def load_config() -> AudioConfig:
                 return cfg
         except Exception:
             pass
+
+    old_config = HOME_DIR / ".config" / "dusky_audio_studio" / "config.json"
+    if old_config.exists():
+        try:
+            with open(old_config, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                cfg = AudioConfig()
+                for k, v in data.items():
+                    if hasattr(cfg, k):
+                        setattr(cfg, k, v)
+                save_config(cfg)
+                return cfg
+        except Exception:
+            pass
+
     return AudioConfig()
 
 
@@ -1034,6 +1049,13 @@ class AudioDspServer:
         with open(PID_FILE, "w", encoding="utf-8") as f:
             f.write(str(os.getpid()))
 
+        # Immediately restore all persisted audio settings (input/output EQ, vocoder, spatial DSP, denoise)
+        try:
+            init_cfg = load_config()
+            self._apply_full_config(init_cfg)
+        except Exception:
+            pass
+
         return True
 
     def _telemetry_reader(self) -> None:
@@ -1174,7 +1196,7 @@ class AudioDspServer:
         self.send_cmd(f"AGG {cfg.aggressiveness * 10}")
 
         # RNNoise Suppression - Output / Speaker & Headphone (Two-Way)
-        self.send_cmd(f"OUT_NOISE {1 if cfg.out_rnnoise_on else 0}")
+        self.send_cmd(f"OUT_NOISE {1 if (cfg.enabled and cfg.out_rnnoise_on) else 0}")
         self.send_cmd(f"OUT_AGG {cfg.out_aggressiveness * 10}")
 
         # Vocoder & Voice Transformers
@@ -2957,6 +2979,12 @@ def main() -> None:
         return
 
     match args[0].lower():
+        case "--autostart":
+            if cfg.enabled:
+                start_daemon(cfg)
+                print("Dusky Audio DSP autostarted from persisted state (ON).")
+            else:
+                print("Dusky Audio DSP persisted state is OFF (skipping autostart).")
         case "--on" | "-1" | "on":
             cfg.enabled = True
             save_config(cfg)

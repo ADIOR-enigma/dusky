@@ -340,7 +340,9 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
     def _fetch_audio(self) -> None:
         if not self.dynamic_toggles.get('audio'):
             return
-        pid_file = Path(HOME) / '.config' / 'dusky_audio_studio' / 'daemon.pid'
+        pid_file = Path(HOME) / '.config' / 'dusky' / 'settings' / 'dusky_studio' / 'daemon.pid'
+        if not pid_file.exists():
+            pid_file = Path(HOME) / '.config' / 'dusky_audio_studio' / 'daemon.pid'
         is_active = False
         if pid_file.exists():
             try:
