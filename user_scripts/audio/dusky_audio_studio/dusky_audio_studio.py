@@ -250,9 +250,13 @@ class AudioConfig:
     volume: int = 100  # 0..200%
     monitor: bool = False
 
-    # Noise Suppression (Enabled by default on fresh install)
+    # Noise Suppression - Input / Microphone (Enabled by default on fresh install)
     rnnoise_on: bool = True
     aggressiveness: int = 70  # 0..100%
+
+    # Noise Suppression - Output / Speaker & Headphone (Two-Way, OFF by default)
+    out_rnnoise_on: bool = False
+    out_aggressiveness: int = 70  # 0..100%
 
     # Vocoder & Voice Character Stack
     vocoder_on: bool = False
@@ -896,9 +900,13 @@ class AudioDspServer:
         self.send_cmd(f"VOL {cfg.volume * 10}")
         self.send_cmd(f"MON {1 if cfg.monitor else 0}")
 
-        # RNNoise Suppression
+        # RNNoise Suppression - Input / Microphone
         self.send_cmd(f"RNN {1 if (cfg.enabled and cfg.rnnoise_on) else 0}")
         self.send_cmd(f"AGG {cfg.aggressiveness * 10}")
+
+        # RNNoise Suppression - Output / Speaker & Headphone (Two-Way)
+        self.send_cmd(f"OUT_NOISE {1 if cfg.out_rnnoise_on else 0}")
+        self.send_cmd(f"OUT_AGG {cfg.out_aggressiveness * 10}")
 
         # Vocoder & Voice Transformers
         self.send_cmd(f"VOC {1 if (cfg.enabled and cfg.vocoder_on) else 0}")
@@ -1297,6 +1305,49 @@ def run_gtk_app() -> None:
                 self.on_agg_changed,
             )
             vbox.pack_start(self.agg_row, False, False, 0)
+
+            vbox.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 4)
+
+            # Output (Two-Way) Noise Cancellation - Speakers / Headphones
+            out_section_lbl = Gtk.Label(
+                label="Output Noise Cancellation (Incoming Audio)",
+                xalign=0,
+            )
+            out_section_lbl.get_style_context().add_class("section-label")
+            vbox.pack_start(out_section_lbl, False, False, 0)
+
+            out_desc = Gtk.Label(
+                label=(
+                    "Filters background noise from other people's microphones "
+                    "in Discord, Zoom, and browser calls before it reaches "
+                    "your speakers or headphones."
+                ),
+                xalign=0,
+                wrap=True,
+            )
+            out_desc.get_style_context().add_class("dim-label")
+            vbox.pack_start(out_desc, False, False, 0)
+
+            out_rnn_hdr = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            out_rnn_lbl = Gtk.Label(label="Output RNNoise Suppression", xalign=0)
+            out_rnn_lbl.get_style_context().add_class("section-label")
+            self.out_rnn_switch = Gtk.Switch()
+            self.out_rnn_switch.get_style_context().add_class("compact-switch")
+            self.out_rnn_switch.set_active(self.cfg.out_rnnoise_on)
+            self.out_rnn_switch.connect("notify::active", self.on_out_rnnoise_toggled)
+            out_rnn_hdr.pack_start(out_rnn_lbl, True, True, 0)
+            out_rnn_hdr.pack_end(self.out_rnn_switch, False, False, 0)
+            vbox.pack_start(out_rnn_hdr, False, False, 0)
+
+            self.out_agg_row = self.create_slider_row(
+                "Output Noise Gate Aggressiveness",
+                self.cfg.out_aggressiveness,
+                0,
+                100,
+                "%",
+                self.on_out_agg_changed,
+            )
+            vbox.pack_start(self.out_agg_row, False, False, 0)
 
             vbox.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 4)
 
@@ -1782,6 +1833,18 @@ def run_gtk_app() -> None:
             save_config(self.cfg)
             send_daemon_cmd(f"AGG {val * 10}")
 
+        def on_out_rnnoise_toggled(self, switch: Gtk.Switch, _g: Any) -> None:
+            active = switch.get_active()
+            self.cfg.out_rnnoise_on = active
+            save_config(self.cfg)
+            send_daemon_cmd(f"OUT_NOISE {1 if active else 0}")
+
+        def on_out_agg_changed(self, scale: Gtk.Scale) -> None:
+            val = int(scale.get_value())
+            self.cfg.out_aggressiveness = val
+            save_config(self.cfg)
+            send_daemon_cmd(f"OUT_AGG {val * 10}")
+
         def on_pitch_changed(self, scale: Gtk.Scale) -> None:
             val = int(scale.get_value())
             self.cfg.pitch_shift = val * 100
@@ -2210,7 +2273,7 @@ def main() -> None:
                 cfg.aggressiveness = val
                 save_config(cfg)
                 send_daemon_cmd(f"AGG {val * 10}")
-                print(f"Set Noise Reduction Aggressiveness to {val}%")
+                print(f"Set Input Noise Reduction Aggressiveness to {val}%")
             except ValueError:
                 print("Invalid value for aggressiveness (0-100).", file=sys.stderr)
         case ("--set-vol" | "--vol") if len(args) > 1:
@@ -2222,6 +2285,34 @@ def main() -> None:
                 print(f"Set Output Gain to {val}%")
             except ValueError:
                 print("Invalid value for volume (0-200).", file=sys.stderr)
+        case "--out-noise" if len(args) > 1:
+            action = args[1].lower()
+            if action == "on":
+                cfg.out_rnnoise_on = True
+                save_config(cfg)
+                send_daemon_cmd("OUT_NOISE 1")
+                print("Output Noise Cancellation: ON")
+            elif action == "off":
+                cfg.out_rnnoise_on = False
+                save_config(cfg)
+                send_daemon_cmd("OUT_NOISE 0")
+                print("Output Noise Cancellation: OFF")
+            elif action == "toggle":
+                cfg.out_rnnoise_on = not cfg.out_rnnoise_on
+                save_config(cfg)
+                send_daemon_cmd(f"OUT_NOISE {1 if cfg.out_rnnoise_on else 0}")
+                print(f"Output Noise Cancellation: {'ON' if cfg.out_rnnoise_on else 'OFF'}")
+            else:
+                print("Usage: --out-noise <on|off|toggle>", file=sys.stderr)
+        case ("--set-out-agg" | "--out-agg") if len(args) > 1:
+            try:
+                val = max(0, min(100, int(args[1])))
+                cfg.out_aggressiveness = val
+                save_config(cfg)
+                send_daemon_cmd(f"OUT_AGG {val * 10}")
+                print(f"Set Output Noise Reduction Aggressiveness to {val}%")
+            except ValueError:
+                print("Invalid value for output aggressiveness (0-100).", file=sys.stderr)
         case "--help" | "-h":
             print(
                 """Usage: dusky_audio_studio.py [COMMAND]
@@ -2237,8 +2328,10 @@ Commands:
   --reset-spatial           Reset Delay & Reverb to clean bypass
   --status, -s              Print current status and live telemetry
   --preset, -p <name>       Apply voice preset (e.g. "Daft Punk", "Darth Vader", "Sci-Fi Alien")
-  --set-agg <0-100>         Set RNNoise suppression aggressiveness (0 to 100%)
+  --set-agg <0-100>         Set input RNNoise suppression aggressiveness (0 to 100%)
   --set-vol <0-200>         Set microphone volume/gain (0 to 200%)
+  --out-noise <on|off|toggle>  Toggle output noise cancellation (Two-Way)
+  --set-out-agg <0-100>     Set output RNNoise suppression aggressiveness (0 to 100%)
   --help, -h                Show this help message
 
 Available Voice Character Presets:

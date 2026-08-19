@@ -26,6 +26,14 @@
 #define GHA_SPECTRUM_BINS 64
 #define GHA_EQ_BANDS 9
 
+#define GHA_FLAG_RNNOISE_ON     (1u << 0)
+#define GHA_FLAG_EQ_ON          (1u << 1)
+#define GHA_FLAG_DELAY_ON       (1u << 2)
+#define GHA_FLAG_REVERB_ON      (1u << 3)
+#define GHA_FLAG_MONITOR_ON     (1u << 4)
+#define GHA_FLAG_VOCODER_ON     (1u << 5)
+#define GHA_FLAG_OUT_RNNOISE_ON (1u << 6)
+
 #pragma pack(push, 4)
 
 struct gha_frame
@@ -33,7 +41,7 @@ struct gha_frame
     uint32_t magic;   /* GHA_MAGIC */
     uint32_t version; /* GHA_PROTOCOL_VERSION */
     uint32_t seq;     /* monotonically increasing */
-    uint32_t flags;   /* bit 0: rnnoise on, 1: eq on, 2: delay on, 3: reverb on, 4: monitor on, 5: vocoder on */
+    uint32_t flags;   /* bit 0: rnnoise on, 1: eq on, 2: delay on, 3: reverb on, 4: monitor on, 5: vocoder on, 6: out_rnnoise on */
 
     float vad_prob;           /* 0..1 voice-activity prob from rnnoise; ALWAYS computed */
     float rms_in_db;          /* -inf..0 dBFS RMS of raw input */
@@ -61,7 +69,9 @@ struct gha_frame
  *                       default sink so the user can hear what their
  *                       virtual mic sounds like.
  *
- *   RNN <0|1>           enable/disable rnnoise
+ *   RNN <0|1>           enable/disable microphone rnnoise (Input)
+ *   OUT_NOISE <0|1>     enable/disable output speaker/headphone rnnoise (Two-Way)
+ *   OUT_AGG <0..1000>   set output rnnoise aggressiveness per-mille
  *   VOC <0|1>           enable/disable vocoder
  *   EQ  <0|1>           enable/disable parametric EQ
  *   DLY <0|1>           enable/disable delay
@@ -90,12 +100,13 @@ struct gha_frame
  *   QUIT
  *
  * Frame flags layout (uint32 LE):
- *   bit 0: rnnoise on
+ *   bit 0: rnnoise on (Input)
  *   bit 1: EQ on
  *   bit 2: delay on
  *   bit 3: reverb on
  *   bit 4: monitor on
  *   bit 5: vocoder on
+ *   bit 6: out_rnnoise on (Output / Two-Way)
  */
 
 #endif

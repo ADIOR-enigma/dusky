@@ -58,6 +58,8 @@ struct eq_band
 static struct
 {
     _Atomic int rnnoise_on;
+    _Atomic int out_rnnoise_on; /* Two-Way Output Noise Cancellation (Speakers/Headphones) */
+    _Atomic int out_rnn_aggressiveness; /* 0..1000 */
     _Atomic int eq_on;
     _Atomic int delay_on;
     _Atomic int reverb_on;
@@ -150,6 +152,8 @@ static struct
 static void params_init(void)
 {
     atomic_store(&g_params.rnnoise_on, 1);
+    atomic_store(&g_params.out_rnnoise_on, 0); /* Default OFF */
+    atomic_store(&g_params.out_rnn_aggressiveness, 700);
     atomic_store(&g_params.eq_on, 0);
     atomic_store(&g_params.delay_on, 0);
     atomic_store(&g_params.reverb_on, 0);
@@ -1116,6 +1120,47 @@ static struct rt_state g_rt;
 static struct post_ring g_post; /* post-DSP samples for virtual source */
 static struct post_ring g_mon;  /* post-DSP samples for monitor playback */
 
+/* ---------------------------------------------------------------------------
+ *   Output (Two-Way) Noise Cancellation RT state
+ *
+ *   The sink pipeline captures stereo audio from applications (Discord, Zoom,
+ *   browser calls, etc.), denoises each channel independently through its own
+ *   RNNoise instance, applies a soft aggressiveness gate, and pushes clean
+ *   audio to the physical speakers / headphones.
+ *
+ *   Architecture:
+ *     [Apps] -> sink_in_stream (Audio/Sink, stereo 48 kHz)
+ *                  |
+ *           cb_sink_in_process (dual RNNoise + gate)
+ *                  |
+ *           g_sink_l / g_sink_r (SPSC rings)
+ *                  |
+ *           cb_sink_out_process -> sink_out_stream (Playback, stereo)
+ *                  |
+ *           [Physical Speakers / Headphones]
+ * ------------------------------------------------------------------------- */
+
+/* Per-channel RNNoise state for the output sink. Mirrors the relevant
+ * subset of rt_state but without the vocoder / EQ / delay / reverb stages
+ * (output noise cancellation is pure denoise + soft gate). */
+struct sink_channel_state
+{
+    DenoiseState *rn;
+    float rn_in[RNN_FRAME];
+    int rn_fill;
+    float rn_out_ring[RING_CAP];
+    int rn_out_head, rn_out_tail;
+    float vad_ema;
+    float gate_gain;
+    int hangover_left;
+    struct biquad rnn_hpf; /* pre-RNNoise 70 Hz rumble filter */
+};
+
+static struct sink_channel_state g_sink_ch_l;
+static struct sink_channel_state g_sink_ch_r;
+static struct post_ring g_sink_l; /* denoised left -> sink_out_stream */
+static struct post_ring g_sink_r; /* denoised right -> sink_out_stream */
+
 static int eq_hash(const struct eq_band *b)
 {
     return atomic_load(&b->type) * 1000003 + atomic_load(&b->freq_hz) * 31 + atomic_load(&b->q_mille) * 17 + atomic_load(&b->gain_centidb);
@@ -1169,23 +1214,27 @@ static void rt_refresh_voice_bpf(void)
 }
 
 /* ---------------------------------------------------------------------------
- *   PipeWire glue (two streams: capture + virtual source)
+ *   PipeWire glue (capture + virtual source + output sink)
  * ------------------------------------------------------------------------- */
 
 struct app
 {
     struct pw_main_loop *loop;
-    struct pw_stream *in_stream;  /* captures from a real mic */
-    struct pw_stream *out_stream; /* exposed as Audio/Source */
-    struct pw_stream *mon_stream; /* optional monitor playback */
+    struct pw_stream *in_stream;       /* captures from a real mic */
+    struct pw_stream *out_stream;      /* exposed as Audio/Source */
+    struct pw_stream *mon_stream;      /* optional monitor playback */
+    struct pw_stream *sink_in_stream;  /* virtual sink capturing app audio (stereo) */
+    struct pw_stream *sink_out_stream; /* playback to real speakers (stereo) */
     struct spa_source *timer;
     struct spa_source *stdin_src;
     uint32_t seq_emit;
     /* Pending capture-source change requested from the main loop.
      * mon_pending: 0=no change, 1=connect monitor, 2=disconnect monitor.
-     * src_pending: 0=no change, 1=apply src_pending_target. */
+     * src_pending: 0=no change, 1=apply src_pending_target.
+     * sink_pending: 0=no change, 1=connect sink pipeline, 2=disconnect. */
     _Atomic int src_pending;
     _Atomic int mon_pending;
+    _Atomic int sink_pending;
     char src_pending_target[256];
 };
 static struct app g_app;
@@ -1199,6 +1248,8 @@ struct stream_ctx
 static struct stream_ctx g_in_ctx;
 static struct stream_ctx g_out_ctx;
 static struct stream_ctx g_mon_ctx;
+static struct stream_ctx g_sink_in_ctx;
+static struct stream_ctx g_sink_out_ctx;
 
 /* Push one sample into a SPSC ring with drop-oldest-on-full semantics. */
 static inline uint32_t ring_push(struct post_ring *r, uint32_t head, float v)
@@ -1605,7 +1656,8 @@ static void cb_in_process(void *userdata)
         g_snap.rnn_diff_sum[slot] = g_rt.rnn_diff_sum;
         g_snap.rnn_diff_n[slot] = g_rt.rnn_diff_n;
         atomic_store(&g_snap.tracked_pitch_hz, g_rt.pitch.tracked_hz);
-        uint32_t flags = (rnn_on ? 1u : 0u) | (eq_on ? 2u : 0u) | (delay_on ? 4u : 0u) | (reverb_on ? 8u : 0u) | (mon_on ? 16u : 0u) | (voc_on ? 32u : 0u);
+        int out_rnn = atomic_load(&g_params.out_rnnoise_on);
+        uint32_t flags = (rnn_on ? 1u : 0u) | (eq_on ? 2u : 0u) | (delay_on ? 4u : 0u) | (reverb_on ? 8u : 0u) | (mon_on ? 16u : 0u) | (voc_on ? 32u : 0u) | (out_rnn ? 64u : 0u);
         atomic_store(&g_snap.flags, flags);
         atomic_store(&g_snap.seq, cur + 1);
         g_rt.rms_in_sum = g_rt.rms_out_sum = 0.0f;
@@ -1704,14 +1756,206 @@ static void cb_mon_process(void *userdata)
     pw_stream_queue_buffer(ctx->stream, b);
 }
 
+/* ---------------------------------------------------------------------------
+ *   Output (Two-Way) Noise Cancellation: Sink RT callbacks
+ *
+ *   cb_sink_in_process: RT callback for the virtual sink stream. Captures
+ *   interleaved stereo F32 audio from apps (Discord, Zoom, browser, games),
+ *   deinterleaves into L/R, runs each through its own RNNoise + soft gate,
+ *   and pushes the denoised samples into per-channel SPSC rings.
+ *
+ *   cb_sink_out_process: RT callback for the playback stream. Drains the
+ *   per-channel rings, interleaves L/R, and writes stereo F32 to the output
+ *   PipeWire buffer destined for physical speakers / headphones.
+ * ------------------------------------------------------------------------- */
+
+/* Process one RNNoise frame for a single sink channel. Identical algorithm
+ * to the input pipeline's gate, but parameterised per-channel so L and R
+ * can gate independently (one person talking on L, silence on R). */
+static void sink_channel_process_frame(struct sink_channel_state *ch, int aggro_mille)
+{
+    float denoised[RNN_FRAME];
+    float vad = rnnoise_process_frame(ch->rn, denoised, ch->rn_in);
+
+    /* Asymmetric EMA on VAD (same constants as input pipeline). */
+    const float alpha_up = 0.6f;
+    const float alpha_dn = 0.05f;
+    float prev = ch->vad_ema;
+    ch->vad_ema = (vad > prev)
+                      ? prev + alpha_up * (vad - prev)
+                      : prev + alpha_dn * (vad - prev);
+
+    /* Soft post-RNNoise gate with hysteresis and hangover. */
+    float aggro = aggro_mille * 0.001f;
+    if (aggro < 0.0f) aggro = 0.0f;
+    if (aggro > 1.0f) aggro = 1.0f;
+    const float open_th = 0.50f;
+    const float close_th = 0.15f;
+    const int hangover_samples = SAMPLE_RATE / 4; /* 250 ms */
+    const float close_target = 1.0f - 0.94f * aggro;
+    const float gain_coeff = 1.0f - expf(-1.0f / (SAMPLE_RATE * 0.005f));
+
+    for (int k = 0; k < RNN_FRAME; k++)
+    {
+        float s = denoised[k] * (1.0f / 32768.0f);
+
+        float v = ch->vad_ema;
+        float target;
+        if (v >= open_th)
+        {
+            target = 1.0f;
+            ch->hangover_left = hangover_samples;
+        }
+        else if (v <= close_th && ch->hangover_left == 0)
+        {
+            target = close_target;
+        }
+        else
+        {
+            target = 1.0f;
+            if (ch->hangover_left > 0)
+                ch->hangover_left--;
+        }
+        ch->gate_gain += gain_coeff * (target - ch->gate_gain);
+        s *= ch->gate_gain;
+
+        int next = (ch->rn_out_head + 1) % RING_CAP;
+        if (next != ch->rn_out_tail)
+        {
+            ch->rn_out_ring[ch->rn_out_head] = s;
+            ch->rn_out_head = next;
+        }
+    }
+    ch->rn_fill = 0;
+}
+
+/* Feed one sample to a sink channel's RNNoise input buffer. When the
+ * buffer fills a complete 480-sample frame, process it. Returns the
+ * next available denoised sample (or 0 if the output ring is empty). */
+static float sink_channel_tick(struct sink_channel_state *ch, float x, int aggro_mille)
+{
+    /* Pre-RNNoise 70 Hz high-pass (same as input pipeline). */
+    float rn_in = biquad_tick(&ch->rnn_hpf, x);
+    ch->rn_in[ch->rn_fill++] = rn_in * 32768.0f;
+    if (ch->rn_fill == RNN_FRAME)
+        sink_channel_process_frame(ch, aggro_mille);
+
+    /* Drain one sample from the output ring. */
+    if (ch->rn_out_head != ch->rn_out_tail)
+    {
+        float y = ch->rn_out_ring[ch->rn_out_tail];
+        ch->rn_out_tail = (ch->rn_out_tail + 1) % RING_CAP;
+        return y;
+    }
+    return 0.0f;
+}
+
+/* Sink capture RT callback. The virtual sink receives interleaved stereo
+ * F32 from whatever apps route audio into "G-Helper Clean Output".
+ * When out_rnnoise_on is active, each channel is independently denoised.
+ * When bypassed, audio passes through untouched. */
+static void cb_sink_in_process(void *userdata)
+{
+    struct stream_ctx *ctx = userdata;
+    struct pw_buffer *b = pw_stream_dequeue_buffer(ctx->stream);
+    if (!b)
+        return;
+    struct spa_buffer *buf = b->buffer;
+    if (!buf->datas[0].data)
+    {
+        pw_stream_queue_buffer(ctx->stream, b);
+        return;
+    }
+    uint32_t stride = sizeof(float) * 2; /* stereo interleaved */
+    uint32_t n_samples = buf->datas[0].chunk->size / stride;
+    const float *in = buf->datas[0].data;
+
+    int rnn_on = atomic_load(&g_params.out_rnnoise_on);
+    int aggro = atomic_load(&g_params.out_rnn_aggressiveness);
+
+    uint32_t lhead = atomic_load_explicit(&g_sink_l.head, memory_order_relaxed);
+    uint32_t rhead = atomic_load_explicit(&g_sink_r.head, memory_order_relaxed);
+
+    for (uint32_t i = 0; i < n_samples; i++)
+    {
+        float l = in[i * 2 + 0];
+        float r = in[i * 2 + 1];
+
+        if (rnn_on)
+        {
+            l = sink_channel_tick(&g_sink_ch_l, l, aggro);
+            r = sink_channel_tick(&g_sink_ch_r, r, aggro);
+        }
+
+        lhead = ring_push(&g_sink_l, lhead, l);
+        rhead = ring_push(&g_sink_r, rhead, r);
+    }
+    atomic_store_explicit(&g_sink_l.head, lhead, memory_order_release);
+    atomic_store_explicit(&g_sink_r.head, rhead, memory_order_release);
+    pw_stream_queue_buffer(ctx->stream, b);
+}
+
+/* Sink playback RT callback. Drains per-channel rings and interleaves
+ * into a stereo F32 buffer for the physical output device. */
+static void cb_sink_out_process(void *userdata)
+{
+    struct stream_ctx *ctx = userdata;
+    struct pw_buffer *b = pw_stream_dequeue_buffer(ctx->stream);
+    if (!b)
+        return;
+    struct spa_buffer *buf = b->buffer;
+    if (!buf->datas[0].data)
+    {
+        pw_stream_queue_buffer(ctx->stream, b);
+        return;
+    }
+    uint32_t stride = sizeof(float) * 2; /* stereo interleaved */
+    uint32_t n_avail = buf->datas[0].maxsize / stride;
+    uint32_t n_samples = n_avail;
+    if (b->requested && b->requested < n_samples)
+        n_samples = (uint32_t)b->requested;
+    float *out = buf->datas[0].data;
+
+    uint32_t lh = atomic_load_explicit(&g_sink_l.head, memory_order_acquire);
+    uint32_t lt = atomic_load_explicit(&g_sink_l.tail, memory_order_relaxed);
+    uint32_t rh = atomic_load_explicit(&g_sink_r.head, memory_order_acquire);
+    uint32_t rt_ = atomic_load_explicit(&g_sink_r.tail, memory_order_relaxed);
+
+    for (uint32_t i = 0; i < n_samples; i++)
+    {
+        float l = 0.0f, r = 0.0f;
+        if (lt != lh)
+        {
+            l = g_sink_l.buf[lt];
+            lt = (lt + 1) % POST_RING_CAP;
+        }
+        if (rt_ != rh)
+        {
+            r = g_sink_r.buf[rt_];
+            rt_ = (rt_ + 1) % POST_RING_CAP;
+        }
+        out[i * 2 + 0] = l;
+        out[i * 2 + 1] = r;
+    }
+    atomic_store_explicit(&g_sink_l.tail, lt, memory_order_release);
+    atomic_store_explicit(&g_sink_r.tail, rt_, memory_order_release);
+
+    buf->datas[0].chunk->offset = 0;
+    buf->datas[0].chunk->stride = (int32_t)stride;
+    buf->datas[0].chunk->size = n_samples * stride;
+    pw_stream_queue_buffer(ctx->stream, b);
+}
+
 static void cb_state_changed(void *userdata, enum pw_stream_state old,
                              enum pw_stream_state state, const char *error)
 {
     struct stream_ctx *ctx = userdata;
-    const char *name = (ctx == &g_in_ctx)    ? "capture"
-                       : (ctx == &g_out_ctx) ? "source "
-                       : (ctx == &g_mon_ctx) ? "monitor"
-                                             : "?      ";
+    const char *name = (ctx == &g_in_ctx)       ? "capture "
+                       : (ctx == &g_out_ctx)    ? "source  "
+                       : (ctx == &g_mon_ctx)    ? "monitor "
+                       : (ctx == &g_sink_in_ctx)  ? "sink-in "
+                       : (ctx == &g_sink_out_ctx) ? "sink-out"
+                                                  : "?       ";
     fprintf(stderr, "[ghelper-audio] %s %s -> %s%s%s\n",
             name,
             pw_stream_state_as_string(old),
@@ -1738,8 +1982,21 @@ static const struct pw_stream_events mon_stream_events = {
     .process = cb_mon_process,
 };
 
-/* g_in_ctx / g_out_ctx are defined ahead of the callbacks so the
- * state-change handler can identify which stream emitted an event. */
+static const struct pw_stream_events sink_in_stream_events = {
+    PW_VERSION_STREAM_EVENTS,
+    .state_changed = cb_state_changed,
+    .process = cb_sink_in_process,
+};
+
+static const struct pw_stream_events sink_out_stream_events = {
+    PW_VERSION_STREAM_EVENTS,
+    .state_changed = cb_state_changed,
+    .process = cb_sink_out_process,
+};
+
+/* g_in_ctx / g_out_ctx / g_sink_in_ctx / g_sink_out_ctx are defined ahead
+ * of the callbacks so the state-change handler can identify which stream
+ * emitted an event. */
 
 /* ---------------------------------------------------------------------------
  *   Audio frame emitter (60 Hz timer in main loop)
@@ -1857,6 +2114,48 @@ static void apply_pending_monitor(struct app *app)
     }
 }
 
+/* Connect or disconnect the output sink pipeline (Two-Way Noise Cancellation).
+ * When connecting, the sink_out_stream (playback to real speakers) is linked
+ * to the default output device. The sink_in_stream (virtual sink) is always
+ * connected from startup - it just passes audio through or denoises based
+ * on the out_rnnoise_on flag. This function handles the playback side. */
+static void apply_pending_sink(struct app *app)
+{
+    int p = atomic_exchange(&app->sink_pending, 0);
+    if (p == 0)
+        return;
+
+    if (p == 2)
+    {
+        pw_stream_disconnect(app->sink_out_stream);
+        fprintf(stderr, "[ghelper-audio] sink-out disconnected\n");
+        return;
+    }
+
+    uint8_t pod_buf[1024];
+    struct spa_pod_builder b = SPA_POD_BUILDER_INIT(pod_buf, sizeof(pod_buf));
+    const struct spa_pod *params[1];
+    params[0] = spa_format_audio_raw_build(&b, SPA_PARAM_EnumFormat,
+                                           &SPA_AUDIO_INFO_RAW_INIT(
+                                                   .format = SPA_AUDIO_FORMAT_F32,
+                                                   .channels = 2,
+                                                   .rate = SAMPLE_RATE));
+    if (pw_stream_connect(app->sink_out_stream,
+                          PW_DIRECTION_OUTPUT,
+                          PW_ID_ANY,
+                          PW_STREAM_FLAG_AUTOCONNECT |
+                              PW_STREAM_FLAG_MAP_BUFFERS |
+                              PW_STREAM_FLAG_RT_PROCESS,
+                          params, 1) < 0)
+    {
+        fprintf(stderr, "[ghelper-audio] sink-out connect failed\n");
+    }
+    else
+    {
+        fprintf(stderr, "[ghelper-audio] sink-out connected\n");
+    }
+}
+
 static void on_timer(void *userdata, uint64_t expirations)
 {
     struct app *app = userdata;
@@ -1864,6 +2163,7 @@ static void on_timer(void *userdata, uint64_t expirations)
 
     apply_pending_source(app);
     apply_pending_monitor(app);
+    apply_pending_sink(app);
 
     static uint32_t last_seq = 0;
     uint32_t seq = atomic_load(&g_snap.seq);
@@ -1948,6 +2248,25 @@ static void parse_cmd(char *line)
     if (!strncmp(line, "RNN ", 4))
     {
         atomic_store(&g_params.rnnoise_on, atoi(line + 4) ? 1 : 0);
+    }
+    else if (!strncmp(line, "OUT_NOISE ", 10))
+    {
+        /* Two-Way Output Noise Cancellation on/off. When enabled, the
+         * cb_sink_in_process callback runs RNNoise on each stereo channel.
+         * When disabled, audio passes through the sink untouched. */
+        int on = atoi(line + 10) ? 1 : 0;
+        atomic_store(&g_params.out_rnnoise_on, on);
+        fprintf(stderr, "[ghelper-audio] output noise cancellation %s\n",
+                on ? "ON" : "OFF");
+    }
+    else if (!strncmp(line, "OUT_AGG ", 8))
+    {
+        /* Output RNNoise aggressiveness (per-mille, 0..1000). Same semantics
+         * as the input pipeline's AGG command. */
+        int v = atoi(line + 8);
+        if (v < 0) v = 0;
+        if (v > 1000) v = 1000;
+        atomic_store(&g_params.out_rnn_aggressiveness, v);
     }
     else if (!strncmp(line, "EQ ", 3))
     {
@@ -2289,6 +2608,27 @@ int main(int argc, char *argv[])
                    atomic_load(&g_params.vocoder_attack_ms),
                    atomic_load(&g_params.vocoder_release_ms));
 
+    /* ---- Output (Two-Way) Noise Cancellation: initialise dual RNNoise
+     * instances for independent stereo channel denoising. Each gets its
+     * own 70 Hz rumble HPF and starts with the gate fully open. */
+    g_sink_ch_l.rn = rnnoise_create(NULL);
+    g_sink_ch_r.rn = rnnoise_create(NULL);
+    if (!g_sink_ch_l.rn || !g_sink_ch_r.rn)
+    {
+        fprintf(stderr, "rnnoise_create failed for output sink channels\n");
+        return 1;
+    }
+    biquad_design(&g_sink_ch_l.rnn_hpf, 3 /* HPF */, (float)SAMPLE_RATE,
+                  70.0f, 0.707f, 0.0f);
+    biquad_design(&g_sink_ch_r.rnn_hpf, 3 /* HPF */, (float)SAMPLE_RATE,
+                  70.0f, 0.707f, 0.0f);
+    g_sink_ch_l.gate_gain = 1.0f;
+    g_sink_ch_l.vad_ema = 0.0f;
+    g_sink_ch_l.hangover_left = 0;
+    g_sink_ch_r.gate_gain = 1.0f;
+    g_sink_ch_r.vad_ema = 0.0f;
+    g_sink_ch_r.hangover_left = 0;
+
     struct app *app = &g_app;
     memset(app, 0, sizeof(*app));
     app->loop = pw_main_loop_new(NULL);
@@ -2372,6 +2712,95 @@ int main(int argc, char *argv[])
     /* mon_stream stays unconnected; apply_pending_monitor() wires it on
      * demand when the user enables monitoring. */
 
+    /* ---- Output Noise Cancellation: Virtual Sink (Audio/Sink, stereo).
+     * Apps (Discord, Zoom, browsers, games) route their audio into this
+     * sink when the user selects it as their output device. The
+     * cb_sink_in_process callback optionally runs RNNoise on each channel.
+     *
+     * The sink_in_stream is ALWAYS connected from startup so apps can find
+     * it and route audio into it (even when noise cancellation is off —
+     * in that case audio passes through untouched). The sink_out_stream
+     * (playback to real speakers) is also always connected so there is
+     * no audio gap when toggling noise cancellation on/off. */
+    struct pw_properties *sink_in_props = pw_properties_new(
+        PW_KEY_MEDIA_TYPE, "Audio",
+        PW_KEY_MEDIA_CATEGORY, "Capture",
+        PW_KEY_MEDIA_ROLE, "Communication",
+        PW_KEY_NODE_NAME, "ghelper-audio-sink",
+        PW_KEY_NODE_NICK, "G-Helper Clean Output",
+        PW_KEY_NODE_DESCRIPTION, "G-Helper Clean Output (Two-Way RT DSP)",
+        PW_KEY_MEDIA_CLASS, "Audio/Sink",
+        PW_KEY_NODE_VIRTUAL, "true",
+        "audio.channels", "2",
+        "audio.position", "FL,FR",
+        PW_KEY_PRIORITY_SESSION, "900",
+        NULL);
+
+    app->sink_in_stream = pw_stream_new_simple(
+        pw_main_loop_get_loop(app->loop),
+        "ghelper-audio-sink",
+        sink_in_props,
+        &sink_in_stream_events,
+        &g_sink_in_ctx);
+    g_sink_in_ctx.stream = app->sink_in_stream;
+
+    struct spa_pod_builder b_sink_in = SPA_POD_BUILDER_INIT(pod_buf, sizeof(pod_buf));
+    const struct spa_pod *sink_in_params[1];
+    sink_in_params[0] = spa_format_audio_raw_build(&b_sink_in, SPA_PARAM_EnumFormat,
+                                                   &SPA_AUDIO_INFO_RAW_INIT(
+                                                           .format = SPA_AUDIO_FORMAT_F32,
+                                                           .channels = 2,
+                                                           .rate = SAMPLE_RATE));
+
+    if (pw_stream_connect(app->sink_in_stream,
+                          PW_DIRECTION_INPUT, PW_ID_ANY,
+                          PW_STREAM_FLAG_AUTOCONNECT |
+                              PW_STREAM_FLAG_MAP_BUFFERS |
+                              PW_STREAM_FLAG_RT_PROCESS,
+                          sink_in_params, 1) < 0)
+    {
+        fprintf(stderr, "sink_in_stream connect failed\n");
+        return 1;
+    }
+
+    /* Sink playback stream: routes cleaned audio to real speakers/headphones.
+     * Always connected from startup for seamless passthrough/denoise toggle. */
+    struct pw_properties *sink_out_props = pw_properties_new(
+        PW_KEY_MEDIA_TYPE, "Audio",
+        PW_KEY_MEDIA_CATEGORY, "Playback",
+        PW_KEY_MEDIA_ROLE, "Communication",
+        PW_KEY_NODE_NAME, "ghelper-audio-sink-out",
+        PW_KEY_NODE_DESCRIPTION, "G-Helper Clean Output playback",
+        NULL);
+
+    app->sink_out_stream = pw_stream_new_simple(
+        pw_main_loop_get_loop(app->loop),
+        "ghelper-audio-sink-out",
+        sink_out_props,
+        &sink_out_stream_events,
+        &g_sink_out_ctx);
+    g_sink_out_ctx.stream = app->sink_out_stream;
+
+    struct spa_pod_builder b_sink_out = SPA_POD_BUILDER_INIT(pod_buf, sizeof(pod_buf));
+    const struct spa_pod *sink_out_params[1];
+    sink_out_params[0] = spa_format_audio_raw_build(&b_sink_out, SPA_PARAM_EnumFormat,
+                                                    &SPA_AUDIO_INFO_RAW_INIT(
+                                                            .format = SPA_AUDIO_FORMAT_F32,
+                                                            .channels = 2,
+                                                            .rate = SAMPLE_RATE));
+
+    if (pw_stream_connect(app->sink_out_stream,
+                          PW_DIRECTION_OUTPUT,
+                          PW_ID_ANY,
+                          PW_STREAM_FLAG_AUTOCONNECT |
+                              PW_STREAM_FLAG_MAP_BUFFERS |
+                              PW_STREAM_FLAG_RT_PROCESS,
+                          sink_out_params, 1) < 0)
+    {
+        fprintf(stderr, "sink_out_stream connect failed\n");
+        return 1;
+    }
+
     /* 60 Hz timer to emit audio frames on stdout */
     struct timespec interval = {0, 16000000}; /* 16 ms */
     app->timer = pw_loop_add_timer(pw_main_loop_get_loop(app->loop),
@@ -2396,10 +2825,14 @@ int main(int argc, char *argv[])
     if (app->timer)
         pw_loop_destroy_source(pw_main_loop_get_loop(app->loop), app->timer);
 
+    pw_stream_destroy(app->sink_out_stream);
+    pw_stream_destroy(app->sink_in_stream);
     pw_stream_destroy(app->mon_stream);
     pw_stream_destroy(app->out_stream);
     pw_stream_destroy(app->in_stream);
     pw_main_loop_destroy(app->loop);
+    rnnoise_destroy(g_sink_ch_r.rn);
+    rnnoise_destroy(g_sink_ch_l.rn);
     rnnoise_destroy(g_rt.rn);
     pw_deinit();
     return 0;
