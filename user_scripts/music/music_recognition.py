@@ -298,6 +298,8 @@ class HistoryStore:
         self.history_path = history_path
         self.lock_path = history_path.with_suffix(".lock")
         self.max_records = max_records
+        self.history_path.parent.mkdir(parents=True, exist_ok=True)
+
 
     def _atomic_modify(self, modifier: Callable[[list[SongMetadata]], list[SongMetadata]]) -> None:
         lock_fd = os.open(self.lock_path, os.O_CREAT | os.O_RDWR, 0o600)
@@ -433,7 +435,6 @@ class Notifier:
             "-u", "low",
             "-t", "4000",
             "-h", cls.SYNC_HINT,
-            "-i", "audio-input-microphone",
             "Music Recognition",
             f"Listening to {source_name}...",
         ]
@@ -446,7 +447,6 @@ class Notifier:
     def notify_detected(cls, song: SongMetadata) -> None:
         if not shutil.which("notify-send"):
             return
-        icon = song.local_cover_path if (song.local_cover_path and os.path.isfile(song.local_cover_path)) else "audio-input-microphone"
         
         # Build subtitle with album and year
         details = html.escape(song.artist)
@@ -461,14 +461,47 @@ class Notifier:
             "-u", "normal",
             "-t", "8000",
             "-h", cls.SYNC_HINT,
-            "-i", icon,
-            song.title,
-            details,
         ]
-        try:
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception as e:
-            log_error(f"Notification error: {e}")
+        if song.local_cover_path and os.path.isfile(song.local_cover_path):
+            cmd.extend(["-i", song.local_cover_path])
+
+        cmd.extend([song.title, details])
+        
+        youtube_url = song.youtube_search_url or song.shazam_url
+        spotify_url = song.spotify_url
+
+        if youtube_url or spotify_url:
+            if youtube_url:
+                cmd.append("--action=default=Open on YouTube")
+            if spotify_url:
+                cmd.append("--action=spotify=Open on Spotify")
+
+            helper_script = f"""
+import subprocess
+proc = subprocess.run({cmd!r}, capture_output=True, text=True)
+action = proc.stdout.strip()
+if action == 'default' and {bool(youtube_url)}:
+    subprocess.Popen(['xdg-open', {youtube_url!r}], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+elif action == 'spotify' and {bool(spotify_url)}:
+    subprocess.Popen(['xdg-open', {spotify_url!r}], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+"""
+            try:
+                subprocess.Popen(
+                    [sys.executable, "-c", helper_script],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                    start_new_session=True
+                )
+            except Exception as e:
+                log_error(f"Notification listener spawn error: {e}")
+        else:
+            try:
+                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception as e:
+                log_error(f"Notification error: {e}")
+
+
 
     @classmethod
     def notify_no_match(cls, elapsed_secs: int) -> None:
@@ -480,7 +513,6 @@ class Notifier:
             "-u", "low",
             "-t", "3500",
             "-h", cls.SYNC_HINT,
-            "-i", "audio-input-microphone",
             "Music Recognition",
             f"No match found ({elapsed_secs}s elapsed)",
         ]
@@ -488,6 +520,7 @@ class Notifier:
             subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception:
             pass
+
 
 
 
@@ -718,7 +751,15 @@ class RecognitionEngine:
                     apple_music_url = action.get("uri", "")
 
         query_str = urllib.parse.quote(f"{title} {artist}")
+        if spotify_url.startswith("spotify:track:"):
+            track_id = spotify_url.split(":")[-1]
+            spotify_url = f"https://open.spotify.com/track/{track_id}"
+        elif not spotify_url:
+            spotify_url = f"https://open.spotify.com/search/{query_str}"
+
         youtube_search_url = f"https://www.youtube.com/results?search_query={query_str}"
+
+
 
         now = datetime.now(timezone.utc)
         return SongMetadata(
@@ -769,7 +810,7 @@ def render_song_card(song: SongMetadata, history_count: int = 0) -> Panel:
     lines: list[Text] = []
 
     # Title
-    lines.append(Text.from_markup(f" 🎵 [bold fg]{escape(song.title)}[/bold fg]"))
+    lines.append(Text.from_markup(f" 󰎆 [bold fg]{escape(song.title)}[/bold fg]"))
 
     # Artist
     lines.append(Text.from_markup(f"    [muted]by[/muted] [accent]{escape(song.artist)}[/accent]"))
@@ -810,7 +851,7 @@ def render_song_card(song: SongMetadata, history_count: int = 0) -> Panel:
 
     return Panel(
         content,
-        title="[bold accent]✔ Song Identified[/bold accent]",
+        title="[bold accent]󰄬 Song Identified[/bold accent]",
         subtitle=footer,
         subtitle_align="right",
         border_style=theme.muted,
@@ -825,13 +866,14 @@ def render_history_table(songs: list[SongMetadata], query: str | None = None) ->
     """Render a clean Rich table of song recognition history using Matugen theme."""
     theme = MatugenTheme.load()
     table = Table(
-        title=f"🎵 Song Recognition History ({len(songs)} songs)" + (f" • Filter: '{query}'" if query else ""),
+        title=f"󰎆 Song Recognition History ({len(songs)} songs)" + (f" • Filter: '{query}'" if query else ""),
         title_style=f"bold {theme.accent}",
         box=box.ROUNDED,
         border_style=theme.muted,
         header_style=f"bold {theme.accent}",
         show_lines=False,
     )
+
 
     table.add_column("#", justify="right", style=theme.muted, width=4)
     table.add_column("Time", style=theme.muted, width=16)
@@ -927,7 +969,7 @@ def run_fzf_browser(history_store: HistoryStore) -> None:
         lookup[key] = s
 
     fzf_input = "\n".join(lines)
-    header = "ENTER: Open on YouTube | CTRL-Y: Copy Info | ESC: Exit"
+    header = "ENTER: YouTube | CTRL-S: Spotify | CTRL-Y: Copy | ESC: Exit"
     env = os.environ.copy()
     env["FZF_DEFAULT_OPTS"] = f"--color={fzf_colors} --pointer='▌' --marker='┃' --info=inline-right"
 
@@ -941,13 +983,13 @@ def run_fzf_browser(history_store: HistoryStore) -> None:
                 "--marker=┃",
                 "--highlight-line",
                 "--header", header,
-                "--prompt", "🎵 Music History > ",
+                "--prompt", "󰎆 History > ",
                 "--border=rounded",
-                "--border-label= 🎵 Song History ",
+                "--border-label= 󰎆 Song History ",
                 "--border-label-pos=top:center",
                 "--layout=reverse",
                 "--height=50%",
-                "--expect=ctrl-y",
+                "--expect=ctrl-y,ctrl-s",
             ],
             input=fzf_input.encode("utf-8"),
             capture_output=True,
@@ -968,6 +1010,10 @@ def run_fzf_browser(history_store: HistoryStore) -> None:
             if key_pressed == "ctrl-y":
                 copy_to_clipboard(f"{selected_song.title} - {selected_song.artist}")
                 sys.exit(0)
+            elif key_pressed == "ctrl-s":
+                spotify_target = selected_song.spotify_url or f"https://open.spotify.com/search/{urllib.parse.quote(selected_song.title + ' ' + selected_song.artist)}"
+                open_in_browser(spotify_target)
+                sys.exit(0)
             else:
                 url = selected_song.youtube_search_url or selected_song.shazam_url or selected_song.spotify_url
                 open_in_browser(url)
@@ -982,7 +1028,7 @@ def handle_interactive_post_recognition(song: SongMetadata | None, history_store
         return
 
     action_text = Text.from_markup(
-        "\n [accent]Actions:[/accent] [bold fg][H][/bold fg] History  [bold fg][F][/bold fg] FZF Search  [bold fg][O][/bold fg] Open on YouTube  [bold fg][C][/bold fg] Copy  [bold fg][Q][/bold fg] Exit"
+        "\n [accent]Actions:[/accent] [bold fg][H][/bold fg] History  [bold fg][F][/bold fg] FZF Search  [bold fg][O][/bold fg] YouTube  [bold fg][S][/bold fg] Spotify  [bold fg][C][/bold fg] Copy  [bold fg][Q][/bold fg] Exit"
     )
     console.print(action_text)
 
@@ -997,7 +1043,7 @@ def handle_interactive_post_recognition(song: SongMetadata | None, history_store
         console.clear()
         items = history_store.get_all()
         console.print(render_history_table(items))
-        console.print(Text.from_markup("\n [accent]Actions:[/accent] [bold fg][F][/bold fg] FZF Search  [bold fg][O][/bold fg] Open on YouTube  [bold fg][C][/bold fg] Copy Last  [bold fg][Q][/bold fg] Exit"))
+        console.print(Text.from_markup("\n [accent]Actions:[/accent] [bold fg][F][/bold fg] FZF Search  [bold fg][O][/bold fg] YouTube  [bold fg][S][/bold fg] Spotify  [bold fg][C][/bold fg] Copy Last  [bold fg][Q][/bold fg] Exit"))
         try:
             sub_key = read_single_key().lower()
         except (KeyboardInterrupt, EOFError):
@@ -1010,6 +1056,12 @@ def handle_interactive_post_recognition(song: SongMetadata | None, history_store
             if latest:
                 url = latest.youtube_search_url or latest.shazam_url or latest.spotify_url
                 open_in_browser(url)
+            sys.exit(0)
+        elif sub_key == "s":
+            latest = history_store.get_latest()
+            if latest:
+                spotify_target = latest.spotify_url or f"https://open.spotify.com/search/{urllib.parse.quote(latest.title + ' ' + latest.artist)}"
+                open_in_browser(spotify_target)
             sys.exit(0)
         elif sub_key == "c":
             latest = history_store.get_latest()
@@ -1027,11 +1079,18 @@ def handle_interactive_post_recognition(song: SongMetadata | None, history_store
             url = target.youtube_search_url or target.shazam_url or target.spotify_url
             open_in_browser(url)
         sys.exit(0)
+    elif key == "s":
+        target = song or history_store.get_latest()
+        if target:
+            spotify_target = target.spotify_url or f"https://open.spotify.com/search/{urllib.parse.quote(target.title + ' ' + target.artist)}"
+            open_in_browser(spotify_target)
+        sys.exit(0)
     elif key == "c":
         target = song or history_store.get_latest()
         if target:
             copy_to_clipboard(f"{target.title} - {target.artist}")
         sys.exit(0)
+
 
 
 
@@ -1108,7 +1167,7 @@ def run_recognition(
                     eq_idx = (eq_idx + 1) % len(EQ_FRAMES)
                     wave = EQ_FRAMES[eq_idx]
                     status_text = Text.assemble(
-                        ("⏺ ", "error"),
+                        ("󰐊 ", "error"),
                         ("Listening... ", "bold fg"),
                         (f"[{elapsed + sec:02d}s/{timeout}s] ", "muted"),
                         (f"{wave} ", "accent"),
@@ -1129,7 +1188,7 @@ def run_recognition(
                 if recorded:
                     live.update(
                         Panel(
-                            Align.center(Text("⚡ Analyzing audio fingerprint with Shazam servers...", style="accent")),
+                            Align.center(Text("󰑐 Analyzing audio fingerprint with Shazam servers...", style="accent")),
                             box=box.ROUNDED,
                             border_style=theme.muted,
                             padding=(0, 1)
@@ -1170,7 +1229,7 @@ def run_recognition(
         Panel(
             Align.center(
                 Text.assemble(
-                    ("✖ ", "error"),
+                    ("󰅖 ", "error"),
                     ("No Match Found ", "bold fg"),
                     (f"(Elapsed: {elapsed_total}s, {attempt} attempts)\n", "muted"),
                     ("Ensure music is audible and playing clearly.", "italic warning")
@@ -1194,7 +1253,7 @@ def run_recognition(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="music_recognition",
-        description="🎵 Dusky Music Recognition - Shazam Audio Identification with Rich UI & Mako notifications",
+        description="󰎆 Dusky Music Recognition - Shazam Audio Identification with Rich UI & Mako notifications",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Commands:
@@ -1286,7 +1345,7 @@ def main() -> None:
 
         for dep in ["songrec", "ffmpeg", "pw-record", "pactl", "notify-send", "wl-copy", "fzf", "mako"]:
             p = shutil.which(dep)
-            status = f"[success]✔ {p}[/success]" if p else "[error]✖ Not Installed[/error]"
+            status = f"[success]󰄬 {p}[/success]" if p else "[error]󰅖 Not Installed[/error]"
             table.add_row(f"Dependency: {dep}", status)
 
         sink = AudioEngine.get_default_monitor_source() or "None"
@@ -1301,7 +1360,7 @@ def main() -> None:
     if args.clear_history or cmd == "clear":
         if console.input("[warning]Are you sure you want to clear song recognition history? (y/N): [/warning]").strip().lower() in ("y", "yes"):
             history.clear()
-            console.print("[success]✔ Recognition history cleared.[/success]")
+            console.print("[success]󰄬 Recognition history cleared.[/success]")
         else:
             console.print("[muted]Aborted.[/muted]")
         return
@@ -1312,11 +1371,12 @@ def main() -> None:
         export_path = Path(target).resolve()
         fmt = export_path.suffix.lstrip(".") or "json"
         if history.export(export_path, fmt):
-            console.print(f"[success]✔ Successfully exported history to:[/success] {export_path}")
+            console.print(f"[success]󰄬 Successfully exported history to:[/success] {export_path}")
         else:
-            console.print(f"[error]✖ Failed to export history to:[/error] {export_path}")
+            console.print(f"[error]󰅖 Failed to export history to:[/error] {export_path}")
             sys.exit(1)
         return
+
 
     # Subcommand: FZF Interactive Browser
     if args.fzf or cmd == "fzf":
