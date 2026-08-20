@@ -491,21 +491,13 @@ icon = "utilities-system-monitor-symbolic"
 description = "Screentime daemon, autostart apps, and live system diagnostics"
 
 [[pages.layout.items]]
-type = "toggle"
+type = "service"
 [pages.layout.items.properties]
 title = "Screentime Tracking Service"
-description = "Enable or disable background Screentime tracking daemon"
+description = "Wayland screentime daemon (from tui_service_toggle.py)"
 icon = "preferences-system-time-symbolic"
-state_command = "systemctl --user is-active --quiet dusky_screentime.service && echo yes"
-interval = 5
-[pages.layout.items.on_toggle.enabled]
-type = "exec"
-command = "systemctl --user enable --now dusky_screentime.service && notify-send 'Screentime' 'Tracking Daemon Enabled'"
-terminal = false
-[pages.layout.items.on_toggle.disabled]
-type = "exec"
-command = "systemctl --user disable --now dusky_screentime.service && notify-send 'Screentime' 'Tracking Daemon Disabled'"
-terminal = false
+service = "dusky_screentime.service"
+scope = "user"
 
 [[pages.layout.items]]
 type = "button"
@@ -703,6 +695,15 @@ type = "exec"
 command = "kitty --class change_ftp_directory_server.sh --hold sh -c $HOME/user_scripts/ftp/change_ftp_directory_server.sh"
 terminal = false
 
+[[pages.layout.items]]
+type = "service"
+[pages.layout.items.properties]
+title = "FTP Server"
+description = "vsftpd daemon (from tui_service_toggle.py)"
+icon = "network-server-symbolic"
+service = "vsftpd.service"
+scope = "system"
+
 
 [[pages]]
 id = "network"
@@ -855,6 +856,39 @@ icon = "user-trash-symbolic"
 type = "exec"
 command = "kitty --class tailscale_uninstall --hold sh -c \"$HOME/user_scripts/networking/uninstall_tailscale.sh\""
 terminal = false
+
+[[pages.layout]]
+type = "section"
+[pages.layout.properties]
+title = "Network Services — Native Toggle"
+description = "From tui_service_toggle.py CORE_SYSTEM_DEFS — lazy, polkit"
+
+[[pages.layout.items]]
+type = "service"
+[pages.layout.items.properties]
+title = "Tailscale Daemon"
+description = "tailscaled mesh VPN"
+icon = "network-vpn-symbolic"
+service = "tailscaled.service"
+scope = "system"
+
+[[pages.layout.items]]
+type = "service"
+[pages.layout.items.properties]
+title = "SSH Server"
+description = "sshd OpenSSH remote access"
+icon = "system-users-symbolic"
+service = "sshd.service"
+scope = "system"
+
+[[pages.layout.items]]
+type = "service"
+[pages.layout.items.properties]
+title = "WARP VPN Service"
+description = "warp-svc Cloudflare WARP daemon"
+icon = "security-high-symbolic"
+service = "warp-svc.service"
+scope = "system"
 
 [[pages.layout]]
 type = "section"
@@ -1094,6 +1128,15 @@ command = "~/user_scripts/battery/tlp/tlp_mode_toggle.sh performance"
 [pages.layout.items.on_change."Power Saver"]
 type = "exec"
 command = "~/user_scripts/battery/tlp/tlp_mode_toggle.sh power-saver"
+
+[[pages.layout.items]]
+type = "service"
+[pages.layout.items.properties]
+title = "TLP Power Management"
+description = "tlp advanced battery tweaks (from tui_service_toggle.py)"
+icon = "battery-good-symbolic"
+service = "tlp.service"
+scope = "system"
 
 [[pages.layout.items]]
 type = "toggle"
@@ -1540,6 +1583,30 @@ style = "suggested"
 [pages.layout.items.on_press]
 type = "exec"
 command = "pavucontrol"
+
+[[pages.layout]]
+type = "section"
+[pages.layout.properties]
+title = "Background Services"
+description = "From tui_service_toggle.py CORE_USER_DEFS"
+
+[[pages.layout.items]]
+type = "service"
+[pages.layout.items.properties]
+title = "Audio Visualizer"
+description = "dusky_visualizer background daemon"
+icon = "audio-x-generic-symbolic"
+service = "dusky_visualizer.service"
+scope = "user"
+
+[[pages.layout.items]]
+type = "service"
+[pages.layout.items.properties]
+title = "RAM Monitor"
+description = "Alerts on 95% RAM / 90% ZRAM"
+icon = "utilities-system-monitor-symbolic"
+service = "dusky_ram_monitor.service"
+scope = "user"
 
 [[pages.layout]]
 type = "section"
@@ -2085,17 +2152,9 @@ title = "System Services — Native Toggle (Lazy, Polkit)"
 [[pages.layout.items]]
 type = "service_card"
 [pages.layout.items.properties]
-title = "Bluetooth"
-icon = "bluetooth-active-symbolic"
-service = "bluetooth.service"
-scope = "system"
-
-[[pages.layout.items]]
-type = "service_card"
-[pages.layout.items.properties]
-title = "CUPS Print"
-icon = "printer-symbolic"
-service = "cups.service"
+title = "Firewall (UFW)"
+icon = "security-low-symbolic"
+service = "ufw.service"
 scope = "system"
 
 [[pages.layout.items]]
@@ -2106,35 +2165,63 @@ icon = "preferences-system-time-symbolic"
 service = "systemd-timesyncd.service"
 scope = "system"
 
+[[pages.layout.items]]
+type = "service_card"
+[pages.layout.items.properties]
+title = "WARP VPN"
+icon = "security-high-symbolic"
+service = "warp-svc.service"
+scope = "system"
+
+[[pages.layout.items]]
+type = "service_card"
+[pages.layout.items.properties]
+title = "SSH Server"
+icon = "network-server-symbolic"
+service = "sshd.service"
+scope = "system"
+
 [[pages.layout]]
 type = "section"
 [pages.layout.properties]
 title = "User Services — No Password, Instant"
-description = "Toggled via systemctl --user; state checked lazily on page entry"
+description = "Toggled via systemctl --user; checked lazily on page entry (see tui_service_toggle.py CORE_USER_DEFS)"
 
 [[pages.layout.items]]
 type = "service"
 [pages.layout.items.properties]
-title = "Screentime Daemon"
-description = "Background productivity tracking"
-icon = "preferences-system-time-symbolic"
-service = "dusky_screentime.service"
+title = "Night Light"
+description = "hyprsunset blue-light filter"
+icon = "weather-clear-night-symbolic"
+service = "hyprsunset.service"
 scope = "user"
 
-[[pages.layout]]
-type = "section"
-[pages.layout.properties]
-title = "System Service — Polkit (Cached ~5 min)"
-description = "System scope prompts via hyprpolkitagent then keeps auth (auth_admin_keep)"
+[[pages.layout.items]]
+type = "service"
+[pages.layout.items.properties]
+title = "Idle Daemon"
+description = "Hyprland idle (dim/lock/sleep)"
+icon = "preferences-system-time-symbolic"
+service = "hypridle.service"
+scope = "user"
 
 [[pages.layout.items]]
 type = "service"
 [pages.layout.items.properties]
-title = "Keylogger System Service"
-description = "Requires polkit auth"
-icon = "input-keyboard-symbolic"
-service = "dusky_keylogger.service"
-scope = "system"
+title = "Battery Alerts"
+description = "Low battery notifications"
+icon = "battery-good-symbolic"
+service = "dusky_battery.service"
+scope = "user"
+
+[[pages.layout.items]]
+type = "service"
+[pages.layout.items.properties]
+title = "Network Meter"
+description = "Waybar traffic monitor"
+icon = "network-workgroup-symbolic"
+service = "network_meter.service"
+scope = "user"
 
 
 [[pages]]
@@ -3100,6 +3187,19 @@ style = "suggested"
 type = "exec"
 command = "foot --app-id=dusky_tui --hold python3 $HOME/user_scripts/hypr/input/tui_keybinds.py"
 
+[[pages.layout.items]]
+type = "button"
+[pages.layout.items.properties]
+title = "Keybind Cheatsheet"
+button_text = "View"
+description = "Minimalist visual cheatsheet (Matugen palette, 4 categories)"
+icon = "view-grid-symbolic"
+
+style = "suggested"
+[pages.layout.items.on_press]
+type = "exec"
+command = "kitty --class dusky_keybinds_cheatsheet --hold sh -c \"python3 $HOME/user_scripts/hypr/input/keybinds_cheatsheet.py\""
+
 [[pages]]
 id = "tools_and_ai"
 title = "Tools & AI"
@@ -3892,20 +3992,12 @@ type = "grid_section"
 title = "Keylogger"
 
 [[pages.layout.items]]
-type = "toggle_card"
+type = "service_card"
 [pages.layout.items.properties]
 title = "Keylogger Service"
 icon = "input-keyboard-symbolic"
-state_command = "systemctl is-active --quiet dusky_keylogger.service && echo yes"
-interval = 3
-[pages.layout.items.on_toggle.enabled]
-type = "exec"
-command = "pkexec systemctl enable --now dusky_keylogger.service && notify-send 'Keylogger' 'Service Enabled'"
-terminal = false
-[pages.layout.items.on_toggle.disabled]
-type = "exec"
-command = "pkexec systemctl disable --now dusky_keylogger.service && notify-send 'Keylogger' 'Service Disabled'"
-terminal = false
+service = "dusky_keylogger.service"
+scope = "system"
 
 [[pages.layout.items]]
 type = "grid_card"
