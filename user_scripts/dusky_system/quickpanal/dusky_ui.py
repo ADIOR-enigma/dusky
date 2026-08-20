@@ -766,16 +766,78 @@ button.power-ring-btn.applying:checked {
     color: alpha(@theme_fg_color, 0.5); 
 }
 
+switch image,
+switch image.on,
+switch image.off,
+switch image:first-child,
+switch image:last-child {
+    -gtk-icon-source: none;
+    -gtk-icon-transform: scale(0);
+    opacity: 0;
+    min-width: 0px;
+    min-height: 0px;
+    margin: 0px;
+    padding: 0px;
+    color: transparent;
+}
+
+switch,
+switch:checked,
+switch:not(:checked),
+switch:hover,
+switch:hover:not(:checked),
+switch:checked:hover,
+switch:checked:hover:active,
+switch:checked:active,
+switch:checked:disabled,
+switch:disabled,
+switch:focus,
+switch.compact-switch,
+switch.compact-switch:checked,
+switch.compact-switch:not(:checked),
+switch.compact-switch:hover,
+switch.compact-switch:active,
+switch.compact-switch:disabled {
+    color: transparent;
+    font-size: 0px;
+    text-shadow: none;
+    -gtk-icon-source: none;
+    -gtk-icon-shadow: none;
+    background-image: none;
+    outline: none;
+    box-shadow: none;
+}
+
+switch label,
+switch * {
+    color: transparent;
+    font-size: 0px;
+    text-shadow: none;
+    -gtk-icon-source: none;
+    -gtk-icon-shadow: none;
+    background-image: none;
+    opacity: 0;
+    min-width: 0px;
+    min-height: 0px;
+    margin: 0px;
+    padding: 0px;
+}
+
 switch.compact-switch {
     min-width: 38px;
     min-height: 20px;
     border-radius: 999px;
     border: 1px solid rgba(255, 255, 255, 0.05);
     background-color: rgba(255, 255, 255, 0.12);
+    box-shadow: none;
+    outline: none;
+    color: transparent;
 }
 switch.compact-switch:checked {
     background-color: @theme_selected_bg_color;
     border-color: @theme_selected_bg_color;
+    box-shadow: none;
+    color: transparent;
 }
 switch.compact-switch slider {
     min-width: 18px;
@@ -784,6 +846,7 @@ switch.compact-switch slider {
     background-color: #ffffff;
     border: none;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+    outline: none;
 }
 switch.compact-switch:checked slider {
     background-color: #ffffff;
