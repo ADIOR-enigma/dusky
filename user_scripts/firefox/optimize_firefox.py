@@ -102,14 +102,28 @@ def has_overlayfs_support() -> bool:
                 return True
     except Exception as e:
         logger.warning(f"Error reading /proc/filesystems: {e}")
-        
+
+    # Try to load the module; use sudo if needed (non-interactive safe fallback to plain modprobe)
+    for cmd in (["sudo", "-n", "modprobe", "overlay"], ["modprobe", "overlay"]):
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True)
+            if res.returncode == 0:
+                # Re-check /proc/filesystems after successful modprobe
+                try:
+                    if "overlay" in Path("/proc/filesystems").read_text():
+                        return True
+                except Exception:
+                    pass
+                return True
+        except Exception:
+            continue
+
+    # Final check: overlay may be available as built-in but not listed until probed via filesystem test
     try:
-        res = subprocess.run(["modprobe", "overlay"], capture_output=True, text=True)
-        if res.returncode == 0:
+        if Path("/sys/fs/overlay").exists():
             return True
     except Exception:
         pass
-        
     return False
 
 
@@ -147,16 +161,62 @@ def backup_profile(
     
     if dry_run:
         logger.info(f"[dim][Dry Run] Would create profile backup at {backup_path}[/]")
+        # Even in dry-run, warn about low space if detectable
+        try:
+            import shutil
+            if backup_dir.exists():
+                free = shutil.disk_usage(backup_dir).free
+                # Rough estimate: profile size * 0.7 (gz compression)
+                try:
+                    est = sum(f.stat().st_size for f in profile_dir.rglob("*") if f.is_file())
+                    est_compressed = int(est * 0.7)
+                    if est_compressed > free:
+                        logger.warning(f"[yellow]Dry-run warning: Estimated backup need {est_compressed/1024/1024:.0f}MB but free on {backup_dir} is {free/1024/1024:.0f}MB - may fail without cleanup.[/]")
+                except Exception:
+                    pass
+        except Exception:
+            pass
         return
         
     try:
         backup_dir.mkdir(parents=True, exist_ok=True)
+
+        # Pre-check free space and proactively rotate oldest backups to make room (handles tiny LUKS partition 3GB with 985MB profile)
+        try:
+            import shutil
+            existing_backups_pre = sorted(
+                backup_dir.glob(f"firefox-backup-{profile_dir.name}-*.tar.gz"),
+                key=lambda p: p.stat().st_mtime
+            )
+            if len(existing_backups_pre) >= MAX_BACKUPS_PER_PROFILE:
+                # Free at least one slot before creating new tar, to avoid filling tiny LUKS volume
+                excess_pre = len(existing_backups_pre) - MAX_BACKUPS_PER_PROFILE + 1
+                logger.info(f"Pre-pruning [yellow]{excess_pre}[/] old backup(s) to free space before creating new backup...")
+                for old_backup in existing_backups_pre[:excess_pre]:
+                    try:
+                        old_backup.unlink()
+                        logger.info(f"[dim]Deleted old backup pre-emptively: {old_backup.name}[/]")
+                    except Exception as e:
+                        logger.warning(f"Failed to delete old backup {old_backup.name}: {e}")
+            # Also check free space vs estimated compressed size
+            try:
+                free = shutil.disk_usage(backup_dir).free
+                est = sum(f.stat().st_size for f in profile_dir.rglob("*") if f.is_file())
+                est_compressed = int(est * 0.7)
+                # Need at least est_compressed + 100MB headroom
+                if est_compressed + 100*1024*1024 > free:
+                    logger.warning(f"[yellow]Low disk space on {backup_dir}: free {free/1024/1024:.0f}MB, need ~{est_compressed/1024/1024:.0f}MB. Attempting anyway with rotation...[/]")
+            except Exception:
+                pass
+        except Exception as e:
+            logger.debug(f"Pre-rotation check failed: {e}")
+
         logger.info(f"Creating profile backup: [cyan]{backup_path.name}[/]...")
         with tarfile.open(backup_path, "w:gz") as tar:
             tar.add(profile_dir, arcname=profile_dir.name)
         logger.info("[bold green]Backup created successfully.[/]")
         
-        # --- FIXED LOGIC: Backup Rotation / Drive Pollution Prevention ---
+        # --- Backup Rotation / Drive Pollution Prevention ---
         existing_backups = sorted(
             backup_dir.glob(f"firefox-backup-{profile_dir.name}-*.tar.gz"),
             key=lambda p: p.stat().st_mtime
@@ -174,7 +234,7 @@ def backup_profile(
                     
     except Exception as e:
         logger.error(f"[bold red]Failed to create profile backup:[/] {e}")
-        logger.error("Aborting optimization because backup failed.")
+        logger.error("Aborting optimization because backup failed. Check free space on backup device and permissions.")
         sys.exit(1)
 
 
@@ -420,12 +480,16 @@ def get_optimization_prefs(ram_gb: float, cache_mode: CacheMode) -> dict[str, st
     else:
         logger.info(f"System has [cyan]{ram_gb:.1f} GB[/] RAM (< 16 GB). Scaling to Moderate-performance profile.")
 
+    # Validated against Firefox 154.0 (Arch) / mozilla-release FIREFOX_154_0_RELEASE:
+    # - browser.cache.offline.enable removed (AppCache gone since Fx85) => dropped
+    # - media.ffmpeg.vaapi.enabled removed (replaced by media.hardware-video-decoding.force-enabled) => dropped
+    # - widget.wayland-dmabuf-vaapi.enabled removed (replaced by widget.dmabuf / media.hardware-video-decoding) => dropped
+    # Remaining prefs all verified present in StaticPrefList.yaml / all.js / firefox.js / CacheObserver.cpp
     prefs: dict[str, str | int | bool] = {
         "browser.cache.memory.enable": True,
         "browser.cache.memory.capacity": capacity_kb,
         "browser.cache.disk.smart_size.enabled": False,
         "browser.cache.disk_cache_ssl": False,
-        "browser.cache.offline.enable": False,
         "dom.ipc.processCount": shared_ipc,
         "dom.ipc.processCount.webIsolated": isolated_ipc,
         "dom.ipc.processCount.extension": ext_ipc,
@@ -433,9 +497,7 @@ def get_optimization_prefs(ram_gb: float, cache_mode: CacheMode) -> dict[str, st
         "browser.tabs.unloadOnLowMemory": unload_low_mem,
         "gfx.webrender.all": True,
         "layers.acceleration.force-enabled": True,
-        "media.ffmpeg.vaapi.enabled": True,
         "media.hardware-video-decoding.force-enabled": True,
-        "widget.wayland-dmabuf-vaapi.enabled": True,
         "widget.wayland.opaque-region.enabled": False,
         "apz.gtk.kinetic_scroll.enabled": True,
         "toolkit.telemetry.enabled": False,
@@ -517,7 +579,7 @@ def update_user_js(profile_dir: Path, prefs: dict[str, str | int | bool], dry_ru
 
 
 def remove_user_js_optimizations(profile_dir: Path, dry_run: bool) -> None:
-    # Key array remains identical for robust reversion
+    # Must stay in sync with get_optimization_prefs() + cache_mode prefs; keep legacy dead prefs for cleanup of old installs
     managed_keys = [
         "browser.cache.memory.enable", "browser.cache.memory.capacity",
         "browser.cache.disk.smart_size.enabled", "browser.cache.disk_cache_ssl",
