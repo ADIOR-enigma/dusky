@@ -416,3 +416,28 @@ gutter.left {
   color: {{colors.outline.default.hex}};
   border-color: @borders;
 }
+
+/* =============================================================================
+ * 16. Fix: Suggested-action disabled contrast (matugen dynamic)
+ *     Root cause: libadwaita filter opacity 50% yields 1.58:1 contrast on
+ *     warm tan palette #ffb779/#4c2700 over #130d08 (WCAG fail, barely
+ *     visible "Add"). 0.75 mix restores 4.54:1 (AA) while still muted.
+ * ============================================================================= */
+button.suggested-action:disabled,
+button.suggested-action:disabled:backdrop,
+headerbar button.suggested-action:disabled,
+.dialog button.suggested-action:disabled,
+.toolbar button.suggested-action:disabled,
+.action-bar button.suggested-action:disabled {
+  opacity: 1;
+  filter: none;
+  color: {{colors.on_primary.default.hex}};
+  background-color: alpha({{colors.primary.default.hex}}, 0.75);
+  border-color: alpha({{colors.primary.default.hex}}, 0.3);
+}
+
+button.suggested-action:disabled label,
+button.suggested-action:disabled image {
+  opacity: 1;
+  color: {{colors.on_primary.default.hex}};
+}

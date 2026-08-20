@@ -340,3 +340,46 @@ windowcontrols button.minimize:hover {
   background-color: alpha(@window_fg_color, 0.12);
   color: @window_fg_color;
 }
+
+/* =============================================================================
+ * 12. Fix: Suggested-action disabled contrast (matugen dynamic)
+ *     Root cause: libadwaita filter opacity 50% yields 1.58:1 on tan
+ *     #ffb779/#4c2700 over #130d08 (WCAG fail, "Add" barely visible).
+ *     75% mix restores 4.54:1 (AA) while still indicating disabled.
+ * ============================================================================= */
+button.suggested-action:disabled,
+button.suggested-action:disabled:backdrop,
+menubutton.suggested-action:disabled,
+splitbutton.suggested-action:disabled,
+row.button.suggested-action:disabled,
+headerbar button.suggested-action:disabled,
+dialog button.suggested-action:disabled,
+.action-bar button.suggested-action:disabled {
+  filter: none;
+  opacity: 1;
+  background-color: color-mix(in srgb, var(--accent-bg-color) 75%, var(--window-bg-color));
+  color: var(--accent-fg-color);
+  border: none;
+}
+
+button.suggested-action:disabled label,
+button.suggested-action:disabled image,
+menubutton.suggested-action:disabled label,
+menubutton.suggested-action:disabled image,
+splitbutton.suggested-action:disabled label,
+splitbutton.suggested-action:disabled image,
+row.button.suggested-action:disabled label {
+  opacity: 1;
+  color: var(--accent-fg-color);
+}
+
+/* Backdrop disabled retains slightly lower mix */
+button.suggested-action:disabled:backdrop {
+  background-color: color-mix(in srgb, var(--accent-bg-color) 55%, var(--window-bg-color));
+}
+
+/* Ensure AdwStatusPage large icons use view_fg for contrast, not muted */
+statuspage > scrolledwindow > viewport > box > clamp > box > .icon {
+  color: var(--view-fg-color);
+  opacity: 0.9;
+}
