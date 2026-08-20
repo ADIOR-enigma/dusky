@@ -1479,36 +1479,42 @@ class AudioDspServer:
         self.stop()
 
     def _handle_client(self, conn: socket.socket) -> None:
-        conn.settimeout(2.0)
+        conn.settimeout(5.0)
         try:
             with conn:
-                data = conn.recv(4096).decode("utf-8").strip()
-                if not data:
-                    return
-
-                for line in data.splitlines():
-                    cmd = line.strip()
-                    if not cmd:
+                buf = ""
+                while self.running:
+                    try:
+                        chunk = conn.recv(4096).decode("utf-8")
+                    except socket.timeout:
                         continue
+                    if not chunk:
+                        break
+                    buf += chunk
+                    while "\n" in buf:
+                        line, buf = buf.split("\n", 1)
+                        cmd = line.strip()
+                        if not cmd:
+                            continue
 
-                    if cmd == "GET_TELEMETRY":
-                        with self._lock:
-                            resp = json.dumps(asdict(self.telemetry)) + "\n"
-                        conn.sendall(resp.encode("utf-8"))
-                    elif cmd == "PING":
-                        conn.sendall(b"PONG\n")
-                    elif cmd == "QUIT":
-                        self.running = False
-                        conn.sendall(b"OK\n")
-                        return
-                    elif cmd.startswith("CMD "):
-                        self.send_cmd(cmd[4:])
-                        conn.sendall(b"OK\n")
-                    elif cmd.startswith("CONFIG_SYNC "):
-                        cfg_dict = json.loads(cmd[12:])
-                        cfg = AudioConfig(**cfg_dict)
-                        self._apply_full_config(cfg)
-                        conn.sendall(b"OK\n")
+                        if cmd == "GET_TELEMETRY":
+                            with self._lock:
+                                resp = json.dumps(asdict(self.telemetry)) + "\n"
+                            conn.sendall(resp.encode("utf-8"))
+                        elif cmd == "PING":
+                            conn.sendall(b"PONG\n")
+                        elif cmd == "QUIT":
+                            self.running = False
+                            conn.sendall(b"OK\n")
+                            return
+                        elif cmd.startswith("CMD "):
+                            self.send_cmd(cmd[4:])
+                            conn.sendall(b"OK\n")
+                        elif cmd.startswith("CONFIG_SYNC "):
+                            cfg_dict = json.loads(cmd[12:])
+                            cfg = AudioConfig(**cfg_dict)
+                            self._apply_full_config(cfg)
+                            conn.sendall(b"OK\n")
         except Exception:
             pass
 
