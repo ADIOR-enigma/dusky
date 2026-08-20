@@ -494,7 +494,7 @@ description = "Screentime daemon, autostart apps, and live system diagnostics"
 type = "service"
 [pages.layout.items.properties]
 title = "Screentime Tracking Service"
-description = "Wayland screentime daemon (from tui_service_toggle.py)"
+description = "Background productivity tracking"
 icon = "preferences-system-time-symbolic"
 service = "dusky_screentime.service"
 scope = "user"
@@ -699,7 +699,7 @@ terminal = false
 type = "service"
 [pages.layout.items.properties]
 title = "FTP Server"
-description = "vsftpd daemon (from tui_service_toggle.py)"
+description = "Very Secure FTP daemon"
 icon = "network-server-symbolic"
 service = "vsftpd.service"
 scope = "system"
@@ -860,8 +860,7 @@ terminal = false
 [[pages.layout]]
 type = "section"
 [pages.layout.properties]
-title = "Network Services — Native Toggle"
-description = "From tui_service_toggle.py CORE_SYSTEM_DEFS — lazy, polkit"
+title = "Network Services"
 
 [[pages.layout.items]]
 type = "service"
@@ -1133,7 +1132,7 @@ command = "~/user_scripts/battery/tlp/tlp_mode_toggle.sh power-saver"
 type = "service"
 [pages.layout.items.properties]
 title = "TLP Power Management"
-description = "tlp advanced battery tweaks (from tui_service_toggle.py)"
+description = "Advanced power management"
 icon = "battery-good-symbolic"
 service = "tlp.service"
 scope = "system"
@@ -1588,7 +1587,6 @@ command = "pavucontrol"
 type = "section"
 [pages.layout.properties]
 title = "Background Services"
-description = "From tui_service_toggle.py CORE_USER_DEFS"
 
 [[pages.layout.items]]
 type = "service"
@@ -2147,7 +2145,7 @@ terminal = false
 [[pages.layout]]
 type = "grid_section"
 [pages.layout.properties]
-title = "System Services — Native Toggle (Lazy, Polkit)"
+title = "System Services"
 
 [[pages.layout.items]]
 type = "service_card"
@@ -2200,8 +2198,7 @@ scope = "system"
 [[pages.layout]]
 type = "section"
 [pages.layout.properties]
-title = "User Services — No Password, Instant"
-description = "Toggled via systemctl --user; checked lazily on page entry (see tui_service_toggle.py CORE_USER_DEFS)"
+title = "User Services"
 
 [[pages.layout.items]]
 type = "service"
