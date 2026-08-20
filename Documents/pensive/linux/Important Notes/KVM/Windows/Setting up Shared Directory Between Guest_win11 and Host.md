@@ -136,3 +136,14 @@ If the service started successfully, the drive is now mounted.
 > [!success] Setup Complete
 > 
 > You now have high-performance, low-latency file sharing between your Arch Linux host and Windows guest.
+
+if you still can't see it its because your zram's permissions are not appropriately set, make sure its owned by the user and has all read/write permissions 
+
+eg 
+```bash
+sudo chown -R dusk:dusk zram1
+```
+
+```bash
+sudo chmod -R 777 /mnt/zram1
+```
