@@ -318,19 +318,22 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
             self.bottom_fade.hide()
 
     def _update_ui_state(self) -> int:
+        if not self.get_visible():
+            return GLib.SOURCE_REMOVE
         now = datetime.now()
         self.lbl_time.set_label(now.strftime('%I:%M'))
         self.lbl_date.set_label(now.strftime('%A, %B %d'))
-        self.pool.submit(self._fetch_weather)
-        self.pool.submit(self._fetch_audio)
-        self.pool.submit(self._fetch_mako)
-        self.pool.submit(self._fetch_idle)
-        self.pool.submit(self._fetch_blur)
-        self.pool.submit(self._fetch_net_bt_state)
-        self.pool.submit(self._fetch_power_profile)
-        self.pool.submit(self._fetch_hardware_metrics)
-        self.pool.submit(self._fetch_network)
-        self.pool.submit(self._fetch_updates)
+        if self.pool:
+            self.pool.submit(self._fetch_weather)
+            self.pool.submit(self._fetch_audio)
+            self.pool.submit(self._fetch_mako)
+            self.pool.submit(self._fetch_idle)
+            self.pool.submit(self._fetch_blur)
+            self.pool.submit(self._fetch_net_bt_state)
+            self.pool.submit(self._fetch_power_profile)
+            self.pool.submit(self._fetch_hardware_metrics)
+            self.pool.submit(self._fetch_network)
+            self.pool.submit(self._fetch_updates)
         for row in self._slider_rows:
             row.refresh_async()
         if hasattr(self, 'notifications_module'):
@@ -338,7 +341,7 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
         return GLib.SOURCE_CONTINUE
 
     def _fetch_audio(self) -> None:
-        if not self.dynamic_toggles.get('audio'):
+        if not self.dynamic_toggles.get('audio') or not self.get_visible():
             return
         pid_file = Path(HOME) / '.config' / 'dusky' / 'settings' / 'dusky_studio' / 'daemon.pid'
         if not pid_file.exists():
@@ -371,9 +374,17 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
             )
 
     def _fetch_weather(self) -> None:
-        if not self.layout_cfg.get('show_weather', True):
+        if not self.layout_cfg.get('show_weather', True) or not self.get_visible():
             return
         try:
+            weather_file = Path(HOME) / '.config' / 'dusky' / 'settings' / 'waybar_weather'
+            if weather_file.exists():
+                with open(weather_file, 'r', encoding='utf-8') as f:
+                    raw = json.load(f)
+                data = raw.get('payload') if isinstance(raw, dict) and raw.get('version') == 2 else raw
+                if data and data.get('text'):
+                    GLib.idle_add(self._apply_weather, data.get('text').strip())
+                    return
             data = fetch_json_output(f'python3 {HOME}/user_scripts/waybar/weather.py')
             if data and data.get('text'):
                 GLib.idle_add(self._apply_weather, data.get('text').strip())
@@ -389,7 +400,7 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
         self.weather_box.show()
 
     def _fetch_mako(self) -> None:
-        if not self.dynamic_toggles.get('dnd'):
+        if not self.dynamic_toggles.get('dnd') or not self.get_visible():
             return
         data = fetch_json_output(f'{HOME}/user_scripts/waybar/mako.sh --horizontal')
         if data:
@@ -410,7 +421,7 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
             tg.update_state(icon='notification-symbolic', css_class='normal', tooltip=final_tt, badge=badge)
 
     def _fetch_idle(self) -> None:
-        if not self.dynamic_toggles.get('idle'):
+        if not self.dynamic_toggles.get('idle') or not self.get_visible():
             return
         r = run_command(['pgrep', '-x', 'hypridle'], timeout=0.8, capture_stdout=True)
         GLib.idle_add(self._apply_idle, r is not None and r.returncode == 0)
@@ -425,7 +436,7 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
             tg.update_state(icon='view-reveal-symbolic', css_class='active', tooltip='Idle Inhibited (Awake)\nLMB: Toggle | RMB: Lock Screen')
 
     def _fetch_blur(self) -> None:
-        if not self.dynamic_toggles.get('blur'):
+        if not self.dynamic_toggles.get('blur') or not self.get_visible():
             return
         try:
             with open(f'{HOME}/.config/dusky/settings/opacity_blur', 'r', encoding='utf-8') as f:
@@ -451,7 +462,7 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
         return False
 
     def _fetch_net_bt_state(self) -> None:
-        if not hasattr(self, 'wifi_switch'):
+        if not hasattr(self, 'wifi_switch') or not self.get_visible():
             return
         try:
             wifi_r = run_command(['busctl', 'get-property', 'org.freedesktop.NetworkManager', '/org/freedesktop/NetworkManager', 'org.freedesktop.NetworkManager', 'WirelessEnabled'], timeout=0.8, capture_stdout=True)
@@ -489,7 +500,8 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
 
     def _clear_wifi_pending(self) -> bool:
         self._wifi_pending = False
-        self.pool.submit(self._fetch_net_bt_state)
+        if self.get_visible() and self.pool:
+            self.pool.submit(self._fetch_net_bt_state)
         return GLib.SOURCE_REMOVE
 
     def _on_bt_state_set(self, switch: Gtk.Switch, state: bool) -> bool:
@@ -506,11 +518,12 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
 
     def _clear_bt_pending(self) -> bool:
         self._bt_pending = False
-        self.pool.submit(self._fetch_net_bt_state)
+        if self.get_visible() and self.pool:
+            self.pool.submit(self._fetch_net_bt_state)
         return GLib.SOURCE_REMOVE
 
     def _fetch_power_profile(self) -> None:
-        if not hasattr(self, 'power_container'):
+        if not hasattr(self, 'power_container') or not self.get_visible():
             return
         if getattr(self, '_power_pending_profile', None) is not None:
             return
@@ -574,11 +587,12 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
         self._power_pending_profile = None
         for btn in (self.btn_save, self.btn_bal, self.btn_perf):
             _remove_css_class(btn, 'applying')
-        self.pool.submit(self._fetch_power_profile)
+        if self.get_visible() and self.pool:
+            self.pool.submit(self._fetch_power_profile)
         return GLib.SOURCE_REMOVE
 
     def _fetch_hardware_metrics(self) -> None:
-        if not hasattr(self, 'metrics_row'):
+        if not hasattr(self, 'metrics_row') or not self.get_visible():
             return
         try:
             with open('/proc/stat', 'r', encoding='utf-8') as f:
@@ -605,13 +619,25 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
             pass
 
     def _fetch_network(self) -> None:
-        if not hasattr(self, 'metrics_row'):
+        if not hasattr(self, 'metrics_row') or not self.get_visible():
             return
+        state_file = Path(f'/run/user/{os.getuid()}/waybar-net/state')
+        if state_file.exists():
+            try:
+                parts = state_file.read_text(encoding='utf-8').strip().split()
+                if len(parts) >= 4:
+                    unit, up, down, cls = parts[0], parts[1], parts[2], parts[3]
+                    txt = f"{up} {unit} {down}"
+                    tt = "Disconnected" if cls == "network-disconnected" else f"Upload: {up} {unit}/s\nDownload: {down} {unit}/s"
+                    GLib.idle_add(self.pill_net.apply_json, {"text": txt, "class": cls, "tooltip": tt}, 'network-disconnected')
+                    return
+            except Exception:
+                pass
         data = fetch_json_output(f'{HOME}/user_scripts/waybar/network/network_meter_calling.sh --horizontal')
         GLib.idle_add(self.pill_net.apply_json, data, 'network-disconnected')
 
     def _fetch_updates(self) -> None:
-        if not self.dynamic_toggles.get('updates'):
+        if not self.dynamic_toggles.get('updates') or not self.get_visible():
             return
         try:
             with open(f'{HOME}/.config/dusky/settings/waybar_update_counter_h', 'r', encoding='utf-8') as f:
@@ -653,7 +679,11 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
             execute_cmd(cmd)
         else:
             execute_cmd(cmd)
-            GLib.timeout_add(150, self._update_ui_state)
+            def _single_shot_update() -> bool:
+                if self.get_visible():
+                    self._update_ui_state()
+                return GLib.SOURCE_REMOVE
+            GLib.timeout_add(150, _single_shot_update)
 
     def hide_and_execute(self, cmd: str) -> None:
         if not cmd:
@@ -734,16 +764,21 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
         app = self.get_application()
         if app and hasattr(app, 'resume_workers'):
             app.resume_workers()
-        if self._timer_id is None:
-            self._update_ui_state()
-            self._timer_id = GLib.timeout_add(2000, self._update_ui_state)
+        if self.pool:
+            self.pool.resume()
+        if self._timer_id is not None:
+            GLib.source_remove(self._timer_id)
+        self._update_ui_state()
+        self._timer_id = GLib.timeout_add(2000, self._update_ui_state)
         self.request_reposition()
-        GLib.timeout_add(150, self._reposition_to_corner)
+        GLib.timeout_add(150, lambda: (self._reposition_to_corner() if self.get_visible() else None, GLib.SOURCE_REMOVE)[1])
 
     def _on_hide(self, *args: Any) -> None:
         if self._timer_id is not None:
             GLib.source_remove(self._timer_id)
             self._timer_id = None
+        if self.pool:
+            self.pool.suspend()
         app = self.get_application()
         if app and hasattr(app, 'suspend_workers'):
             app.suspend_workers()
@@ -775,7 +810,7 @@ class QuickPanalApp(Gtk.Application):
 
     def suspend_workers(self) -> None:
         if self.pool:
-            self.pool.shutdown()
+            self.pool.suspend()
         if self._sunset_controller:
             self._sunset_controller.stop()
         if self._local_brightness_worker:
@@ -787,6 +822,8 @@ class QuickPanalApp(Gtk.Application):
 
     def resume_workers(self) -> None:
         gc.unfreeze()
+        if self.pool:
+            self.pool.resume()
         if self._volume_worker:
             self._volume_worker.start()
         if self._local_brightness_worker:

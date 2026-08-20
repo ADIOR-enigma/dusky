@@ -115,38 +115,11 @@ def gi_object_c_pointer(gi_obj: object) -> ctypes.c_void_p | None:
         return None
     return ctypes.c_void_p(raw) if raw else None
 
-def _resolve_cgroup_file(name: str) -> str | None:
-    try:
-        with open("/proc/self/cgroup", "r", encoding="utf-8") as f:
-            line = f.read().strip()
-        cgroup_path = line.split(":", 2)[2]
-        path = f"/sys/fs/cgroup{cgroup_path}/{name}"
-        return path if os.path.isfile(path) else None
-    except Exception:
-        return None
-
-_CGROUP_MEMORY_CURRENT: Final[str | None] = _resolve_cgroup_file("memory.current")
-_CGROUP_MEMORY_HIGH: Final[str | None] = _resolve_cgroup_file("memory.high")
-
-def _should_pageout() -> bool:
-    if not _CGROUP_MEMORY_HIGH or not _CGROUP_MEMORY_CURRENT:
-        return False
-    try:
-        with open(_CGROUP_MEMORY_HIGH, "r", encoding="utf-8") as f:
-            high = f.read().strip()
-        if high == "max":
-            return False
-        with open(_CGROUP_MEMORY_CURRENT, "r", encoding="utf-8") as f:
-            current = int(f.read().strip())
-        return current > int(high) * 80 // 100
-    except (OSError, ValueError):
-        return False
-
 def _reclaim_idle_memory() -> None:
     """
-    August 2026 Active Memory Compaction & Trim
-    Purges regex caches, garbage collects, invokes malloc_trim,
-    and uses madvise MADV_PAGEOUT on clean pages to maintain an ultra-lean RSS.
+    Active Memory Compaction & Trim
+    Purges regex caches, garbage collects, and invokes malloc_trim to return free heap
+    to the OS safely and efficiently without triggering swap churn.
     """
     re.purge()
     if hasattr(sys, "_clear_internal_caches"):
@@ -170,31 +143,6 @@ def _reclaim_idle_memory() -> None:
                 break
     except OSError:
         pass
-        
-    if _should_pageout():
-        _pageout_idle_pages()
-
-def _pageout_idle_pages() -> None:
-    if _LIBC is None:
-        return
-    try:
-        with open("/proc/self/maps", "r", encoding="utf-8") as f:
-            for line in f:
-                parts = line.split(None, 5)
-                if len(parts) < 2:
-                    continue
-                perms = parts[1]
-                if "r" not in perms or "x" in perms or "p" not in perms:
-                    continue
-                path = parts[5].strip() if len(parts) > 5 else ""
-                if path in ("[vdso]", "[vvar]", "[vsyscall]") or path.startswith("[stack"):
-                    continue
-                start_s, end_s = parts[0].split("-")
-                start, length = int(start_s, 16), int(end_s, 16) - int(start_s, 16)
-                if length > 0:
-                    _LIBC.madvise(ctypes.c_void_p(start), ctypes.c_size_t(length), _MADV_PAGEOUT)
-    except Exception as e:
-        LOG.debug(f"MADV_PAGEOUT compilation failed: {e}")
 
 def clamp(value: float, lower: float, upper: float) -> float:
     if not math.isfinite(value):
@@ -203,120 +151,79 @@ def clamp(value: float, lower: float, upper: float) -> float:
 
 def parse_float(text: str) -> float | None:
     try:
-        val = float(text.strip())
-        return val if math.isfinite(val) else None
-    except ValueError:
+        return float(text.strip())
+    except (ValueError, TypeError):
         return None
 
 def percent_int(value: float, lower: int = 0) -> int:
-    return int(clamp(round(value), float(lower), 100.0))
+    return int(max(lower, min(100, round(value))))
 
 def snap_to_step(value: float, lower: float, upper: float, step: float) -> float:
+    if not math.isfinite(value):
+        return lower
+    clamped = max(lower, min(upper, value))
     if step <= 0.0:
-        return clamp(value, lower, upper)
-    scaled = (value - lower) / step
-    snapped = lower + math.floor(scaled + 0.5 + 1e-12) * step
-    return round(clamp(snapped, lower, upper), 10)
+        return clamped
+    snapped = round((clamped - lower) / step) * step + lower
+    return max(lower, min(upper, snapped))
 
 def kelvin_value(value: float) -> int:
-    return int(clamp(round(value), 1000.0, 6000.0))
+    return int(max(1000, min(10000, round(value))))
 
 def start_thread(name: str, target: Callable[..., None], *args: object, daemon: bool = True) -> threading.Thread:
-    thread = threading.Thread(
-        name=name,
-        target=target,
-        args=args,
-        daemon=daemon,
-        context=contextvars.Context()
-    )
-    thread.start()
-    return thread
+    t = threading.Thread(name=name, target=target, args=args, daemon=daemon)
+    t.start()
+    return t
 
 def run_command(
     args: Sequence[CommandArg],
     *,
-    timeout: float,
-    capture_stdout: bool = False
+    timeout: float = CONTROL_TIMEOUT,
+    capture_stdout: bool = False,
+    extra_env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str] | None:
-    argv = [os.fspath(arg) for arg in args]
+    env = COMMAND_ENV if extra_env is None else {**COMMAND_ENV, **extra_env}
+    cmd_list = [os.fspath(a) for a in args]
     try:
-        proc = subprocess.Popen(
-            argv,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE if capture_stdout else subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            env=COMMAND_ENV,
-            close_fds=True,
-            start_new_session=True,
+        return subprocess.run(
+            cmd_list,
+            capture_output=capture_stdout,
             text=True,
-            encoding="utf-8",
-            errors="replace"
+            timeout=timeout,
+            check=False,
+            env=env,
+            close_fds=True
         )
-    except OSError as exc:
-        LOG.debug("Command failed to execute: %r: %s", argv, exc)
-        return None
-    try:
-        stdout, _ = proc.communicate(timeout=timeout)
-        return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, None)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except OSError:
-            pass
-        try:
-            proc.communicate(timeout=0.5)
-        except Exception:
-            pass
-        LOG.warning("Subprocess timed out and was reaped: %r", argv)
+        LOG.warning("Command '%s' timed out after %.2fs", cmd_list[0], timeout)
         return None
-    except Exception as e:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except OSError:
-            pass
-        try:
-            proc.communicate(timeout=0.5)
-        except Exception:
-            pass
-        LOG.debug("Subprocess exception: %s", e)
+    except FileNotFoundError:
+        LOG.warning("Command '%s' not found on PATH", cmd_list[0])
+        return None
+    except OSError as e:
+        LOG.error("Failed executing '%s': %s", cmd_list[0], e)
         return None
 
 def execute_cmd(cmd: str) -> None:
-    if not cmd:
+    """
+    Zero-overhead non-blocking detached process spawner.
+    Completely disconnects stdio and sets sid to prevent any pipeline/zombie freezing.
+    """
+    if not cmd or not cmd.strip():
         return
-    expanded = os.path.expanduser(cmd.strip())
-    if expanded.startswith("dusky-run "):
-        expanded = expanded[10:].strip()
     try:
-        if shutil.which("dusky-run") is not None:
-            subprocess.Popen(
-                ["dusky-run", "/usr/bin/bash", "-c", expanded],
-                start_new_session=True,
-                env=COMMAND_ENV,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                close_fds=True
-            )
-            return
-        if shutil.which("systemd-run") is not None:
-            subprocess.Popen(
-                ["systemd-run", "--user", "--scope", "--", "/usr/bin/bash", "-c", expanded],
-                start_new_session=True,
-                env=COMMAND_ENV,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                close_fds=True
-            )
-            return
+        # Pre-expand paths if using standard home variable shorthand
+        if "~" in cmd:
+            cmd = os.path.expanduser(cmd)
+            
         subprocess.Popen(
-            ["/usr/bin/bash", "-c", expanded],
-            start_new_session=True,
-            env=COMMAND_ENV,
+            cmd,
+            shell=True,
+            executable="/usr/bin/bash",
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            start_new_session=True,
             close_fds=True
         )
     except OSError as e:
@@ -376,15 +283,18 @@ def atomic_write_text(path: Path, text: str, *, durable: bool = True) -> bool:
         return False
 
 class RefreshPool:
-    __slots__ = ("_executor", "_max_workers", "_lock")
+    __slots__ = ("_executor", "_max_workers", "_lock", "_suspended")
 
     def __init__(self, max_workers: int = 4) -> None:
         self._max_workers = max_workers
         self._executor: ThreadPoolExecutor | None = None
         self._lock = threading.Lock()
+        self._suspended = False
 
     def submit(self, func: Callable[..., Any], *args: Any, **kwargs: Any) -> Future[Any] | None:
         with self._lock:
+            if self._suspended:
+                return None
             if self._executor is None:
                 self._executor = ThreadPoolExecutor(
                     max_workers=self._max_workers,
@@ -395,11 +305,19 @@ class RefreshPool:
             except RuntimeError:
                 return None
 
-    def shutdown(self) -> None:
+    def suspend(self) -> None:
         with self._lock:
+            self._suspended = True
             if self._executor is not None:
                 self._executor.shutdown(wait=False, cancel_futures=True)
                 self._executor = None
+
+    def resume(self) -> None:
+        with self._lock:
+            self._suspended = False
+
+    def shutdown(self) -> None:
+        self.suspend()
 
 class LatestValueWorker:
     """
