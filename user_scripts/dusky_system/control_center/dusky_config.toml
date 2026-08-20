@@ -3823,6 +3823,102 @@ terminal = false
 
 
 [[pages]]
+id = "keylogger"
+title = "Keylogger"
+icon = "input-keyboard-symbolic"
+
+[[pages.layout]]
+type = "grid_section"
+[pages.layout.properties]
+title = "Keylogger"
+
+[[pages.layout.items]]
+type = "toggle_card"
+[pages.layout.items.properties]
+title = "Keylogger Service"
+icon = "input-keyboard-symbolic"
+state_command = "systemctl is-active --quiet dusky_keylogger.service && echo yes"
+interval = 3
+[pages.layout.items.on_toggle.enabled]
+type = "exec"
+command = "pkexec systemctl enable --now dusky_keylogger.service && notify-send 'Keylogger' 'Service Enabled'"
+terminal = false
+[pages.layout.items.on_toggle.disabled]
+type = "exec"
+command = "pkexec systemctl disable --now dusky_keylogger.service && notify-send 'Keylogger' 'Service Disabled'"
+terminal = false
+
+[[pages.layout.items]]
+type = "grid_card"
+[pages.layout.items.properties]
+title = "Keylogger TUI"
+icon = "preferences-system-symbolic"
+[pages.layout.items.on_press]
+type = "exec"
+command = "foot --app-id=dusky_tui python3 $HOME/user_scripts/keylogger/tui_keylogger.py"
+terminal = false
+
+[[pages.layout.items]]
+type = "grid_card"
+[pages.layout.items.properties]
+title = "Dashboard"
+icon = "utilities-system-monitor-symbolic"
+[pages.layout.items.on_press]
+type = "exec"
+command = "kitty --class dusky_keylogger -e $HOME/contained_apps/uv/dusky_key_logger/bin/dusky dashboard"
+terminal = false
+
+[[pages.layout.items]]
+type = "grid_card"
+[pages.layout.items.properties]
+title = "Generate Transcript"
+icon = "document-edit-symbolic"
+[pages.layout.items.on_press]
+type = "exec"
+command = "kitty --class dusky_keylogger_transcript --hold python3 $HOME/user_scripts/keylogger/dusky_keylogger/cli.py text --period today || kitty --hold $HOME/contained_apps/uv/dusky_key_logger/bin/dusky text --period today"
+terminal = false
+
+[[pages.layout]]
+type = "section"
+[pages.layout.properties]
+title = "Configuration"
+icon = ""
+description = "Persistence in ~/.config/dusky/settings/keylogger/ (survives reboot, auto-created) • Ephemeral transcripts in /tmp (cleared on reboot)"
+
+[[pages.layout.items]]
+type = "button"
+[pages.layout.items.properties]
+title = "Open Keylogger Config"
+description = "~/.config/dusky/settings/keylogger/config.json (persistent, auto-created if missing)"
+icon = "document-edit-symbolic"
+[pages.layout.items.on_press]
+type = "exec"
+command = "$HOME/user_scripts/dusky_system/control_center/dusky_text_editor.py \"$HOME/.config/dusky/settings/keylogger/config.json\""
+terminal = false
+
+[[pages.layout.items]]
+type = "button"
+[pages.layout.items.properties]
+title = "View Service Logs"
+description = "journalctl -u dusky_keylogger"
+icon = "utilities-terminal-symbolic"
+[pages.layout.items.on_press]
+type = "exec"
+command = "kitty --class dusky_keylogger_logs --hold sh -c 'journalctl -u dusky_keylogger --no-pager -n 100; echo; read -p \"Press Enter to close...\"'"
+terminal = false
+
+[[pages.layout.items]]
+type = "button"
+[pages.layout.items.properties]
+title = "Keylogger Status"
+description = "dusky status (persistent DB + ephemeral dir)"
+icon = "dialog-information-symbolic"
+[pages.layout.items.on_press]
+type = "exec"
+command = "kitty --class dusky_keylogger_status --hold sh -c '$HOME/contained_apps/uv/dusky_key_logger/bin/dusky status; echo; read -p \"Press Enter to close...\"'"
+terminal = false
+
+[[pages]]
 id = "about_dusky"
 title = "About"
 
