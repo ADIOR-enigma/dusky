@@ -2115,6 +2115,7 @@ icon = "system-run-symbolic"
 type = "section"
 [pages.layout.properties]
 title = "Management"
+center_title = true
 icon = ""
 description = ""
 
@@ -2146,6 +2147,7 @@ terminal = false
 type = "grid_section"
 [pages.layout.properties]
 title = "System Services"
+center_title = true
 
 [[pages.layout.items]]
 type = "service_card"
@@ -2199,6 +2201,7 @@ scope = "system"
 type = "section"
 [pages.layout.properties]
 title = "User Services"
+center_title = true
 
 [[pages.layout.items]]
 type = "service"

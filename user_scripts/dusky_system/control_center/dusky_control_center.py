@@ -1480,6 +1480,10 @@ class DuskyControlCenter(Adw.Application):
         if title := props.get("title"):
             group.set_title(GLib.markup_escape_text(str(title)))
 
+        if props.get("center_title"):
+            self._center_preferences_group(group)
+            GLib.idle_add(lambda g=group: (self._center_preferences_group(g), GLib.SOURCE_REMOVE)[1])
+
         flow = Gtk.FlowBox()
         flow.set_valign(Gtk.Align.START)
         flow.set_selection_mode(Gtk.SelectionMode.NONE)
@@ -1535,6 +1539,39 @@ class DuskyControlCenter(Adw.Application):
         group.add(flow)
         return group
 
+    def _center_preferences_group(self, group: Adw.PreferencesGroup) -> None:
+        """Center the heading/description labels of a PreferencesGroup."""
+        try:
+            # group -> vertical box
+            outer = group.get_first_child()
+            if not isinstance(outer, Gtk.Box):
+                return
+            header = outer.get_first_child()
+            if not isinstance(header, Gtk.Box):
+                return
+            # header is horizontal box with class "header"
+            # its first child is vertical labels box
+            labels_box = header.get_first_child()
+            if not isinstance(labels_box, Gtk.Box):
+                return
+            # Traverse labels inside labels_box
+            label = labels_box.get_first_child()
+            while label is not None:
+                if isinstance(label, Gtk.Label):
+                    label.set_halign(Gtk.Align.CENTER)
+                    label.set_xalign(0.5)
+                    label.set_hexpand(True)
+                    label.set_justify(Gtk.Justification.CENTER)
+                label = label.get_next_sibling()
+            # Also center the header box itself if needed
+            header.set_halign(Gtk.Align.CENTER)
+            header.set_hexpand(True)
+            labels_box.set_halign(Gtk.Align.CENTER)
+            labels_box.set_hexpand(True)
+            outer.set_halign(Gtk.Align.FILL)
+        except Exception as e:
+            log.debug("Failed to center group title: %s", e)
+
     def _build_standard_section(
         self,
         section: ConfigSection,
@@ -1548,6 +1585,11 @@ class DuskyControlCenter(Adw.Application):
             group.set_title(GLib.markup_escape_text(str(title)))
         if desc := props.get("description"):
             group.set_description(GLib.markup_escape_text(str(desc)))
+
+        if props.get("center_title"):
+            # Defer slightly to ensure labels are realized, but also try immediately
+            self._center_preferences_group(group)
+            GLib.idle_add(lambda g=group: (self._center_preferences_group(g), GLib.SOURCE_REMOVE)[1])
 
         for item in section.get("items", []):
             if not isinstance(item, dict):
