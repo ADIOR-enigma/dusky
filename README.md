@@ -2,7 +2,7 @@
 
 ### The official Discord Server has been deleted.
 
-A community Discord server has been created! You can join it below. Please note that the original developer is not involved with this community server in any capacity. Alternatively, you can participate on the discussions page mentioned above.
+A community Discord server has been created! You can join it below. Please note that the original developer is not involved with this community server in any capacity.
 
 [Join Community Discord Server](https://discord.gg/V2EeUJwd4)
 
