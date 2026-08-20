@@ -276,9 +276,25 @@ class PresetMatchMatrix:
         return self._matches.get(puid, 0) / total
 
     def _serialize_payload(self, uid: str, raw: Any) -> str:
-        item = getattr(self._app, "_item_by_uid", {}).get(uid)
-        if item is not None:
-            return item.serialize(raw)
+        # Canonical index is _items_by_uid (list of duplicates); use first entry's ConfigItem for typing.
+        items_for_uid = getattr(self._app, "_items_by_uid", {}).get(uid)
+        if items_for_uid:
+            try:
+                # _items_by_uid[uid] is list[(tab_idx, item_idx, ConfigItem)]
+                first = items_for_uid[0]
+                item = first[2] if isinstance(first, tuple) and len(first) == 3 else first
+                return item.serialize(raw)
+            except Exception:
+                pass
+        # Legacy fallback – some callers may populate a single-item map
+        single = getattr(self._app, "_item_by_uid", None)
+        if isinstance(single, dict):
+            item2 = single.get(uid)
+            if item2 is not None:
+                try:
+                    return item2.serialize(raw)
+                except Exception:
+                    pass
         match raw:
             case None:
                 return "nil"
@@ -1410,7 +1426,17 @@ class FlowContainer(Widget):
 
         width = self.size.width
         if width <= 0:
-            self.call_after_refresh(self.reflow)
+            # Width not yet resolved (hidden tab or initial layout).  A
+            # single retry is enough – the next Resize event will reflow
+            # anyway.  Avoid infinite call_after_refresh loops.
+            if not getattr(self, "_reflow_retry_scheduled", False):
+                self._reflow_retry_scheduled = True
+
+                def _retry() -> None:
+                    self._reflow_retry_scheduled = False
+                    self.reflow()
+
+                self.call_after_refresh(_retry)
             return
 
         visible_children = []
@@ -2045,7 +2071,7 @@ Tooltip {
 
         # Async save / stale-write protection.
         self._write_generation: dict[str, int] = {}
-        self._save_lock: asyncio.Lock | None = None
+        # _save_lock is already declared above (line ~2005); do not re-declare.
         self._sudo_keepalive: Timer | None = None
 
         # Color variable registry.
@@ -2326,7 +2352,10 @@ Tooltip {
                     self._preset_items.append((t_idx, i_idx, item))
 
         if hasattr(self, "_preset_matrix"):
-            self._preset_matrix.rebuild(self._configurable_items)
+            # Rebuild expects both configurables and presets (it separates
+            # internally).  Passing only configurables starved the preset
+            # index, leaving ratio() always 0.  Combine both lists.
+            self._preset_matrix.rebuild(self._configurable_items + self._preset_items)
 
     def _rebuild_key_map(self) -> None:
         # Compatibility wrapper for older call sites.
@@ -2929,6 +2958,10 @@ Tooltip {
         if self.theme_path:
             self.set_interval(1.0, self.watch_theme_file)
 
+        # External file & preset dir polling (previously dead code – now scheduled).
+        self.set_interval(1.0, self.watch_target_file)
+        self.set_interval(1.5, self.watch_presets_dir)
+
         self.call_after_refresh(self.check_tab_overflow)
         self.call_after_refresh(self._update_scroll_indicators)
         self._update_footer_legend()
@@ -3069,7 +3102,7 @@ Tooltip {
             )
         )
         if self._boot_complete and hasattr(self, "_preset_matrix"):
-            self._preset_matrix.rebuild(self._configurable_items)
+            self._preset_matrix.rebuild(self._configurable_items + self._preset_items)
             if hasattr(self, "_option_cache"):
                 self._option_cache.invalidate_presets()
             self._schema_dirty_counter += 1
@@ -3314,6 +3347,14 @@ Tooltip {
             else:
                 self._tab_dirty.add(tab_idx)
 
+        # Deferred values changed after the initial rebuild – refresh the
+        # preset match matrix so ratios reflect the newly loaded state.
+        if hasattr(self, "_preset_matrix"):
+            try:
+                self._preset_matrix.rebuild(self._configurable_items + self._preset_items)
+            except Exception:
+                pass
+
         if current_idx in tab_indices:
             if ol := self.current_option_list:
                 self._update_pagination(ol)
@@ -3532,6 +3573,7 @@ Tooltip {
                             if str(item.value) != str(new_val):
                                 item.value = new_val
                                 item.exists_in_target = True
+                                self._on_item_value_changed(item)
                                 self._bump_write_generation(self._get_item_uid(item))
                                 changed_any = True
 
@@ -3545,6 +3587,8 @@ Tooltip {
                                 if expected_exists:
                                     item.value = expected_val
 
+                                # Always notify – existence toggle affects preset totals.
+                                self._on_item_value_changed(item)
                                 self._bump_write_generation(self._get_item_uid(item))
                                 changed_any = True
 
@@ -3677,6 +3721,8 @@ Tooltip {
 
         self.register_theme(custom_theme)
         self.theme = theme_name
+        # Invalidate render cache so next _build_option picks up new palette.
+        self._intern_styles()
 
     def _update_file_link(self, item: ConfigItem | None = None) -> None:
         try:
@@ -3954,7 +4000,18 @@ Tooltip {
             if self._status_timer:
                 self._status_timer.stop()
 
-            self._status_timer = self.set_timer(3, lambda: setattr(app_footer, "status_msg", ""))
+            def _clear_status() -> None:
+                try:
+                    # Re-query – the footer may have been remounted since the
+                    # timer was scheduled (e.g., after a screen change).
+                    self.query_one(AppFooter).status_msg = ""
+                except Exception:
+                    try:
+                        app_footer.status_msg = ""
+                    except Exception:
+                        pass
+
+            self._status_timer = self.set_timer(3, _clear_status)
         except Exception:
             pass
 
@@ -4030,6 +4087,7 @@ Tooltip {
 
             item.value = o if undo else n
             item.exists_in_target = True
+            self._on_item_value_changed(item)
             self._refresh_single_ui(t, i, item)
             uids.add(self._get_item_uid(item))
 
@@ -4052,6 +4110,7 @@ Tooltip {
 
         for t_idx, i_idx, other_item in self._items_by_uid.get(uid, []):
             other_item.value = item.default
+            self._on_item_value_changed(other_item)
             self._refresh_single_ui(t_idx, i_idx, other_item)
 
         self._bump_write_generation(uid)
@@ -4073,6 +4132,7 @@ Tooltip {
             item = self.schema[t][i]
             item.value = o if action_type == "undo" else n
             item.exists_in_target = True
+            self._on_item_value_changed(item)
             self.pending_commits.add((t, i))
             self._refresh_single_ui(t, i, item)
 
@@ -4096,6 +4156,7 @@ Tooltip {
 
                         item = self.schema[t][i]
                         item.value = n if action_type == "undo" else o
+                        self._on_item_value_changed(item)
                         self._refresh_single_ui(t, i, item)
                         self.pending_commits.discard((t, i))
                     else:
@@ -4202,12 +4263,14 @@ Tooltip {
 
         item.value = new_val
         item.exists_in_target = True
+        self._on_item_value_changed(item)
 
         # Sync duplicate items across tabs.
         for t_idx, i_idx, other_item in self._items_by_uid.get(item_uid, []):
             if other_item is not item:
                 other_item.value = new_val
                 other_item.exists_in_target = True
+                self._on_item_value_changed(other_item)
                 self._refresh_single_ui(t_idx, i_idx, other_item)
 
         val_str = item.serialize(new_val)
@@ -4869,7 +4932,7 @@ Tooltip {
         if self._modal_active():
             return
 
-        if 0 <= index < len(self.tabs):
+        if index in self.tabs:
             self.query_one(Tabs).active = f"tab-id-{index}"
 
     def action_toggle_save_mode(self) -> None:
@@ -5060,9 +5123,10 @@ Tooltip {
                     else:
                         self.notify_status(f"No items to reset in {tab_name}", level="info")
 
+            safe_tab = _md_escape(str(tab_name))
             self.push_screen(
                 ConfirmDialog(
-                    f"Are you sure you want to reset all items in **{tab_name}** to their factory defaults?",
+                    f"Are you sure you want to reset all items in **{safe_tab}** to their factory defaults?",
                     title="Reset Page",
                     level="warning"
                 ),
