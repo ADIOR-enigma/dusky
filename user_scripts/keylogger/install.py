@@ -189,6 +189,16 @@ def cmd_status(_args: argparse.Namespace) -> int:
     else:
         print(f"Database:       {C_YELLOW}no data yet{C_RESET}")
 
+    # New canonical config (dusky/settings/keylogger) + legacy
+    new_cfg = Path(home) / ".config" / "dusky" / "settings" / "keylogger" / "config.json"
+    old_cfg = Path(home) / ".config" / "dusky-keylogger" / "config.json"
+    if new_cfg.exists():
+        print(f"Config (new):   {C_GREEN}present{C_RESET} ({new_cfg})")
+    elif old_cfg.exists():
+        print(f"Config (old):   {C_YELLOW}legacy present, will migrate to new on next run{C_RESET} ({old_cfg})")
+    else:
+        print(f"Config:         {C_YELLOW}not created yet (auto-created on fresh install){C_RESET}")
+
     for svc, flag in (("is-active", "active"), ("is-enabled", "enabled")):
         proc = subprocess.run(
             ["systemctl", svc, SERVICE_NAME], capture_output=True, text=True
@@ -264,11 +274,14 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
         ok(f"Removed venv ({venv})")
     if args.purge:
         data_dir = Path(home) / ".local" / "share" / "dusky-keylogger"
-        config_dir = Path(home) / ".config" / "dusky-keylogger"
-        for path in (data_dir, config_dir):
+        old_config = Path(home) / ".config" / "dusky-keylogger"
+        new_config = Path(home) / ".config" / "dusky" / "settings" / "keylogger"
+        for path in (data_dir, old_config, new_config):
             if path.exists():
                 shutil.rmtree(path)
                 ok(f"Removed {path}")
+        # Also clean ephemeral transcripts in default /tmp locations (optional, not required)
+        # but leave /tmp as is (cleared on reboot)
     else:
         # Without --purge we keep data/config, but ensure permissions stay tight.
         pass
@@ -389,14 +402,48 @@ def cmd_install(args: argparse.Namespace) -> int:
         os.chmod(data_dir, 0o700)
     except OSError:
         pass
-    config_dir = Path(home) / ".config" / "dusky-keylogger"
-    config_dir.mkdir(parents=True, exist_ok=True)
+    # Legacy config dir (for backward compat) and new canonical dusky/settings/keylogger
+    old_config = Path(home) / ".config" / "dusky-keylogger"
+    old_config.mkdir(parents=True, exist_ok=True)
     try:
-        os.chmod(config_dir, 0o700)
+        os.chmod(old_config, 0o700)
+    except OSError:
+        pass
+    new_config = Path(home) / ".config" / "dusky" / "settings" / "keylogger"
+    new_config.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(new_config, 0o700)
+        # Also ensure parents are 0700 (dusky/settings)
+        for p in [new_config, new_config.parent, new_config.parent.parent]:
+            try:
+                os.chmod(p, 0o700)
+            except OSError:
+                pass
     except OSError:
         pass
     run(["chown", "-R", f"{user}:{user}", str(data_dir)], check=False)
-    run(["chown", "-R", f"{user}:{user}", str(config_dir)], check=False)
+    run(["chown", "-R", f"{user}:{user}", str(old_config)], check=False)
+    run(["chown", "-R", f"{user}:{user}", str(new_config)], check=False)
+    # Ensure new canonical config file exists with defaults if fresh install
+    try:
+        cfg_file = new_config / "config.json"
+        if not cfg_file.exists() and not (old_config / "config.json").exists():
+            import json as _json
+
+            defaults = {
+                "flush_interval": 0.5,
+                "log_level": "info",
+                "data_dir": "~/.local/share/dusky-keylogger",
+                "transcript_dir": "/tmp",
+                "transcript_format": "text",
+                "persistent_enabled": True,
+                "ephemeral_enabled": True,
+            }
+            cfg_file.write_text(_json.dumps(defaults, indent=2) + "\n", encoding="utf-8")
+            os.chmod(cfg_file, 0o600)
+            run(["chown", f"{user}:{user}", str(cfg_file)], check=False)
+    except OSError:
+        pass
 
     venv_py = build_venv(user, home)
     install_service(venv_py, user, home)
