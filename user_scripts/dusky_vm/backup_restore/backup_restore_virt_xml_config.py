@@ -58,7 +58,7 @@ def path_completer(text: str, state: int) -> Optional[str]:
     except Exception:
         return None
 
-readline.set_completer_delims(' \t\n;')
+readline.set_completer_delims('\t\n;')
 readline.parse_and_bind("tab: complete")
 readline.set_completer(path_completer)
 
@@ -83,7 +83,6 @@ require_root()
 try:
     from rich.console import Console
     from rich.panel import Panel
-    from rich.prompt import Confirm, Prompt
     from rich.table import Table
     from rich.theme import Theme
 except ImportError:
@@ -133,12 +132,45 @@ class BackupManifest:
     file_hashes: Dict[str, str] = field(default_factory=dict)
 
 # ==============================================================================
-# SYSTEM UTILITIES & SUBPROCESS HELPERS
+# SYSTEM UTILITIES & PROMPT HELPERS
 # ==============================================================================
 def bail(msg: str) -> Never:
     """Exit gracefully with a clear error panel."""
     console.print(Panel(f"[danger]FATAL ERROR:[/danger] {msg}", border_style="red"))
     sys.exit(1)
+
+def prompt_choice(prompt_text: str, choices: List[str], default: str = "") -> str:
+    """Safe TUI prompt that decouples rich ANSI styling from Readline input buffer."""
+    choices_str = "/".join(choices)
+    default_str = f" [default: {default}]" if default else ""
+    console.print(f"\n[bold cyan]{prompt_text}[/bold cyan] [dim]({choices_str}){default_str}[/dim]")
+    while True:
+        try:
+            val = input("> ").strip()
+        except EOFError:
+            return default
+        if not val and default:
+            return default
+        if val in choices:
+            return val
+        console.print(f"[warning]Invalid selection '{val}'. Please enter one of: {', '.join(choices)}[/warning]")
+
+def prompt_confirm(prompt_text: str, default: bool = True) -> bool:
+    """Safe TUI boolean confirmation prompt with decoupled readline buffer."""
+    default_str = "Y/n" if default else "y/N"
+    console.print(f"\n[bold cyan]{prompt_text}[/bold cyan] [dim][{default_str}][/dim]")
+    while True:
+        try:
+            val = input("> ").strip().lower()
+        except EOFError:
+            return default
+        if not val:
+            return default
+        if val in ("y", "yes"):
+            return True
+        if val in ("n", "no"):
+            return False
+        console.print("[warning]Please enter 'y' or 'n'.[/warning]")
 
 def run_cmd(
     cmd: List[str],
@@ -243,7 +275,7 @@ def handle_running_vms(interactive: bool = True, shutdown_running: bool = False)
         console.print("  [cyan]1.[/cyan] Gracefully shut down active VMs (ACPI)")
         console.print("  [cyan]2.[/cyan] Suspend active VMs (virsh managedsave)")
         console.print("  [cyan]3.[/cyan] Abort operation")
-        action = Prompt.ask("\n[bold]Select action[/bold]", choices=["1", "2", "3"], default="1")
+        action = prompt_choice("Select action", choices=["1", "2", "3"], default="1")
     else:
         bail(f"Active VMs detected ({', '.join(active_vms)}). Shut them down or use --shutdown-running.")
 
@@ -290,7 +322,7 @@ def execute_backup(dest_dir_arg: Optional[str] = None, non_interactive: bool = F
         target_dir = resolve_user_path(target_input)
 
     if not target_dir.exists():
-        if non_interactive or Prompt.ask(f"Directory '{target_dir}' does not exist. Create it?", choices=["y", "n"], default="y") == 'y':
+        if non_interactive or prompt_confirm(f"Directory '{target_dir}' does not exist. Create it?", default=True):
             target_dir.mkdir(parents=True, exist_ok=True)
         else:
             bail("Backup aborted by operator.")
@@ -1030,7 +1062,7 @@ def main() -> None:
         console.print("  [cyan]3.[/cyan] Verify Backup Integrity (Audit/Check)")
         console.print("  [cyan]4.[/cyan] Exit gracefully")
 
-        choice = Prompt.ask("\n[bold]Vector[/bold]", choices=["1", "2", "3", "4"], default="4")
+        choice = prompt_choice("Vector", choices=["1", "2", "3", "4"], default="4")
 
         match choice:
             case "1":
