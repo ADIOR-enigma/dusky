@@ -22,7 +22,7 @@ Design goals (modern, reliable, verifiable):
     so every run can be audited.
   • `--verify` performs a full health check of an installation
     (binary, version metadata, launcher, desktop entry, icon, PATH,
-    and a live launch smoke test).
+    and a shared-library/architecture check).
   • Pre-flight checks: disk space, archive integrity, required members,
     symlink safety.
 
@@ -70,9 +70,15 @@ def _bootstrap_dependencies() -> None:
 
     print(f"📦  Installing missing dependencies via uv: {', '.join(missing)} …")
     _CONTAINED_LIBS.mkdir(parents=True, exist_ok=True)
-    subprocess.check_call(
-        [uv, "pip", "install", "--target", libs_str, "-q", *missing],
-    )
+    try:
+        subprocess.check_call(
+            [uv, "pip", "install", "--target", libs_str, "-q", *missing],
+        )
+    except subprocess.CalledProcessError as e:
+        sys.exit(
+            f"✗  Failed to install dependencies via uv (exit {e.returncode}).\n"
+            f"   Try:  {uv} pip install --target {libs_str} -q {', '.join(missing)}"
+        )
     importlib.invalidate_caches()
 
 
@@ -88,6 +94,7 @@ import shlex
 import struct
 import tarfile
 import tempfile
+import time
 
 from rich import box
 from rich.console import Console
@@ -348,21 +355,31 @@ def _nearest_existing(p: Path) -> Path:
     return p
 
 
-def _check_disk_space(members: list[tarfile.TarInfo], dest: Path) -> int:
-    """Verify there's room for the extracted archive at *dest*."""
-    needed = sum(m.size for m in members if m.isfile())
-    base = _nearest_existing(dest)
+def _free_space(p: Path) -> int | None:
+    """Free bytes on the filesystem containing *p* (or its nearest ancestor)."""
+    base = p
+    while not base.exists() and base != base.parent:
+        base = base.parent
     try:
-        free = os.statvfs(base).f_bavail * os.statvfs(base).f_frsize
+        st = os.statvfs(base)
+        return st.f_bavail * st.f_frsize
     except OSError:
         logging.warning("could not stat %s for disk space check", base)
-        return needed
-    if free < needed:
-        raise InstallError(
-            f"insufficient disk space: need {needed / 1e6:.0f} MB, "
-            f"but only {free / 1e6:.0f} MB free on {base}"
-        )
-    logging.info("disk space ok: need %d bytes, %d free on %s", needed, free, base)
+        return None
+
+
+def _check_disk_space(members: list[tarfile.TarInfo], *dests: Path) -> int:
+    """Verify every destination has room for the extracted archive."""
+    needed = sum(m.size for m in members if m.isfile())
+    for dest in dests:
+        free = _free_space(dest)
+        if free is not None and free < needed:
+            raise InstallError(
+                f"insufficient disk space: need {needed / 1e6:.0f} MB, "
+                f"but only {free / 1e6:.0f} MB free on {_nearest_existing(dest)}"
+            )
+        if free is not None:
+            logging.info("disk space ok: need %d bytes, %d free on %s", needed, free, dest)
     return needed
 
 
@@ -408,6 +425,42 @@ def _pre_auth_sudo() -> bool:
     return subprocess.run(["sudo", "-v"]).returncode == 0
 
 
+def _ensure_dir(path: Path) -> None:
+    """Create *path* and parents, escalating to sudo if needed."""
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        _run("mkdir", "-p", str(path), sudo=True)
+
+
+def _write_file(
+    path: Path,
+    data: str | bytes,
+    mode: int | None = None,
+    *,
+    sudo: bool = False,
+) -> None:
+    """Write *data* to *path* with an optional mode, using sudo if needed.
+
+    When *sudo* is true the content is staged in a temp file and installed
+    via ``install`` so no shell quoting / injection concerns exist."""
+    payload = data.encode("utf-8") if isinstance(data, str) else data
+    if sudo:
+        with tempfile.NamedTemporaryFile("wb", delete=False) as tf:
+            tf.write(payload)
+            staged = Path(tf.name)
+        try:
+            perm = format(mode, "o") if mode is not None else "644"
+            _run("install", "-m", perm, str(staged), str(path), sudo=True)
+        finally:
+            staged.unlink(missing_ok=True)
+    else:
+        path.write_bytes(payload)
+        if mode is not None:
+            path.chmod(mode)
+    logging.info("wrote %s (%d bytes, sudo=%s)", path, len(payload), sudo)
+
+
 def _confirm(prompt: str, default: bool = True) -> bool:
     """Ask a yes/no question. On EOF (piped stdin), use *default*."""
     try:
@@ -416,21 +469,44 @@ def _confirm(prompt: str, default: bool = True) -> bool:
         return default
 
 
-def _smoke_test(binary: Path, timeout: int = 25) -> tuple[bool, str]:
-    """Launch the binary with --version as a sanity check."""
-    logging.info("smoke test: %s --version", binary)
+def _binary_health_check(binary: Path) -> tuple[bool, str]:
+    """Non-invasive launch-readiness check for the app binary.
+
+    Verifies the ELF magic, architecture, and that all shared libraries
+    resolve via ``ldd``. Never executes the app — launching this Electron
+    app as a probe spawns GPU/network/language-server children that keep
+    running and can hang a second launch (single-instance lock)."""
     try:
-        proc = subprocess.run(
-            [str(binary), "--version"],
-            capture_output=True, text=True, timeout=timeout,
-        )
-    except subprocess.TimeoutExpired:
-        return False, "timed out"
+        with open(binary, "rb") as f:
+            magic = f.read(4)
+            f.seek(18)
+            machine = struct.unpack("<H", f.read(2))[0]
     except OSError as e:
         return False, str(e)
-    lines = (proc.stdout + proc.stderr).strip().splitlines()
-    detail = lines[0][:120] if lines else f"exit {proc.returncode}"
-    return proc.returncode == 0, detail
+    if magic != b"\x7fELF":
+        return False, "not an ELF executable"
+    arch = {0x3E: "x86_64", 0xB7: "aarch64"}.get(machine, f"machine={machine}")
+    if machine not in (0x3E, 0xB7):
+        return False, f"unrecognized architecture ({arch})"
+    if not shutil.which("ldd"):
+        return True, f"valid ELF ({arch}); ldd unavailable"
+
+    try:
+        proc = subprocess.run(
+            ["ldd", str(binary)], capture_output=True, text=True, timeout=60,
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        return True, f"valid ELF ({arch}); ldd check skipped ({e})"
+
+    if proc.returncode != 0:
+        msg = (proc.stderr or proc.stdout).strip()
+        if "not a dynamic executable" in msg or "statically linked" in msg:
+            return True, f"valid ELF ({arch}), statically linked"
+        return False, f"ldd failed: {msg[:120]}"
+    missing = [ln.strip() for ln in proc.stdout.splitlines() if "not found" in ln]
+    if missing:
+        return False, "; ".join(missing[:3])
+    return True, f"valid ELF ({arch}), all libraries resolved"
 
 
 def _launcher_content(binary_path: Path) -> str:
@@ -469,16 +545,17 @@ def _validate_desktop(desktop_file: Path) -> bool:
     return True
 
 
-def _refresh_caches(apps_dir: Path, icon_dir: Path) -> None:
+def _refresh_caches(apps_dir: Path, icon_dir: Path, *, sudo: bool = False) -> None:
     """Refresh the desktop/icon databases so launchers pick changes up."""
     if shutil.which("update-desktop-database"):
+        cmd = ["update-desktop-database", str(apps_dir)]
         subprocess.run(
-            ["update-desktop-database", str(apps_dir)], capture_output=True,
+            ["sudo", *cmd] if sudo else cmd, capture_output=True,
         )
     if shutil.which("gtk-update-icon-cache"):
+        cmd = ["gtk-update-icon-cache", "-f", "-q", str(icon_dir / "hicolor")]
         subprocess.run(
-            ["gtk-update-icon-cache", "-f", "-q", str(icon_dir / "hicolor")],
-            capture_output=True,
+            ["sudo", *cmd] if sudo else cmd, capture_output=True,
         )
 
 
@@ -489,9 +566,29 @@ def _install_icon(asar_path: Path, icon_dir: Path) -> bool:
         logging.warning("no usable icon.png found in app.asar")
         return False
     dest = icon_dir / "hicolor" / "512x512" / "apps" / "antigravity.png"
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(data)
-    logging.info("installed icon: %s (%d bytes)", dest, len(data))
+    _ensure_dir(dest.parent)
+    _write_file(
+        dest,
+        data,
+        mode=0o644,
+        sudo=_needs_sudo(dest),
+    )
+    index = icon_dir / "hicolor" / "index.theme"
+    if not index.exists():
+        _ensure_dir(index.parent)
+        _write_file(
+            index,
+            "[Icon Theme]\n"
+            "Name=Hicolor\n"
+            "Comment=Fallback icon theme\n"
+            "Directories=512x512/apps\n"
+            "\n"
+            "[512x512/apps]\n"
+            "Size=512\n"
+            "Context=Applications\n",
+            mode=0o644,
+            sudo=_needs_sudo(index),
+        )
     return True
 
 
@@ -517,17 +614,37 @@ def _finalize_extracted(tmp_root: Path, *, system: bool, new_version: str | None
 
 
 def _swap_into_place(tmp_root: Path, install_dir: Path, *, use_sudo: bool) -> None:
-    """Atomically move the new install into its final location."""
+    """Swap the new install into place, keeping the old one intact until the
+    move succeeds. Rolls the old install back if the move fails."""
     if use_sudo:
         _run("chown", "-R", "root:root", str(tmp_root), sudo=True)
-        _run("rm", "-rf", str(install_dir), sudo=True)
-        _run("mv", str(tmp_root), str(install_dir), sudo=True)
-    else:
-        if install_dir.is_symlink() or install_dir.is_file():
-            install_dir.unlink()
-        elif install_dir.is_dir():
-            shutil.rmtree(install_dir)
-        shutil.move(str(tmp_root), str(install_dir))
+
+    def mv(src: Path, dst: Path) -> None:
+        if use_sudo:
+            _run("mv", str(src), str(dst), sudo=True)
+        else:
+            shutil.move(str(src), str(dst))
+
+    backup = install_dir.with_name(
+        install_dir.name + f".old-{os.getpid()}-{int(time.time())}"
+    )
+    had_old = install_dir.is_symlink() or install_dir.exists()
+    if had_old:
+        mv(install_dir, backup)
+        logging.info("moved old install aside: %s -> %s", install_dir, backup)
+    try:
+        mv(tmp_root, install_dir)
+    except Exception:
+        if had_old:
+            logging.error("move to %s failed — restoring old install", install_dir)
+            mv(backup, install_dir)
+        raise
+    if had_old:
+        if use_sudo:
+            _run("rm", "-rf", str(backup), sudo=True)
+        else:
+            shutil.rmtree(backup, ignore_errors=True)
+        logging.info("removed old install backup: %s", backup)
 
 
 def _install(
@@ -545,7 +662,6 @@ def _install(
     legacy_dirs: list[Path],
 ) -> None:
     use_sudo = not dry_run and _needs_sudo(install_dir)
-    use_sudo_symlink = not dry_run and _needs_sudo(symlink_dir)
     binary_path = install_dir / BINARY_NAME
     launcher_path = symlink_dir / BINARY_NAME
     desktop_file = apps_dir / DESKTOP_FILE
@@ -570,6 +686,7 @@ def _install(
         if dry_run:
             say("create temp workspace and extract there first")
         else:
+            _check_disk_space(members, Path(tempfile.gettempdir()))
             tmp_dir = Path(tempfile.mkdtemp(prefix="antigravity-install-"))
             logging.info("temp workspace: %s", tmp_dir)
         progress.advance(task)
@@ -610,7 +727,9 @@ def _install(
         # 5 ── Swap into place ───────────────────────────────────────
         progress.update(task, description=f"[cyan]Installing to {install_dir.parent}[/]")
         if dry_run:
-            say(f"remove old {install_dir} and move new install into place")
+            say(f"swap new install into place at {install_dir} (old preserved until move succeeds)")
+            if legacy_dirs:
+                say(f"remove legacy installs: {', '.join(str(d) for d in legacy_dirs)}")
         else:
             _swap_into_place(tmp_dir / root, install_dir, use_sudo=use_sudo)
             for legacy in legacy_dirs:
@@ -626,42 +745,52 @@ def _install(
         if dry_run:
             say(f"write launcher {launcher_path} → {binary_path}")
         else:
-            symlink_dir.mkdir(parents=True, exist_ok=True)
+            _ensure_dir(symlink_dir)
             if launcher_path.exists() or launcher_path.is_symlink():
                 launcher_path.unlink()
-            launcher_path.write_text(_launcher_content(binary_path))
-            launcher_path.chmod(0o755)
-            logging.info("wrote launcher: %s", launcher_path)
+            _write_file(
+                launcher_path,
+                _launcher_content(binary_path),
+                mode=0o755,
+                sudo=_needs_sudo(symlink_dir),
+            )
         progress.advance(task)
 
         # 7 ── Desktop entry ─────────────────────────────────────────
         progress.update(task, description="[cyan]Creating desktop entry[/]")
         if dry_run:
-            say(f"write desktop entry {desktop_file} (Icon=antigravity)")
+            say(f"write desktop entry {desktop_file} (Icon=antigravity) and refresh caches")
         else:
-            apps_dir.mkdir(parents=True, exist_ok=True)
-            desktop_file.write_text(_desktop_content(launcher_path))
+            _ensure_dir(apps_dir)
+            _write_file(
+                desktop_file,
+                _desktop_content(launcher_path),
+                mode=0o644,
+                sudo=_needs_sudo(apps_dir),
+            )
             ok = _validate_desktop(desktop_file)
             if not ok:
                 console.print("[warn]  ⚠  Desktop entry failed validation (see log).[/]")
-            _refresh_caches(apps_dir, icon_dir)
+            _refresh_caches(apps_dir, icon_dir, sudo=_needs_sudo(apps_dir))
             logging.info("wrote desktop entry: %s (validated=%s)", desktop_file, ok)
         progress.advance(task)
 
-        # 8 ── Smoke test ────────────────────────────────────────────
-        progress.update(task, description="[cyan]Smoke test[/]")
-        if not dry_run:
-            ok, detail = _smoke_test(install_dir / BINARY_NAME)
+        # 8 ── Binary health check ───────────────────────────────────
+        progress.update(task, description="[cyan]Checking binary[/]")
+        if dry_run:
+            say("check ELF architecture and shared-library resolution")
+        else:
+            ok, detail = _binary_health_check(install_dir / BINARY_NAME)
             if ok:
-                console.print(f"  [success]✓  Binary launches: {detail}[/]")
-                logging.info("smoke test ok: %s", detail)
+                console.print(f"  [success]✓  Binary ready: {detail}[/]")
+                logging.info("binary health check ok: %s", detail)
             else:
                 console.print(
-                    f"[warn]  ⚠  Binary smoke test failed: {detail}[/]\n"
+                    f"[warn]  ⚠  Binary health check failed: {detail}[/]\n"
                     "     The install is in place, but the binary may be missing "
-                    "shared libraries or an incompatible libc."
+                    "shared libraries or be the wrong architecture."
                 )
-                logging.warning("smoke test failed: %s", detail)
+                logging.warning("binary health check failed: %s", detail)
         progress.advance(task)
 
     if tmp_dir and tmp_dir.exists():
@@ -743,8 +872,8 @@ def verify(
     else:
         add("On PATH", True, f"sandbox install — launcher intentionally not on PATH")
 
-    ok_smoke, smoke_detail = _smoke_test(binary)
-    add("Binary launches", ok_smoke, smoke_detail)
+    ok_health, health_detail = _binary_health_check(binary)
+    add("Binary loads (libraries)", ok_health, health_detail)
 
     console.print()
     tbl = Table(box=box.ROUNDED, title=f"[bold]{APP_NAME} Health Check[/]", padding=(0, 2))
@@ -836,7 +965,6 @@ def _run_cli(args: argparse.Namespace, log_path: Path) -> int:
         symlink_dir = prefix / "bin"
         apps_dir = prefix / "share" / "applications"
         icon_dir = prefix / "share" / "icons"
-        prefix.mkdir(parents=True, exist_ok=True)
     else:
         install_dir = DEFAULT_INSTALL_DIR
         symlink_dir = DEFAULT_SYMLINK_DIR
@@ -858,6 +986,9 @@ def _run_cli(args: argparse.Namespace, log_path: Path) -> int:
             install_dir, symlink_dir, apps_dir, icon_dir, system=not args.prefix,
         )
 
+    if args.prefix:
+        prefix.mkdir(parents=True, exist_ok=True)
+
     # ── Banner ────────────────────────────────────────────────────
     console.print()
     console.print(
@@ -874,21 +1005,18 @@ def _run_cli(args: argparse.Namespace, log_path: Path) -> int:
     if args.archive:
         archive = Path(args.archive).expanduser().resolve()
     else:
-        default_display = str(DEFAULT_ARCHIVE) if DEFAULT_ARCHIVE.exists() else ""
+        # Always fall back to the default archive when no path is given.
         if args.yes:
-            raw = default_display
+            raw = str(DEFAULT_ARCHIVE)
         else:
             try:
                 raw = Prompt.ask(
                     "[bold]📦  Path to Antigravity archive[/]",
-                    default=default_display or None,
+                    default=str(DEFAULT_ARCHIVE),
                 )
             except EOFError:
-                raw = default_display
-        if not raw:
-            console.print("[err]✗  No archive path provided.[/]")
-            return 1
-        archive = Path(raw).expanduser().resolve()
+                raw = str(DEFAULT_ARCHIVE)
+        archive = Path(raw or str(DEFAULT_ARCHIVE)).expanduser().resolve()
 
     if not archive.exists():
         console.print(f"[err]✗  File not found: {archive}[/]")
