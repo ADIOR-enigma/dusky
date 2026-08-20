@@ -79,11 +79,26 @@ tags:
 
 ### 1. CPU & pinning
 
+> [!tip] Automated via `35_cpu_pinning_generator.py` — generates `vcpupin` + `emulatorpin` + `iothreadpin` + topology for your host (`lscpu` + `nproc`). Hand-type only if you understand P/E/SMT layout. Adapt example: 4 vCPU uses 2 P-cores (4 threads); 8 vCPU uses 4 P-cores.
+
+**Option A — 4 vCPU (2 P-cores, 4 threads):**
 ```xml
 <vcpu placement='static'>4</vcpu>
 <cputune>
   <vcpupin vcpu='0' cpuset='0'/><vcpupin vcpu='1' cpuset='1'/>
   <vcpupin vcpu='2' cpuset='2'/><vcpupin vcpu='3' cpuset='3'/>
+  <emulatorpin cpuset='12-19'/>
+</cputune>
+```
+
+**Option B — 8 vCPU (4 P-cores, 8 threads — recommended for 8-core VMs):**
+```xml
+<vcpu placement='static'>8</vcpu>
+<cputune>
+  <vcpupin vcpu='0' cpuset='0'/><vcpupin vcpu='1' cpuset='1'/>
+  <vcpupin vcpu='2' cpuset='2'/><vcpupin vcpu='3' cpuset='3'/>
+  <vcpupin vcpu='4' cpuset='4'/><vcpupin vcpu='5' cpuset='5'/>
+  <vcpupin vcpu='6' cpuset='6'/><vcpupin vcpu='7' cpuset='7'/>
   <emulatorpin cpuset='12-19'/>
 </cputune>
 ```

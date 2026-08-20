@@ -16,10 +16,11 @@ tags:
 ```bash
 sudo pacman -S --needed qemu-desktop libvirt virt-install virt-manager virt-viewer dnsmasq iproute2 openbsd-netcat edk2-ovmf swtpm nftables libosinfo pciutils
 sudo usermod -aG libvirt,kvm,input "$(id -un)"   # re-login!
-# libvirt sockets (not libvirtd)
-sudo nvim /etc/libvirt/virtqemud.conf   # add if you lack polkit (optional fallback):
+# libvirt sockets (not libvirtd) — see [[libvert Modular daemon enable]] §3 for real perms
+# /etc/libvirt/virtqemud.conf fallback (INERT under systemd socket activation):
 # unix_sock_group = "libvirt"
 # unix_sock_rw_perms = "0770"
+# Real perms: /etc/systemd/system/virtqemud.socket.d/10-arsonix.conf → [Socket] SocketGroup=libvirt SocketMode=0660
 ```
 
 ## Host validation
