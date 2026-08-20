@@ -1001,7 +1001,23 @@ def enumerate_sinks() -> list[tuple[str, str]]:
     return sinks
 
 
-def resolve_hardware_source(requested: str = "default") -> str:
+def is_node_alive(node_name: str, media_class: str) -> bool:
+    """Checks if a given PipeWire node is actively connected and alive."""
+    if not node_name or node_name == "default" or not shutil.which("pw-dump"):
+        return False
+    try:
+        out = subprocess.check_output(["pw-dump", "Node"], text=True, stderr=subprocess.DEVNULL, env=COMMAND_ENV)
+        for obj in json.loads(out):
+            props = obj.get("info", {}).get("props", {})
+            if props.get("media.class") == media_class:
+                if props.get("node.name") == node_name or props.get("node.description") == node_name:
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def resolve_hardware_source(requested: str = "default", fallback_node: str = "") -> str:
     """
     Resolves the physical microphone node name to prevent WirePlumber feedback loops.
     If 'default' is requested, dynamically queries the active physical microphone hardware node.
@@ -1009,7 +1025,11 @@ def resolve_hardware_source(requested: str = "default") -> str:
     if requested != "default" and requested.strip():
         return requested.strip()
 
-    # 1. Try to query the active default source from native WirePlumber metadata
+    # Priority 1: Check provided fallback_node (e.g. pre_source) if it is actively connected
+    if fallback_node and fallback_node != "default" and is_node_alive(fallback_node, "Audio/Source"):
+        return fallback_node
+
+    # Priority 2: Try to query the active default source from native WirePlumber metadata
     if shutil.which("pw-dump"):
         try:
             out = subprocess.check_output(["pw-dump", "Metadata"], text=True, stderr=subprocess.DEVNULL, env=COMMAND_ENV)
@@ -1025,7 +1045,7 @@ def resolve_hardware_source(requested: str = "default") -> str:
         except Exception:
             pass
 
-    # 2. Fallback to querying active default source from wpctl status
+    # Priority 3: Fallback to querying active default source from wpctl status
     try:
         out = subprocess.check_output(["wpctl", "status"], text=True, stderr=subprocess.DEVNULL, env=COMMAND_ENV)
         in_sources = False
@@ -1052,7 +1072,15 @@ def resolve_hardware_source(requested: str = "default") -> str:
     except Exception:
         pass
 
-    # 3. Fallback to first non-virtual source in enumerated sources
+    # Priority 4: Check persisted config pre_source
+    try:
+        persisted = load_config()
+        if persisted.pre_source and persisted.pre_source != "default" and is_node_alive(persisted.pre_source, "Audio/Source"):
+            return persisted.pre_source
+    except Exception:
+        pass
+
+    # Priority 5: Fallback to first non-virtual source in enumerated sources
     sources = enumerate_sources()
     for node, _ in sources:
         if node != "default" and not node.startswith(("ghelper", "dusky")):
@@ -1060,7 +1088,7 @@ def resolve_hardware_source(requested: str = "default") -> str:
     return "default"
 
 
-def resolve_hardware_sink(requested: str = "default") -> str:
+def resolve_hardware_sink(requested: str = "default", fallback_node: str = "") -> str:
     """
     Resolves the physical speaker/headphone node name to prevent WirePlumber feedback loops.
     If 'default' is requested, dynamically queries the active physical playback hardware node.
@@ -1068,7 +1096,11 @@ def resolve_hardware_sink(requested: str = "default") -> str:
     if requested != "default" and requested.strip():
         return requested.strip()
 
-    # 1. Try to query the active default sink from native WirePlumber metadata
+    # Priority 1: Check provided fallback_node (e.g. pre_sink) if it is actively connected
+    if fallback_node and fallback_node != "default" and is_node_alive(fallback_node, "Audio/Sink"):
+        return fallback_node
+
+    # Priority 2: Try to query the active default sink from native WirePlumber metadata
     if shutil.which("pw-dump"):
         try:
             out = subprocess.check_output(["pw-dump", "Metadata"], text=True, stderr=subprocess.DEVNULL, env=COMMAND_ENV)
@@ -1084,7 +1116,7 @@ def resolve_hardware_sink(requested: str = "default") -> str:
         except Exception:
             pass
 
-    # 2. Fallback to querying active default sink from wpctl status
+    # Priority 3: Fallback to querying active default sink from wpctl status
     try:
         out = subprocess.check_output(["wpctl", "status"], text=True, stderr=subprocess.DEVNULL, env=COMMAND_ENV)
         in_sinks = False
@@ -1116,7 +1148,15 @@ def resolve_hardware_sink(requested: str = "default") -> str:
     except Exception:
         pass
 
-    # 3. Fallback to first non-virtual sink in enumerated sinks
+    # Priority 4: Check persisted config pre_sink
+    try:
+        persisted = load_config()
+        if persisted.pre_sink and persisted.pre_sink != "default" and is_node_alive(persisted.pre_sink, "Audio/Sink"):
+            return persisted.pre_sink
+    except Exception:
+        pass
+
+    # Priority 5: Fallback to first non-virtual sink in enumerated sinks
     sinks = enumerate_sinks()
     for node, _ in sinks:
         if node != "default" and not node.startswith(("ghelper", "dusky")):
@@ -1520,9 +1560,9 @@ class AudioDspServer:
 
     def _apply_full_config(self, cfg: AudioConfig) -> None:
         # Hardware source & sink resolution (eliminates feedback loops)
-        target_src = resolve_hardware_source(cfg.source)
+        target_src = resolve_hardware_source(cfg.source, fallback_node=cfg.pre_source)
         self.send_cmd(f"SRC {target_src}")
-        target_sink = resolve_hardware_sink(cfg.sink)
+        target_sink = resolve_hardware_sink(cfg.sink, fallback_node=cfg.pre_sink)
         self.send_cmd(f"SINK_TGT {target_sink}")
         self.send_cmd(f"VOL {cfg.volume * 10}")
         self.send_cmd(f"MON {1 if cfg.monitor else 0}")
@@ -3032,13 +3072,22 @@ def run_gtk_app() -> None:
         # ---------------------------------------------------------------------
         def reset_all_defaults(self, *_: Any) -> None:
             self._updating_ui = True
+            saved_pre_src = self.cfg.pre_source
+            saved_pre_snk = self.cfg.pre_sink
+            saved_enabled = self.cfg.enabled
+
             self.cfg.volume = 100
             self.cfg.rnnoise_on = True
             self.cfg.aggressiveness = 100
             self.cfg.out_rnnoise_on = False
             self.cfg.out_aggressiveness = 70
+            self.cfg.source = "default"
             self.cfg.sink = "default"
             self.cfg.monitor = False
+            self.cfg.pre_source = saved_pre_src
+            self.cfg.pre_sink = saved_pre_snk
+            self.cfg.enabled = saved_enabled
+
             self._reset_voice_state()
             self._reset_spatial_state()
             self._reset_eq_state()
