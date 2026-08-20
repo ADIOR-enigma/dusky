@@ -1004,12 +1004,28 @@ def enumerate_sinks() -> list[tuple[str, str]]:
 def resolve_hardware_source(requested: str = "default") -> str:
     """
     Resolves the physical microphone node name to prevent WirePlumber feedback loops.
-    If 'default' is requested, picks the active physical microphone hardware node.
+    If 'default' is requested, dynamically queries the active physical microphone hardware node.
     """
     if requested != "default" and requested.strip():
         return requested.strip()
 
-    # 1. Try to query the active default source from wpctl status
+    # 1. Try to query the active default source from native WirePlumber metadata
+    if shutil.which("pw-dump"):
+        try:
+            out = subprocess.check_output(["pw-dump", "Metadata"], text=True, stderr=subprocess.DEVNULL, env=COMMAND_ENV)
+            metas = json.loads(out)
+            for m_obj in metas:
+                if m_obj.get("props", {}).get("metadata.name") == "default":
+                    for item in m_obj.get("metadata", []):
+                        if item.get("key") in ("default.audio.source", "default.configured.audio.source"):
+                            val = item.get("value")
+                            v_str = val.get("name") if isinstance(val, dict) else (val if isinstance(val, str) else None)
+                            if v_str and not any(v_str.lower().startswith(x) for x in ("ghelper", "dusky", "rnnoise")):
+                                return v_str
+        except Exception:
+            pass
+
+    # 2. Fallback to querying active default source from wpctl status
     try:
         out = subprocess.check_output(["wpctl", "status"], text=True, stderr=subprocess.DEVNULL, env=COMMAND_ENV)
         in_sources = False
@@ -1036,7 +1052,7 @@ def resolve_hardware_source(requested: str = "default") -> str:
     except Exception:
         pass
 
-    # 2. Fallback to first non-virtual source in enumerated sources
+    # 3. Fallback to first non-virtual source in enumerated sources
     sources = enumerate_sources()
     for node, _ in sources:
         if node != "default" and not node.startswith(("ghelper", "dusky")):
@@ -1047,12 +1063,28 @@ def resolve_hardware_source(requested: str = "default") -> str:
 def resolve_hardware_sink(requested: str = "default") -> str:
     """
     Resolves the physical speaker/headphone node name to prevent WirePlumber feedback loops.
-    If 'default' is requested, picks the active physical playback hardware node.
+    If 'default' is requested, dynamically queries the active physical playback hardware node.
     """
     if requested != "default" and requested.strip():
         return requested.strip()
 
-    # 1. Try to query the active default sink from wpctl status
+    # 1. Try to query the active default sink from native WirePlumber metadata
+    if shutil.which("pw-dump"):
+        try:
+            out = subprocess.check_output(["pw-dump", "Metadata"], text=True, stderr=subprocess.DEVNULL, env=COMMAND_ENV)
+            metas = json.loads(out)
+            for m_obj in metas:
+                if m_obj.get("props", {}).get("metadata.name") == "default":
+                    for item in m_obj.get("metadata", []):
+                        if item.get("key") in ("default.audio.sink", "default.configured.audio.sink"):
+                            val = item.get("value")
+                            v_str = val.get("name") if isinstance(val, dict) else (val if isinstance(val, str) else None)
+                            if v_str and not any(v_str.lower().startswith(x) for x in ("ghelper", "dusky", "rnnoise")):
+                                return v_str
+        except Exception:
+            pass
+
+    # 2. Fallback to querying active default sink from wpctl status
     try:
         out = subprocess.check_output(["wpctl", "status"], text=True, stderr=subprocess.DEVNULL, env=COMMAND_ENV)
         in_sinks = False
@@ -1084,7 +1116,7 @@ def resolve_hardware_sink(requested: str = "default") -> str:
     except Exception:
         pass
 
-    # 2. Fallback to first non-virtual sink in enumerated sinks
+    # 3. Fallback to first non-virtual sink in enumerated sinks
     sinks = enumerate_sinks()
     for node, _ in sinks:
         if node != "default" and not node.startswith(("ghelper", "dusky")):
@@ -1096,68 +1128,103 @@ def save_previous_default_devices(cfg: AudioConfig) -> None:
     """
     Captures the current active physical hardware default source and sink before
     enabling Dusky virtual nodes, so they can be seamlessly restored on disable or reboot.
+    Utilizes multi-layer detection (PipeWire Metadata -> wpctl status -> hardware enumeration).
     """
     if not shutil.which("wpctl"):
         return
 
-    try:
-        out = subprocess.check_output(["wpctl", "status"], text=True, stderr=subprocess.DEVNULL, env=COMMAND_ENV)
-        in_audio = False
-        in_sinks = False
-        in_sources = False
-        src_id: int | None = None
-        snk_id: int | None = None
+    src_name: str | None = None
+    snk_name: str | None = None
 
-        for line in out.splitlines():
-            if line.strip() == "Audio":
-                in_audio = True
-                continue
-            if in_audio:
-                if line.strip().startswith(("Video", "Settings")):
-                    break
-                if "Sinks:" in line:
-                    in_sinks = True
-                    in_sources = False
+    # Layer 1: Query native WirePlumber default metadata
+    if shutil.which("pw-dump"):
+        try:
+            out = subprocess.check_output(["pw-dump", "Metadata"], text=True, stderr=subprocess.DEVNULL, env=COMMAND_ENV)
+            metas = json.loads(out)
+            for m_obj in metas:
+                if m_obj.get("props", {}).get("metadata.name") == "default":
+                    for item in m_obj.get("metadata", []):
+                        k = item.get("key")
+                        val = item.get("value")
+                        val_str = val.get("name") if isinstance(val, dict) else (val if isinstance(val, str) else None)
+                        if not val_str or any(val_str.lower().startswith(x) for x in ("ghelper", "dusky", "rnnoise")):
+                            continue
+                        if k in ("default.audio.sink", "default.configured.audio.sink") and not snk_name:
+                            snk_name = val_str
+                        elif k in ("default.audio.source", "default.configured.audio.source") and not src_name:
+                            src_name = val_str
+        except Exception:
+            pass
+
+    # Layer 2: Fallback to wpctl status parsing
+    if not src_name or not snk_name:
+        try:
+            out = subprocess.check_output(["wpctl", "status"], text=True, stderr=subprocess.DEVNULL, env=COMMAND_ENV)
+            in_audio = False
+            in_sinks = False
+            in_sources = False
+            src_id: int | None = None
+            snk_id: int | None = None
+
+            for line in out.splitlines():
+                if line.strip() == "Audio":
+                    in_audio = True
                     continue
-                elif "Sources:" in line:
-                    in_sources = True
-                    in_sinks = False
-                    continue
-                elif line.strip().startswith(("Filters:", "Streams:", "Devices:")):
-                    in_sinks = False
-                    in_sources = False
-                    continue
+                if in_audio:
+                    if line.strip().startswith(("Video", "Settings")):
+                        break
+                    if "Sinks:" in line:
+                        in_sinks = True
+                        in_sources = False
+                        continue
+                    elif "Sources:" in line:
+                        in_sources = True
+                        in_sinks = False
+                        continue
+                    elif line.strip().startswith(("Filters:", "Streams:", "Devices:")):
+                        in_sinks = False
+                        in_sources = False
+                        continue
 
-                if in_sinks:
-                    m = re.search(r"\*\s+(\d+)\.", line)
-                    if m:
-                        snk_id = int(m.group(1))
-                elif in_sources:
-                    m = re.search(r"\*\s+(\d+)\.", line)
-                    if m:
-                        src_id = int(m.group(1))
+                    if in_sinks and snk_id is None:
+                        m = re.search(r"\*\s+(\d+)\.", line)
+                        if m:
+                            snk_id = int(m.group(1))
+                    elif in_sources and src_id is None:
+                        m = re.search(r"\*\s+(\d+)\.", line)
+                        if m:
+                            src_id = int(m.group(1))
 
-        if src_id is not None:
-            info = subprocess.check_output(["pw-cli", "info", str(src_id)], text=True, stderr=subprocess.DEVNULL, env=COMMAND_ENV)
-            name_m = re.search(r'node\.name = "([^"]+)"', info)
-            if name_m:
-                node_name = name_m.group(1)
-                lower = node_name.lower()
-                if not lower.startswith(("ghelper", "dusky", "rnnoise")):
-                    cfg.pre_source = node_name
+            if src_id is not None and not src_name:
+                info = subprocess.check_output(["pw-cli", "info", str(src_id)], text=True, stderr=subprocess.DEVNULL, env=COMMAND_ENV)
+                name_m = re.search(r'node\.name = "([^"]+)"', info)
+                if name_m:
+                    n_str = name_m.group(1)
+                    if not any(n_str.lower().startswith(x) for x in ("ghelper", "dusky", "rnnoise")):
+                        src_name = n_str
 
-        if snk_id is not None:
-            info = subprocess.check_output(["pw-cli", "info", str(snk_id)], text=True, stderr=subprocess.DEVNULL, env=COMMAND_ENV)
-            name_m = re.search(r'node\.name = "([^"]+)"', info)
-            if name_m:
-                node_name = name_m.group(1)
-                lower = node_name.lower()
-                if not lower.startswith(("ghelper", "dusky", "rnnoise")):
-                    cfg.pre_sink = node_name
+            if snk_id is not None and not snk_name:
+                info = subprocess.check_output(["pw-cli", "info", str(snk_id)], text=True, stderr=subprocess.DEVNULL, env=COMMAND_ENV)
+                name_m = re.search(r'node\.name = "([^"]+)"', info)
+                if name_m:
+                    n_str = name_m.group(1)
+                    if not any(n_str.lower().startswith(x) for x in ("ghelper", "dusky", "rnnoise")):
+                        snk_name = n_str
+        except Exception:
+            pass
 
-        save_config(cfg)
-    except Exception:
-        pass
+    # Layer 3: Fallback to physical hardware enumeration
+    if not src_name:
+        src_name = resolve_hardware_source()
+    if not snk_name:
+        snk_name = resolve_hardware_sink()
+
+    if src_name and not any(src_name.lower().startswith(x) for x in ("ghelper", "dusky", "rnnoise")):
+        cfg.pre_source = src_name
+    if snk_name and not any(snk_name.lower().startswith(x) for x in ("ghelper", "dusky", "rnnoise")):
+        cfg.pre_sink = snk_name
+
+    save_config(cfg)
 
 
 def restore_previous_default_devices(cfg: AudioConfig | None = None) -> None:
@@ -1171,8 +1238,8 @@ def restore_previous_default_devices(cfg: AudioConfig | None = None) -> None:
     if cfg is None:
         cfg = load_config()
 
-    target_source = cfg.pre_source if cfg.pre_source else resolve_hardware_source()
-    target_sink = cfg.pre_sink if cfg.pre_sink else resolve_hardware_sink()
+    target_source = cfg.pre_source if (cfg.pre_source and cfg.pre_source != "default") else resolve_hardware_source()
+    target_sink = cfg.pre_sink if (cfg.pre_sink and cfg.pre_sink != "default") else resolve_hardware_sink()
 
     src_id: int | None = None
     snk_id: int | None = None
@@ -1186,15 +1253,45 @@ def restore_previous_default_devices(cfg: AudioConfig | None = None) -> None:
                 media_class = props.get("media.class", "")
                 name = props.get("node.name", "")
                 desc = props.get("node.description", "")
+                nick = props.get("node.nick", "")
 
                 if media_class == "Audio/Source" and src_id is None:
-                    if target_source in (name, desc) or target_source.lower() in name.lower():
+                    if target_source in (name, desc, nick) or target_source.lower() in (name.lower(), desc.lower()):
                         src_id = obj.get("id")
                 elif media_class == "Audio/Sink" and snk_id is None:
-                    if target_sink in (name, desc) or target_sink.lower() in name.lower():
+                    if target_sink in (name, desc, nick) or target_sink.lower() in (name.lower(), desc.lower()):
                         snk_id = obj.get("id")
         except Exception:
             pass
+
+    # Dynamic fallback if targeted hardware device was disconnected/unplugged
+    if src_id is None:
+        fallback_src = resolve_hardware_source()
+        if fallback_src != "default" and shutil.which("pw-dump"):
+            try:
+                out = subprocess.check_output(["pw-dump", "Node"], text=True, stderr=subprocess.DEVNULL, env=COMMAND_ENV)
+                for obj in json.loads(out):
+                    if obj.get("info", {}).get("props", {}).get("media.class") == "Audio/Source":
+                        n = obj.get("info", {}).get("props", {}).get("node.name", "")
+                        if fallback_src == n:
+                            src_id = obj.get("id")
+                            break
+            except Exception:
+                pass
+
+    if snk_id is None:
+        fallback_snk = resolve_hardware_sink()
+        if fallback_snk != "default" and shutil.which("pw-dump"):
+            try:
+                out = subprocess.check_output(["pw-dump", "Node"], text=True, stderr=subprocess.DEVNULL, env=COMMAND_ENV)
+                for obj in json.loads(out):
+                    if obj.get("info", {}).get("props", {}).get("media.class") == "Audio/Sink":
+                        n = obj.get("info", {}).get("props", {}).get("node.name", "")
+                        if fallback_snk == n:
+                            snk_id = obj.get("id")
+                            break
+            except Exception:
+                pass
 
     if src_id is not None:
         subprocess.run(["wpctl", "set-default", str(src_id)], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=COMMAND_ENV)
