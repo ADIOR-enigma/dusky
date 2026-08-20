@@ -247,16 +247,10 @@ def log_error(msg: str) -> None:
 
 
 def copy_to_clipboard(text: str) -> bool:
-    """Copy text to Wayland or X11 clipboard."""
+    """Copy text to Wayland clipboard using wl-copy."""
     if shutil.which("wl-copy"):
         try:
             subprocess.run(["wl-copy"], input=text.encode("utf-8"), check=True, stderr=subprocess.DEVNULL)
-            return True
-        except Exception:
-            pass
-    if shutil.which("xclip"):
-        try:
-            subprocess.run(["xclip", "-selection", "clipboard"], input=text.encode("utf-8"), check=True, stderr=subprocess.DEVNULL)
             return True
         except Exception:
             pass
@@ -594,15 +588,6 @@ class AudioEngine:
             except Exception:
                 pass
 
-        if shutil.which("pactl"):
-            try:
-                res = subprocess.run(["pactl", "get-default-sink"], capture_output=True, text=True, check=True)
-                sink = res.stdout.strip()
-                if sink:
-                    return sink
-            except Exception:
-                pass
-
         return "@DEFAULT_AUDIO_SINK@"
 
     @staticmethod
@@ -641,15 +626,6 @@ class AudioEngine:
                             name_m = re.search(r'node\.name = "([^"]+)"', info)
                             if name_m:
                                 return name_m.group(1)
-            except Exception:
-                pass
-
-        if shutil.which("pactl"):
-            try:
-                res = subprocess.run(["pactl", "get-default-source"], capture_output=True, text=True, check=True)
-                source = res.stdout.strip()
-                if source:
-                    return source
             except Exception:
                 pass
 
@@ -1425,7 +1401,7 @@ def main() -> None:
         table.add_row("History File", f"{HISTORY_FILE} ({len(history.get_all())} items)")
         table.add_row("Cover Art Cache", f"{COVERS_DIR} ({len(list(COVERS_DIR.glob('*.jpg')))} covers)")
 
-        for dep in ["songrec", "ffmpeg", "pw-record", "pactl", "notify-send", "wl-copy", "fzf", "mako"]:
+        for dep in ["songrec", "pw-record", "ffmpeg", "notify-send", "wl-copy", "fzf", "mako"]:
             p = shutil.which(dep)
             status = f"[success]󰄬 {p}[/success]" if p else "[error]󰅖 Not Installed[/error]"
             table.add_row(f"Dependency: {dep}", status)
