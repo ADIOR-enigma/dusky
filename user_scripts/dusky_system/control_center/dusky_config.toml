@@ -2077,6 +2077,65 @@ type = "exec"
 command = "kitty --class performance.sh --hold sh -c \"$HOME/user_scripts/performance/services_and_process_terminator.sh\""
 terminal = false
 
+[[pages.layout]]
+type = "grid_section"
+[pages.layout.properties]
+title = "System Services — Native Toggle (Lazy, Polkit)"
+
+[[pages.layout.items]]
+type = "service_card"
+[pages.layout.items.properties]
+title = "Bluetooth"
+icon = "bluetooth-active-symbolic"
+service = "bluetooth.service"
+scope = "system"
+
+[[pages.layout.items]]
+type = "service_card"
+[pages.layout.items.properties]
+title = "CUPS Print"
+icon = "printer-symbolic"
+service = "cups.service"
+scope = "system"
+
+[[pages.layout.items]]
+type = "service_card"
+[pages.layout.items.properties]
+title = "Timesync"
+icon = "preferences-system-time-symbolic"
+service = "systemd-timesyncd.service"
+scope = "system"
+
+[[pages.layout]]
+type = "section"
+[pages.layout.properties]
+title = "User Services — No Password, Instant"
+description = "Toggled via systemctl --user; state checked lazily on page entry"
+
+[[pages.layout.items]]
+type = "service"
+[pages.layout.items.properties]
+title = "Screentime Daemon"
+description = "Background productivity tracking"
+icon = "preferences-system-time-symbolic"
+service = "dusky_screentime.service"
+scope = "user"
+
+[[pages.layout]]
+type = "section"
+[pages.layout.properties]
+title = "System Service — Polkit (Cached ~5 min)"
+description = "System scope prompts via hyprpolkitagent then keeps auth (auth_admin_keep)"
+
+[[pages.layout.items]]
+type = "service"
+[pages.layout.items.properties]
+title = "Keylogger System Service"
+description = "Requires polkit auth"
+icon = "input-keyboard-symbolic"
+service = "dusky_keylogger.service"
+scope = "system"
+
 
 [[pages]]
 id = "configs"

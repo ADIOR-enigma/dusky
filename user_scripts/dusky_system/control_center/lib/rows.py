@@ -49,6 +49,7 @@ gi.require_version("Gio", "2.0")
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango
 
 import lib.utility as utility
+import lib.service_manager as svc_mgr
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -237,6 +238,9 @@ class RowProperties(TypedDict, total=False):
     buttons: list[dict[str, Any]]
     hyprland_event: str
     mode: str
+    service: str
+    scope: str
+    unit: str
 
 
 class RowContext(TypedDict, total=False):
@@ -2662,6 +2666,10 @@ class ExpanderRow(DynamicIconMixin, HyprlandIPCMixin, Adw.ExpanderRow):
                     return PathRow(props, item.get("on_action"), self.context)
                 case "flag_group":
                     return FlagGroupRow(props, item.get("on_action"), self.context)
+                case "service":
+                    return ServiceToggleRow(props, item.get("on_toggle"), self.context)
+                case "service_card":
+                    return ServiceToggleCard(props, item.get("on_toggle"), self.context)
                 case _:
                     log.warning("Unknown item type '%s' in expander, skipping", item_type)
                     return None
@@ -3601,3 +3609,523 @@ class GridToggleCard(DynamicIconMixin, StateMonitorMixin, HyprlandIPCMixin, Grid
         if key := self.properties.get("key"):
             key_str = str(key).strip()
             _submit_setting_save_safe(key_str, new_state)
+
+
+# =============================================================================
+# SYSTEMD SERVICE TOGGLE ROWS (Lazy, Efficient, Polkit-Aware)
+# =============================================================================
+class _ServiceBase:
+    """
+    Shared helper for service rows.
+    - Validates unit/scope strictly
+    - Provides single-shot async is-active check on map (no polling)
+    - Toggle via pkexec/systemctl with polkit caching (~5-10 min via auth_admin_keep)
+    - Generation + cancellable guards eliminate races & hang risks
+    """
+
+    def _init_service_params(self, properties: RowProperties) -> bool:
+        raw_unit = properties.get("service") or properties.get("unit") or properties.get("key") or ""
+        raw_scope = properties.get("scope") or properties.get("target_scope") or "system"
+        spec = svc_mgr.normalize_service_spec(raw_unit, raw_scope)
+        if spec is None:
+            self._service_unit: str | None = None
+            self._service_scope: svc_mgr.Scope = "system"  # type: ignore
+            self._service_invalid_reason: str = f"Invalid service: {raw_unit!r}"
+            log.warning("Service toggle invalid spec: unit=%r scope=%r", raw_unit, raw_scope)
+            return False
+        self._service_unit = spec.unit
+        self._service_scope = spec.scope
+        self._service_invalid_reason = ""
+        return True
+
+    def _format_subtitle(self, is_active: bool | None, checking: bool = False) -> str:
+        if checking:
+            return "Checking…"
+        if is_active is None:
+            return "Status unknown"
+        base = str(self.properties.get("description", "")).strip()
+        state_str = "Active" if is_active else "Inactive"
+        if base:
+            return f"{base} • {state_str}"
+        return state_str
+
+
+class ServiceToggleRow(DynamicIconMixin, HyprlandIPCMixin, Adw.ActionRow, _ServiceBase):
+    """
+    List row with Gtk.Switch for systemd services.
+
+    Efficiency: Checks state ONLY when mapped (page visible). No periodic polling.
+    Correctness: If service was toggled outside CC, navigating back triggers fresh is-active.
+    Security: System scope uses pkexec → hyprpolkitagent prompts, caches via auth_admin_keep.
+    Robustness: Generation counters, cancellables, 4s/45s timeouts, revert on failure.
+    """
+
+    __gtype_name__ = "DuskyServiceToggleRow"
+
+    def __init__(
+        self,
+        properties: RowProperties,
+        on_toggle: ActionConfig | None = None,
+        context: RowContext | None = None,
+    ) -> None:
+        # We bypass BaseActionRow to avoid StateMonitorMixin polling
+        Adw.ActionRow.__init__(self)
+        self.add_css_class("action-row")
+
+        self._state = WidgetState()
+        self.properties: RowProperties = properties
+        self.on_action: ActionConfig = on_toggle or {}
+        self.context: RowContext = context or {}
+        self.toast_overlay: Adw.ToastOverlay | None = self.context.get("toast_overlay")
+
+        title = str(properties.get("title", "Service")).strip() or "Service"
+        self.set_title(GLib.markup_escape_text(title))
+        if sub := properties.get("description", ""):
+            self.set_subtitle(GLib.markup_escape_text(str(sub)))
+
+        icon_config = properties.get("icon", DEFAULT_ICON)
+        self.icon_widget = self._create_icon_widget(icon_config)
+        self.add_prefix(self.icon_widget)
+        if _is_dynamic_icon(icon_config) and isinstance(icon_config, dict):
+            self._start_icon_update_loop(icon_config)
+
+        # Service params
+        self._service_valid = self._init_service_params(properties)
+        self._is_active: bool | None = None
+        self._operation_in_progress = False
+        self._programmatic_update = False
+        self._service_handle: Any = None
+        self._toggle_handle: Any = None
+
+        # Switch widget
+        self.toggle_switch = Gtk.Switch()
+        self.toggle_switch.set_valign(Gtk.Align.CENTER)
+        self.toggle_switch.set_sensitive(False)  # disabled until first check
+        # If invalid, keep disabled and show error subtitle
+        if not self._service_valid:
+            self.set_subtitle(GLib.markup_escape_text(self._service_invalid_reason))
+            self.toggle_switch.set_sensitive(False)
+        else:
+            # Show checking state initially
+            self.set_subtitle(GLib.markup_escape_text(self._format_subtitle(None, checking=True)))
+
+        self.toggle_switch.connect("state-set", self._on_toggle_changed)
+        self.add_suffix(self.toggle_switch)
+        self.set_activatable_widget(self.toggle_switch)
+
+        self.connect("map", self._on_service_map)
+        self.connect("unmap", self._on_service_unmap)
+        self._start_hyprland_ipc()
+
+    def _create_icon_widget(self, icon: object) -> Gtk.Image:
+        if isinstance(icon, dict) and icon.get("type") == "file":
+            if path := icon.get("path"):
+                p = _expand_path(str(path))
+                if p.exists():
+                    img = Gtk.Image.new_from_file(str(p))
+                    img.add_css_class("action-row-prefix-icon")
+                    img.set_valign(Gtk.Align.CENTER)
+                    return img
+        icon_name = _resolve_static_icon_name(icon)
+        img = Gtk.Image.new_from_icon_name(icon_name)
+        img.add_css_class("action-row-prefix-icon")
+        img.set_valign(Gtk.Align.CENTER)
+        return img
+
+    # ── Lifecycle ──────────────────────────────────────────────────────────
+    def _on_service_map(self, _w: Gtk.Widget) -> None:
+        self._start_hyprland_ipc()
+        self._resume_all_polls()  # for dynamic icon
+        if self._service_valid and not self._operation_in_progress:
+            self._trigger_check()
+
+    def _on_service_unmap(self, _w: Gtk.Widget) -> None:
+        self._stop_hyprland_ipc()
+        self._pause_all_polls()
+        # cancel in-flight checks
+        with self._state.lock:
+            if self._state.monitor.cancellable is not None:
+                try:
+                    self._state.monitor.cancellable.cancel()
+                except Exception:
+                    pass
+                self._state.monitor.cancellable = None
+                self._state.monitor.is_running = False
+            # Also cancel service-specific handles if stored
+            if self._service_handle is not None:
+                try:
+                    self._service_handle.cancel()
+                except Exception:
+                    pass
+                self._service_handle = None
+            if self._toggle_handle is not None:
+                try:
+                    self._toggle_handle.cancel()
+                except Exception:
+                    pass
+                self._toggle_handle = None
+
+    def force_refresh(self) -> None:
+        """Public hook for control_center page switch to force fresh check."""
+        if self.get_mapped() and self._service_valid and not self._operation_in_progress:
+            self._trigger_check()
+
+    # ── State Check (single-shot, no polling) ──────────────────────────────
+    def _trigger_check(self) -> None:
+        if not self._service_valid or self._service_unit is None:
+            return
+        if not self.get_mapped():
+            return
+        with self._state.lock:
+            if self._state.is_destroyed or self._state.monitor.is_running:
+                return
+            self._state.monitor.is_running = True
+            self._state.monitor.generation += 1
+            generation = self._state.monitor.generation
+            # clear previous cancellable
+            if self._state.monitor.cancellable is not None:
+                try:
+                    self._state.monitor.cancellable.cancel()
+                except Exception:
+                    pass
+            self._state.monitor.cancellable = None
+
+        # Visual: checking
+        self.set_subtitle(GLib.markup_escape_text(self._format_subtitle(None, checking=True)))
+        self.toggle_switch.set_sensitive(False)
+
+        # Capture current unit/scope for closure
+        unit = self._service_unit
+        scope = self._service_scope
+
+        def _on_result(is_active: bool | None) -> None:
+            with self._state.lock:
+                if self._state.is_destroyed or self._state.monitor.generation != generation:
+                    return
+                # If a toggle is in progress, ignore stale check results to avoid flicker
+                if self._operation_in_progress:
+                    self._state.monitor.is_running = False
+                    self._state.monitor.cancellable = None
+                    return
+                self._state.monitor.is_running = False
+                self._state.monitor.cancellable = None
+            # Update UI on main thread already (callback via idle)
+            if is_active is None:
+                self.set_subtitle(GLib.markup_escape_text("Status unavailable"))
+                # Keep switch sensitive but not active, allow retry on next map
+                self.toggle_switch.set_sensitive(True)
+                return
+            self._apply_state_update(is_active, generation)
+
+        # Use service_manager for strict argv handling
+        handle = svc_mgr.check_single_service_async(scope, unit, timeout=svc_mgr.TIMEOUT_IS_ACTIVE, on_result=_on_result)
+        with self._state.lock:
+            if not self._state.is_destroyed and self._state.monitor.generation == generation:
+                self._state.monitor.cancellable = handle
+
+    def _apply_state_update(self, new_state: bool, generation: int) -> bool:
+        with self._state.lock:
+            if self._state.is_destroyed or self._state.monitor.generation != generation:
+                return GLib.SOURCE_REMOVE
+            if self._operation_in_progress:
+                return GLib.SOURCE_REMOVE
+        if self._is_active is not None and new_state == self._is_active:
+            # Still update subtitle/toggle sensitivity
+            self._is_active = new_state
+            self.set_subtitle(GLib.markup_escape_text(self._format_subtitle(new_state)))
+            self.toggle_switch.set_sensitive(True)
+            # Programmatic update without triggering state-set
+            if new_state != self.toggle_switch.get_active():
+                self._programmatic_update = True
+                try:
+                    self.toggle_switch.set_active(new_state)
+                finally:
+                    self._programmatic_update = False
+            return GLib.SOURCE_REMOVE
+
+        self._is_active = new_state
+        self.set_subtitle(GLib.markup_escape_text(self._format_subtitle(new_state)))
+        self._programmatic_update = True
+        try:
+            self.toggle_switch.set_active(new_state)
+        finally:
+            self._programmatic_update = False
+        self.toggle_switch.set_sensitive(True)
+        return GLib.SOURCE_REMOVE
+
+    # ── Toggle Handling ────────────────────────────────────────────────────
+    def _on_toggle_changed(self, _switch: Gtk.Switch, state: bool) -> bool:
+        if self._programmatic_update:
+            return False
+        if not self._service_valid or self._service_unit is None:
+            return True
+        if self._operation_in_progress:
+            # Revert optimistic change, show toast
+            self._programmatic_update = True
+            try:
+                self.toggle_switch.set_active(not state)
+            finally:
+                self._programmatic_update = False
+            utility.toast(self.toast_overlay, "Operation in progress…", 2)
+            return True  # block default handling (we already reverted)
+
+        # Cancel any pending check to avoid race overwriting optimistic state
+        with self._state.lock:
+            if self._state.monitor.cancellable is not None:
+                with suppress(Exception):
+                    self._state.monitor.cancellable.cancel()
+                self._state.monitor.cancellable = None
+                self._state.monitor.is_running = False
+
+        # Optimistically keep the switch at requested state but disable during operation
+        self._operation_in_progress = True
+        self.toggle_switch.set_sensitive(False)
+        self.set_subtitle(GLib.markup_escape_text("Applying…"))
+
+        # Save previous state for revert
+        previous = self._is_active
+        # Update internal to match requested (for visual)
+        self._is_active = state
+
+        unit = self._service_unit
+        scope = self._service_scope
+
+        def _on_toggle_done(success: bool, msg: str) -> None:
+            with self._state.lock:
+                if self._state.is_destroyed:
+                    return
+            self._operation_in_progress = False
+            self.toggle_switch.set_sensitive(True)
+            if success:
+                # Confirm state via fresh check instead of trusting previous?
+                # Keep optimistic state but refresh subtitle; schedule re-check for certainty
+                self.set_subtitle(GLib.markup_escape_text(self._format_subtitle(state)))
+                utility.toast(self.toast_overlay, msg, 2)
+                # Re-check after brief delay to ensure systemd settled (avoid race where is-active still old)
+                GLib.timeout_add(350, lambda: (self._trigger_check(), GLib.SOURCE_REMOVE)[1])
+            else:
+                # Revert
+                self._is_active = previous
+                self._programmatic_update = True
+                try:
+                    self.toggle_switch.set_active(previous if previous is not None else not state)
+                finally:
+                    self._programmatic_update = False
+                self.set_subtitle(GLib.markup_escape_text(self._format_subtitle(previous)))
+                utility.toast(self.toast_overlay, msg, 4)
+            # Clear toggle handle
+            with self._state.lock:
+                self._toggle_handle = None
+
+        handle = svc_mgr.toggle_service_async(scope, unit, state, timeout=svc_mgr.TIMEOUT_TOGGLE, on_complete=_on_toggle_done)
+        with self._state.lock:
+            self._toggle_handle = handle
+        # Allow switch to visually move to requested state (optimistic)
+        return False
+
+    def do_unroot(self) -> None:
+        sources = self._state.mark_destroyed_and_get_sources()
+        # cancel service handles
+        if self._service_handle is not None:
+            with suppress(Exception):
+                self._service_handle.cancel()
+        if self._toggle_handle is not None:
+            with suppress(Exception):
+                self._toggle_handle.cancel()
+        _batch_source_remove(*sources)
+        Adw.ActionRow.do_unroot(self)
+
+
+class ServiceToggleCard(DynamicIconMixin, HyprlandIPCMixin, GridCardBase, _ServiceBase):
+    """
+    Grid card variant for systemd services. Visual toggle-active state matches row.
+    Single-shot check on map, pkexec for system, no polling.
+    """
+
+    __gtype_name__ = "DuskyServiceToggleCard"
+
+    def __init__(
+        self,
+        properties: RowProperties,
+        on_toggle: ActionConfig | None = None,
+        context: RowContext | None = None,
+    ) -> None:
+        super().__init__(properties, on_toggle, context)
+
+        self._service_valid = self._init_service_params(properties)
+        self._is_active: bool | None = None
+        self._operation_in_progress = False
+        self._service_handle: Any = None
+        self._toggle_handle: Any = None
+
+        icon_conf = properties.get("icon", DEFAULT_ICON)
+        box = self._build_content(
+            _resolve_static_icon_name(icon_conf),
+            str(properties.get("title", "Service")),
+        )
+        self.status_lbl = Gtk.Label(label="Checking…", css_classes=["hero-subtitle"])
+        box.append(self.status_lbl)
+        self.set_child(box)
+
+        if not self._service_valid:
+            self.status_lbl.set_label("Invalid")
+            self.set_sensitive(False)
+            self.set_tooltip_text(self._service_invalid_reason)
+
+        self.connect("clicked", self._on_clicked)
+        self.connect("map", self._on_card_map)
+        self.connect("unmap", self._on_card_unmap)
+
+        if _is_dynamic_icon(icon_conf) and isinstance(icon_conf, dict):
+            self._start_icon_update_loop(icon_conf)
+
+    def _on_card_map(self, _w: Gtk.Widget) -> None:
+        self._start_hyprland_ipc()
+        self._resume_all_polls()
+        if self._service_valid and not self._operation_in_progress:
+            self._trigger_check()
+
+    def _on_card_unmap(self, _w: Gtk.Widget) -> None:
+        self._stop_hyprland_ipc()
+        self._pause_all_polls()
+        with self._state.lock:
+            if self._state.monitor.cancellable is not None:
+                with suppress(Exception):
+                    self._state.monitor.cancellable.cancel()
+                self._state.monitor.cancellable = None
+                self._state.monitor.is_running = False
+            if self._service_handle is not None:
+                with suppress(Exception):
+                    self._service_handle.cancel()
+                self._service_handle = None
+            if self._toggle_handle is not None:
+                with suppress(Exception):
+                    self._toggle_handle.cancel()
+                self._toggle_handle = None
+
+    def force_refresh(self) -> None:
+        if self.get_mapped() and self._service_valid and not self._operation_in_progress:
+            self._trigger_check()
+
+    def _trigger_check(self) -> None:
+        if not self._service_valid or getattr(self, "_service_unit", None) is None:
+            return
+        if not self.get_mapped():
+            return
+        with self._state.lock:
+            if self._state.is_destroyed or self._state.monitor.is_running:
+                return
+            self._state.monitor.is_running = True
+            self._state.monitor.generation += 1
+            generation = self._state.monitor.generation
+            if self._state.monitor.cancellable is not None:
+                with suppress(Exception):
+                    self._state.monitor.cancellable.cancel()
+            self._state.monitor.cancellable = None
+
+        self.status_lbl.set_label("Checking…")
+        self.set_sensitive(False)
+
+        unit = self._service_unit  # type: ignore
+        scope = self._service_scope  # type: ignore
+
+        def _on_result(is_active: bool | None) -> None:
+            with self._state.lock:
+                if self._state.is_destroyed or self._state.monitor.generation != generation:
+                    return
+                if self._operation_in_progress:
+                    self._state.monitor.is_running = False
+                    self._state.monitor.cancellable = None
+                    return
+                self._state.monitor.is_running = False
+                self._state.monitor.cancellable = None
+            if is_active is None:
+                self.status_lbl.set_label("Error")
+                self.set_sensitive(True)
+                return
+            self._apply_state_update(is_active, generation)
+
+        handle = svc_mgr.check_single_service_async(scope, unit, timeout=svc_mgr.TIMEOUT_IS_ACTIVE, on_result=_on_result)
+        with self._state.lock:
+            if not self._state.is_destroyed and self._state.monitor.generation == generation:
+                self._state.monitor.cancellable = handle
+
+    def _apply_state_update(self, new_state: bool, generation: int) -> bool:
+        with self._state.lock:
+            if self._state.is_destroyed or self._state.monitor.generation != generation:
+                return GLib.SOURCE_REMOVE
+            if self._operation_in_progress:
+                return GLib.SOURCE_REMOVE
+        self._is_active = new_state
+        self.status_lbl.set_label(STATE_ON if new_state else STATE_OFF)
+        if new_state:
+            self.add_css_class("toggle-active")
+        else:
+            self.remove_css_class("toggle-active")
+        self.set_sensitive(True)
+        return GLib.SOURCE_REMOVE
+
+    def _on_clicked(self, _btn: Gtk.Button) -> None:
+        if not self._service_valid or getattr(self, "_service_unit", None) is None:
+            return
+        if self._operation_in_progress:
+            utility.toast(self.toast_overlay, "Operation in progress…", 2)
+            return
+        # Cancel any pending check to avoid race
+        with self._state.lock:
+            if self._state.monitor.cancellable is not None:
+                with suppress(Exception):
+                    self._state.monitor.cancellable.cancel()
+                self._state.monitor.cancellable = None
+                self._state.monitor.is_running = False
+        new_state = not bool(self._is_active)
+        self._operation_in_progress = True
+        self.set_sensitive(False)
+        self.status_lbl.set_label("Applying…")
+
+        unit = self._service_unit  # type: ignore
+        scope = self._service_scope  # type: ignore
+        previous = self._is_active
+
+        def _on_done(success: bool, msg: str) -> None:
+            with self._state.lock:
+                if self._state.is_destroyed:
+                    return
+            self._operation_in_progress = False
+            self.set_sensitive(True)
+            if success:
+                self._is_active = new_state
+                self.status_lbl.set_label(STATE_ON if new_state else STATE_OFF)
+                if new_state:
+                    self.add_css_class("toggle-active")
+                else:
+                    self.remove_css_class("toggle-active")
+                utility.toast(self.toast_overlay, msg, 2)
+                GLib.timeout_add(350, lambda: (self._trigger_check(), GLib.SOURCE_REMOVE)[1])
+            else:
+                self._is_active = previous
+                # revert visual to previous
+                if previous:
+                    self.add_css_class("toggle-active")
+                    self.status_lbl.set_label(STATE_ON)
+                else:
+                    self.remove_css_class("toggle-active")
+                    self.status_lbl.set_label(STATE_OFF)
+                utility.toast(self.toast_overlay, msg, 4)
+            with self._state.lock:
+                self._toggle_handle = None
+
+        handle = svc_mgr.toggle_service_async(scope, unit, new_state, timeout=svc_mgr.TIMEOUT_TOGGLE, on_complete=_on_done)
+        with self._state.lock:
+            self._toggle_handle = handle
+
+    def do_unroot(self) -> None:
+        sources = self._state.mark_destroyed_and_get_sources()
+        if self._service_handle is not None:
+            with suppress(Exception):
+                self._service_handle.cancel()
+        if self._toggle_handle is not None:
+            with suppress(Exception):
+                self._toggle_handle.cancel()
+        _batch_source_remove(*sources)
+        Gtk.Button.do_unroot(self)

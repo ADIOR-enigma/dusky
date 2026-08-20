@@ -159,6 +159,8 @@ class ItemType(StrEnum):
     FILE_GENERATOR = "file_generator"
     ASYNC_SELECTOR = "async_selector"
     FLAG_GROUP = "flag_group"
+    SERVICE = "service"
+    SERVICE_CARD = "service_card"
 
 
 class SectionType(StrEnum):
@@ -1497,8 +1499,13 @@ class DuskyControlCenter(Adw.Application):
                 match item_type:
                     case ItemType.TOGGLE_CARD:
                         child = rows.GridToggleCard(item_props, grid_item.get("on_toggle"), ctx)
+                    case ItemType.SERVICE_CARD:
+                        child = rows.ServiceToggleCard(item_props, grid_item.get("on_toggle"), ctx)
                     case ItemType.GRID_CARD:
                         child = rows.GridCard(item_props, grid_item.get("on_press"), ctx)
+                    case ItemType.SERVICE:
+                        # Allow service rows in grid as toggle cards fallback
+                        child = rows.ServiceToggleCard(item_props, grid_item.get("on_toggle"), ctx)
                     case _:
                         log.warning(
                             "Unsupported grid item type '%s', defaulting to GridCard",
@@ -1771,6 +1778,10 @@ class DuskyControlCenter(Adw.Application):
                     row = rows.AsyncSelectorRow(props, item.get("on_action"), ctx)
                 case ItemType.FLAG_GROUP:
                     row = rows.FlagGroupRow(props, item.get("on_action"), ctx)
+                case ItemType.SERVICE:
+                    row = rows.ServiceToggleRow(props, item.get("on_toggle"), ctx)
+                case ItemType.SERVICE_CARD:
+                    row = rows.ServiceToggleCard(props, item.get("on_toggle"), ctx)
                 case _:
                     log.warning("Unknown item type '%s', defaulting to button", item_type)
                     row = rows.ButtonRow(props, item.get("on_press"), ctx)
