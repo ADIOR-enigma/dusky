@@ -557,29 +557,103 @@ def download_cover_art(url: str, song_id: str) -> str:
 class AudioEngine:
     @staticmethod
     def get_default_monitor_source() -> str:
-        """Fetch PipeWire/PulseAudio default sink monitor."""
+        """Fetch PipeWire default playback sink name."""
+        # 1. Native WirePlumber metadata
+        if shutil.which("pw-dump"):
+            try:
+                out = subprocess.check_output(["pw-dump", "Metadata"], text=True, stderr=subprocess.DEVNULL)
+                for obj in json.loads(out):
+                    if obj.get("props", {}).get("metadata.name") == "default":
+                        for item in obj.get("metadata", []):
+                            if item.get("key") in ("default.audio.sink", "default.configured.audio.sink"):
+                                val = item.get("value")
+                                name = val.get("name") if isinstance(val, dict) else val
+                                if name and isinstance(name, str):
+                                    return name
+            except Exception:
+                pass
+
+        # 2. Native WirePlumber wpctl status
+        if shutil.which("wpctl"):
+            try:
+                out = subprocess.check_output(["wpctl", "status"], text=True, stderr=subprocess.DEVNULL)
+                in_sinks = False
+                for line in out.splitlines():
+                    if "Sinks:" in line:
+                        in_sinks = True
+                        continue
+                    if in_sinks:
+                        if line.strip().startswith(("├─", "└─", "Sources:", "Filters:", "Streams:")):
+                            break
+                        m = re.search(r"\*\s+(\d+)\.", line)
+                        if m:
+                            info = subprocess.check_output(["pw-cli", "info", m.group(1)], text=True, stderr=subprocess.DEVNULL)
+                            name_m = re.search(r'node\.name = "([^"]+)"', info)
+                            if name_m:
+                                return name_m.group(1)
+            except Exception:
+                pass
+
         if shutil.which("pactl"):
             try:
                 res = subprocess.run(["pactl", "get-default-sink"], capture_output=True, text=True, check=True)
                 sink = res.stdout.strip()
                 if sink:
-                    return f"{sink}.monitor"
-            except Exception as e:
-                log_error(f"pactl get-default-sink failed: {e}")
-        return "@DEFAULT_SINK@.monitor"
+                    return sink
+            except Exception:
+                pass
+
+        return "@DEFAULT_AUDIO_SINK@"
 
     @staticmethod
     def get_default_mic_source() -> str:
-        """Fetch PipeWire/PulseAudio default input source."""
+        """Fetch PipeWire default input microphone source name."""
+        # 1. Native WirePlumber metadata
+        if shutil.which("pw-dump"):
+            try:
+                out = subprocess.check_output(["pw-dump", "Metadata"], text=True, stderr=subprocess.DEVNULL)
+                for obj in json.loads(out):
+                    if obj.get("props", {}).get("metadata.name") == "default":
+                        for item in obj.get("metadata", []):
+                            if item.get("key") in ("default.audio.source", "default.configured.audio.source"):
+                                val = item.get("value")
+                                name = val.get("name") if isinstance(val, dict) else val
+                                if name and isinstance(name, str):
+                                    return name
+            except Exception:
+                pass
+
+        # 2. Native WirePlumber wpctl status
+        if shutil.which("wpctl"):
+            try:
+                out = subprocess.check_output(["wpctl", "status"], text=True, stderr=subprocess.DEVNULL)
+                in_sources = False
+                for line in out.splitlines():
+                    if "Sources:" in line:
+                        in_sources = True
+                        continue
+                    if in_sources:
+                        if line.strip().startswith(("├─", "└─", "Filters:", "Streams:")):
+                            break
+                        m = re.search(r"\*\s+(\d+)\.", line)
+                        if m:
+                            info = subprocess.check_output(["pw-cli", "info", m.group(1)], text=True, stderr=subprocess.DEVNULL)
+                            name_m = re.search(r'node\.name = "([^"]+)"', info)
+                            if name_m:
+                                return name_m.group(1)
+            except Exception:
+                pass
+
         if shutil.which("pactl"):
             try:
                 res = subprocess.run(["pactl", "get-default-source"], capture_output=True, text=True, check=True)
                 source = res.stdout.strip()
                 if source:
                     return source
-            except Exception as e:
-                log_error(f"pactl get-default-source failed: {e}")
-        return "@DEFAULT_SOURCE@"
+            except Exception:
+                pass
+
+        return "@DEFAULT_AUDIO_SOURCE@"
 
     @classmethod
     def record_clip(
@@ -587,6 +661,7 @@ class AudioEngine:
         source: str,
         duration: int,
         out_path: Path,
+        is_sink_monitor: bool = True,
         tick_callback: Callable[[int], None] | None = None
     ) -> bool:
         """Record audio clip using pw-record or ffmpeg with robust process cleanup."""
@@ -603,8 +678,11 @@ class AudioEngine:
                 "--target", source,
                 "--rate", "44100",
                 "--channels", "2",
-                str(out_path)
             ]
+            if is_sink_monitor:
+                cmd.extend(["-P", "{ stream.capture.sink = true }"])
+            cmd.append(str(out_path))
+
             proc = None
             try:
                 proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -633,10 +711,11 @@ class AudioEngine:
 
         # Method 2: ffmpeg with Pulse input fallback
         if shutil.which("ffmpeg"):
+            inp_source = f"{source}.monitor" if is_sink_monitor and not source.endswith(".monitor") else source
             cmd = [
                 "ffmpeg", "-y",
                 "-f", "pulse",
-                "-i", source,
+                "-i", inp_source,
                 "-t", str(duration),
                 "-acodec", "pcm_s16le",
                 "-ar", "44100",
@@ -667,7 +746,6 @@ class AudioEngine:
         return False
 
 
-
 # ==============================================================================
 #  SHAZAM / SONGREC RECOGNITION ENGINE
 # ==============================================================================
@@ -675,8 +753,11 @@ class RecognitionEngine:
     @staticmethod
     def verify_dependencies() -> list[str]:
         """Check for missing system binaries."""
-        deps = ["songrec", "ffmpeg", "pactl"]
-        return [dep for dep in deps if not shutil.which(dep)]
+        deps = ["songrec"]
+        missing = [dep for dep in deps if not shutil.which(dep)]
+        if not shutil.which("pw-record") and not shutil.which("ffmpeg"):
+            missing.append("pw-record (or ffmpeg)")
+        return missing
 
     @classmethod
     def parse_songrec_json(cls, raw_json: str, source_type: str) -> SongMetadata | None:
@@ -759,8 +840,6 @@ class RecognitionEngine:
 
         youtube_search_url = f"https://www.youtube.com/results?search_query={query_str}"
 
-
-
         now = datetime.now(timezone.utc)
         return SongMetadata(
             id=song_id,
@@ -784,12 +863,12 @@ class RecognitionEngine:
 
     @classmethod
     def recognize_file(cls, audio_path: Path, source_type: str) -> SongMetadata | None:
-        """Run songrec on the given audio file."""
+        """Run songrec on the given audio file using audio-file-to-recognized-song."""
         if not shutil.which("songrec"):
             log_error("songrec binary not found.")
             return None
 
-        cmd = ["songrec", "recognize", "--json", str(audio_path)]
+        cmd = ["songrec", "audio-file-to-recognized-song", str(audio_path)]
         try:
             res = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
             if res.stdout and res.stdout.strip():
@@ -1116,6 +1195,7 @@ def run_recognition(
         return 1
 
     # Select audio source
+    is_sink_monitor = (source_type != "mic")
     if source_type == "mic":
         audio_source = AudioEngine.get_default_mic_source()
         source_label = "Microphone"
@@ -1144,7 +1224,7 @@ def run_recognition(
             # Silent loop for JSON mode
             while time.time() - start_time < timeout:
                 attempt += 1
-                if AudioEngine.record_clip(audio_source, duration, tmp_wav):
+                if AudioEngine.record_clip(audio_source, duration, tmp_wav, is_sink_monitor=is_sink_monitor):
                     song = RecognitionEngine.recognize_file(tmp_wav, source_type)
                     if song:
                         if song.cover_url:
@@ -1183,7 +1263,9 @@ def run_recognition(
                     )
 
                 update_live_status(0)
-                recorded = AudioEngine.record_clip(audio_source, duration, tmp_wav, tick_callback=update_live_status)
+                recorded = AudioEngine.record_clip(
+                    audio_source, duration, tmp_wav, is_sink_monitor=is_sink_monitor, tick_callback=update_live_status
+                )
 
                 if recorded:
                     live.update(
