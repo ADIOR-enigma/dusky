@@ -310,12 +310,16 @@ def stage_shm(operator: pwd.struct_passwd, size: int, force: bool) -> None:
     except KeyError:
         bail("Group 'kvm' does not exist.")
 
+    # Symlink defense: /dev/shm is world-writable + sticky, never follow
+    if SHM_PATH.is_symlink():
+        bail(f"{SHM_PATH} is a symlink (possible TOCTOU attack). Remove it manually.")
     if SHM_PATH.exists():
-        st = SHM_PATH.stat()
+        try:
+            st = SHM_PATH.stat()
+        except OSError as exc:
+            bail(f"Cannot stat {SHM_PATH}: {exc}")
         if stat.S_ISDIR(st.st_mode):
             bail(f"{SHM_PATH} is a directory (a stale kvmfr/mount artefact). Remove it manually.")
-        if SHM_PATH.is_symlink():
-            bail(f"{SHM_PATH} is a symlink (possible TOCTOU attack). Remove it manually.")
         if st.st_size == size and st.st_uid == operator.pw_uid and st.st_gid == kvm_gid \
                 and stat.S_IMODE(st.st_mode) == 0o660 and not force:
             console.print(
@@ -330,11 +334,10 @@ def stage_shm(operator: pwd.struct_passwd, size: int, force: bool) -> None:
             )
         # Any mismatch requires replacing the inode; warn and unlink (live mapping already
         # invalidated by size/owner/mode drift). Use O_EXCL to avoid raced truncation.
-        if SHM_PATH.exists():
-            try:
-                SHM_PATH.unlink()
-            except OSError as exc:
-                bail(f"Cannot remove stale {SHM_PATH}: {exc}")
+        try:
+            SHM_PATH.unlink()
+        except OSError as exc:
+            bail(f"Cannot remove stale {SHM_PATH}: {exc}")
 
     fd = os.open(SHM_PATH, os.O_CREAT | os.O_EXCL | os.O_RDWR | os.O_NOFOLLOW, 0o660)
     try:
