@@ -40,6 +40,11 @@ def default_config_path() -> Path:
 DEFAULT_CONFIG: dict = {
     "flush_interval": DEFAULT_FLUSH_INTERVAL,
     "log_level": "info",
+    # Ephemeral transcript output: lives in /tmp (cleared on reboot).
+    # Change via config.json "transcript_dir", env DUSKY_TRANSCRIPT_DIR, or
+    # CLI --out. Persistent counts/stats stay in DATA_DIR (not ephemeral).
+    "transcript_dir": "/tmp",
+    "transcript_format": "text",  # "text" | "markdown"
 }
 
 
@@ -48,6 +53,15 @@ def load_config(path: Path | None = None) -> dict:
     config = dict(DEFAULT_CONFIG)
     try:
         if cfg_path.exists():
+            # Tighten existing config dir/file perms (privacy) even on read path.
+            try:
+                os.chmod(cfg_path.parent, 0o700)
+            except OSError:
+                pass
+            try:
+                os.chmod(cfg_path, 0o600)
+            except OSError:
+                pass
             with cfg_path.open("r", encoding="utf-8") as fh:
                 loaded = json.load(fh)
                 if isinstance(loaded, dict):
@@ -82,7 +96,95 @@ def load_config(path: Path | None = None) -> dict:
         config["flush_interval"] = DEFAULT_FLUSH_INTERVAL
     if str(config.get("log_level", "info")).lower() not in {"debug", "info", "warning", "error"}:
         config["log_level"] = "info"
+    else:
+        config["log_level"] = str(config.get("log_level", "info")).lower()
+
+    # -- transcript_dir: env overrides config for flexibility (no hardcoding user) --
+    env_transcript = os.environ.get("DUSKY_TRANSCRIPT_DIR")
+    if env_transcript:
+        config["transcript_dir"] = env_transcript
+    raw_tdir = str(config.get("transcript_dir", "/tmp") or "/tmp").strip()
+    # Expand ~ and $HOME without hardcoding username; keep /tmp as default even if
+    # user passes empty. Normalize.
+    try:
+        tdir = Path(raw_tdir).expanduser()
+        # If relative, make it relative to $HOME (intuitive for users editing config)
+        if not tdir.is_absolute():
+            tdir = (Path.home() / tdir)
+        # Do NOT resolve strictly; /tmp may be symlink to /var/tmp etc.
+        config["transcript_dir"] = str(tdir)
+    except Exception:
+        config["transcript_dir"] = "/tmp"
+
+    fmt = str(config.get("transcript_format", "text")).lower().strip()
+    if fmt not in {"text", "markdown", "md"}:
+        fmt = "text"
+    if fmt == "md":
+        fmt = "markdown"
+    config["transcript_format"] = fmt
+
+    # Env format override (also flexible)
+    env_fmt = os.environ.get("DUSKY_TRANSCRIPT_FORMAT")
+    if env_fmt:
+        ef = env_fmt.lower().strip()
+        if ef in {"text", "markdown", "md"}:
+            config["transcript_format"] = "markdown" if ef in {"markdown", "md"} else "text"
+
+    # Persist auto-migrated keys (e.g., fresh fields after update) without
+    # clobbering user values. Best-effort; failure is non-fatal.
+    try:
+        if cfg_path.exists():
+            with cfg_path.open("r", encoding="utf-8") as fh:
+                on_disk = json.load(fh)
+            if isinstance(on_disk, dict):
+                missing = {k: v for k, v in config.items() if k not in on_disk}
+                # Only persist keys that are part of DEFAULT_CONFIG (avoid
+                # writing env-overridden ephemeral values if env set)
+                persisted_missing = {k: v for k, v in missing.items() if k in DEFAULT_CONFIG}
+                # Don't persist env-override transcript_dir if it came from env
+                if os.environ.get("DUSKY_TRANSCRIPT_DIR") and "transcript_dir" in persisted_missing:
+                    persisted_missing.pop("transcript_dir", None)
+                if os.environ.get("DUSKY_TRANSCRIPT_FORMAT") and "transcript_format" in persisted_missing:
+                    persisted_missing.pop("transcript_format", None)
+                if persisted_missing:
+                    on_disk.update(persisted_missing)
+                    tmp = cfg_path.with_suffix(".tmp")
+                    tmp.write_text(json.dumps(on_disk, indent=2) + "\n", encoding="utf-8")
+                    tmp.chmod(0o600)
+                    tmp.rename(cfg_path)
+    except Exception:
+        pass
+
     return config
+
+
+def get_transcript_dir(config: dict | None = None) -> Path:
+    """Resolve ephemeral transcript directory (config > env > /tmp).
+
+    Never hardcodes a username; uses $HOME expansion if relative.
+    Auto-creates on first use (caller should mkdir) but this helper just resolves.
+    """
+    cfg = config if config is not None else load_config()
+    raw = str(cfg.get("transcript_dir", "/tmp") or "/tmp")
+    # env already folded in load_config, but respect direct env if config was passed in
+    env = os.environ.get("DUSKY_TRANSCRIPT_DIR")
+    if env:
+        raw = env
+    p = Path(raw).expanduser()
+    if not p.is_absolute():
+        p = Path.home() / p
+    return p
+
+
+def get_transcript_format(config: dict | None = None) -> str:
+    cfg = config if config is not None else load_config()
+    fmt = str(cfg.get("transcript_format", "text")).lower()
+    env = os.environ.get("DUSKY_TRANSCRIPT_FORMAT")
+    if env:
+        env = env.lower().strip()
+        if env in {"text", "markdown", "md"}:
+            return "markdown" if env in {"markdown", "md"} else "text"
+    return "markdown" if fmt in {"markdown", "md"} else "text"
 
 
 def sd_notify(message: str) -> None:

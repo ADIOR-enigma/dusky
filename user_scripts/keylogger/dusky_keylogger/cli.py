@@ -25,7 +25,13 @@ from rich.table import Table
 
 from . import __version__
 from . import keycodes as kc
-from .daemon import Daemon, default_data_dir
+from .daemon import (
+    Daemon,
+    default_data_dir,
+    get_transcript_dir,
+    get_transcript_format,
+    load_config,
+)
 from .listener import KeyListener, KeyPress
 from .stats import daily_series, period_range, summarize
 from .storage import EventRow, KeyStore, row_from_press
@@ -172,16 +178,28 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
 def cmd_status(args: argparse.Namespace) -> int:
     store = _get_store(args)
     db_path = store.path
-    total = store.total() if db_path.exists() else 0
-    first, last = store.first_last_ts() if db_path.exists() else (None, None)
+    try:
+        total = store.total() if db_path.exists() else 0
+    except Exception:
+        total = 0
+    try:
+        first, last = store.first_last_ts() if db_path.exists() else (None, None)
+    except Exception:
+        first, last = None, None
+
+    cfg = load_config()
+    tdir = get_transcript_dir(cfg)
+    tformat = get_transcript_format(cfg)
 
     console.print("[bold cyan]Dusky Keylogger -- status[/]")
     status = Table(box=box.SIMPLE_HEAVY)
     status.add_column("Item", style="bold")
     status.add_column("Value")
     status.add_row("Version", __version__)
-    status.add_row("Database", str(db_path))
-    status.add_row("Total events", f"{total:,}")
+    status.add_row("Database (persistent)", str(db_path))
+    status.add_row("Total events (persistent)", f"{total:,}")
+    status.add_row("Transcript dir (ephemeral)", f"{tdir}  [dim](cleared on reboot, change via config/env)[/]")
+    status.add_row("Transcript format", tformat)
     if first is not None and last is not None:
         status.add_row(
             "First event",
@@ -244,13 +262,71 @@ def cmd_events(args: argparse.Namespace) -> int:
     return 0
 
 
+def _resolve_transcript_path(
+    args: argparse.Namespace, period: str, fmt: str
+) -> Path:
+    """Resolve transcript output path respecting CLI > env > config > /tmp.
+
+    Never hardcodes a username; uses $HOME expansion and Path.home().
+    Auto-creates the parent if needed (caller). Returns absolute Path.
+    """
+    # Explicit --out always wins
+    if getattr(args, "out", None):
+        p = Path(args.out).expanduser()
+        if not p.is_absolute():
+            p = (Path.cwd() / p).resolve()
+        return p
+    # --transcript-dir explicit CLI override (if present)
+    cli_tdir = getattr(args, "transcript_dir", None)
+    if cli_tdir:
+        base = Path(cli_tdir).expanduser()
+        if not base.is_absolute():
+            base = Path.home() / base
+    else:
+        # config + env (load_config already folds env)
+        cfg = load_config()
+        base = get_transcript_dir(cfg)
+    # Normalize extension by format
+    ext = ".md" if fmt == "markdown" else ".txt"
+    day = datetime.now().strftime("%Y-%m-%d")
+    # Sanitize period (already validated)
+    filename = f"dusky-typed-{period}-{day}{ext}"
+    return base / filename
+
+
+def _format_markdown(text: str, period: str, start: datetime, end: datetime) -> str:
+    """Wrap raw transcript in markdown with metadata header."""
+    header = (
+        f"# Dusky Keylogger — Transcript\n\n"
+        f"- **Period:** `{period}`  \n"
+        f"- **Range:** `{start.strftime('%Y-%m-%d %H:%M')}` → `{end.strftime('%Y-%m-%d %H:%M')}`  \n"
+        f"- **Generated:** `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`  \n"
+        f"- **Characters:** `{len(text):,}`  \n"
+        f"- **Note:** Backspace rendered as `⌫`, Enter as newline, Tab as tab.  \n"
+        f"  This file lives in an ephemeral directory (e.g., `/tmp`) and is cleared on reboot.  \n"
+        f"  Persistent counts stay in `~/.local/share/dusky-keylogger/keys.db` until you delete them.\n\n"
+        f"---\n\n"
+    )
+    # Ensure markdown code fence doesn't break if transcript contains ```
+    safe = text.replace("```", "\\`\\`\\`")
+    return header + "```text\n" + safe + "\n```\n"
+
+
 def cmd_text(args: argparse.Namespace) -> int:
-    """Stitch everything typed in a period into readable text.
+    """Stitch everything typed in a period into readable text / markdown.
 
     Read-only: derives the transcript from the event store and writes it
-    to a file in /tmp (wiped on reboot) so it never accumulates in the
-    persistent database. Printable chars are kept in order; backspace is
-    marked as ⌫, Enter as a newline, Tab as a tab.
+    to an ephemeral directory (default /tmp, cleared on reboot) so it never
+    accumulates in the persistent database. Persistent stats remain in
+    DATA_DIR until you manually delete them.
+
+    The output directory is configurable via:
+      1. --out / --transcript-dir CLI flags (highest priority)
+      2. env DUSKY_TRANSCRIPT_DIR
+      3. config.json "transcript_dir"
+      4. default "/tmp"
+    Similarly format via --format / env DUSKY_TRANSCRIPT_FORMAT / config.
+    The directory is auto-created on first use (fresh install).
     """
     store = _get_store(args)
     try:
@@ -258,9 +334,15 @@ def cmd_text(args: argparse.Namespace) -> int:
     except ValueError as exc:
         console.print(f"[red]Invalid period: {exc}[/]")
         return 2
+
+    # Resolve format: CLI > env > config
+    cli_fmt = getattr(args, "format", None)
+    if cli_fmt:
+        fmt = "markdown" if str(cli_fmt).lower() in {"markdown", "md"} else "text"
+    else:
+        fmt = get_transcript_format()
+
     parts: list[str] = []
-    # Stream rows; for very large periods this could be 100k+ rows, but
-    # building a list of single-char strings is still efficient (join).
     for row in store.iter_between(start, end):
         if row.kind == kc.KIND_PRINTABLE and row.char:
             parts.append(row.char)
@@ -270,18 +352,29 @@ def cmd_text(args: argparse.Namespace) -> int:
             parts.append("\n")
         elif row.kind == kc.KIND_TAB:
             parts.append("\t")
-    text = "".join(parts)
-    if args.out:
-        out_path = Path(args.out)
-    else:
-        day = datetime.now().strftime("%Y-%m-%d")
-        out_path = Path(f"/tmp/dusky-typed-{args.period}-{day}.txt")
+    raw_text = "".join(parts)
+    # Apply markdown wrapper if requested
+    output_text = _format_markdown(raw_text, args.period, start, end) if fmt == "markdown" else raw_text
+
+    out_path = _resolve_transcript_path(args, args.period, fmt)
     try:
+        # Auto-create transcript dir for fresh installs; don't chmod /tmp itself,
+        # only the file (and leaf dir if we created it).
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(text, encoding="utf-8")
-        # Restrict transcript too -- it contains literal typed text.
+        # If parent is not /tmp and not /temp, tighten to 0700 for privacy;
+        # for /tmp itself we leave its 1777 as is.
         try:
             import os
+
+            # Only chmod leaf if it's not the system /tmp
+            if out_path.parent.resolve() not in {Path("/tmp").resolve(), Path("/temp").resolve()}:
+                os.chmod(out_path.parent, 0o700)
+        except OSError:
+            pass
+        out_path.write_text(output_text, encoding="utf-8")
+        try:
+            import os
+
             os.chmod(out_path, 0o600)
         except OSError:
             pass
@@ -289,9 +382,10 @@ def cmd_text(args: argparse.Namespace) -> int:
         console.print(f"[red]Could not write transcript to {out_path}: {exc}[/]")
         return 1
     console.print(
-        f"[green]Typed transcript ({args.period}) — {len(text):,} chars → {out_path}[/]"
+        f"[green]Typed transcript ({args.period}, {fmt}) — {len(raw_text):,} chars → {out_path}[/]"
     )
-    print(text)
+    # Also echo to stdout for piping; use raw_text for text, full markdown for md
+    print(output_text)
     return 0
 
 
@@ -401,15 +495,43 @@ def build_parser() -> argparse.ArgumentParser:
     p_events.add_argument("--data-dir", default=None)
     p_events.set_defaults(func=cmd_events)
 
-    p_text = sub.add_parser("text", help="Print everything typed as readable text")
+    p_text = sub.add_parser(
+        "text",
+        help="Print everything typed as readable text (ephemeral /tmp, persistent stats stay in DB)",
+    )
     p_text.add_argument(
         "--period", choices=["today", "week", "month", "all"], default="today"
     )
     p_text.add_argument(
-        "--out", default=None, help="Output path (default /tmp/dusky-typed-<period>-<date>.txt)"
+        "--out",
+        default=None,
+        help="Output path (default $DUSKY_TRANSCRIPT_DIR or config transcript_dir or /tmp/dusky-typed-<period>-<date>.[txt|md])",
+    )
+    p_text.add_argument(
+        "--transcript-dir",
+        default=None,
+        help="Override ephemeral directory (default from config/env, fallback /tmp)",
+    )
+    p_text.add_argument(
+        "--format",
+        choices=["text", "markdown", "md"],
+        default=None,
+        help="Output format; text = raw, markdown = header + code fence (default from config)",
     )
     p_text.add_argument("--data-dir", default=None)
     p_text.set_defaults(func=cmd_text)
+    # Alias: export = text
+    p_export = sub.add_parser("export", help="Alias for 'text' (supports --format markdown)")
+    p_export.add_argument(
+        "--period", choices=["today", "week", "month", "all"], default="today"
+    )
+    p_export.add_argument("--out", default=None, help="Output path")
+    p_export.add_argument("--transcript-dir", default=None, help="Override ephemeral directory")
+    p_export.add_argument(
+        "--format", choices=["text", "markdown", "md"], default=None, help="Output format"
+    )
+    p_export.add_argument("--data-dir", default=None)
+    p_export.set_defaults(func=cmd_text)
 
     p_seed = sub.add_parser("seed", help="Generate demo data (testing only)")
     p_seed.add_argument("--days", type=int, default=14)
