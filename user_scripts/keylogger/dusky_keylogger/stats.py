@@ -5,6 +5,7 @@ estimated WPM, top keys, and hourly activity -- for today, this ISO
 week, this month, or the full history.
 """
 
+import calendar
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
 
@@ -37,10 +38,16 @@ def period_range(
         return start, start + timedelta(days=7)
     if period == "month":
         start = datetime.combine(now.date().replace(day=1), time.min)
-        return start, (start + timedelta(days=32)).replace(day=1)
+        # Calendar-aware: advance one month properly (avoids the 32-day trick's edge on month-end).
+        year, month = start.year, start.month
+        if month == 12:
+            end = datetime(year + 1, 1, 1)
+        else:
+            end = datetime(year, month + 1, 1)
+        return start, end
     if period == "all":
         return datetime.fromtimestamp(0), datetime(9999, 12, 31)
-    raise ValueError(f"Unknown period: {period}")
+    raise ValueError(f"Unknown period {period!r}: expected one of {', '.join(_PERIODS)}")
 
 
 @dataclass(slots=True)

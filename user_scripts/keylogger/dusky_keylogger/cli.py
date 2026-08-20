@@ -35,9 +35,25 @@ console = Console()
 
 def _get_store(args: argparse.Namespace) -> KeyStore:
     data_dir = getattr(args, "data_dir", None)
-    store = KeyStore(Path(data_dir) / "keys.db" if data_dir else default_data_dir() / "keys.db")
+    # Resolve via env/default; allow explicit override for testing.
+    base = Path(data_dir) if data_dir else default_data_dir()
+    base.mkdir(parents=True, exist_ok=True)
+    try:
+        import os
+        os.chmod(base, 0o700)
+    except OSError:
+        pass
+    db_path = base / "keys.db"
+    store = KeyStore(db_path)
     if not store.path.exists():
         store.init_db()
+    else:
+        # Ensure existing DB has correct restrictive permissions (defense in depth).
+        try:
+            import os
+            os.chmod(store.path, 0o600)
+        except OSError:
+            pass
     return store
 
 
@@ -237,8 +253,14 @@ def cmd_text(args: argparse.Namespace) -> int:
     marked as ⌫, Enter as a newline, Tab as a tab.
     """
     store = _get_store(args)
-    start, end = period_range(args.period)
+    try:
+        start, end = period_range(args.period)
+    except ValueError as exc:
+        console.print(f"[red]Invalid period: {exc}[/]")
+        return 2
     parts: list[str] = []
+    # Stream rows; for very large periods this could be 100k+ rows, but
+    # building a list of single-char strings is still efficient (join).
     for row in store.iter_between(start, end):
         if row.kind == kc.KIND_PRINTABLE and row.char:
             parts.append(row.char)
@@ -254,7 +276,18 @@ def cmd_text(args: argparse.Namespace) -> int:
     else:
         day = datetime.now().strftime("%Y-%m-%d")
         out_path = Path(f"/tmp/dusky-typed-{args.period}-{day}.txt")
-    out_path.write_text(text, encoding="utf-8")
+    try:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(text, encoding="utf-8")
+        # Restrict transcript too -- it contains literal typed text.
+        try:
+            import os
+            os.chmod(out_path, 0o600)
+        except OSError:
+            pass
+    except OSError as exc:
+        console.print(f"[red]Could not write transcript to {out_path}: {exc}[/]")
+        return 1
     console.print(
         f"[green]Typed transcript ({args.period}) — {len(text):,} chars → {out_path}[/]"
     )
@@ -274,6 +307,9 @@ def _synthetic_press(keycode: int, ts_us: int) -> KeyPress:
 
 
 def cmd_seed(args: argparse.Namespace) -> int:
+    if args.days < 1 or args.days > 365:
+        console.print("[red]--days must be between 1 and 365[/]")
+        return 2
     store = _get_store(args)
     store.init_db()
     now = datetime.now()
@@ -313,7 +349,11 @@ def cmd_seed(args: argparse.Namespace) -> int:
             ts_us = int(ts.timestamp() * 1_000_000)
             press = _synthetic_press(keycode, ts_us)
             rows.append(row_from_press(press))
-    inserted = store.insert_many(rows)
+    # Insert in chunks to avoid huge single transaction for large --days.
+    inserted = 0
+    CHUNK = 2000
+    for i in range(0, len(rows), CHUNK):
+        inserted += store.insert_many(rows[i : i + CHUNK])
     console.print(
         f"[green]Seeded {inserted:,} demo events across {args.days} day(s).[/]\n"
         "[dim]These are synthetic test records. Remove them with: "

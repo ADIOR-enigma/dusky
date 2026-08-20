@@ -10,6 +10,7 @@ On-disk format is SQLite STRICT. application_id = 0x44534B59 ('DSKY').
 
 from __future__ import annotations
 
+import logging
 import os
 import queue
 import sqlite3
@@ -21,6 +22,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
+
+logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 2
 APPLICATION_ID = 0x44534B59  # 'DSKY'
@@ -247,6 +250,16 @@ class KeyStore:
 
     def init_db(self) -> None:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(self._db_path.parent, 0o700)
+        except OSError:
+            pass
+        # If DB already exists, ensure its permissions are tight before opening.
+        if self._db_path.exists():
+            try:
+                os.chmod(self._db_path, 0o600)
+            except OSError:
+                pass
         with self._connect(writable=True) as conn:
             with conn:
                 conn.executescript(_FILE_PRAGMAs)
@@ -270,6 +283,11 @@ class KeyStore:
         # lock it down so no other local user can read it.
         try:
             os.chmod(self._db_path, 0o600)
+            # Also tighten wal/shm if they exist
+            for suffix in ("-wal", "-shm"):
+                p = Path(str(self._db_path) + suffix)
+                if p.exists():
+                    os.chmod(p, 0o600)
         except OSError:
             pass
 
@@ -278,10 +296,15 @@ class KeyStore:
         if writable:
             conn = sqlite3.connect(self._db_path, timeout=10.0)
         else:
+            # If DB doesn't exist yet, fail fast rather than creating an empty file
+            # that has no schema -- callers should call init_db() first.
+            if not self._db_path.exists():
+                raise sqlite3.OperationalError(f"database not initialized: {self._db_path}")
             uri = f"file:{self._db_path.as_posix()}?mode=ro"
             try:
                 conn = sqlite3.connect(uri, uri=True, timeout=10.0)
             except sqlite3.OperationalError:
+                # Older sqlite builds without URI support or bad URI handling
                 conn = sqlite3.connect(self._db_path, timeout=10.0)
         try:
             _configure(conn, read_only=not writable)
@@ -291,6 +314,8 @@ class KeyStore:
 
     def open_writer(self) -> sqlite3.Connection:
         """Open a long-lived writer connection. Caller owns the lifetime."""
+        # Ensure parent exists so sqlite can create the file; chmod will be done in init_db.
+        self._db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self._db_path, timeout=10.0)
         _configure(conn)
         return conn
@@ -548,6 +573,11 @@ class EventWriter:
         """Enqueue a batch. Returns False if the queue is saturated."""
         if not rows:
             return True
+        if not isinstance(rows, list):
+            # Defensive: callers should always pass list[EventRow]; if a single
+            # row is passed by mistake we wrap it to avoid thread crash.
+            logger.warning("EventWriter.submit: expected list, got %s", type(rows).__name__)
+            rows = list(rows) if isinstance(rows, (tuple, set)) else [rows]  # type: ignore[list-item]
         try:
             self._queue.put_nowait(rows)
             return True
@@ -562,22 +592,46 @@ class EventWriter:
         deadline = time.monotonic() + timeout
         while True:
             try:
-                self._queue.put(None, timeout=max(0.05, deadline - time.monotonic()))
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._queue.put(None, timeout=max(0.05, remaining))
                 break
             except queue.Full:
                 if time.monotonic() >= deadline:
+                    logger.warning("Writer close timed out waiting for queue space")
                     break
+        # Give the thread a chance to drain; if it doesn't exit, we leave
+        # it as daemon so process can still exit (data loss is already logged).
         self._thread.join(timeout=timeout)
+        if self._thread.is_alive():
+            logger.warning("Writer thread did not exit within %.1fs", timeout)
         self._thread = None
 
     def _run(self) -> None:
-        conn = self._store.open_writer()
+        conn = None
+        try:
+            conn = self._store.open_writer()
+        except BaseException as exc:
+            self._error = exc
+            logger.error("Writer could not open DB: %s", exc)
+            return
         try:
             while True:
                 item = self._queue.get()
                 if item is None:
+                    # Sentinel arrived as the next top-level item: flush any
+                    # pending retry that accumulated from prior transient failures.
+                    if self._retry:
+                        self._flush(conn, [])
                     break
+                # Defensive: if someone enqueued a non-list (e.g., single row), handle.
+                if not isinstance(item, list):
+                    logger.warning("Writer received non-list batch %s", type(item).__name__)
+                    item = [item]  # type: ignore[list-item]
                 batch = list(item)
+                # Coalesce any additional batches that arrived while we were
+                # waiting on sqlite, to reduce transaction count.
                 while True:
                     try:
                         nxt = self._queue.get_nowait()
@@ -585,19 +639,38 @@ class EventWriter:
                         break
                     if nxt is None:
                         self._flush(conn, batch)
-                        self._flush(conn, [])  # one last retry of _retry
+                        # Draining after sentinel: also flush retry if needed,
+                        # then exit without losing the retry.
+                        if self._retry:
+                            self._flush(conn, [])
                         return
+                    if not isinstance(nxt, list):
+                        logger.warning("Writer coalesce got non-list %s", type(nxt).__name__)
+                        nxt = [nxt]  # type: ignore[list-item]
                     batch.extend(nxt)
                 self._flush(conn, batch)
         except BaseException as exc:
             self._error = exc
+            logger.exception("Writer thread crashed")
         finally:
-            try:
-                conn.execute("PRAGMA optimize")
-                conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
-            except sqlite3.Error:
-                pass
-            conn.close()
+            # Final attempt to persist retry if thread is exiting due to
+            # exception or sentinel. This ensures we don't silently drop
+            # rows that were held in _retry after a transient SQLITE_BUSY.
+            if conn is not None:
+                if self._retry:
+                    try:
+                        self._flush(conn, [])
+                    except Exception:
+                        logger.exception("Final retry flush failed")
+                try:
+                    conn.execute("PRAGMA optimize")
+                    conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                except sqlite3.Error:
+                    pass
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
     def _flush(self, conn: sqlite3.Connection, rows: list[EventRow]) -> None:
         pending = self._retry + rows

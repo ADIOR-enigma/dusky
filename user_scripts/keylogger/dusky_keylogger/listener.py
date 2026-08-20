@@ -168,6 +168,7 @@ class KeyEventClassifier:
 
         if keycode == kc.KEY_CAPSLOCK:
             if value == 1:
+                # If we are tracking real LED state, don't soft-toggle.
                 if not state.caps_from_led:
                     state.caps_on = not state.caps_on
                 return KeyPress(
@@ -197,6 +198,12 @@ class KeyEventClassifier:
         if value != 1:
             return None
 
+        # While a shortcut modifier (Ctrl/Meta) is held, most keys are part
+        # of a shortcut (Ctrl+C etc.) and should not be counted as typed
+        # text. Backspace is exempt so Ctrl+Backspace still tracks corrections,
+        # and modifiers themselves are always logged for stats completeness.
+        # Delete is intentionally *not* exempt: Ctrl+Delete is a word-delete
+        # shortcut, not free-form typing.
         if state.shortcut_modifiers and not (
             kc.is_backspace(keycode) or kc.is_modifier(keycode)
         ):
@@ -245,11 +252,14 @@ class _InputMask(ctypes.Structure):
 def apply_event_mask(fd: int) -> None:
     """Deliver only EV_KEY and EV_LED. EV_SYN is always delivered.
 
-    Empty masks for EV_REL / EV_ABS / EV_MSC stop combo-device motion
-    events from rotating KEY events out of the evdev ring buffer.
+    Empty masks for EV_REL / EV_ABS / EV_MSC etc. stop combo-device
+    motion/scroll events from rotating KEY events out of the evdev ring
+    buffer. We deny every type we don't need (REL, ABS, MSC, SW, SND,
+    REP, FF); only KEY and LED are allowed (SYN is implicit).
     """
     allow = (kc.EV_KEY, kc.EV_LED)
-    deny = (kc.EV_REL, kc.EV_ABS, kc.EV_MSC)
+    # EV_SW=0x05, EV_SND=0x12, EV_REP=0x14, EV_FF=0x15 -- deny all.
+    deny = (kc.EV_REL, kc.EV_ABS, kc.EV_MSC, 0x05, 0x12, 0x14, 0x15)
     nbytes = (kc.KEY_MAX >> 3) + 1
     for ev_type in allow:
         buf = (ctypes.c_uint8 * nbytes)(*([0xFF] * nbytes))
@@ -259,7 +269,13 @@ def apply_event_mask(fd: int) -> None:
     for ev_type in deny:
         buf = (ctypes.c_uint8 * empty_n)()
         mask = _InputMask(ev_type, empty_n, ctypes.addressof(buf))
-        fcntl.ioctl(fd, _EVIOCSMASK, mask)
+        try:
+            fcntl.ioctl(fd, _EVIOCSMASK, mask)
+        except OSError as exc:
+            # ENOTTY / EINVAL on kernels that don't support masking a
+            # particular type (e.g., FF on non-FF devices) -- non-fatal.
+            if exc.errno not in (25, 22):
+                raise
 
 
 # ---------------------------------------------------------------------------
@@ -281,7 +297,19 @@ _INOTIFY_HDR = struct.Struct("iIII")  # wd, mask, cookie, len
 
 
 def _libc() -> ctypes.CDLL:
-    lib = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+    cname = ctypes.util.find_library("c")
+    # On musl or minimal containers find_library may return None; fallback to "libc.so.6".
+    if not cname:
+        for cand in ("libc.so.6", "libc.so"):
+            try:
+                lib = ctypes.CDLL(cand, use_errno=True)
+                break
+            except OSError:
+                continue
+        else:
+            raise OSError("Could not locate C library for inotify")
+    else:
+        lib = ctypes.CDLL(cname, use_errno=True)
     lib.inotify_init1.argtypes = [ctypes.c_int]
     lib.inotify_init1.restype = ctypes.c_int
     lib.inotify_add_watch.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
@@ -376,9 +404,19 @@ class KeyListener:
     # -- discovery ---------------------------------------------------------
 
     def _is_keyboard(self, device: Any) -> bool:
-        caps = device.capabilities()
+        try:
+            caps = device.capabilities()
+        except OSError:
+            return False
         keys = caps.get(kc.EV_KEY, ())
-        return any(k < 256 for k in keys)
+        # evdev may return list[int] for EV_KEY; some wrappers return list[tuple] for ABS.
+        def _code(v: Any) -> int:
+            if isinstance(v, int):
+                return v
+            if isinstance(v, (list, tuple)) and v:
+                return int(v[0]) if isinstance(v[0], int) else 0
+            return 999
+        return any(_code(k) < 256 for k in keys)
 
     def _passes_filter(self, name: str) -> bool:
         if not self._device_filter:
@@ -413,12 +451,25 @@ class KeyListener:
         caps_led: bool | None = None
         num_led: bool | None = None
         try:
-            active = list(live.device.active_keys())
+            active = list(live.device.active_keys(verbose=False))  # type: ignore[call-arg]
+        except TypeError:
+            # python-evdev <1.9 signature has no verbose arg
+            try:
+                active = list(live.device.active_keys())
+            except OSError as exc:
+                logger.debug("EVIOCGKEY failed on %s: %s", live.path, exc)
         except OSError as exc:
             logger.debug("EVIOCGKEY failed on %s: %s", live.path, exc)
         try:
             leds = set(live.device.leds())
-            caps = live.device.capabilities().get(kc.EV_LED, ())
+            # capabilities for EV_LED is list[int] on most kernels; handle tuple form.
+            caps_raw = live.device.capabilities().get(kc.EV_LED, ())
+            caps: set[int] = set()
+            for c in caps_raw:
+                if isinstance(c, int):
+                    caps.add(c)
+                elif isinstance(c, (list, tuple)) and c:
+                    caps.add(int(c[0]))
             if kc.LED_CAPSL in caps:
                 caps_led = kc.LED_CAPSL in leds
             if kc.LED_NUML in caps:
@@ -466,7 +517,10 @@ class KeyListener:
             return
         if self._loop is not None:
             with contextlib.suppress(Exception):
-                self._loop.remove_reader(live.device.fd)
+                try:
+                    self._loop.remove_reader(live.device.fd)
+                except Exception:
+                    pass
         with contextlib.suppress(OSError):
             live.device.close()
         self.classifier.reset(path)
@@ -474,6 +528,9 @@ class KeyListener:
 
     def _try_attach_path(self, path: str) -> None:
         if path in self._devices:
+            return
+        # Quick check to avoid log spam on non-event nodes.
+        if not path.startswith("/dev/input/event"):
             return
         try:
             device = self._InputDevice(path)
@@ -548,6 +605,8 @@ class KeyListener:
         except OSError:
             logger.exception("inotify read failed")
             return
+        if not data:
+            return
         overflow = False
         names: list[tuple[int, str]] = []
         for mask, name in _parse_inotify(data):
@@ -566,6 +625,9 @@ class KeyListener:
             if mask & (_IN_DELETE | _IN_MOVED_FROM):
                 self._detach(path)
             else:
+                # For CREATE / ATTRIB / MOVED_TO, give udev a tiny window to
+                # fix up permissions before we try to open (avoids EACCES race).
+                # ATTRIB already implies permissions may have just changed.
                 self._try_attach_path(path)
 
     def _rescan(self) -> None:

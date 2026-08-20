@@ -104,7 +104,9 @@ def venv_dir(home: str) -> Path:
 
 
 def user_in_group(user: str, group: str) -> bool:
-    proc = run(["id", "-nG", user], capture=True)
+    proc = subprocess.run(["id", "-nG", user], capture_output=True, text=True)
+    if proc.returncode != 0:
+        return False
     return group in proc.stdout.split()
 
 
@@ -123,8 +125,12 @@ def python_version(exe: str = sys.executable) -> tuple[int, int] | None:
             capture_output=True,
             text=True,
         )
-        major, minor = proc.stdout.strip().split(".", 1)[:2]
-        return int(major), int(minor)
+        if proc.returncode != 0:
+            return None
+        parts = proc.stdout.strip().split(".")
+        if len(parts) < 2:
+            return None
+        return int(parts[0]), int(parts[1])
     except Exception:
         return None
 
@@ -224,15 +230,34 @@ def cmd_dry_run(_args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _ensure_root_for_uninstall(args: argparse.Namespace) -> None:
+    if os.geteuid() == 0:
+        return
+    print(f"{C_CYAN}[ESCALATE]{C_RESET} Uninstall needs root -- re-executing with sudo...")
+    sudo = shutil.which("sudo")
+    if not sudo:
+        fail("sudo not found -- run as root to uninstall.")
+    argv = [sudo, sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]]
+    os.execv(sudo, argv)
+
+
 def cmd_uninstall(args: argparse.Namespace) -> int:
+    # Uninstall touches /etc/systemd/system and may need root even though
+    # status/dry-run don't. Escalate if not already root.
+    _ensure_root_for_uninstall(args)
     user, home = original_user()
     step("Stopping and disabling service...")
     run(["systemctl", "stop", SERVICE_NAME], check=False)
     run(["systemctl", "disable", SERVICE_NAME], check=False)
     if SERVICE_FILE.exists():
-        SERVICE_FILE.unlink()
+        try:
+            SERVICE_FILE.unlink()
+        except OSError as exc:
+            fail(f"Could not remove {SERVICE_FILE}: {exc}")
         run(["systemctl", "daemon-reload"])
         ok(f"Removed {SERVICE_FILE}")
+    else:
+        print(f"{C_DIM}Service file not present -- skipping.{C_RESET}")
     venv = venv_dir(home)
     if venv.exists():
         shutil.rmtree(venv)
@@ -244,6 +269,9 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
             if path.exists():
                 shutil.rmtree(path)
                 ok(f"Removed {path}")
+    else:
+        # Without --purge we keep data/config, but ensure permissions stay tight.
+        pass
     print(f"{C_GREEN}Done. The 'input' group membership was left untouched.{C_RESET}")
     return 0
 
@@ -298,6 +326,7 @@ def install_service(venv_py: str, user: str, home: str) -> None:
     if not SERVICE_TEMPLATE.exists():
         fail(f"Service template missing: {SERVICE_TEMPLATE}")
     data_dir = f"{home}/.local/share/dusky-keylogger"
+    config_dir = f"{home}/.config/dusky-keylogger"
     template = string.Template(SERVICE_TEMPLATE.read_text(encoding="utf-8"))
     rendered = template.substitute(
         USER=user,
@@ -305,6 +334,7 @@ def install_service(venv_py: str, user: str, home: str) -> None:
         INSTALL_DIR=str(INSTALL_DIR),
         VENV_PYTHON=venv_py,
         DATA_DIR=data_dir,
+        CONFIG_DIR=config_dir,
     )
     step(f"Installing {SERVICE_FILE}...")
     tmp = SERVICE_FILE.with_suffix(".service.tmp")
@@ -355,8 +385,18 @@ def cmd_install(args: argparse.Namespace) -> int:
 
     data_dir = Path(home) / ".local" / "share" / "dusky-keylogger"
     data_dir.mkdir(parents=True, exist_ok=True)
-    os.chmod(data_dir, 0o700)
+    try:
+        os.chmod(data_dir, 0o700)
+    except OSError:
+        pass
+    config_dir = Path(home) / ".config" / "dusky-keylogger"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(config_dir, 0o700)
+    except OSError:
+        pass
     run(["chown", "-R", f"{user}:{user}", str(data_dir)], check=False)
+    run(["chown", "-R", f"{user}:{user}", str(config_dir)], check=False)
 
     venv_py = build_venv(user, home)
     install_service(venv_py, user, home)

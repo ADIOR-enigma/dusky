@@ -114,8 +114,15 @@ class DuskyDashboard(App):
 
     def __init__(self, db_path: str | Path, refresh: float = REFRESH_SECONDS) -> None:
         super().__init__()
-        self._store = KeyStore(db_path)
-        self._refresh = refresh
+        # Ensure DB exists so first run doesn't show empty error; init is idempotent.
+        store = KeyStore(db_path)
+        if not store.path.exists():
+            try:
+                store.init_db()
+            except Exception:
+                pass
+        self._store = store
+        self._refresh = max(0.5, float(refresh))
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -152,9 +159,14 @@ class DuskyDashboard(App):
             today = summarize(self._store, "today", limit_keys=MAX_TOP_KEYS)
             recent = self._store.recent(MAX_EVENT_ROWS)
         except Exception as exc:
-            self.call_from_thread(self.notify, f"DB read failed: {exc}", severity="error")
+            # SQLite busy or missing table on fresh install -- don't spam, just notify once.
+            self.call_from_thread(self.notify, f"DB read failed: {exc}", severity="warning")
             return
-        self.call_from_thread(self._apply, cards, series, today.top_keys, recent)
+        try:
+            self.call_from_thread(self._apply, cards, series, today.top_keys, recent)
+        except Exception:
+            # App may be closing while worker still runs.
+            pass
 
     def _apply(
         self,
