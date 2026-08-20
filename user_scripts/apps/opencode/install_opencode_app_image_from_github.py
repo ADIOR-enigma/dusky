@@ -1,38 +1,41 @@
 #!/usr/bin/env python3
 """
-Antigravity Installer / Updater for Arch Linux
+OpenCode Desktop Installer / Updater for Arch Linux
 
-Extracts the Antigravity .tar.gz archive to /opt, creates a launcher
-in ~/.local/bin, and sets up a .desktop entry (with icon) so it shows
-up properly in rofi and other application menus.
+Installs the OpenCode desktop AppImage as a real application:
+extracts the embedded squashfs to /opt/opencode-desktop, creates a
+`opencode-desktop` launcher in ~/.local/bin, installs the app's own
+icon into the hicolor theme, and writes a .desktop entry (with icon,
+so launchers like rofi show it properly).
 
 Design goals (modern, reliable, verifiable):
 
-  • Atomic installs — the archive is extracted to a temp workspace,
-    validated, and only then swapped into place. The old installation
-    is never destroyed until the new one is complete and verified.
-  • Python-only extraction (tarfile + "data" filter = path-traversal
-    safe, no external `tar`, no fragile root shell pipelines).
-  • Auto-detects the archive's top-level directory instead of relying
-    on a hardcoded name.
-  • Installs the app's own icon (read straight out of app.asar) into
-    the hicolor theme and writes Icon= in the .desktop entry, which
-    fixes icon-less launcher entries (e.g. rofi).
-  • File-based logging (default ~/.local/state/antigravity-installer.log)
-    so every run can be audited.
+  • Atomic installs — extraction happens in a temp workspace and the
+    new version is only swapped into place once complete; the old
+    install is preserved until the move succeeds (rollback on failure).
+  • Three independent extraction paths, tried in order of determinism:
+    unsquashfs (offset-based, no FUSE needed), the AppImage runtime's
+    own --appimage-extract, and 7z. No single missing tool breaks it.
+  • Offset-based squashfs detection (validated 'hsqs' superblock), so
+    single members (app.asar, icon) can be read without full extraction.
+  • Version detection reads package.json straight out of app.asar —
+    the same parser used by the Antigravity installer.
+  • The launcher is named `opencode-desktop` so it never shadows the
+    existing `opencode` CLI in /usr/bin.
+  • File-based logging (~/.local/state/opencode-installer.log) so every
+    run can be audited.
   • `--verify` performs a full health check of an installation
     (binary, version metadata, launcher, desktop entry, icon, PATH,
     and a shared-library/architecture check).
-  • Pre-flight checks: disk space, archive integrity, required members,
-    symlink safety.
+  • Pre-flight checks: disk space, AppImage integrity, required members.
 
 Usage:
-    python install_new_version.py                                # interactive
-    python install_new_version.py /path/to/Antigravity.tar.gz     # direct
-    python install_new_version.py --prefix /tmp/sandbox           # sandbox
-    python install_new_version.py --prefix /tmp/sandbox --verify  # health check
-    python install_new_version.py --verify                        # check /opt install
-    python install_new_version.py --dry-run                       # preview only
+    python install_opencode.py                                # interactive
+    python install_opencode.py /path/to/opencode.AppImage     # direct
+    python install_opencode.py --prefix /tmp/sandbox          # sandbox
+    python install_opencode.py --prefix /tmp/sandbox --verify # check a sandbox
+    python install_opencode.py --verify                       # check /opt install
+    python install_opencode.py --dry-run                      # preview only
 """
 
 # ── Bootstrap: auto-install Python dependencies ──────────────────────
@@ -44,7 +47,7 @@ import sys
 from pathlib import Path
 
 if sys.version_info < (3, 12):
-    sys.exit("✗  Python 3.12+ is required (safe tarfile extraction filters).")
+    sys.exit("✗  Python 3.12+ is required.")
 
 _CONTAINED_LIBS = Path.home() / "contained_apps" / "python-libs"
 
@@ -92,7 +95,6 @@ import os
 import re
 import shlex
 import struct
-import tarfile
 import tempfile
 import time
 
@@ -123,26 +125,25 @@ _THEME = Theme(
 console = Console(theme=_THEME)
 
 # ── Constants ────────────────────────────────────────────────────────
-INSTALLER_VERSION = "2.0.0"
-APP_NAME = "Antigravity"
-BINARY_NAME = "antigravity"
-DESKTOP_FILE = "antigravity.desktop"
+INSTALLER_VERSION = "1.0.0"
+APP_NAME = "OpenCode"
+BINARY_NAME = "ai.opencode.desktop"
+LAUNCHER_NAME = "opencode-desktop"
+DESKTOP_FILE = "opencode-desktop.desktop"
 VERSION_FILE = ".installed_version"
+ICON_NAME = "ai.opencode.desktop"
+ICON_SIZE = "128x128"
+ICON_MEMBER = f"usr/share/icons/hicolor/{ICON_SIZE}/apps/{ICON_NAME}.png"
 
-DEFAULT_INSTALL_DIR = Path("/opt/Antigravity-x64")
+DEFAULT_INSTALL_DIR = Path("/opt/opencode-desktop")
 DEFAULT_SYMLINK_DIR = Path.home() / ".local" / "bin"
 DEFAULT_APPS_DIR = Path.home() / ".local" / "share" / "applications"
 DEFAULT_ICON_DIR = Path.home() / ".local" / "share" / "icons"
-DEFAULT_LOG_PATH = Path.home() / ".local" / "state" / "antigravity-installer.log"
-DEFAULT_ARCHIVE = Path("/mnt/zram1/Antigravity.tar.gz")
+DEFAULT_LOG_PATH = Path.home() / ".local" / "state" / "opencode-installer.log"
+DEFAULT_ARCHIVE = Path("/mnt/zram1/opencode-desktop-linux-x86_64.AppImage")
 
-# Legacy install locations probed for an existing version / cleanup
-LEGACY_INSTALL_DIRS = [
-    Path("/opt/Antigravity"),
-]
-
-# Flags preserved in the launcher script (matches the existing setup)
-LAUNCHER_FLAGS = ["--disable-gpu-sandbox"]
+# Flags preserved in the launcher (matches the app's own embedded entry)
+LAUNCHER_FLAGS = ["--no-sandbox"]
 
 LOG_MAX_BYTES = 2 * 1024 * 1024
 
@@ -169,8 +170,8 @@ def _setup_logging(flag_path: str | None) -> Path:
     """Configure file-based logging. Returns the active log path."""
     if flag_path:
         log_path = Path(flag_path).expanduser()
-    elif os.environ.get("ANTIGRAVITY_LOG"):
-        log_path = Path(os.environ["ANTIGRAVITY_LOG"]).expanduser()
+    elif os.environ.get("OPENCODE_LOG"):
+        log_path = Path(os.environ["OPENCODE_LOG"]).expanduser()
     else:
         log_path = DEFAULT_LOG_PATH
 
@@ -279,75 +280,134 @@ def _get_version_from_dir(d: Path) -> str | None:
 
 
 def get_installed_version(install_dir: Path) -> str | None:
-    """Version of the currently installed app (primary dir, then legacy)."""
-    ver = _get_version_from_dir(install_dir)
-    if ver:
-        return ver
-    for legacy in LEGACY_INSTALL_DIRS:
-        if legacy.exists():
-            ver = _get_version_from_dir(legacy)
-            if ver:
-                return ver
+    """Version of the currently installed app."""
+    return _get_version_from_dir(install_dir)
+
+
+# ═════════════════════════════════════════════════════════════════════
+#  AppImage inspection & extraction
+# ═════════════════════════════════════════════════════════════════════
+
+def _squashfs_offset(path: Path) -> int | None:
+    """Locate the embedded squashfs superblock.
+
+    A plain 'hsqs' scan is not enough — the ELF runtime contains that
+    byte sequence in its machine code. A valid superblock also carries
+    the block size 131072 (0x20000) at offset +12."""
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    pos = 0
+    while True:
+        idx = data.find(b"hsqs", pos)
+        if idx < 0:
+            return None
+        if (
+            idx + 16 <= len(data)
+            and struct.unpack_from("<I", data, idx + 12)[0] == 0x20000
+        ):
+            return idx
+        pos = idx + 1
+
+
+def _extract_member(archive: Path, member: str) -> bytes | None:
+    """Read a single file out of the AppImage's squashfs, without a full
+    extraction. Tries unsquashfs (offset-based) then 7z."""
+    offset = _squashfs_offset(archive)
+    if offset is not None and shutil.which("unsquashfs"):
+        try:
+            proc = subprocess.run(
+                ["unsquashfs", "-o", str(offset), "-cat", str(archive), member],
+                capture_output=True, timeout=300,
+            )
+            if proc.returncode == 0 and proc.stdout:
+                logging.info("extracted %s via unsquashfs", member)
+                return proc.stdout
+        except (subprocess.TimeoutExpired, OSError) as e:
+            logging.warning("unsquashfs single-member extraction failed: %s", e)
+
+    if shutil.which("7z"):
+        with tempfile.TemporaryDirectory(prefix="ocd-7z-") as tmp:
+            try:
+                proc = subprocess.run(
+                    ["7z", "x", "-y", f"-o{tmp}", str(archive), member],
+                    capture_output=True, timeout=600,
+                )
+                p = Path(tmp) / member
+                if proc.returncode == 0 and p.is_file():
+                    logging.info("extracted %s via 7z", member)
+                    return p.read_bytes()
+            except (subprocess.TimeoutExpired, OSError) as e:
+                logging.warning("7z single-member extraction failed: %s", e)
     return None
 
 
-def find_legacy_installs(install_dir: Path) -> list[Path]:
-    """Legacy install directories that still exist and aren't the target."""
-    return [d for d in LEGACY_INSTALL_DIRS if d.exists() and d != install_dir]
+def _extract_all(archive: Path, dest: Path) -> bool:
+    """Extract the whole AppImage into *dest* (contents at its root).
+
+    Tries, in order: unsquashfs (offset-based, no FUSE), the AppImage
+    runtime's own --appimage-extract, then 7z."""
+    offset = _squashfs_offset(archive)
+
+    if offset is not None and shutil.which("unsquashfs"):
+        try:
+            proc = subprocess.run(
+                ["unsquashfs", "-o", str(offset), "-d", str(dest), str(archive)],
+                capture_output=True, timeout=900,
+            )
+            if proc.returncode == 0 and (dest / BINARY_NAME).is_file():
+                logging.info("full extraction via unsquashfs")
+                return True
+        except (subprocess.TimeoutExpired, OSError) as e:
+            logging.warning("unsquashfs full extraction failed: %s", e)
+
+    with tempfile.TemporaryDirectory(prefix="ocd-run-") as run_dir:
+        staged = Path(run_dir) / "app.AppImage"
+        shutil.copy2(archive, staged)
+        staged.chmod(0o755)
+        try:
+            proc = subprocess.run(
+                [str(staged), "--appimage-extract"],
+                cwd=run_dir, capture_output=True, timeout=900,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            logging.warning("runtime extraction failed: %s", e)
+            proc = None
+        root = Path(run_dir) / "squashfs-root"
+        if proc is not None and proc.returncode == 0 and (root / BINARY_NAME).is_file():
+            shutil.move(str(root), str(dest))
+            logging.info("full extraction via AppImage runtime")
+            return True
+
+    if shutil.which("7z"):
+        try:
+            proc = subprocess.run(
+                ["7z", "x", "-y", f"-o{dest}", str(archive)],
+                capture_output=True, timeout=900,
+            )
+            if proc.returncode == 0 and (dest / BINARY_NAME).is_file():
+                logging.info("full extraction via 7z")
+                return True
+        except (subprocess.TimeoutExpired, OSError) as e:
+            logging.warning("7z full extraction failed: %s", e)
+    return False
+
+
+def get_appimage_version(archive: Path) -> str | None:
+    """Read the app version from the AppImage's embedded app.asar."""
+    asar = _extract_member(archive, "resources/app.asar")
+    if not asar:
+        return None
+    with tempfile.TemporaryDirectory(prefix="ocd-ver-") as tmp:
+        p = Path(tmp) / "app.asar"
+        p.write_bytes(asar)
+        return get_version_from_asar(p)
 
 
 # ═════════════════════════════════════════════════════════════════════
-#  Archive inspection
+#  Helpers
 # ═════════════════════════════════════════════════════════════════════
-
-def _normalize_member(name: str) -> str:
-    return name[2:] if name.startswith("./") else name
-
-
-def inspect_archive(archive: Path) -> tuple[str, list[tarfile.TarInfo]]:
-    """Open the archive and return (top-level root dir, members).
-
-    Validates: readable tar, single top-level directory, required
-    members present, and no symlinks/hardlinks (refused for safety)."""
-    try:
-        with tarfile.open(archive, "r:*") as tar:
-            members = tar.getmembers()
-    except (tarfile.TarError, OSError) as e:
-        raise InstallError(f"could not read archive: {e}")
-
-    if not members:
-        raise InstallError("archive is empty")
-
-    tops: set[str] = set()
-    for m in members:
-        name = _normalize_member(m.name)
-        if not name or name == ".":
-            continue
-        tops.add(name.split("/")[0])
-
-    if len(tops) != 1:
-        listing = ", ".join(sorted(tops))
-        raise InstallError(
-            f"archive must have a single top-level directory (found: {listing})"
-        )
-    root = tops.pop()
-
-    names = {_normalize_member(m.name) for m in members}
-    required = [f"{root}/{BINARY_NAME}", f"{root}/resources/app.asar"]
-    missing = [r for r in required if r not in names]
-    if missing:
-        raise InstallError(
-            f"archive is missing required members: {', '.join(missing)}"
-        )
-
-    links = [m.name for m in members if m.islnk() or m.issym()]
-    if links:
-        raise InstallError(
-            f"archive contains symlinks/hardlinks — refusing to install: "
-            f"{', '.join(links[:5])}"
-        )
-    return root, members
-
 
 def _nearest_existing(p: Path) -> Path:
     while not p.exists() and p != p.parent:
@@ -368,9 +428,8 @@ def _free_space(p: Path) -> int | None:
         return None
 
 
-def _check_disk_space(members: list[tarfile.TarInfo], *dests: Path) -> int:
-    """Verify every destination has room for the extracted archive."""
-    needed = sum(m.size for m in members if m.isfile())
+def _check_disk_space(needed: int, *dests: Path) -> None:
+    """Verify every destination has room for *needed* bytes."""
     for dest in dests:
         free = _free_space(dest)
         if free is not None and free < needed:
@@ -380,24 +439,7 @@ def _check_disk_space(members: list[tarfile.TarInfo], *dests: Path) -> int:
             )
         if free is not None:
             logging.info("disk space ok: need %d bytes, %d free on %s", needed, free, dest)
-    return needed
 
-
-def get_archive_version(archive: Path, root: str) -> str | None:
-    """Extract only the .asar from the tarball and read its version."""
-    asar_member = f"{root}/resources/app.asar"
-    try:
-        with tempfile.TemporaryDirectory(prefix="agy-ver-") as tmp:
-            with tarfile.open(archive, "r:*") as tar:
-                tar.extract(asar_member, path=tmp, filter="data")
-            return get_version_from_asar(Path(tmp) / asar_member)
-    except Exception:
-        return None
-
-
-# ═════════════════════════════════════════════════════════════════════
-#  Helpers
-# ═════════════════════════════════════════════════════════════════════
 
 def _needs_sudo(path: Path) -> bool:
     """True when writing to *path* (or its parent) requires root."""
@@ -526,16 +568,17 @@ def _desktop_content(exec_path: Path) -> str:
     return (
         "[Desktop Entry]\n"
         "Type=Application\n"
-        "Name=Antigravity\n"
-        "GenericName=Agentic Platform\n"
-        "Comment=Antigravity IDE\n"
+        "Name=OpenCode\n"
+        "GenericName=AI Coding Agent\n"
+        "Comment=OpenCode desktop\n"
         f"Exec={shlex.quote(str(exec_path))} %U\n"
-        "Icon=antigravity\n"
+        f"Icon={ICON_NAME}\n"
         "Terminal=false\n"
         "StartupNotify=true\n"
-        "StartupWMClass=Antigravity\n"
-        "Categories=Development;IDE;\n"
-        "Keywords=Antigravity;agent;IDE;\n"
+        f"StartupWMClass={ICON_NAME}\n"
+        "Categories=Development;\n"
+        "Keywords=opencode;AI;agent;code;\n"
+        "MimeType=x-scheme-handler/opencode;\n"
     )
 
 
@@ -567,13 +610,13 @@ def _refresh_caches(apps_dir: Path, icon_dir: Path, *, sudo: bool = False) -> No
         )
 
 
-def _install_icon(asar_path: Path, icon_dir: Path) -> bool:
-    """Extract the app's own icon from app.asar into the hicolor theme."""
-    data = read_asar_file(asar_path, "icon.png")
+def _install_icon(archive: Path, icon_dir: Path) -> bool:
+    """Extract the app's own icon from the AppImage into the hicolor theme."""
+    data = _extract_member(archive, ICON_MEMBER)
     if not data or not data.startswith(b"\x89PNG\r\n\x1a\n"):
-        logging.warning("no usable icon.png found in app.asar")
+        logging.warning("no usable icon (%s) found in AppImage", ICON_MEMBER)
         return False
-    dest = icon_dir / "hicolor" / "512x512" / "apps" / "antigravity.png"
+    dest = icon_dir / "hicolor" / ICON_SIZE / "apps" / f"{ICON_NAME}.png"
     _ensure_dir(dest.parent)
     _write_file(
         dest,
@@ -589,10 +632,10 @@ def _install_icon(asar_path: Path, icon_dir: Path) -> bool:
             "[Icon Theme]\n"
             "Name=Hicolor\n"
             "Comment=Fallback icon theme\n"
-            "Directories=512x512/apps\n"
+            f"Directories={ICON_SIZE}/apps\n"
             "\n"
-            "[512x512/apps]\n"
-            "Size=512\n"
+            f"[{ICON_SIZE}/apps]\n"
+            "Size=128\n"
             "Context=Applications\n",
             mode=0o644,
             sudo=_needs_sudo(index),
@@ -609,6 +652,8 @@ def _finalize_extracted(tmp_root: Path, *, system: bool, new_version: str | None
     binary = tmp_root / BINARY_NAME
     if not binary.is_file():
         raise InstallError(f"binary missing after extraction: {binary}")
+    if not (tmp_root / "resources" / "app.asar").is_file():
+        raise InstallError(f"resources/app.asar missing after extraction")
     binary.chmod(binary.stat().st_mode | 0o755)
 
     if system:
@@ -621,11 +666,17 @@ def _finalize_extracted(tmp_root: Path, *, system: bool, new_version: str | None
         logging.info("wrote version metadata: %s", new_version)
 
 
-def _swap_into_place(tmp_root: Path, install_dir: Path, *, use_sudo: bool) -> None:
+def _swap_into_place(tmp_root: Path, install_dir: Path, *, use_sudo: bool, system: bool) -> None:
     """Swap the new install into place, keeping the old one intact until the
     move succeeds. Rolls the old install back if the move fails."""
     if use_sudo:
         _run("chown", "-R", "root:root", str(tmp_root), sudo=True)
+
+    if system and use_sudo:
+        sandbox = tmp_root / "chrome-sandbox"
+        if sandbox.exists():
+            # chown clears setuid; re-apply it so Electron's SUID sandbox works.
+            _run("chmod", "4755", str(sandbox), sudo=True)
 
     def mv(src: Path, dst: Path) -> None:
         if use_sudo:
@@ -658,20 +709,18 @@ def _swap_into_place(tmp_root: Path, install_dir: Path, *, use_sudo: bool) -> No
 def _install(
     *,
     archive: Path,
-    root: str,
-    members: list[tarfile.TarInfo],
     install_dir: Path,
     symlink_dir: Path,
     apps_dir: Path,
     icon_dir: Path,
+    archive_size: int,
     new_version: str | None,
     dry_run: bool,
     system: bool,
-    legacy_dirs: list[Path],
 ) -> None:
     use_sudo = not dry_run and _needs_sudo(install_dir)
     binary_path = install_dir / BINARY_NAME
-    launcher_path = symlink_dir / BINARY_NAME
+    launcher_path = symlink_dir / LAUNCHER_NAME
     desktop_file = apps_dir / DESKTOP_FILE
     tmp_dir: Path | None = None
 
@@ -692,60 +741,49 @@ def _install(
         # 1 ── Prepare temp workspace ────────────────────────────────
         progress.update(task, description="[cyan]Preparing workspace[/]")
         if dry_run:
-            say("create temp workspace and extract there first")
+            say("create temp workspace, extract the AppImage there first")
         else:
-            _check_disk_space(members, Path(tempfile.gettempdir()))
-            tmp_dir = Path(tempfile.mkdtemp(prefix="antigravity-install-"))
+            _check_disk_space(archive_size * 3, Path(tempfile.gettempdir()))
+            tmp_dir = Path(tempfile.mkdtemp(prefix="opencode-install-"))
             logging.info("temp workspace: %s", tmp_dir)
         progress.advance(task)
 
         # 2 ── Extract ───────────────────────────────────────────────
-        progress.update(task, description="[cyan]Extracting archive[/]")
-        try:
-            if dry_run:
-                say(f"extract archive to temp workspace ({len(members)} members)")
-            else:
-                with tarfile.open(archive, "r:*") as tar:
-                    xtask = progress.add_task("Extracting…", total=len(members))
-                    for m in members:
-                        tar.extract(m, path=tmp_dir, filter="data")
-                        progress.advance(xtask)
-        except (tarfile.TarError, OSError) as e:
-            raise InstallError(f"extraction failed: {e}")
+        progress.update(task, description="[cyan]Extracting AppImage[/]")
+        if dry_run:
+            say("extract embedded squashfs (unsquashfs → AppImage runtime → 7z)")
+        else:
+            if not _extract_all(archive, tmp_dir / "extracted"):
+                raise InstallError(
+                    "extraction failed: no usable method found "
+                    "(install squashfs-tools, fuse3, or p7zip)"
+                )
         progress.advance(task)
 
         # 3 ── Verify + finalize extraction ──────────────────────────
         progress.update(task, description="[cyan]Verifying extraction[/]")
         if dry_run:
-            say(f"verify {root}/{BINARY_NAME}, set permissions, write version metadata")
+            say(f"verify {BINARY_NAME} + resources/app.asar, set permissions, write version metadata")
         else:
             _finalize_extracted(
-                tmp_dir / root, system=system, new_version=new_version,
+                tmp_dir / "extracted", system=system, new_version=new_version,
             )
         progress.advance(task)
 
         # 4 ── Icon ──────────────────────────────────────────────────
         progress.update(task, description="[cyan]Installing icon[/]")
         if dry_run:
-            say("extract icon.png from app.asar into hicolor theme")
+            say(f"extract {ICON_MEMBER} into the hicolor theme")
         else:
-            _install_icon(tmp_dir / root / "resources" / "app.asar", icon_dir)
+            _install_icon(archive, icon_dir)
         progress.advance(task)
 
         # 5 ── Swap into place ───────────────────────────────────────
         progress.update(task, description=f"[cyan]Installing to {install_dir.parent}[/]")
         if dry_run:
             say(f"swap new install into place at {install_dir} (old preserved until move succeeds)")
-            if legacy_dirs:
-                say(f"remove legacy installs: {', '.join(str(d) for d in legacy_dirs)}")
         else:
-            _swap_into_place(tmp_dir / root, install_dir, use_sudo=use_sudo)
-            for legacy in legacy_dirs:
-                if _needs_sudo(legacy):
-                    _run("rm", "-rf", str(legacy), sudo=True)
-                else:
-                    shutil.rmtree(legacy, ignore_errors=True)
-                logging.info("removed legacy install: %s", legacy)
+            _swap_into_place(tmp_dir / "extracted", install_dir, use_sudo=use_sudo, system=system)
         progress.advance(task)
 
         # 6 ── Launcher ──────────────────────────────────────────────
@@ -767,7 +805,7 @@ def _install(
         # 7 ── Desktop entry ─────────────────────────────────────────
         progress.update(task, description="[cyan]Creating desktop entry[/]")
         if dry_run:
-            say(f"write desktop entry {desktop_file} (Icon=antigravity) and refresh caches")
+            say(f"write desktop entry {desktop_file} (Icon={ICON_NAME}) and refresh caches")
         else:
             _ensure_dir(apps_dir)
             _write_file(
@@ -844,7 +882,7 @@ def verify(
     elif asar_ver:
         add("Version (from asar)", True, asar_ver)
 
-    launcher = symlink_dir / BINARY_NAME
+    launcher = symlink_dir / LAUNCHER_NAME
     launcher_ok = launcher.is_file() and os.access(launcher, os.X_OK)
     add("Launcher present", launcher_ok, str(launcher))
     if launcher_ok:
@@ -857,22 +895,22 @@ def verify(
     desktop = apps_dir / DESKTOP_FILE
     add("Desktop entry present", desktop.is_file(), str(desktop))
     if desktop.is_file():
-        add("Desktop entry has icon", "Icon=antigravity" in desktop.read_text())
+        add("Desktop entry has icon", f"Icon={ICON_NAME}" in desktop.read_text())
         add("Desktop entry valid", _validate_desktop(desktop))
 
-    hicolor_icon = icon_dir / "hicolor" / "512x512" / "apps" / "antigravity.png"
+    hicolor_icon = icon_dir / "hicolor" / ICON_SIZE / "apps" / f"{ICON_NAME}.png"
     icon_ok = hicolor_icon.is_file()
     icon_detail = str(hicolor_icon) if icon_ok else ""
     if not icon_ok:
         for theme_root in (icon_dir, Path("/usr/share/icons")):
             if theme_root.exists():
-                found = sorted(theme_root.glob("*/apps/antigravity.*"))
+                found = sorted(theme_root.glob(f"*/apps/{ICON_NAME}.*"))
                 if found:
                     icon_ok, icon_detail = True, str(found[0])
                     break
     add("Icon available", icon_ok, icon_detail)
 
-    which = shutil.which(BINARY_NAME)
+    which = shutil.which(LAUNCHER_NAME)
     if system:
         add("On PATH", bool(which), which or f"{symlink_dir} not in PATH")
         if which:
@@ -909,12 +947,12 @@ def verify(
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description=f"Install or update {APP_NAME} on Arch Linux.",
+        description=f"Install or update {APP_NAME} desktop on Arch Linux.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
             f"  %(prog)s                                     # interactive\n"
-            f"  %(prog)s ~/Downloads/Antigravity.tar.gz      # direct path\n"
+            f"  %(prog)s ~/Downloads/opencode.AppImage       # direct path\n"
             f"  %(prog)s --prefix /tmp/sandbox                # sandboxed install\n"
             f"  %(prog)s --verify                            # health check\n"
             f"  %(prog)s --prefix /tmp/sandbox --verify      # check a sandbox\n"
@@ -923,7 +961,7 @@ def _parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "archive", nargs="?", default=None,
-        help=f"Path to {APP_NAME}.tar.gz (prompted interactively if omitted).",
+        help=f"Path to the {APP_NAME} AppImage (defaults to {DEFAULT_ARCHIVE}).",
     )
     p.add_argument(
         "--prefix", default=None, metavar="DIR",
@@ -969,7 +1007,7 @@ def _run_cli(args: argparse.Namespace, log_path: Path) -> int:
     # ── Resolve install paths ─────────────────────────────────────
     if args.prefix:
         prefix = Path(args.prefix).expanduser().resolve()
-        install_dir = prefix / "Antigravity-x64"
+        install_dir = prefix / "opencode-desktop"
         symlink_dir = prefix / "bin"
         apps_dir = prefix / "share" / "applications"
         icon_dir = prefix / "share" / "icons"
@@ -984,7 +1022,7 @@ def _run_cli(args: argparse.Namespace, log_path: Path) -> int:
         console.print()
         console.print(
             Panel(
-                f"[bold magenta]{APP_NAME} Health Check[/]",
+                f"[bold magenta]{APP_NAME} Desktop Health Check[/]",
                 subtitle=f"[dim]{install_dir}[/]",
                 box=box.ROUNDED,
                 padding=(1, 4),
@@ -1001,7 +1039,7 @@ def _run_cli(args: argparse.Namespace, log_path: Path) -> int:
     console.print()
     console.print(
         Panel(
-            f"[bold magenta]🚀  {APP_NAME} Installer[/]",
+            f"[bold magenta]🚀  {APP_NAME} Desktop Installer[/]",
             subtitle="[dim]Arch Linux[/]",
             box=box.DOUBLE_EDGE,
             padding=(1, 4),
@@ -1019,7 +1057,7 @@ def _run_cli(args: argparse.Namespace, log_path: Path) -> int:
         else:
             try:
                 raw = Prompt.ask(
-                    "[bold]📦  Path to Antigravity archive[/]",
+                    "[bold]📦  Path to OpenCode AppImage[/]",
                     default=str(DEFAULT_ARCHIVE),
                 )
             except EOFError:
@@ -1032,30 +1070,41 @@ def _run_cli(args: argparse.Namespace, log_path: Path) -> int:
     if not archive.is_file():
         console.print(f"[err]✗  Not a file: {archive}[/]")
         return 1
-    if not tarfile.is_tarfile(str(archive)):
-        console.print(f"[err]✗  Not a valid tar archive: {archive}[/]")
+
+    # ── Validate AppImage ─────────────────────────────────────────
+    try:
+        with open(archive, "rb") as f:
+            magic = f.read(4)
+    except OSError as e:
+        console.print(f"[err]✗  Cannot read archive: {e}[/]")
         return 1
+    if magic != b"\x7fELF":
+        console.print(f"[err]✗  Not an AppImage (missing ELF magic): {archive}[/]")
+        return 1
+    with console.status("[cyan]Inspecting AppImage …[/]"):
+        offset = _squashfs_offset(archive)
+    if offset is None:
+        console.print(f"[err]✗  No embedded squashfs found in: {archive}[/]")
+        return 1
+    logging.info("squashfs superblock at offset %d", offset)
+
+    archive_size = archive.stat().st_size
+    _check_disk_space(archive_size * 3, install_dir)
 
     console.print(f"  [dim]Archive :[/]  {archive}")
     if args.prefix:
         console.print(f"  [dim]Prefix  :[/]  {args.prefix}")
     console.print()
-
-    # ── Inspect archive ───────────────────────────────────────────
-    with console.status("[cyan]Inspecting archive …[/]"):
-        root, members = inspect_archive(archive)
-        needed = _check_disk_space(members, install_dir)
-    logging.info(
-        "archive inspected: root=%s, members=%d, ~%d MB extracted",
-        root, len(members), needed // (1024 * 1024),
+    console.print(
+        f"[success]  ✓  AppImage verified (squashfs at offset [hl]{offset}[/], "
+        f"{archive_size / 1e6:.0f} MB)[/]"
     )
-    console.print(f"[success]  ✓  Archive verified (root: [hl]{root}[/], {len(members)} members)[/]")
 
     # ── Version detection ─────────────────────────────────────────
     with console.status("[cyan]Detecting versions …[/]"):
         installed_ver = get_installed_version(install_dir)
-        new_ver = get_archive_version(archive, root)
-        legacy_dirs = find_legacy_installs(install_dir) if not args.prefix else []
+        new_ver = get_appimage_version(archive)
+    logging.info("installed version: %s, incoming version: %s", installed_ver, new_ver)
 
     tbl = Table(box=box.ROUNDED, show_header=False, padding=(0, 2))
     tbl.add_column("Label", style="bold", min_width=12)
@@ -1070,9 +1119,6 @@ def _run_cli(args: argparse.Namespace, log_path: Path) -> int:
     )
     console.print()
     console.print(tbl)
-    if legacy_dirs:
-        for ld in legacy_dirs:
-            console.print(f"  [warn]⚠  Legacy install found at {ld} — will be removed[/]")
     console.print()
 
     # ── Same-version guard ────────────────────────────────────────
@@ -1106,16 +1152,14 @@ def _run_cli(args: argparse.Namespace, log_path: Path) -> int:
     # ── Install ───────────────────────────────────────────────────
     _install(
         archive=archive,
-        root=root,
-        members=members,
         install_dir=install_dir,
         symlink_dir=symlink_dir,
         apps_dir=apps_dir,
         icon_dir=icon_dir,
+        archive_size=archive_size,
         new_version=new_ver,
         dry_run=args.dry_run,
         system=not args.prefix,
-        legacy_dirs=legacy_dirs,
     )
     logging.info(
         "install complete: version=%s, install_dir=%s",
@@ -1137,8 +1181,8 @@ def _run_cli(args: argparse.Namespace, log_path: Path) -> int:
     else:
         console.print(
             Panel(
-                f"[bold green]✅  {APP_NAME}{ver_label} installed successfully![/]\n\n"
-                f"  [bold]Run with:[/]   [cyan]antigravity[/]\n"
+                f"[bold green]✅  {APP_NAME} Desktop{ver_label} installed successfully![/]\n\n"
+                f"  [bold]Run with:[/]   [cyan]{LAUNCHER_NAME}[/]\n"
                 f"  [bold]Location:[/]  [dim]{install_dir}[/]\n"
                 f"  [bold]Log:[/]       [dim]{log_path}[/]",
                 box=box.ROUNDED,
@@ -1146,15 +1190,15 @@ def _run_cli(args: argparse.Namespace, log_path: Path) -> int:
         )
 
         # Warn if the launcher directory is not in PATH
-        which = shutil.which(BINARY_NAME)
-        if which is None or Path(which).resolve() != (symlink_dir / BINARY_NAME).resolve():
+        which = shutil.which(LAUNCHER_NAME)
+        if which is None or Path(which).resolve() != (symlink_dir / LAUNCHER_NAME).resolve():
             console.print(
                 f"[warn]  ⚠  {symlink_dir} is not first in your PATH.[/]\n"
                 f"     Add it to your shell profile or run {APP_NAME} with the full path."
             )
         console.print(
             f"[info]  ℹ  Verify the install anytime with: "
-            f"python install_new_version.py --verify[/]"
+            f"python install_opencode.py --verify[/]"
         )
     console.print()
     return 0
