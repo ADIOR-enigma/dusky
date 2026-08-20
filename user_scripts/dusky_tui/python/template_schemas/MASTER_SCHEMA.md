@@ -32,7 +32,7 @@ Required module attributes (missing one → fatal error):
 | `ENGINE_TYPE` | `str` | ✅ | Lowercased by the router. Must be one of the engine names below. |
 | `TARGET_FILE` | `str` | ✅ | Expanded + resolved. Ignored by file-less engines (systemd, network, cpu_core, pkg_throttle) but must still be set. |
 | `SCHEMA` | `dict[int, list[ConfigItem]]` | ✅ | Tab index → items. |
-| `TABS` | `list[str]` | ✅ | Index-aligned with `SCHEMA` keys. |
+| `TABS` | `list[str] \| dict[int, str]` | ✅ | Index-aligned with `SCHEMA` keys. Router normalizes a `list` via `dict(enumerate(...))`; a `dict` may use sparse indices. |
 
 Optional module attributes:
 
@@ -43,11 +43,11 @@ Optional module attributes:
 | `THEME_FILE` | `None` | Matugen JSON path. The ecosystem convention is **exactly** `~/.config/matugen/generated/dusky_tui.json`. Do not alter this string. |
 | `ENABLE_USER_PRESETS` | `True` | Enables Ctrl+P save / D delete of user profiles. |
 | `USER_PRESETS_TAB` | auto-detected | Must exactly match a tab name. Auto-falls back to a tab named `presets`/`theme`/`themes`/`appearance`/`profiles` (case-insensitive). |
-| `GLOBAL_POPUP` | `None` | `{"title", "message", "level" ("info"/"warning"/"danger"/"success"), "require_confirm": bool, "cancel_quits": bool, "btn_text"}`. |
-| `TAB_NOTICES` | `None` | `{tab_index: {"level", "message"}}` or `{tab_index: [{"level","message"}, ...]}` — persistent banner at the top of a tab. |
-| `DEFERRED_LOAD` | `None` | Callable returning `list[int]` of tab indices to populate after first render (used for slow, dynamic tabs like systemd services). |
-| `REQUIRE_ROOT` | `False` | Re-executes the whole router via sudo/su with env preservation (real-user HOME/XDG reconstruction). |
-| `CUSTOM_VIEWS` | `None` | `{tab_index_or_name: {"view": <Widget class | Widget | callable(app)->renderable>, "interval": seconds}}` — replaces a tab's list with a Rich renderable (see `tui_dusky_network.py`). |
+| `GLOBAL_POPUP` | `None` | `{"title": str, "message": str, "level": "info"\|"warning"\|"danger"\|"success", "require_confirm": bool (default False), "cancel_quits": bool (default False), "btn_text": str}` — shown once after first render; if `require_confirm` the Yes/No dialog quits when cancelled and `cancel_quits` is set. |
+| `TAB_NOTICES` | `None` | `{tab_index: {"level": "info"\|"warning"\|"danger"\|"success", "message": str, "position": "top"\|"bottom" (default top)}}` or `{tab_index: [{...}, ...]}` — persistent `NoticeBox` banner(s) rendered above/below the option list for that tab. |
+| `DEFERRED_LOAD` | `None` | Callable `() -> list[int] \| tuple[list[int], dict[int, list[ConfigItem]]]` run in a background thread after first paint. Return the tab indices to populate; optionally return `(indices, new_items)` to replace `SCHEMA[tab]` before state is re-loaded. Used for slow/dynamic tabs (systemd services, network scans). In headless mode the router just calls it for side-effects. |
+| `REQUIRE_ROOT` | `False` | Re-executes the whole router via `sudo`/`su` with real-user `HOME`/`XDG_*` reconstruction and `XDG_CONFIG_HOME` chown fix. |
+| `CUSTOM_VIEWS` | `None` | `{tab_index_or_name: view_spec}` — replaces that tab's `ConfigOptionList` with a custom renderable. `view_spec` may be a `Widget` subclass, a `Widget` instance, a callable `(app) -> renderable`, or `{"view": <above>, "interval": float_seconds}` for auto-refresh. `CustomRichTabWidget` handles `refresh_interval` and scroll bindings. See `tui_dusky_network.py` `render_network_dashboard_view`. |
 
 ---
 
@@ -68,7 +68,7 @@ Source of truth: `frontend/core_types.py`. All fields except `label`, `key`,
 | `min_val` / `max_val` / `step` | `float\|None` | | Numeric bounds / arrow-key step for `int`/`float`. |
 | `group` | `str\|None` | | Renders a section header (uppercased). Same-group items MUST be contiguous. **Reserved: `"User Presets"`** — do not use it in your schema. |
 | `extended_help` | `str\|None` | | Markdown shown in the `?` help panel. Include it on every item. |
-| `preset_payload` | `dict\|None` | | For `preset`. Keys are exact item UIDs (`scope.key`, dots even when scope has slashes); unlisted keys are FORCED back to their `default`. `{"__ALL_DEFAULTS__": True}` resets everything. |
+| `preset_payload` | `dict\|None` | | For `preset`. Keys are exact item UIDs (`scope.key`, dots even when scope has slashes) with **Python-native values** matching the target item's `type_` (e.g. `True` not `"true"`, `5` not `"5"`); unlisted keys are FORCED back to their `default` on apply. `{"__ALL_DEFAULTS__": True}` resets everything. |
 | `is_parent` | `bool` | | Turns ANY item into an expandable folder (hybrid menu). Folders are ONE level deep — never nest a folder inside a folder. |
 | `parent_ref` | `str\|None` | | Must exactly equal the parent's UID (`scope.key`). Children render only when the parent is expanded. A dangling ref silently becomes a root row — always verify. |
 | `expanded` | `bool` | | Default open/closed state for a parent folder. |
@@ -203,6 +203,7 @@ network engine's status/speed-test/hotspot tabs).
 | `fontconfig` | [engines/fontconfig.md](./engines/fontconfig.md) | `FontconfigEngine` | `~/.config/fontconfig/conf.d/99-dusky-fonts.conf` | family aliases + render props |
 | `toml` / `toml_engine` | [engines/toml.md](./engines/toml.md) | `TomlEngine` | any TOML | dotted table path, deep nesting |
 | `systemd_dns` | [engines/systemd_dns.md](./engines/systemd_dns.md) | `SystemdDnsEngine` | `/etc/systemd/resolved.conf.d/99-dns-tui.conf` | fixed `[Resolve]` keys |
+| `starship` | [engines/starship.md](./engines/starship.md) | `StarshipEngine` | `~/.config/starship.toml` | scope ignored; keys `active_prompt` (preset selector), `custom_prompt_name` (string), `action_save_custom` (trigger) — atomic whole-file TOML swap, hash-matched state file |
 
 > `engines/rich_speedtest.py` is **not** an engine — it is a Rich-based speed
 > test UI helper invoked by the `network` engine.
