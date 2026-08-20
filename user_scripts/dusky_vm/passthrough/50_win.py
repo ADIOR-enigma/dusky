@@ -18,9 +18,9 @@ import subprocess
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
-MIN_PY: tuple[int, int] = (3, 14)
-if sys.version_info[:2] < MIN_PY:
-    sys.stderr.write(f"\n[FATAL] Python {MIN_PY[0]}.{MIN_PY[1]}+ required; running {sys.version_info.major}.{sys.version_info.minor}.\n\n")
+MIN_PY: tuple[int, int, int] = (3, 14, 7)
+if sys.version_info[:3] < MIN_PY:
+    sys.stderr.write(f"\n[FATAL] Python {MIN_PY[0]}.{MIN_PY[1]}.{MIN_PY[2]}+ required; running {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}.\n\n")
     raise SystemExit(1)
 
 try:

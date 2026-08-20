@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Looking Glass Client Configuration
-Target: Arch rolling (Aug 2026) / Python 3.14.6+ / Wayland / Hyprland
+Target: Arch rolling (Aug 2026) / Python 3.14.7+ / Wayland / Hyprland
 Policy: Atomic, idempotent, operator-owned (not root), native <shmem> path.
 """
 
@@ -12,9 +12,9 @@ import tempfile
 from pathlib import Path
 import json
 
-MIN_PY: tuple[int, int] = (3, 14)
-if sys.version_info[:2] < MIN_PY:
-    sys.stderr.write(f"\n[FATAL] Python {MIN_PY[0]}.{MIN_PY[1]}+ required; running {sys.version_info.major}.{sys.version_info.minor}.\n\n")
+MIN_PY: tuple[int, int, int] = (3, 14, 7)
+if sys.version_info[:3] < MIN_PY:
+    sys.stderr.write(f"\n[FATAL] Python {MIN_PY[0]}.{MIN_PY[1]}.{MIN_PY[2]}+ required; running {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}.\n\n")
     raise SystemExit(1)
 
 STATE_FILE = Path("/var/lib/arsonix/state.json")
@@ -105,7 +105,7 @@ def main() -> None:
             print(f"Warning: Failed to set directory ownership: {e}")
 
     default_config = f"""; Looking Glass Client Configuration
-; Tailored for Hyprland / Wayland / Kernel 7.x / Aug 2026
+; Tailored for Hyprland / Wayland / Kernel 7.1.8 / Aug 2026
 
 [app]
 shmFile={shm_file}

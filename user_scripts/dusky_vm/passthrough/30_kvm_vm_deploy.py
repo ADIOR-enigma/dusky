@@ -3,7 +3,7 @@
 Arsonix KVM/VFIO Pipeline -- Phase 6 (30_kvm_vm_deploy.py)
 Domain composition: virt-install baseline -> DOM surgery -> virsh define.
 
-Target : Arch Linux rolling (Aug 2026) / libvirt 11 / virt-install 5.x / QEMU 10.x
+Target : Arch Linux rolling (Aug 2026) / libvirt 12.6+ / virt-install 5.x / QEMU 11.1.0+
 Policy : Every decision an earlier phase already made is READ, never re-typed.
          State lives in /var/lib/arsonix/state.json (survives the Phase 3 reboot;
          /tmp does not -- tmp.mount is a tmpfs and systemd-tmpfiles prunes it).
@@ -25,7 +25,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Never
 
-MIN_PY: tuple[int, int] = (3, 14)
+MIN_PY: tuple[int, int, int] = (3, 14, 7)
 STATE_DIR = Path("/var/lib/arsonix")
 STATE_FILE = STATE_DIR / "state.json"
 STATE_SCHEMA = 2
@@ -58,8 +58,8 @@ def elevate() -> None:
     )
 
 
-if sys.version_info[:2] < MIN_PY:
-    _hard_exit("Python 3.14+ required.")
+if sys.version_info[:3] < MIN_PY:
+    _hard_exit("Python 3.14.7+ required.")
 elevate()
 
 try:

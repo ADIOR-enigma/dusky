@@ -3,7 +3,7 @@
 Arsonix KVM/VFIO Pipeline -- Phase 5 (25_looking_glass.py)
 Looking Glass shared-memory relay: host staging + native libvirt <shmem> device.
 
-Target : Arch Linux rolling (Aug 2026) / libvirt 11 / Looking Glass B7+
+Target : Arch Linux rolling (Aug 2026) / libvirt 12.6+ / Looking Glass B7+
 Policy : Use the libvirt-native <shmem> device. The <qemu:commandline> ivshmem
          hack is DELETED, not carried forward: raw QOM args bypass libvirt's
          device model, block migration/validation, force the xmlns:qemu escape
@@ -30,7 +30,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Never
 
-MIN_PY: tuple[int, int] = (3, 14)
+MIN_PY: tuple[int, int, int] = (3, 14, 7)
 STATE_DIR = Path("/var/lib/arsonix")
 STATE_FILE = STATE_DIR / "state.json"
 STATE_SCHEMA = 2
@@ -65,8 +65,8 @@ def elevate() -> None:
     )
 
 
-if sys.version_info[:2] < MIN_PY:
-    _hard_exit("Python 3.14+ required.")
+if sys.version_info[:3] < MIN_PY:
+    _hard_exit("Python 3.14.7+ required.")
 elevate()
 
 try:
@@ -341,7 +341,7 @@ def stage_shm(operator: pwd.struct_passwd, size: int, force: bool) -> None:
 
     fd = os.open(SHM_PATH, os.O_CREAT | os.O_EXCL | os.O_RDWR | os.O_NOFOLLOW, 0o660)
     try:
-        # tmpfs on Linux 7.1 guarantees fallocate; sparse fallback is a legacy shim and is
+        # tmpfs on Linux 7.1.8 guarantees fallocate; sparse fallback is a legacy shim and is
         # deleted per the Aug 2026 no-compat directive.
         os.posix_fallocate(fd, 0, size)
         os.fchown(fd, operator.pw_uid, kvm_gid)

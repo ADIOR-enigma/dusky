@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Phase 6: CPU Topology & Contiguous Pinning Generator
-Target: Arch Linux rolling (Aug 2026) / Kernel 7.1+ / Python 3.14.6+ / systemd 260+ / libvirt 11.x
+Target: Arch Linux rolling (Aug 2026) / Kernel 7.1.8+ / Python 3.14.7+ / systemd 261+ / libvirt 12.6+
 Philosophy: Smart core alignment (P/E Core detection, SMT grouping), idempotent XML modification via ET.
 """
 
@@ -16,14 +16,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Never
 
-MIN_PY: tuple[int, int] = (3, 14)
+MIN_PY: tuple[int, int, int] = (3, 14, 7)
 
 def _hard_exit(msg: str) -> Never:
     sys.stderr.write(f"\n[FATAL] {msg}\n\n")
     raise SystemExit(1)
 
-if sys.version_info[:2] < MIN_PY:
-    _hard_exit(f"Python {MIN_PY[0]}.{MIN_PY[1]}+ required; running {sys.version_info.major}.{sys.version_info.minor}.")
+if sys.version_info[:3] < MIN_PY:
+    _hard_exit(f"Python {MIN_PY[0]}.{MIN_PY[1]}.{MIN_PY[2]}+ required; running {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}.")
 
 try:
     from rich.console import Console

@@ -3,7 +3,7 @@
 Arsonix KVM/VFIO Pipeline -- Phase 3 (15_gpu_probing_kernal_param_mkinit.py)
 IOMMU topology probe, VFIO claim, bootloader cmdline surgery, initramfs hardening.
 
-Target : Arch Linux rolling (Aug 2026) / Linux 7.1+ / Python 3.14.6+ / systemd 260+
+Target : Arch Linux rolling (Aug 2026) / Linux 7.1.8+ / Python 3.14.7+ / systemd 261+
 Sources: docs.kernel.org/driver-api/vfio, Documentation/admin-guide/kernel-parameters.txt,
          bootctl(1), mkinitcpio(8), modprobe.d(5)
 
@@ -38,7 +38,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Never
 
-MIN_PY: tuple[int, int] = (3, 14)
+MIN_PY: tuple[int, int, int] = (3, 14, 7)
 STATE_DIR = Path("/var/lib/arsonix")
 STATE_FILE = STATE_DIR / "state.json"
 STATE_SCHEMA = 2
@@ -105,8 +105,8 @@ def elevate() -> None:
     )
 
 
-if sys.version_info[:2] < MIN_PY:
-    _hard_exit("Python 3.14+ required.")
+if sys.version_info[:3] < MIN_PY:
+    _hard_exit("Python 3.14.7+ required.")
 elevate()
 
 try:

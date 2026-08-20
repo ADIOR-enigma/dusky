@@ -3,7 +3,7 @@
 Arsonix KVM/VFIO Pipeline -- Phase 1 (05_virtio_iso.py)
 Hypervisor staging: packages, KVM capability gate, group membership, VirtIO media.
 
-Target : Arch Linux rolling (Aug 2026) / Linux 7.1+ / Python 3.14.6+ / systemd 260+
+Target : Arch Linux rolling (Aug 2026) / Linux 7.1.8+ / Python 3.14.7+ / systemd 261+
 Policy : Zero legacy. Idempotent. Atomic. Strict. One job: STAGE THE HOST.
 
 Notes on Python 3.14: PEP 649/749 makes annotations lazily evaluated by default,
@@ -32,7 +32,7 @@ from typing import Never
 # ==============================================================================
 # PRE-FLIGHT (stdlib only -- runs before any third-party import)
 # ==============================================================================
-MIN_PY: tuple[int, int] = (3, 14)
+MIN_PY: tuple[int, int, int] = (3, 14, 7)
 STATE_DIR = Path("/var/lib/arsonix")
 STATE_FILE = STATE_DIR / "state.json"
 STATE_SCHEMA = 2
@@ -52,10 +52,10 @@ def _hard_exit(msg: str) -> Never:
 
 
 def require_python() -> None:
-    if sys.version_info[:2] < MIN_PY:
+    if sys.version_info[:3] < MIN_PY:
         _hard_exit(
-            f"Python {MIN_PY[0]}.{MIN_PY[1]}+ required; running "
-            f"{sys.version_info.major}.{sys.version_info.minor}."
+            f"Python {MIN_PY[0]}.{MIN_PY[1]}.{MIN_PY[2]}+ required; running "
+            f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}."
         )
 
 
@@ -290,7 +290,7 @@ def resolve_operator() -> pwd.struct_passwd:
 # ==============================================================================
 REPO_PACKAGES: list[str] = [
     "qemu-desktop",       # RETAINED: superset for passthrough incl. spice/gtk/virtio-gpu; qemu-full (all foreign arches) not needed
-    "libvirt",            # 11.x modular daemons
+    "libvirt",            # 12.6+ modular daemons (virtqemud etc.)
     "virt-install",       # virt-install / virt-xml / virt-clone
     "virt-manager",
     "virt-viewer",
@@ -658,7 +658,7 @@ def main() -> None:
     console.print(
         Panel(
             "[bold green]Arsonix Phase 1 -- Hypervisor Staging[/bold green]\n"
-            "Arch rolling / Linux 7.1+ / Python 3.14+ / systemd 260+",
+            "Arch rolling / Linux 7.1.8+ / Python 3.14.7+ / systemd 261+",
             expand=False,
             border_style="green",
         )

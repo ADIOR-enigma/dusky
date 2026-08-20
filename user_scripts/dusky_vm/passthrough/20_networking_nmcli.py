@@ -3,7 +3,7 @@
 Arsonix KVM/VFIO Pipeline -- Phase 4 (20_networking_nmcli.py)
 Adaptive guest networking: Layer-2 system bridge (br0) or Layer-3 NAT (virbr0).
 
-Target : Arch Linux rolling (Aug 2026) / NetworkManager 1.5x / libvirt 11 / nftables
+Target : Arch Linux rolling (Aug 2026) / NetworkManager 1.58+ / libvirt 12.6+ / nftables
 Policy : Verify reachability, not exit codes. Roll back on loss of the default route.
          Never blind-purge a libvirt network the operator may have customised.
 """
@@ -23,7 +23,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Never
 
-MIN_PY: tuple[int, int] = (3, 14)
+MIN_PY: tuple[int, int, int] = (3, 14, 7)
 STATE_DIR = Path("/var/lib/arsonix")
 STATE_FILE = STATE_DIR / "state.json"
 STATE_SCHEMA = 2
@@ -57,8 +57,8 @@ def elevate() -> None:
     )
 
 
-if sys.version_info[:2] < MIN_PY:
-    _hard_exit("Python 3.14+ required.")
+if sys.version_info[:3] < MIN_PY:
+    _hard_exit("Python 3.14.7+ required.")
 elevate()
 
 try:

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
 Arsonix KVM/VFIO Pipeline -- Phase 2 (10_virt_modular_daemon.py)
-libvirt 11 modular daemon topology: monolith eradication, socket activation,
+libvirt 12.6+ modular daemon topology: monolith eradication, socket activation,
 and REAL socket permissions (systemd drop-ins, not the ignored conf keys).
 
-Target : Arch Linux rolling (Aug 2026) / libvirt 11.x / systemd 260+
+Target : Arch Linux rolling (Aug 2026) / libvirt 12.6+ / systemd 261+
 Upstream fact (libvirtd.conf / virtqemud.conf verbatim):
     "This setting is not required or honoured if using systemd socket activation."
     -> unix_sock_group / unix_sock_rw_perms are INERT under .socket activation.
@@ -28,7 +28,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Never
 
-MIN_PY: tuple[int, int] = (3, 14)
+MIN_PY: tuple[int, int, int] = (3, 14, 7)
 STATE_DIR = Path("/var/lib/arsonix")
 STATE_FILE = STATE_DIR / "state.json"
 STATE_SCHEMA = 2
@@ -63,8 +63,8 @@ def elevate() -> None:
     )
 
 
-if sys.version_info[:2] < MIN_PY:
-    _hard_exit("Python 3.14+ required.")
+if sys.version_info[:3] < MIN_PY:
+    _hard_exit("Python 3.14.7+ required.")
 elevate()
 
 try:
@@ -444,7 +444,7 @@ def socket_facts(unit: str) -> str:
 
 def verification_table(fleet: Fleet) -> None:
     console.print("\n[bold blue]==>[/bold blue] [bold]Verification[/bold]")
-    table = Table(title="libvirt 11 modular topology", header_style="bold magenta")
+    table = Table(title="libvirt 12.6+ modular topology", header_style="bold magenta")
     table.add_column("Driver", style="cyan")
     table.add_column(".socket", justify="center")
     table.add_column("sock group/mode", justify="center")
@@ -517,7 +517,7 @@ def main() -> None:
     console.print(
         Panel(
             "[bold green]Arsonix Phase 2 -- Modular Daemon & IPC Plane[/bold green]\n"
-            "libvirt 11 / systemd 260 socket activation / zero idle RSS",
+            "libvirt 12.6+ / systemd 261 socket activation / zero idle RSS",
             expand=False,
             border_style="green",
         )
