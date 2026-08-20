@@ -268,14 +268,94 @@ progressbar progress {
     background-color: @theme_selected_bg_color;
 }
 
+switch image,
+switch image.on,
+switch image.off,
+switch image:first-child,
+switch image:last-child {
+    -gtk-icon-source: none;
+    -gtk-icon-transform: scale(0);
+    opacity: 0;
+    min-width: 0px;
+    min-height: 0px;
+    margin: 0px;
+    padding: 0px;
+    color: transparent;
+}
+
+switch,
+switch:checked,
+switch:not(:checked),
+switch:hover,
+switch:hover:not(:checked),
+switch:checked:hover,
+switch:checked:hover:active,
+switch:checked:active,
+switch:checked:disabled,
+switch:disabled,
+switch:focus,
+switch.compact-switch,
+switch.compact-switch:checked,
+switch.compact-switch:not(:checked),
+switch.compact-switch:hover,
+switch.compact-switch:active,
+switch.compact-switch:disabled {
+    color: transparent;
+    font-size: 0px;
+    text-shadow: none;
+    -gtk-icon-source: none;
+    -gtk-icon-shadow: none;
+    background-image: none;
+    outline: none;
+    box-shadow: none;
+}
+
+switch label,
+switch * {
+    color: transparent;
+    font-size: 0px;
+    text-shadow: none;
+    -gtk-icon-source: none;
+    -gtk-icon-shadow: none;
+    background-image: none;
+    opacity: 0;
+    min-width: 0px;
+    min-height: 0px;
+    margin: 0px;
+    padding: 0px;
+}
+
 switch.compact-switch {
-    min-width: 40px;
-    min-height: 20px;
+    min-width: 44px;
+    min-height: 24px;
+    border-radius: 12px;
+    background-color: alpha(@theme_fg_color, 0.18);
+    border: none;
+    box-shadow: none;
+    outline: none;
+    color: transparent;
+}
+
+switch.compact-switch:checked {
+    background-color: @theme_selected_bg_color;
+    border: none;
+    box-shadow: none;
+    color: transparent;
 }
 
 switch.compact-switch slider {
     min-width: 18px;
     min-height: 18px;
+    border-radius: 9px;
+    border: none;
+    box-shadow: none;
+    outline: none;
+    margin: 3px;
+    background-color: @theme_bg_color;
+}
+
+switch.compact-switch:checked slider {
+    background-color: @theme_base_color;
 }
 
 .footer-info {
@@ -314,6 +394,10 @@ class AudioConfig:
     sink: str = "default"
     volume: int = 100  # 0..200%
     monitor: bool = False
+
+    # Saved Physical Hardware Defaults for Seamless Restore on Disable/Reboot
+    pre_source: str = ""
+    pre_sink: str = ""
 
     # Noise Suppression - Input / Microphone (Enabled by default on fresh install)
     rnnoise_on: bool = True
@@ -1008,6 +1092,155 @@ def resolve_hardware_sink(requested: str = "default") -> str:
     return "default"
 
 
+def save_previous_default_devices(cfg: AudioConfig) -> None:
+    """
+    Captures the current active physical hardware default source and sink before
+    enabling Dusky virtual nodes, so they can be seamlessly restored on disable or reboot.
+    """
+    if not shutil.which("wpctl"):
+        return
+
+    try:
+        out = subprocess.check_output(["wpctl", "status"], text=True, stderr=subprocess.DEVNULL, env=COMMAND_ENV)
+        in_audio = False
+        in_sinks = False
+        in_sources = False
+        src_id: int | None = None
+        snk_id: int | None = None
+
+        for line in out.splitlines():
+            if line.strip() == "Audio":
+                in_audio = True
+                continue
+            if in_audio:
+                if line.strip().startswith(("Video", "Settings")):
+                    break
+                if "Sinks:" in line:
+                    in_sinks = True
+                    in_sources = False
+                    continue
+                elif "Sources:" in line:
+                    in_sources = True
+                    in_sinks = False
+                    continue
+                elif line.strip().startswith(("Filters:", "Streams:", "Devices:")):
+                    in_sinks = False
+                    in_sources = False
+                    continue
+
+                if in_sinks:
+                    m = re.search(r"\*\s+(\d+)\.", line)
+                    if m:
+                        snk_id = int(m.group(1))
+                elif in_sources:
+                    m = re.search(r"\*\s+(\d+)\.", line)
+                    if m:
+                        src_id = int(m.group(1))
+
+        if src_id is not None:
+            info = subprocess.check_output(["pw-cli", "info", str(src_id)], text=True, stderr=subprocess.DEVNULL, env=COMMAND_ENV)
+            name_m = re.search(r'node\.name = "([^"]+)"', info)
+            if name_m:
+                node_name = name_m.group(1)
+                lower = node_name.lower()
+                if not lower.startswith(("ghelper", "dusky", "rnnoise")):
+                    cfg.pre_source = node_name
+
+        if snk_id is not None:
+            info = subprocess.check_output(["pw-cli", "info", str(snk_id)], text=True, stderr=subprocess.DEVNULL, env=COMMAND_ENV)
+            name_m = re.search(r'node\.name = "([^"]+)"', info)
+            if name_m:
+                node_name = name_m.group(1)
+                lower = node_name.lower()
+                if not lower.startswith(("ghelper", "dusky", "rnnoise")):
+                    cfg.pre_sink = node_name
+
+        save_config(cfg)
+    except Exception:
+        pass
+
+
+def restore_previous_default_devices(cfg: AudioConfig | None = None) -> None:
+    """
+    Restores the previously active physical default source and sink when Dusky Audio is toggled off.
+    Falls back to the first available non-virtual hardware device if previous device is disconnected.
+    """
+    if not shutil.which("wpctl"):
+        return
+
+    if cfg is None:
+        cfg = load_config()
+
+    target_source = cfg.pre_source if cfg.pre_source else resolve_hardware_source()
+    target_sink = cfg.pre_sink if cfg.pre_sink else resolve_hardware_sink()
+
+    src_id: int | None = None
+    snk_id: int | None = None
+
+    if shutil.which("pw-dump"):
+        try:
+            out = subprocess.check_output(["pw-dump", "Node"], text=True, stderr=subprocess.DEVNULL, env=COMMAND_ENV)
+            nodes = json.loads(out)
+            for obj in nodes:
+                props = obj.get("info", {}).get("props", {})
+                media_class = props.get("media.class", "")
+                name = props.get("node.name", "")
+                desc = props.get("node.description", "")
+
+                if media_class == "Audio/Source" and src_id is None:
+                    if target_source in (name, desc) or target_source.lower() in name.lower():
+                        src_id = obj.get("id")
+                elif media_class == "Audio/Sink" and snk_id is None:
+                    if target_sink in (name, desc) or target_sink.lower() in name.lower():
+                        snk_id = obj.get("id")
+        except Exception:
+            pass
+
+    if src_id is not None:
+        subprocess.run(["wpctl", "set-default", str(src_id)], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=COMMAND_ENV)
+    if snk_id is not None:
+        subprocess.run(["wpctl", "set-default", str(snk_id)], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=COMMAND_ENV)
+
+
+def set_dusky_devices_as_default() -> None:
+    """
+    Automatically sets Dusky Mic (Source) and Dusky Audio (Sink) as the system's
+    active default audio devices in PipeWire / WirePlumber upon engine startup.
+    Allows manual override at any time via pavucontrol, wpctl, or desktop applets.
+    """
+    if not shutil.which("wpctl") or not shutil.which("pw-dump"):
+        return
+
+    for _ in range(12):
+        try:
+            out = subprocess.check_output(["pw-dump", "Node"], text=True, stderr=subprocess.DEVNULL, env=COMMAND_ENV)
+            nodes = json.loads(out)
+            mic_id = None
+            sink_id = None
+            for obj in nodes:
+                props = obj.get("info", {}).get("props", {})
+                media_class = props.get("media.class", "")
+                node_name = props.get("node.name", "").lower()
+                node_desc = props.get("node.description", "").lower()
+
+                if media_class == "Audio/Source" and ("ghelper-audio" in node_name or "dusky mic" in node_desc):
+                    mic_id = obj.get("id")
+                elif media_class == "Audio/Sink" and ("ghelper-audio-sink" in node_name or "dusky audio" in node_desc):
+                    sink_id = obj.get("id")
+
+            if mic_id is not None and sink_id is not None:
+                subprocess.run(["wpctl", "set-default", str(mic_id)], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=COMMAND_ENV)
+                subprocess.run(["wpctl", "set-default", str(sink_id)], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=COMMAND_ENV)
+                break
+            elif mic_id is not None or sink_id is not None:
+                if mic_id is not None:
+                    subprocess.run(["wpctl", "set-default", str(mic_id)], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=COMMAND_ENV)
+                if sink_id is not None:
+                    subprocess.run(["wpctl", "set-default", str(sink_id)], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=COMMAND_ENV)
+        except Exception:
+            pass
+        time.sleep(0.04)
+
 
 # -----------------------------------------------------------------------------
 #   UNIX Domain Socket IPC & Direct Subprocess Daemon Server
@@ -1308,16 +1541,18 @@ def start_daemon(cfg: AudioConfig | None = None) -> bool:
     if cfg is None:
         cfg = load_config()
 
+    save_previous_default_devices(cfg)
     cfg.enabled = True
     save_config(cfg)
 
     pid = get_daemon_pid()
     if pid and SOCK_PATH.exists():
         sync_config_to_daemon(cfg)
+        set_dusky_devices_as_default()
         return True
 
     # Pre-clean stale state
-    stop_daemon()
+    stop_daemon(restore_defaults=False)
 
     missing = check_system_dependencies()
     if missing:
@@ -1360,6 +1595,7 @@ if srv.start():
                     s.sendall(b"PING\n")
                     if s.recv(16).startswith(b"PONG"):
                         sync_config_to_daemon(cfg)
+                        set_dusky_devices_as_default()
                         return True
             except Exception:
                 pass
@@ -1367,7 +1603,7 @@ if srv.start():
     return False
 
 
-def stop_daemon() -> bool:
+def stop_daemon(restore_defaults: bool = True, cfg: AudioConfig | None = None) -> bool:
     pid = get_daemon_pid()
     if SOCK_PATH.exists():
         try:
@@ -1399,6 +1635,10 @@ def stop_daemon() -> bool:
 
     PID_FILE.unlink(missing_ok=True)
     SOCK_PATH.unlink(missing_ok=True)
+
+    if restore_defaults:
+        restore_previous_default_devices(cfg)
+
     return True
 
 
@@ -1437,7 +1677,7 @@ def run_gtk_app() -> None:
     provider.load_from_data(DUSKY_CSS.encode("utf-8"))
     screen = Gdk.Screen.get_default()
     if screen:
-        Gtk.StyleContext.add_provider_for_screen(screen, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        Gtk.StyleContext.add_provider_for_screen(screen, provider, Gtk.STYLE_PROVIDER_PRIORITY_USER)
 
     class AudioStudioWindow(Gtk.Window):
         def __init__(self) -> None:
@@ -2240,7 +2480,7 @@ def run_gtk_app() -> None:
                     save_config(self.cfg)
                     self.update_status_label()
             else:
-                stop_daemon()
+                stop_daemon(restore_defaults=True, cfg=self.cfg)
 
         def on_source_changed(self, combo: Gtk.ComboBoxText) -> None:
             if self._updating_ui:
@@ -2994,7 +3234,7 @@ def main() -> None:
         case "--off" | "-0" | "off":
             cfg.enabled = False
             save_config(cfg)
-            stop_daemon()
+            stop_daemon(restore_defaults=True, cfg=cfg)
             send_desktop_notification("Dusky Audio Studio", "Voice DSP turned OFF (Direct Hardware Bypass).")
             print("Dusky Audio DSP turned OFF (Direct Hardware Bypass).")
         case "--toggle" | "-t" | "toggle":
@@ -3002,7 +3242,7 @@ def main() -> None:
             if is_on:
                 cfg.enabled = False
                 save_config(cfg)
-                stop_daemon()
+                stop_daemon(restore_defaults=True, cfg=cfg)
                 send_desktop_notification("Dusky Audio Studio", "Voice DSP turned OFF (Direct Hardware Bypass).")
                 print("Dusky Audio DSP turned OFF.")
             else:
