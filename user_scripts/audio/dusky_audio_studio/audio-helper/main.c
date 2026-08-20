@@ -2351,19 +2351,34 @@ static void apply_pending_source(struct app *app)
                 target[0] ? target : "default");
 }
 
-/* Connect or disconnect the monitor playback stream. */
-static void apply_pending_monitor(struct app *app)
+/* Create (or recreate) the monitor playback stream targeting the active
+ * physical output device. When target is non-NULL and not "default",
+ * PW_KEY_TARGET_OBJECT pins the stream to that device. */
+static int create_monitor_stream(struct app *app, const char *target)
 {
-    int p = atomic_exchange(&app->mon_pending, 0);
-    if (p == 0)
-        return;
+    int has_target = (target && target[0] && strcmp(target, "default") != 0);
 
-    if (p == 2)
-    {
-        pw_stream_disconnect(app->mon_stream);
-        fprintf(stderr, "[ghelper-audio] monitor disconnected\n");
-        return;
-    }
+    struct pw_properties *props = pw_properties_new(
+        PW_KEY_MEDIA_TYPE, "Audio",
+        PW_KEY_MEDIA_CATEGORY, "Playback",
+        PW_KEY_MEDIA_ROLE, "Communication",
+        PW_KEY_NODE_NAME, "ghelper-audio-monitor",
+        PW_KEY_NODE_DESCRIPTION, "Dusky Audio monitor",
+        PW_KEY_NODE_AUTOCONNECT, "true",
+        PW_KEY_NODE_DONT_RECONNECT, has_target ? "true" : "false",
+        "node.link-group", "ghelper-sink-group",
+        NULL);
+
+    if (has_target)
+        pw_properties_set(props, PW_KEY_TARGET_OBJECT, target);
+
+    app->mon_stream = pw_stream_new_simple(
+        pw_main_loop_get_loop(app->loop),
+        "ghelper-audio-monitor",
+        props,
+        &mon_stream_events,
+        &g_mon_ctx);
+    g_mon_ctx.stream = app->mon_stream;
 
     uint8_t pod_buf[1024];
     struct spa_pod_builder b = SPA_POD_BUILDER_INIT(pod_buf, sizeof(pod_buf));
@@ -2373,19 +2388,50 @@ static void apply_pending_monitor(struct app *app)
                                                    .format = SPA_AUDIO_FORMAT_F32,
                                                    .channels = 1,
                                                    .rate = SAMPLE_RATE));
-    if (pw_stream_connect(app->mon_stream,
-                          PW_DIRECTION_OUTPUT,
-                          PW_ID_ANY,
-                          PW_STREAM_FLAG_AUTOCONNECT |
-                              PW_STREAM_FLAG_MAP_BUFFERS |
-                              PW_STREAM_FLAG_RT_PROCESS,
-                          params, 1) < 0)
+
+    return pw_stream_connect(app->mon_stream,
+                             PW_DIRECTION_OUTPUT,
+                             PW_ID_ANY,
+                             PW_STREAM_FLAG_AUTOCONNECT |
+                                 PW_STREAM_FLAG_MAP_BUFFERS |
+                                 PW_STREAM_FLAG_RT_PROCESS,
+                             params, 1);
+}
+
+/* Connect or disconnect the monitor playback stream. */
+static void apply_pending_monitor(struct app *app)
+{
+    int p = atomic_exchange(&app->mon_pending, 0);
+    if (p == 0)
+        return;
+
+    if (p == 2)
     {
-        fprintf(stderr, "[ghelper-audio] monitor connect failed\n");
+        if (app->mon_stream)
+        {
+            pw_stream_destroy(app->mon_stream);
+            app->mon_stream = NULL;
+            g_mon_ctx.stream = NULL;
+        }
+        fprintf(stderr, "[ghelper-audio] monitor disconnected\n");
+        return;
     }
-    else
+
+    if (p == 1)
     {
-        fprintf(stderr, "[ghelper-audio] monitor connected\n");
+        if (app->mon_stream)
+        {
+            pw_stream_destroy(app->mon_stream);
+            app->mon_stream = NULL;
+            g_mon_ctx.stream = NULL;
+        }
+
+        const char *target = app->sink_pending_target;
+        if (create_monitor_stream(app, target) < 0)
+            fprintf(stderr, "[ghelper-audio] monitor connect failed\n");
+        else
+            fprintf(stderr, "[ghelper-audio] monitor connected targeting '%s'\n",
+                    target[0] ? target : "default");
     }
 }
 
@@ -2459,6 +2505,15 @@ static void apply_pending_sink_target(struct app *app)
     else
         fprintf(stderr, "[ghelper-audio] sink-out target set to '%s'\n",
                 target[0] ? target : "default");
+
+    /* Retarget monitor stream if active */
+    if (app->mon_stream)
+    {
+        pw_stream_destroy(app->mon_stream);
+        app->mon_stream = NULL;
+        g_mon_ctx.stream = NULL;
+        create_monitor_stream(app, target);
+    }
 }
 
 static void on_timer(void *userdata, uint64_t expirations)
@@ -3164,27 +3219,10 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    /* ---- Monitor playback stream (also PW_DIRECTION_OUTPUT, normal
-     * Playback class): lets the user hear what their virtual mic sounds
-     * like. Stays disconnected until the user sends MON 1. */
-    struct pw_properties *mon_props = pw_properties_new(
-        PW_KEY_MEDIA_TYPE, "Audio",
-        PW_KEY_MEDIA_CATEGORY, "Playback",
-        PW_KEY_MEDIA_ROLE, "Communication",
-        PW_KEY_NODE_NAME, "ghelper-audio-monitor",
-        PW_KEY_NODE_DESCRIPTION, "Dusky Audio monitor",
-        "node.link-group", "ghelper-sink-group",
-        NULL);
-
-    app->mon_stream = pw_stream_new_simple(
-        pw_main_loop_get_loop(app->loop),
-        "ghelper-audio-monitor",
-        mon_props,
-        &mon_stream_events,
-        &g_mon_ctx);
-    g_mon_ctx.stream = app->mon_stream;
-    /* mon_stream stays unconnected; apply_pending_monitor() wires it on
-     * demand when the user enables monitoring. */
+    /* ---- Monitor playback stream: created on-demand by apply_pending_monitor()
+     * with PW_KEY_TARGET_OBJECT dynamically bound to the active physical output sink. */
+    app->mon_stream = NULL;
+    g_mon_ctx.stream = NULL;
 
     /* ---- Output Noise Cancellation: Virtual Sink (Audio/Sink, stereo).
      * Apps (Discord, Zoom, browsers, games) route their audio into this
