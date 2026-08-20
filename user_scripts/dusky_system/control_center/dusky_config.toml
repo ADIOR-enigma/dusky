@@ -6,7 +6,7 @@ icon = "user-home-symbolic"
 [[pages.layout]]
 type = "grid_section"
 [pages.layout.properties]
-title = "Quick Actions"
+title = ""
 
 [[pages.layout.items]]
 type = "toggle_card"
@@ -2179,6 +2179,22 @@ type = "service_card"
 title = "SSH Server"
 icon = "network-server-symbolic"
 service = "sshd.service"
+scope = "system"
+
+[[pages.layout.items]]
+type = "service_card"
+[pages.layout.items.properties]
+title = "Tailscale"
+icon = "network-vpn-symbolic"
+service = "tailscaled.service"
+scope = "system"
+
+[[pages.layout.items]]
+type = "service_card"
+[pages.layout.items.properties]
+title = "FTP Server"
+icon = "folder-remote-symbolic"
+service = "vsftpd.service"
 scope = "system"
 
 [[pages.layout]]
