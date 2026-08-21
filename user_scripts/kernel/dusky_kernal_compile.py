@@ -248,7 +248,7 @@ def is_ram_backed(path: Path) -> bool:
                 return True
     except Exception:
         pass
-    # Final heuristic for non-mounted yet paths (e.g., /mnt/zram1/new_build)
+    # Final heuristic for non-mounted yet paths (e.g., /mnt/zram/new_build)
     return "zram" in str(path) or get_fs_type(target) in ("tmpfs", "ramfs", "zram")
 
 
@@ -825,9 +825,9 @@ def manage_dusky_state() -> None:
             Prompt.ask("\n[dim]Press Enter to continue...[/dim]")
         elif choice == "5":
             console.print("\n[bold cyan]Current build dir:[/bold cyan] " + str(get_build_dir()))
-            console.print("[dim]Examples: /mnt/zram1/dusky_build  (your ZRAM ext4, 59G free)[/dim]")
-            console.print("[dim]          /tmp/dusky_build        (tmpfs, 31G free, RAM-backed)[/dim]")
-            console.print("[dim]          ~/dusky_build           (default, disk)[/dim]")
+            console.print("[dim]Examples: /mnt/zram/dusky_build   (ZRAM block device, e.g. /dev/zram1 formatted as ext4, RAM-backed)[/dim]")
+            console.print("[dim]          /tmp/dusky_build        (tmpfs, RAM-backed, uncompressed)[/dim]")
+            console.print("[dim]          ~/dusky_build           (default, disk - btrfs/ext4)[/dim]")
             console.print("[dim]Env override DUSKY_BUILD_DIR also works for one-off builds.[/dim]")
             raw = Prompt.ask(
                 "\n[bold cyan]Enter new build directory[/bold cyan] (empty to reset to default, 'cancel' to abort)",
@@ -865,9 +865,9 @@ def manage_dusky_state() -> None:
                         console.print(f"[bold green]Build dir set to: {candidate} ({fs_info}, {free_gb:.1f} GB free)[/bold green]")
                         if ram_backed:
                             if fs_info == "tmpfs":
-                                console.print("[dim]tmpfs detected - RAM-backed, very fast, but uses uncompressed RAM. Prefer /mnt/zram1 (zstd-compressed, 62G).[/dim]")
+                                console.print("[dim]tmpfs detected - RAM-backed, very fast, but uses uncompressed RAM. Prefer ZRAM (zstd-compressed, e.g. /mnt/zram).[/dim]")
                             else:
-                                console.print("[dim]ZRAM/RAM detected - excellent for avoiding SSD writes (your /mnt/zram1 is zstd-compressed).[/dim]")
+                                console.print("[dim]ZRAM/RAM detected - excellent for avoiding SSD writes (RAM-backed, zstd-compressed if you used mkfs).[/dim]")
                     except Exception as e:
                         console.print(f"[bold red]Cannot use {candidate}: {e}[/bold red]")
             Prompt.ask("\n[dim]Press Enter to continue...[/dim]")
@@ -1340,7 +1340,7 @@ def parse_cli_args() -> None:
     parser = argparse.ArgumentParser(description="Dusky Kernel Compiler 2026.08 Engine")
     parser.add_argument("--verify", action="store_true", help="Run empirical diagnostics and exit")
     parser.add_argument("--check-latest", action="store_true", help="Check latest kernel.org versions and exit")
-    parser.add_argument("--build-dir", type=str, default=None, help="Override build directory (supports ZRAM/tmpfs, e.g. /mnt/zram1/dusky_build)")
+    parser.add_argument("--build-dir", type=str, default=None, help="Override build directory (supports ZRAM/tmpfs, e.g. /mnt/zram/dusky_build or /tmp/dusky_build)")
     args = parser.parse_args()
 
     if args.build_dir:
