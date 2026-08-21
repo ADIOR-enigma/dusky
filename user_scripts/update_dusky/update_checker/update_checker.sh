@@ -325,6 +325,15 @@ get_fetch_remote() {
         return 0
     fi
 
+    # No tracking config and no literal 'origin' remote: with exactly one
+    # remote configured there is no ambiguity, so use it instead of erroring.
+    local -a remotes=()
+    mapfile -t remotes < <("${GIT_CMD[@]}" remote 2>/dev/null)
+    if (( ${#remotes[@]} == 1 )) && [[ -n ${remotes[0]} ]]; then
+        printf '%s' "${remotes[0]}"
+        return 0
+    fi
+
     return 1
 }
 
@@ -431,6 +440,25 @@ get_upstream_ref() {
             return 0
         fi
     done
+
+    # Single-remote repos whose remote isn't named 'origin': probe the same
+    # candidates under the actual remote name before giving up.
+    local -a remotes=()
+    mapfile -t remotes < <("${GIT_CMD[@]}" remote 2>/dev/null)
+    if (( ${#remotes[@]} == 1 )); then
+        local single=${remotes[0]}
+        if tracking=$("${GIT_CMD[@]}" symbolic-ref -q --short "refs/remotes/${single}/HEAD" 2>/dev/null) &&
+           [[ -n $tracking ]]; then
+            printf '%s' "$tracking"
+            return 0
+        fi
+        for ref in "${single}/main" "${single}/master"; do
+            if "${GIT_CMD[@]}" rev-parse --verify --quiet "$ref" &>/dev/null; then
+                printf '%s' "$ref"
+                return 0
+            fi
+        done
+    fi
 
     return 1
 }
