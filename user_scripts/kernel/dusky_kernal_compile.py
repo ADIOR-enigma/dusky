@@ -1388,6 +1388,39 @@ def compile_kernel() -> None:
         state.use_imported_config = True
         state.save()
 
+        # Auto-clean stale build artifacts from interrupted/corrupt previous run (best clean compile, no corruption)
+        # is_valid_kernel_tree ensures Makefile exists, but half-built .o/vmlinux remain after Ctrl+C SIGKILL
+        # make clean keeps .config (we just saved it) but removes vmlinux, System.map, .o, .tmp
+        try:
+            has_stale = (
+                (kernel_dir / "vmlinux").exists()
+                or (kernel_dir / "System.map").exists()
+                or (kernel_dir / ".tmp_vmlinux.kallsyms1").exists()
+                or any(kernel_dir.rglob("*.o"))
+            )
+            # Also detect zero-byte truncated objects (common after SIGKILL mid-CC)
+            if not has_stale:
+                try:
+                    has_stale = any(p.stat().st_size == 0 for p in kernel_dir.rglob("*.o"))
+                except Exception:
+                    pass
+            if has_stale:
+                console.print("[yellow]:: Previous build artifacts detected - cleaning for corruption-free build (make clean)...[/yellow]")
+                subprocess.run(make_base + ["clean"], cwd=kernel_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                # ThinLTO extra caches
+                for pat in ["*.lto.*", ".tmp_*"]:
+                    for p in kernel_dir.glob(pat):
+                        try:
+                            if p.is_file():
+                                p.unlink(missing_ok=True)
+                            elif p.is_dir():
+                                shutil.rmtree(p, ignore_errors=True)
+                        except Exception:
+                            pass
+                console.print("[dim]Clean done - starting fresh compile[/dim]")
+        except Exception as e:
+            console.print(f"[dim]Clean check skipped: {e}[/dim]")
+
         cores = os.cpu_count() or 4
         toolchain_name = "LLVM/Clang (ThinLTO)" if use_llvm else "GCC"
         console.print(f"\n[bold green]Building linux-{version}-dusky using {toolchain_name} with {cores} threads...[/bold green]\n")
