@@ -93,8 +93,7 @@ DEPENDENCIES = [
 MODPROBED_DB_AUR = "modprobed-db"
 XDG_CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
 DB_FILE = XDG_CONFIG / "modprobed.db"
-BUILD_DIR = Path.home() / "dusky_build"
-PACKAGES_DIR = BUILD_DIR / "packages"
+DEFAULT_BUILD_DIR = Path.home() / "dusky_build"
 DUSKY_DIR = XDG_CONFIG / "dusky" / "settings" / "dusky_kernel"
 DUSKY_STATE_FILE = DUSKY_DIR / "state.json"
 DUSKY_SAVED_CONFIG = DUSKY_DIR / "kernel.config"
@@ -126,6 +125,7 @@ class DuskyState:
     enable_rust: bool = True
     enable_sched_ext: bool = True
     enable_thin_lto: bool = True
+    custom_build_dir: str | None = None
 
     _FIELDS = (
         "use_imported_config",
@@ -139,6 +139,14 @@ class DuskyState:
     def _as_bool(value: object, default: bool) -> bool:
         return value if isinstance(value, bool) else default
 
+    @staticmethod
+    def _as_optional_str(value: object) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        return None
+
     @classmethod
     def load(cls) -> DuskyState:
         defaults = cls()
@@ -148,12 +156,12 @@ class DuskyState:
                     data = json.load(f)
                 if not isinstance(data, dict):
                     return defaults
-                return cls(
-                    **{
-                        name: cls._as_bool(data.get(name), getattr(defaults, name))
-                        for name in cls._FIELDS
-                    }
-                )
+                kwargs = {
+                    name: cls._as_bool(data.get(name), getattr(defaults, name))
+                    for name in cls._FIELDS
+                }
+                kwargs["custom_build_dir"] = cls._as_optional_str(data.get("custom_build_dir"))
+                return cls(**kwargs)
         except (OSError, ValueError):
             pass
         return defaults
@@ -161,10 +169,100 @@ class DuskyState:
     def save(self) -> None:
         DUSKY_DIR.mkdir(parents=True, exist_ok=True)
         payload = {name: getattr(self, name) for name in self._FIELDS}
+        payload["custom_build_dir"] = self.custom_build_dir
         tmp_file = DUSKY_STATE_FILE.with_suffix(".json.tmp")
         with open(tmp_file, "w") as f:
             json.dump(payload, f, indent=4)
         os.replace(tmp_file, DUSKY_STATE_FILE)
+
+
+# --- Modern Build Location Helpers (2026 bleeding-edge: findmnt + walrus, no legacy aliases) ---
+def _resolve_custom_build_dir(raw: str | None) -> Path | None:
+    """Validate & resolve custom build dir. Handles ~, $VAR, relative -> ~/ . Returns absolute Path or None."""
+    if not isinstance(raw, str) or not (stripped := raw.strip()):
+        return None
+    # Expand $VARS then ~ ; Path.expanduser() is native in 3.14
+    expanded = os.path.expandvars(stripped)
+    try:
+        p = Path(expanded).expanduser()
+        if not p.is_absolute():
+            p = Path.home() / p
+        # Normalize without requiring existence (strict=False is 3.6+)
+        return p.resolve(strict=False) if hasattr(p, "resolve") else p.absolute()
+    except Exception:
+        return None
+
+
+def _existing_target(path: Path) -> Path:
+    """findmnt/stat require existing target; walk up to nearest existing parent (bleeding-edge robust)."""
+    p = path
+    # If path itself exists, use it; else walk parents (max 10 hops)
+    for _ in range(10):
+        if p.exists():
+            return p
+        if p.parent == p:
+            break
+        p = p.parent
+    return path if path.exists() else p
+
+
+def get_fs_type(path: Path) -> str:
+    """Bleeding-edge fs detection: findmnt (util-linux 2.42.2) is authoritative on Arch."""
+    target = _existing_target(path)
+    try:
+        r = subprocess.run(
+            ["findmnt", "-n", "-o", "FSTYPE", "--target", str(target)],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        if r.returncode == 0 and (fstype := r.stdout.strip()):
+            return fstype
+    except Exception:
+        pass
+    # Fallback: stat -f (coreutils) - less precise (ext4 shows as ext2/ext3) but always present
+    try:
+        r = subprocess.run(["stat", "-f", "-c", "%T", str(target)], capture_output=True, text=True, timeout=3)
+        if r.returncode == 0 and (fstype := r.stdout.strip()):
+            return fstype
+    except Exception:
+        pass
+    return "unknown"
+
+
+def is_ram_backed(path: Path) -> bool:
+    """True if path lives on RAM (tmpfs/ramfs) or on ZRAM block device (ext4 on /dev/zram*)."""
+    target = _existing_target(path)
+    try:
+        r = subprocess.run(
+            ["findmnt", "-n", "-o", "SOURCE,FSTYPE", "--target", str(target)],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        if r.returncode == 0 and (out := r.stdout.strip()):
+            parts = out.split()
+            src = parts[0] if len(parts) > 0 else ""
+            fstype = parts[1] if len(parts) > 1 else ""
+            if "zram" in src or fstype in ("tmpfs", "ramfs", "zram"):
+                return True
+    except Exception:
+        pass
+    # Final heuristic for non-mounted yet paths (e.g., /mnt/zram1/new_build)
+    return "zram" in str(path) or get_fs_type(target) in ("tmpfs", "ramfs", "zram")
+
+
+def get_build_dir() -> Path:
+    """Effective build dir: 1) $DUSKY_BUILD_DIR env (ephemeral) > 2) persisted state > 3) DEFAULT."""
+    if (env_raw := os.environ.get("DUSKY_BUILD_DIR")) and (resolved := _resolve_custom_build_dir(env_raw)):
+        return resolved
+    if (custom_raw := DuskyState.load().custom_build_dir) and (resolved := _resolve_custom_build_dir(custom_raw)):
+        return resolved
+    return DEFAULT_BUILD_DIR
+
+
+def get_packages_dir() -> Path:
+    return get_build_dir() / "packages"
 
 
 # --- Sudo Keepalive Daemon ---
@@ -662,9 +760,15 @@ def manage_dusky_state() -> None:
         config_color = "green" if state.use_imported_config else "yellow"
         llvm_status = "ENABLED (ThinLTO)" if state.prefer_llvm else "GCC DEFAULT"
         rust_status = "ENABLED" if state.enable_rust else "DISABLED"
+        effective_build = get_build_dir()
+        build_source = "CUSTOM" if effective_build != DEFAULT_BUILD_DIR else "DEFAULT"
+        build_color = "cyan" if effective_build != DEFAULT_BUILD_DIR else "dim"
+        fs_type = get_fs_type(effective_build)
+        ram_backed = is_ram_backed(effective_build)
 
         info_text = (
             f"[bold white]Config Directory:[/bold white] {DUSKY_DIR}\n"
+            f"[bold white]Build Directory:[/bold white] [bold {build_color}]{effective_build}[/bold {build_color}] [dim]({build_source} • {fs_type}{', RAM' if ram_backed else ''})[/dim]\n"
             f"[bold white]Auto-Import Config:[/bold white] [bold {config_color}]{config_status}[/bold {config_color}]\n"
             f"[bold white]LLVM/Clang Mode:[/bold white] [cyan]{llvm_status}[/cyan]\n"
             f"[bold white]Rust Kernel Support:[/bold white] [cyan]{rust_status}[/cyan]\n"
@@ -684,10 +788,11 @@ def manage_dusky_state() -> None:
         table.add_row("2.", "Toggle Config Auto-Import")
         table.add_row("3.", "Toggle LLVM/Clang Toolchain (ThinLTO)")
         table.add_row("4.", "Toggle Rust Kernel Abstractions")
-        table.add_row("5.", "Back to Main Menu")
+        table.add_row("5.", "Set / Change Build Directory (ZRAM/disk)")
+        table.add_row("6.", "Back to Main Menu")
         console.print(table)
 
-        choice = Prompt.ask("\n[bold cyan]Select[/bold cyan]", choices=["1", "2", "3", "4", "5"], default="5")
+        choice = Prompt.ask("\n[bold cyan]Select[/bold cyan]", choices=["1", "2", "3", "4", "5", "6"], default="6")
         if choice == "1":
             DUSKY_DIR.mkdir(parents=True, exist_ok=True)
             if export_active_config(DUSKY_SAVED_CONFIG):
@@ -717,6 +822,54 @@ def manage_dusky_state() -> None:
             state.enable_rust = not state.enable_rust
             state.save()
             console.print(f"\n[bold green]Rust kernel support set to {state.enable_rust}.[/bold green]")
+            Prompt.ask("\n[dim]Press Enter to continue...[/dim]")
+        elif choice == "5":
+            console.print("\n[bold cyan]Current build dir:[/bold cyan] " + str(get_build_dir()))
+            console.print("[dim]Examples: /mnt/zram1/dusky_build  (your ZRAM ext4, 59G free)[/dim]")
+            console.print("[dim]          /tmp/dusky_build        (tmpfs, 31G free, RAM-backed)[/dim]")
+            console.print("[dim]          ~/dusky_build           (default, disk)[/dim]")
+            console.print("[dim]Env override DUSKY_BUILD_DIR also works for one-off builds.[/dim]")
+            raw = Prompt.ask(
+                "\n[bold cyan]Enter new build directory[/bold cyan] (empty to reset to default, 'cancel' to abort)",
+                default="",
+                show_default=False,
+            )
+            if raw.strip().lower() == "cancel":
+                console.print("[yellow]Cancelled.[/yellow]")
+            elif not raw.strip():
+                state.custom_build_dir = None
+                state.save()
+                console.print(f"[bold green]Build dir reset to default: {DEFAULT_BUILD_DIR}[/bold green]")
+            else:
+                candidate = _resolve_custom_build_dir(raw)
+                if candidate is None:
+                    console.print("[bold red]Invalid path.[/bold red]")
+                else:
+                    # Validate writability / create - bleeding-edge: findmnt + statvfs
+                    try:
+                        candidate.mkdir(parents=True, exist_ok=True)
+                        # Atomic write test (O_TMPFILE style via write+fsync)
+                        test_file = candidate / ".dusky_write_test"
+                        test_file.write_text("ok")
+                        test_file.unlink(missing_ok=True)
+                        free_gb = shutil.disk_usage(str(candidate)).free / (1024**3)
+                        fs_info = get_fs_type(candidate)
+                        ram_backed = is_ram_backed(candidate)
+                        if free_gb < 25:
+                            console.print(f"[bold yellow]Warning: only {free_gb:.1f} GB free at {candidate} ({fs_info}) - needs 25-30GB.[/bold yellow]")
+                            if not Confirm.ask("Save anyway?", default=False):
+                                Prompt.ask("\n[dim]Press Enter to continue...[/dim]")
+                                continue
+                        state.custom_build_dir = str(candidate)
+                        state.save()
+                        console.print(f"[bold green]Build dir set to: {candidate} ({fs_info}, {free_gb:.1f} GB free)[/bold green]")
+                        if ram_backed:
+                            if fs_info == "tmpfs":
+                                console.print("[dim]tmpfs detected - RAM-backed, very fast, but uses uncompressed RAM. Prefer /mnt/zram1 (zstd-compressed, 62G).[/dim]")
+                            else:
+                                console.print("[dim]ZRAM/RAM detected - excellent for avoiding SSD writes (your /mnt/zram1 is zstd-compressed).[/dim]")
+                    except Exception as e:
+                        console.print(f"[bold red]Cannot use {candidate}: {e}[/bold red]")
             Prompt.ask("\n[dim]Press Enter to continue...[/dim]")
         else:
             break
@@ -753,10 +906,15 @@ def run_empirical_diagnostics() -> None:
     linger_val = r_linger.stdout.strip() if r_linger.returncode == 0 else "Linger=no"
     console.print(f"[bold white]User Session Linger:[/bold white] [cyan]{linger_val}[/cyan]")
 
-    # 4. Storage & Saved Config
-    BUILD_DIR.mkdir(parents=True, exist_ok=True)
-    free_gb = shutil.disk_usage(str(BUILD_DIR)).free / (1024**3)
-    console.print(f"[bold white]Build Dir Free Space ({BUILD_DIR}):[/bold white] [cyan]{free_gb:.1f} GB[/cyan]")
+    # 4. Storage & Saved Config (uses effective build dir - may be ZRAM)
+    effective_build = get_build_dir()
+    effective_build.mkdir(parents=True, exist_ok=True)
+    free_gb = shutil.disk_usage(str(effective_build)).free / (1024**3)
+    fs_type = get_fs_type(effective_build)
+    src_label = "CUSTOM" if effective_build != DEFAULT_BUILD_DIR else "DEFAULT"
+    console.print(f"[bold white]Build Dir ({src_label}, {fs_type}):[/bold white] [cyan]{effective_build} — {free_gb:.1f} GB free[/cyan]")
+    if is_ram_backed(effective_build):
+        console.print(f"[dim]  -> RAM-backed ({fs_type}) - zero SSD wear, contents lost on reboot/poweroff[/dim]")
     if DUSKY_SAVED_CONFIG.exists():
         size_kb = DUSKY_SAVED_CONFIG.stat().st_size / 1024
         ok = is_plausible_kernel_config(DUSKY_SAVED_CONFIG)
@@ -860,11 +1018,17 @@ def compile_kernel() -> None:
         )
         return
 
-    BUILD_DIR.mkdir(parents=True, exist_ok=True)
-    free_gb = shutil.disk_usage(str(BUILD_DIR)).free / (1024**3)
+    effective_build = get_build_dir()
+    effective_packages = get_packages_dir()
+    effective_build.mkdir(parents=True, exist_ok=True)
+    free_gb = shutil.disk_usage(str(effective_build)).free / (1024**3)
+    fs_type = get_fs_type(effective_build)
+    console.print(f"[dim]Build directory: {effective_build} ({fs_type}, {free_gb:.1f} GB free)[/dim]")
+    if is_ram_backed(effective_build):
+        console.print("[dim]RAM-backed build ({fs_type}) - zero SSD writes, wiped on reboot. Final .pkg.tar.zst is installed via pacman -U before reboot.[/dim]".format(fs_type=fs_type))
     if free_gb < 25.0:
         if not Confirm.ask(
-            f"\n[bold yellow]Only {free_gb:.1f} GB free space in {BUILD_DIR}. Kernel compilation needs ~25-30 GB. Continue?[/bold yellow]",
+            f"\n[bold yellow]Only {free_gb:.1f} GB free space in {effective_build} ({fs_type}). Kernel compilation needs ~25-30 GB. Continue?[/bold yellow]",
             default=False,
         ):
             return
@@ -873,6 +1037,9 @@ def compile_kernel() -> None:
     install_dependencies()
 
     state = DuskyState.load()
+    # Re-resolve in case user changed dir in config manager after initial check
+    effective_build = get_build_dir()
+    effective_packages = get_packages_dir()
     use_llvm = state.prefer_llvm and check_llvm_available()
     if state.prefer_llvm and not use_llvm:
         console.print("[yellow]:: LLVM toolchain requested but incomplete. Falling back to GCC.[/yellow]")
@@ -882,9 +1049,9 @@ def compile_kernel() -> None:
     version, url = pick_release(candidates)
 
     tarball_name = tarball_name_from_url(version, url)
-    tarball = BUILD_DIR / tarball_name
-    kernel_dir = BUILD_DIR / f"linux-{version}"
-    isolated_pkg_dir = PACKAGES_DIR / f"linux-{version}"
+    tarball = effective_build / tarball_name
+    kernel_dir = effective_build / f"linux-{version}"
+    isolated_pkg_dir = effective_packages / f"linux-{version}"
 
     build_proc: subprocess.Popen | None = None
     log_lines: deque[str] = deque(maxlen=20)
@@ -902,7 +1069,7 @@ def compile_kernel() -> None:
                 shutil.rmtree(kernel_dir, ignore_errors=True)
 
             with console.status("[bold yellow]Unpacking source archive...[/bold yellow]"):
-                subprocess.run(["tar", "-xf", str(tarball)], cwd=BUILD_DIR, check=True)
+                subprocess.run(["tar", "-xf", str(tarball)], cwd=effective_build, check=True)
 
             if not is_valid_kernel_tree(kernel_dir):
                 console.print(f"[bold red]Fatal:[/bold red] Extracted tree at {kernel_dir} is invalid.")
@@ -1112,13 +1279,19 @@ def main_menu() -> None:
             else "[dim]LIVE[/dim]"
         )
         llvm_info = "[cyan]LLVM/ThinLTO[/cyan]" if state.prefer_llvm and check_llvm_available() else "[yellow]GCC[/yellow]"
+        effective_build = get_build_dir()
+        build_label = str(effective_build)
+        if effective_build != DEFAULT_BUILD_DIR:
+            build_label = f"[cyan]{effective_build}[/cyan]"
+        else:
+            build_label = f"[dim]{effective_build}[/dim]"
 
         console.print(
             Panel(
                 Align.center(
                     f"[bold cyan]Dusky Kernel Compiler[/bold cyan] [dim]- 2026.08 Production[/dim]\n"
                     f"[dim]Arch Linux • Kernel 7.1+ • localmodconfig + LMC_KEEP • pacman-pkg[/dim]\n"
-                    f"[dim]Toolchain: {llvm_info} • Config: {config_status}[/dim]"
+                    f"[dim]Toolchain: {llvm_info} • Config: {config_status} • Build: {build_label}[/dim]"
                 ),
                 box=box.DOUBLE,
                 border_style="blue",
@@ -1167,7 +1340,17 @@ def parse_cli_args() -> None:
     parser = argparse.ArgumentParser(description="Dusky Kernel Compiler 2026.08 Engine")
     parser.add_argument("--verify", action="store_true", help="Run empirical diagnostics and exit")
     parser.add_argument("--check-latest", action="store_true", help="Check latest kernel.org versions and exit")
+    parser.add_argument("--build-dir", type=str, default=None, help="Override build directory (supports ZRAM/tmpfs, e.g. /mnt/zram1/dusky_build)")
     args = parser.parse_args()
+
+    if args.build_dir:
+        resolved = _resolve_custom_build_dir(args.build_dir)
+        if resolved is None:
+            console.print(f"[bold red]Invalid --build-dir: {args.build_dir}[/bold red]")
+            sys.exit(1)
+        # Persist for this run via env, and offer to save
+        os.environ["DUSKY_BUILD_DIR"] = str(resolved)
+        console.print(f"[dim]Using build dir override: {resolved}[/dim]")
 
     if args.verify:
         run_empirical_diagnostics()
