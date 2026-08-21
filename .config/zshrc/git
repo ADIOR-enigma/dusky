@@ -90,7 +90,7 @@ function _gitdelta_matugen() {
 
 function gitdelta() {
     if (( $# == 0 )); then
-        git_dusky_add_list && git_dusky diff HEAD
+        git_dusky_add_list && git_dusky diff --stat --patch HEAD
         return $?
     fi
 
