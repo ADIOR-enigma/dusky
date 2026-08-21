@@ -109,6 +109,9 @@ UNICODE_SYMBOLS = GLOBAL_CONFIG.get(
         "skipped": "○",
         "pending": "·",
         "sep": "│",
+        "timing": "⚡",
+        "matrix": "⬢",
+        "preflight": "⚙",
     },
 )
 
@@ -125,6 +128,9 @@ ASCII_SYMBOLS = GLOBAL_CONFIG.get(
         "skipped": "SKIP",
         "pending": "...",
         "sep": "|",
+        "timing": "TIME",
+        "matrix": "MAT",
+        "preflight": "SYS",
     },
 )
 
@@ -334,7 +340,7 @@ _INTERACTIVE_RE = re.compile(
 )
 _HEX_COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
 ANSI_STRIP_REGEX = re.compile(
-    r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x1b]*(?:\x07|\x1B\\))"
+    r"\x1B(?:[@-Z\\_-]|\[[0-?]*[ -/]*[@-~]|\][^\x1b]*(?:\x07|\x1B\\))"
 )
 PCT_REGEX = re.compile(r"(?<!\d)(?:100(?:\.0+)?|\d{1,2}(?:\.\d+)?)%")
 SPEED_ETA_REGEX = re.compile(
@@ -5536,7 +5542,7 @@ class DuskyOrchestratorApp(App):
                 for t in soft_failed:
                     lines.append(f"   • [{t.mode}] {escape(t.script_name)} [dim {PALETTE['warning']}](Ignored / Allowed to Fail)[/dim]")
 
-            failed_dirs = sorted(list({str(t.path.parent) for t in failed_tasks if getattr(t, "path", None)}))
+            failed_dirs = sorted({str(t.resolved_path.parent) for t in failed_tasks if t.resolved_path})
             if failed_dirs:
                 lines.append(f"   [dim]Debug locations:[/dim]")
                 for d in failed_dirs:
@@ -5595,7 +5601,11 @@ class DuskyOrchestratorApp(App):
         if isinstance(self.screen, ModalScreen):
             return
 
-        if self.current_pty_master is not None and self.active_task and self.active_task.interactive:
+        # Forward keys to ANY live PTY child (non-interactive tasks can still
+        # prompt for input, e.g. pacman's [Y/n]). Interactive tasks run via
+        # _execute_suspended and never own a PTY master, so gating on
+        # task.interactive here made manual answering impossible.
+        if self.current_pty_master is not None and self.active_task:
             if event.key == "ctrl+f":
                 self.action_open_search()
                 event.stop()
