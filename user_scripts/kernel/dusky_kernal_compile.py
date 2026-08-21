@@ -1388,8 +1388,45 @@ def compile_kernel() -> None:
         state.use_imported_config = True
         state.save()
 
+        # Estimate total steps for progress bar BEFORE clean (after clean, dry-run output is tiny cnt=5)
+        total_steps: int | None = None
+        try:
+            with console.status("[dim]Estimating total compile steps for ETA...[/dim]"):
+                try:
+                    dr = subprocess.run(
+                        make_base + ["-n", "all"],
+                        cwd=kernel_dir,
+                        capture_output=True,
+                        text=True,
+                        timeout=90,
+                    )
+                    out = dr.stdout
+                except subprocess.TimeoutExpired as e:
+                    out = e.stdout.decode() if isinstance(e.stdout, bytes) else (e.stdout or "")
+                    if not out and e.stderr:
+                        out = e.stderr.decode() if isinstance(e.stderr, bytes) else str(e.stderr)
+                cnt = out.count("CC ") + out.count("LD ") + out.count("AR ") + out.count("HOSTCC ")
+                if cnt < 500:
+                    cnt = out.count(" CC ") + out.count(" LD ")
+                if cnt >= 500:
+                    total_steps = cnt
+                    console.print(f"[dim]Estimated {total_steps} steps - progress bar will show ETA[/dim]")
+                else:
+                    # Fallback heuristic: lean localmodconfig ~ 2500-3500 (233 modules * ~12), full ~ 7000
+                    try:
+                        db_cnt = count_db_modules()
+                        heuristic = max(2500, db_cnt * 12)
+                        total_steps = heuristic
+                        console.print(f"[dim]Dry-run cnt={cnt} too low, using heuristic {total_steps} steps (db {db_cnt} modules) - ETA enabled[/dim]")
+                    except Exception:
+                        total_steps = 3000
+                        console.print(f"[dim]Could not estimate steps (cnt={cnt}), using fallback {total_steps} - ETA enabled[/dim]")
+        except Exception as e:
+            console.print(f"[dim]Estimate failed: {e}, progress will be indeterminate[/dim]")
+            total_steps = None
+
         # Auto-clean stale build artifacts from interrupted/corrupt previous run (best clean compile, no corruption)
-        # is_valid_kernel_tree ensures Makefile exists, but half-built .o/vmlinux remain after Ctrl+C SIGKILL
+        # Do AFTER estimation, otherwise dry-run after clean gives cnt=5
         # make clean keeps .config (we just saved it) but removes vmlinux, System.map, .o, .tmp
         try:
             has_stale = (
@@ -1398,7 +1435,6 @@ def compile_kernel() -> None:
                 or (kernel_dir / ".tmp_vmlinux.kallsyms1").exists()
                 or any(kernel_dir.rglob("*.o"))
             )
-            # Also detect zero-byte truncated objects (common after SIGKILL mid-CC)
             if not has_stale:
                 try:
                     has_stale = any(p.stat().st_size == 0 for p in kernel_dir.rglob("*.o"))
@@ -1407,7 +1443,6 @@ def compile_kernel() -> None:
             if has_stale:
                 console.print("[yellow]:: Previous build artifacts detected - cleaning for corruption-free build (make clean)...[/yellow]")
                 subprocess.run(make_base + ["clean"], cwd=kernel_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-                # ThinLTO extra caches
                 for pat in ["*.lto.*", ".tmp_*"]:
                     for p in kernel_dir.glob(pat):
                         try:
@@ -1424,24 +1459,6 @@ def compile_kernel() -> None:
         cores = os.cpu_count() or 4
         toolchain_name = "LLVM/Clang (ThinLTO)" if use_llvm else "GCC"
         console.print(f"\n[bold green]Building linux-{version}-dusky using {toolchain_name} with {cores} threads...[/bold green]\n")
-
-        # Estimate total steps for progress bar (bleeding-edge: dry-run count)
-        total_steps: int | None = None
-        try:
-            with console.status("[dim]Estimating total compile steps for ETA...[/dim]"):
-                dr = subprocess.run(
-                    make_base + ["-n", "all"],
-                    cwd=kernel_dir,
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                )
-                cnt = dr.stdout.count(" CC ") + dr.stdout.count(" LD ") + dr.stdout.count(" AR ") + dr.stdout.count(" HOSTCC ")
-                if cnt >= 500:
-                    total_steps = cnt
-                    console.print(f"[dim]Estimated {total_steps} steps - progress bar will show ETA[/dim]")
-        except Exception:
-            total_steps = None
 
         build_cmd = make_base + [
             f"-j{cores}",
@@ -1503,8 +1520,10 @@ def compile_kernel() -> None:
                     if not clean:
                         continue
                     log_lines.append(clean)
-                    # Advance progress for each CC/LD/AR line (real work)
-                    if any(k in clean for k in (" CC ", " LD ", " AR ", " HOSTCC ")):
+                    # Advance progress for each CC/LD/AR line (real work) - handles both "CC " at start and " CC " in dry-run
+                    if clean.startswith(("CC ", "LD ", "AR ", "HOSTCC ", "CC\t", "LD\t")) or any(
+                        k in clean for k in (" CC ", " LD ", " AR ", " HOSTCC ")
+                    ):
                         progress.advance(task_id)
                     live.update(_make_renderable())
                 build_proc.stdout.close()
