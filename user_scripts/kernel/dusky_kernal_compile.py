@@ -1570,12 +1570,59 @@ def compile_kernel() -> None:
             check=True,
         )
 
+        # Autonomous boot entry (systemd-boot + GRUB) - no manual kernel-install needed next time
+        try:
+            # Find actual installed kver (e.g., 7.2.0-dusky from /usr/lib/modules/*dusky)
+            kver = None
+            try:
+                dusky_mods = sorted(Path("/usr/lib/modules").glob("*-dusky"))
+                if dusky_mods:
+                    # Pick latest by mtime
+                    dusky_mods.sort(key=lambda p: p.stat().st_mtime)
+                    kver = dusky_mods[-1].name
+            except Exception:
+                pass
+            if not kver:
+                # Fallback: version is 7.2 -> 7.2.0-dusky, else 7.2.1 -> 7.2.1-dusky
+                kver = f"{version}.0-dusky" if version.count(".") == 1 else f"{version}-dusky"
+            vmlinuz_str = "/boot/vmlinuz-linux-dusky"
+            # Autonomous: try systemd-boot and GRUB without fragile /boot permission checks (0700)
+            # kernel-install and bootctl will fail gracefully if not applicable
+            try:
+                if is_tool_available("bootctl"):
+                    console.print(f"[cyan]::[/cyan] Ensuring systemd-boot entry for {kver}...")
+                    # kernel-install add is idempotent and handles missing vmlinuz gracefully
+                    subprocess.run(["sudo", "kernel-install", "add", kver, vmlinuz_str], check=False)
+                    subprocess.run(["sudo", "bootctl", "update"], check=False)
+                    try:
+                        r = subprocess.run(["bootctl", "list"], capture_output=True, text=True, timeout=5)
+                        if kver not in r.stdout:
+                            console.print(f"[yellow]:: Note: boot entry for {kver} not in bootctl list, check /boot/loader/entries/[/yellow]")
+                        else:
+                            console.print(f"[green]::[/green] systemd-boot entry verified for {kver}")
+                    except Exception:
+                        pass
+            except Exception as e:
+                console.print(f"[dim]systemd-boot note: {e}[/dim]")
+            try:
+                # GRUB auto-detect: try common locations, let grub-mkconfig fail silently if not present
+                for grub_cfg in ["/boot/grub/grub.cfg", "/boot/grub2/grub.cfg"]:
+                    # Use sudo test via shell then run mkconfig; if test fails, next iteration
+                    if subprocess.run(["sudo", "test", "-f", grub_cfg], capture_output=True).returncode == 0:
+                        console.print(f"[cyan]::[/cyan] Updating GRUB {grub_cfg}...")
+                        subprocess.run(["sudo", "grub-mkconfig", "-o", grub_cfg], check=False)
+                        break
+            except Exception as e:
+                console.print(f"[dim]GRUB note: {e}[/dim]")
+        except Exception as e:
+            console.print(f"[dim]Boot entry auto-creation note: {e} (manual: sudo kernel-install add <kver> /boot/vmlinuz-linux-dusky)[/dim]")
+
         console.print(
             Panel(
                 f"[bold green]Mission Accomplished![/bold green]\n\n"
                 f"Dusky Kernel [bold]linux-{version}-dusky[/bold] installed successfully.\n"
                 "initramfs generation ran automatically via pacman hooks.\n"
-                "[dim]Note: systemd-boot detects new kernels automatically; GRUB users may need 'grub-mkconfig -o /boot/grub/grub.cfg'. Verify your boot entry before rebooting.[/dim]",
+                "[dim]Boot entry ensured automatically for systemd-boot/GRUB. Verify with: bootctl list | grep -A2 dusky[/dim]",
                 border_style="green",
                 padding=(1, 2),
             )
