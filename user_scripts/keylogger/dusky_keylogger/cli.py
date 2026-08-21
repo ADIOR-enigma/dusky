@@ -2,12 +2,12 @@
 
 Subcommands:
     daemon      Run the always-on logging daemon (used by systemd)
-    stats       Print keystroke statistics for today / week / month / all
-    dashboard   Open the live Textual dashboard
+    stats       Print keystroke statistics for today / week / month / all (detailed terminal table)
+    dashboard   Open the live Rich dashboard (matugen, tabs: Overview/Keys/Chars/Transcript/Recent, period 1-4)
     status      Show daemon + database status
     devices     List discovered keyboards (diagnostics)
     events      Print recent key events
-    text        Print everything typed as readable text (saved to /tmp)
+    text        Print everything typed as readable text (ephemeral /tmp + markdown, also visible in TUI Transcript tab)
     seed        Generate demo data for testing (clearly labeled)
 """
 
@@ -168,7 +168,11 @@ def cmd_stats(args: argparse.Namespace) -> int:
 
 
 def cmd_dashboard(args: argparse.Namespace) -> int:
-    from .dashboard import main as dashboard_main
+    # New canonical: dashboard_tui.py (Rich + matugen). Fallback to old dashboard for compat.
+    try:
+        from .dashboard_tui import main as dashboard_main
+    except ImportError:
+        from .dashboard import main as dashboard_main  # type: ignore
 
     store = _get_store(args)
     dashboard_main(store.path)
@@ -304,7 +308,7 @@ def _format_markdown(text: str, period: str, start: datetime, end: datetime) -> 
         f"- **Characters:** `{len(text):,}`  \n"
         f"- **Note:** Backspace rendered as `⌫`, Enter as newline, Tab as tab.  \n"
         f"  This file lives in an ephemeral directory (e.g., `/tmp`) and is cleared on reboot.  \n"
-        f"  Persistent counts stay in `~/.local/share/dusky-keylogger/keys.db` until you delete them.\n\n"
+        f"  Persistent counts stay in `~/.config/dusky/settings/keylogger/data/keys.db` until you delete them.\n\n"
         f"---\n\n"
     )
     # Ensure markdown code fence doesn't break if transcript contains ```
@@ -451,7 +455,7 @@ def cmd_seed(args: argparse.Namespace) -> int:
     console.print(
         f"[green]Seeded {inserted:,} demo events across {args.days} day(s).[/]\n"
         "[dim]These are synthetic test records. Remove them with: "
-        "rm ~/.local/share/dusky-keylogger/keys.db*[/]"
+        "rm ~/.config/dusky/settings/keylogger/data/keys.db*  (or old ~/.local/share/dusky-keylogger/keys.db*)[/]"
     )
     return 0
 
@@ -479,7 +483,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_stats.add_argument("--data-dir", default=None)
     p_stats.set_defaults(func=cmd_stats)
 
-    p_dash = sub.add_parser("dashboard", help="Open the live dashboard (TUI)")
+    p_dash = sub.add_parser(
+        "dashboard", help="Open the live Rich dashboard (matugen, tabs, detailed stats + transcript)"
+    )
     p_dash.add_argument("--data-dir", default=None)
     p_dash.set_defaults(func=cmd_dashboard)
 

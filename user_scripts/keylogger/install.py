@@ -338,7 +338,7 @@ def build_venv(user: str, home: str) -> str:
 def install_service(venv_py: str, user: str, home: str) -> None:
     if not SERVICE_TEMPLATE.exists():
         fail(f"Service template missing: {SERVICE_TEMPLATE}")
-    data_dir = f"{home}/.local/share/dusky-keylogger"
+    data_dir = f"{home}/.config/dusky/settings/keylogger/data"
     config_dir = f"{home}/.config/dusky-keylogger"
     template = string.Template(SERVICE_TEMPLATE.read_text(encoding="utf-8"))
     rendered = template.substitute(
@@ -396,10 +396,23 @@ def cmd_install(args: argparse.Namespace) -> int:
             "for the change to take effect (or reboot)."
         )
 
-    data_dir = Path(home) / ".local" / "share" / "dusky-keylogger"
-    data_dir.mkdir(parents=True, exist_ok=True)
+    # New canonical persistent data dir (per user request) + legacy for migration
+    new_data_dir = Path(home) / ".config" / "dusky" / "settings" / "keylogger" / "data"
+    new_data_dir.mkdir(parents=True, exist_ok=True)
     try:
-        os.chmod(data_dir, 0o700)
+        os.chmod(new_data_dir, 0o700)
+        for p in [new_data_dir, new_data_dir.parent, new_data_dir.parent.parent, new_data_dir.parent.parent.parent]:
+            try:
+                os.chmod(p, 0o700)
+            except OSError:
+                pass
+    except OSError:
+        pass
+    # Legacy XDG data dir for migration (keep for existing installs)
+    old_data_dir = Path(home) / ".local" / "share" / "dusky-keylogger"
+    old_data_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(old_data_dir, 0o700)
     except OSError:
         pass
     # Legacy config dir (for backward compat) and new canonical dusky/settings/keylogger
@@ -421,7 +434,8 @@ def cmd_install(args: argparse.Namespace) -> int:
                 pass
     except OSError:
         pass
-    run(["chown", "-R", f"{user}:{user}", str(data_dir)], check=False)
+    run(["chown", "-R", f"{user}:{user}", str(new_data_dir)], check=False)
+    run(["chown", "-R", f"{user}:{user}", str(old_data_dir)], check=False)
     run(["chown", "-R", f"{user}:{user}", str(old_config)], check=False)
     run(["chown", "-R", f"{user}:{user}", str(new_config)], check=False)
     # Ensure new canonical config file exists with defaults if fresh install
@@ -433,7 +447,7 @@ def cmd_install(args: argparse.Namespace) -> int:
             defaults = {
                 "flush_interval": 0.5,
                 "log_level": "info",
-                "data_dir": "~/.local/share/dusky-keylogger",
+                "data_dir": "~/.config/dusky/settings/keylogger/data",
                 "transcript_dir": "/tmp",
                 "transcript_format": "text",
                 "persistent_enabled": True,

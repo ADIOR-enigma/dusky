@@ -4035,22 +4035,23 @@ type = "exec"
 command = "kitty --class dusky_keylogger -e $HOME/contained_apps/uv/dusky_key_logger/bin/dusky dashboard"
 terminal = false
 
-[[pages.layout.items]]
-type = "grid_card"
-[pages.layout.items.properties]
-title = "Generate Transcript"
-icon = "document-edit-symbolic"
-[pages.layout.items.on_press]
-type = "exec"
-command = "kitty --class dusky_keylogger_transcript --hold python3 $HOME/user_scripts/keylogger/dusky_keylogger/cli.py text --period today || kitty --hold $HOME/contained_apps/uv/dusky_key_logger/bin/dusky text --period today"
-terminal = false
-
 [[pages.layout]]
 type = "section"
 [pages.layout.properties]
 title = "Configuration"
 icon = ""
-description = "Persistence in ~/.config/dusky/settings/keylogger/ (survives reboot, auto-created) • Ephemeral transcripts in /tmp (cleared on reboot)"
+description = ""
+
+[[pages.layout.items]]
+type = "button"
+[pages.layout.items.properties]
+title = "Generate Transcript"
+description = "dusky text --period today → /tmp (ephemeral) • also visible in Dashboard Transcript tab"
+icon = "document-edit-symbolic"
+[pages.layout.items.on_press]
+type = "exec"
+command = "kitty --class dusky_keylogger_transcript --hold $HOME/contained_apps/uv/dusky_key_logger/bin/dusky text --period today"
+terminal = false
 
 [[pages.layout.items]]
 type = "button"

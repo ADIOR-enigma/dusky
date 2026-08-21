@@ -1,12 +1,13 @@
 [Desktop Entry]
 Type=Application
-Name=Dusky Keylogger TUI
+Name=Dusky Keylogger Settings
 GenericName=Keylogger Configurator
 Comment=Configure persistence/ephemeral logging, daemon, transcripts and analytics via TUI
 Exec=foot --app-id=dusky_tui python3 /home/dusk/user_scripts/keylogger/tui_keylogger.py
 Terminal=false
 Categories=Settings;System;Utility;
-Keywords=dusky;keylogger;keys;keystroke;config;tui;settings;persistent;ephemeral;transcript;daemon;stats;
+Keywords=dusky;config;settings;keylogger;keys;keystroke;tui;persistent;ephemeral;transcript;daemon;stats;
 Icon=preferences-system
 StartupNotify=true
 StartupWMClass=dusky_tui
+NoDisplay=false

@@ -1,12 +1,13 @@
 [Desktop Entry]
 Type=Application
-Name=Dusky Keylogger Dashboard
-GenericName=Keystroke Statistics
-Comment=Live keystroke statistics dashboard (Textual TUI)
+Name=Dusky Keylogger
+GenericName=Keystroke Statistics Dashboard
+Comment=Live keystroke analytics — Rich Live TUI (matugen, tabs, detailed stats + transcript)
 Exec=kitty --class dusky_keylogger -e /home/dusk/contained_apps/uv/dusky_key_logger/bin/dusky dashboard
 Terminal=false
 Categories=Utility;System;
-Keywords=dusky;keylogger;keys;keystroke;stats;typing;dashboard;wpm;
+Keywords=keylogger;dusky;keys;keystroke;stats;typing;dashboard;wpm;transcript;matugen;
 Icon=utilities-terminal
 StartupNotify=true
 StartupWMClass=dusky_keylogger
+NoDisplay=false

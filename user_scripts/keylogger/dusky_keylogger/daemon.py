@@ -29,7 +29,9 @@ MAX_BUFFER = 256
 def default_data_dir() -> Path:
     """Persistent DB directory (survives reboot). Never hardcodes username.
 
-    Priority: env DUSKY_KEYLOGGER_DATA_DIR > config.json data_dir > XDG default.
+    Priority: env DUSKY_KEYLOGGER_DATA_DIR > config.json data_dir > default.
+    Default is now ~/.config/dusky/settings/keylogger/data (per user request).
+    Legacy ~/.local/share/dusky-keylogger is auto-migrated if present.
     The directory is auto-created on a fresh install if it doesn't already exist
     (see KeyStore.init_db / Daemon). Uses Path.home() expansion for ~.
     """
@@ -56,7 +58,7 @@ def default_data_dir() -> Path:
             except Exception:
                 pass
             break
-    return Path.home() / ".local" / "share" / "dusky-keylogger"
+    return Path.home() / ".config" / "dusky" / "settings" / "keylogger" / "data"
 
 
 def get_data_dir(config: dict | None = None) -> Path:
@@ -73,7 +75,7 @@ def get_data_dir(config: dict | None = None) -> Path:
     if raw:
         p = Path(raw).expanduser()
         return p if p.is_absolute() else Path.home() / p
-    return Path.home() / ".local" / "share" / "dusky-keylogger"
+    return Path.home() / ".config" / "dusky" / "settings" / "keylogger" / "data"
 
 
 def default_config_path() -> Path:
@@ -111,11 +113,12 @@ DEFAULT_CONFIG: dict = {
     "flush_interval": DEFAULT_FLUSH_INTERVAL,
     "log_level": "info",
     # Persistence: where SQLite DB lives (survives reboot, manual delete only).
+    # Default is now ~/.config/dusky/settings/keylogger/data (per user request).
     # Override via env DUSKY_KEYLOGGER_DATA_DIR or config "data_dir".
     # Ephemeral: where transcripts go (cleared on reboot, e.g., /tmp).
-    # Change via config.json "transcript_dir", env DUSKY_TRANSCRIPT_DIR, or CLI --out.
+    # Default is /tmp (per user request) — just these two places, nothing else.
     # Persistent counts/stats stay in DATA_DIR (not ephemeral); transcripts are ephemeral.
-    "data_dir": "~/.local/share/dusky-keylogger",
+    "data_dir": "~/.config/dusky/settings/keylogger/data",
     "transcript_dir": "/tmp",
     "transcript_format": "text",  # "text" | "markdown"
     "persistent_enabled": True,  # master toggle for DB logging (persistent)
@@ -209,14 +212,14 @@ def load_config(path: Path | None = None) -> dict:
     env_data = os.environ.get("DUSKY_KEYLOGGER_DATA_DIR")
     if env_data:
         config["data_dir"] = env_data
-    raw_data = str(config.get("data_dir", "~/.local/share/dusky-keylogger") or "~/.local/share/dusky-keylogger").strip()
+    raw_data = str(config.get("data_dir", "~/.config/dusky/settings/keylogger/data") or "~/.config/dusky/settings/keylogger/data").strip()
     try:
         ddir = Path(raw_data).expanduser()
         if not ddir.is_absolute():
             ddir = Path.home() / ddir
         config["data_dir"] = str(ddir)
     except Exception:
-        config["data_dir"] = str(Path.home() / ".local" / "share" / "dusky-keylogger")
+        config["data_dir"] = str(Path.home() / ".config" / "dusky" / "settings" / "keylogger" / "data")
 
     # Persist auto-migrated keys (e.g., fresh fields after update) without
     # clobbering user values. Best-effort; failure is non-fatal.

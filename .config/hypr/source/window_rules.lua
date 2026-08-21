@@ -1965,3 +1965,12 @@ hl.window_rule({
     workspace = "unset",
     focus_on_activate = true
 })
+
+--- Dusky Keylogger Dashboard (90% — like dusky_keybinds / packages) ---
+hl.window_rule({
+    name = "dusky_keylogger",
+    match = { class = "^(dusky_keylogger)$" },
+    float = true,
+    size = {"(monitor_w*0.9)", "(monitor_h*0.9)"},
+    center = true,
+})
