@@ -4,7 +4,7 @@
  * line-based commands read on stdin.
  *
  * Frame rate: ~60 Hz (every 800 samples at 48 kHz).
- * Packet size: 2600 bytes (16 header + 20 scalars + 2048 waveforms + 512 spectra).
+ * Packet size: 2596 bytes (16 header + 20 scalars + 2048 waveforms + 512 spectra).
  *
  * Protocol v2 (WIP, not shipped):
  *   - VAD always runs (RNNoise model invoked regardless of bypass flag),

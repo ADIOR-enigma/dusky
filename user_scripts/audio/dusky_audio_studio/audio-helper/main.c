@@ -1397,15 +1397,23 @@ static struct stream_ctx g_mon_ctx;
 static struct stream_ctx g_sink_in_ctx;
 static struct stream_ctx g_sink_out_ctx;
 
-/* Push one sample into a SPSC ring with drop-oldest-on-full semantics. */
+/* Push one sample into a SPSC ring with drop-oldest-on-full semantics.
+ * Tail is normally consumer-owned, but on overflow the producer advances it
+ * too - so the advance must be a CAS. A blind store could revert a tail
+ * increment the consumer made concurrently (capture and virtual-source
+ * callbacks run on separate PipeWire data threads), moving tail backwards
+ * and briefly replaying stale audio. If the CAS loses because the consumer
+ * just freed a slot, we simply keep our sample - no drop needed. */
 static inline uint32_t ring_push(struct post_ring *r, uint32_t head, float v)
 {
     uint32_t next = (head + 1) % POST_RING_CAP;
-    if (next == atomic_load_explicit(&r->tail, memory_order_acquire))
+    uint32_t t = atomic_load_explicit(&r->tail, memory_order_acquire);
+    if (next == t)
     {
-        uint32_t t = atomic_load_explicit(&r->tail, memory_order_relaxed);
-        t = (t + 1) % POST_RING_CAP;
-        atomic_store_explicit(&r->tail, t, memory_order_release);
+        uint32_t desired = (t + 1) % POST_RING_CAP;
+        atomic_compare_exchange_strong_explicit(&r->tail, &t, desired,
+                                                memory_order_release,
+                                                memory_order_acquire);
     }
     r->buf[head] = v;
     return next;
@@ -2085,9 +2093,18 @@ static void cb_sink_in_process(void *userdata)
             r = sink_channel_tick(&g_sink_ch_r, r, aggro);
         }
 
-        /* 2. Stereo Pitch Shifter & Autotune */
-        float mono_mid = 0.5f * (l + r);
-        pitch_tracker_push(&g_sink_rt.pitch, mono_mid, (float)SAMPLE_RATE);
+        /* 2. Stereo Pitch Shifter & Autotune.
+         * The pitch tracker's autocorrelation pass is far too expensive to
+         * burn on every playback sample when nothing consumes it - only
+         * output autotune and vocoder follow-mode read tracked_hz. When
+         * both are inactive the last estimate simply holds; vocoder_tick
+         * falls back to the fixed carrier for stale/zero values, and the
+         * tracker re-converges within one ~10 ms hop after re-enabling. */
+        if (out_autotune_on || (out_voc_on && out_voc_follow))
+        {
+            float mono_mid = 0.5f * (l + r);
+            pitch_tracker_push(&g_sink_rt.pitch, mono_mid, (float)SAMPLE_RATE);
+        }
         g_sink_rt.autotune_ratio_smooth += 0.05f * (target_ratio - g_sink_rt.autotune_ratio_smooth);
         l = psh_tick(&g_sink_rt.psh_l, l, g_sink_rt.autotune_ratio_smooth);
         r = psh_tick(&g_sink_rt.psh_r, r, g_sink_rt.autotune_ratio_smooth);
@@ -2144,6 +2161,16 @@ static void cb_sink_in_process(void *userdata)
                 g_sink_rt.stutter_phase -= 1.0f;
             float target_gate = (g_sink_rt.stutter_phase < (float)out_stutter_duty * 0.001f) ? 1.0f : 0.0f;
             g_sink_rt.stutter_gain += 0.05f * (target_gate - g_sink_rt.stutter_gain);
+            l *= g_sink_rt.stutter_gain;
+            r *= g_sink_rt.stutter_gain;
+        }
+        else if (g_sink_rt.stutter_gain < 1.0f)
+        {
+            /* Smoothly re-open the gate when stutter is disabled - without
+             * this branch the gain froze at whatever value it held when the
+             * effect switched off, leaving playback permanently attenuated
+             * until another preset re-enabled the chopper. */
+            g_sink_rt.stutter_gain += 0.05f * (1.0f - g_sink_rt.stutter_gain);
             l *= g_sink_rt.stutter_gain;
             r *= g_sink_rt.stutter_gain;
         }
@@ -2659,6 +2686,14 @@ static void parse_cmd(char *line)
         int idx, type, hz, q, g;
         if (sscanf(line + 8, "%d %d %d %d %d", &idx, &type, &hz, &q, &g) == 5 && idx >= 0 && idx < GHA_EQ_BANDS)
         {
+            if (type < 0) type = 0;
+            if (type > 6) type = 6;
+            if (hz < 10) hz = 10;
+            if (hz > 20000) hz = 20000;
+            if (q < 50) q = 50;
+            if (q > 5000) q = 5000;
+            if (g < -3600) g = -3600;
+            if (g > 3600) g = 3600;
             atomic_store(&g_params.out_eq[idx].type, type);
             atomic_store(&g_params.out_eq[idx].freq_hz, hz);
             atomic_store(&g_params.out_eq[idx].q_mille, q);
@@ -2762,6 +2797,12 @@ static void parse_cmd(char *line)
         int ms, fb, mix;
         if (sscanf(line + 8, "%d %d %d", &ms, &fb, &mix) == 3)
         {
+            if (ms < 0) ms = 0;
+            if (ms > 1000) ms = 1000;
+            if (fb < 0) fb = 0;
+            if (fb > 950) fb = 950;
+            if (mix < 0) mix = 0;
+            if (mix > 1000) mix = 1000;
             atomic_store(&g_params.out_delay_ms, ms);
             atomic_store(&g_params.out_delay_feedback, fb);
             atomic_store(&g_params.out_delay_mix, mix);
@@ -2776,6 +2817,14 @@ static void parse_cmd(char *line)
         int rm, dp, wd, mx;
         if (sscanf(line + 8, "%d %d %d %d", &rm, &dp, &wd, &mx) == 4)
         {
+            if (rm < 0) rm = 0;
+            if (rm > 1000) rm = 1000;
+            if (dp < 0) dp = 0;
+            if (dp > 1000) dp = 1000;
+            if (wd < 0) wd = 0;
+            if (wd > 1000) wd = 1000;
+            if (mx < 0) mx = 0;
+            if (mx > 1000) mx = 1000;
             atomic_store(&g_params.out_reverb_room, rm);
             atomic_store(&g_params.out_reverb_damp, dp);
             atomic_store(&g_params.out_reverb_width, wd);
@@ -2851,6 +2900,18 @@ static void parse_cmd(char *line)
         int idx, type, hz, q, g;
         if (sscanf(line + 4, "%d %d %d %d %d", &idx, &type, &hz, &q, &g) == 5 && idx >= 0 && idx < GHA_EQ_BANDS)
         {
+            /* Clamp to the ranges biquad_design is numerically well-behaved
+             * in: freq at/below ~10 Hz or at/above Nyquist yields degenerate
+             * coefficients, tiny Q explodes alpha, and gain beyond +/-36 dB
+             * serves no purpose the post-EQ trim cannot do safely. */
+            if (type < 0) type = 0;
+            if (type > 6) type = 6;
+            if (hz < 10) hz = 10;
+            if (hz > 20000) hz = 20000;
+            if (q < 50) q = 50;
+            if (q > 5000) q = 5000;
+            if (g < -3600) g = -3600;
+            if (g > 3600) g = 3600;
             atomic_store(&g_params.eq[idx].type, type);
             atomic_store(&g_params.eq[idx].freq_hz, hz);
             atomic_store(&g_params.eq[idx].q_mille, q);
@@ -2862,6 +2923,15 @@ static void parse_cmd(char *line)
         int ms, fb, mix;
         if (sscanf(line + 4, "%d %d %d", &ms, &fb, &mix) == 3)
         {
+            /* Clamp: feedback >= 1000 per-mille is a marginally-stable comb
+             * that howls; ms beyond the 1 s line just wraps against the
+             * delay buffer clamp anyway. */
+            if (ms < 0) ms = 0;
+            if (ms > 1000) ms = 1000;
+            if (fb < 0) fb = 0;
+            if (fb > 950) fb = 950;
+            if (mix < 0) mix = 0;
+            if (mix > 1000) mix = 1000;
             atomic_store(&g_params.delay_ms, ms);
             atomic_store(&g_params.delay_feedback, fb);
             atomic_store(&g_params.delay_mix, mix);
@@ -2872,6 +2942,16 @@ static void parse_cmd(char *line)
         int rm, dp, wd, mx;
         if (sscanf(line + 4, "%d %d %d %d", &rm, &dp, &wd, &mx) == 4)
         {
+            /* Clamp: room drives comb feedback (0.28 + room*0.7), so any
+             * value above 1000 per-mille makes the tank diverge. */
+            if (rm < 0) rm = 0;
+            if (rm > 1000) rm = 1000;
+            if (dp < 0) dp = 0;
+            if (dp > 1000) dp = 1000;
+            if (wd < 0) wd = 0;
+            if (wd > 1000) wd = 1000;
+            if (mx < 0) mx = 0;
+            if (mx > 1000) mx = 1000;
             atomic_store(&g_params.reverb_room, rm);
             atomic_store(&g_params.reverb_damp, dp);
             atomic_store(&g_params.reverb_width, wd);
@@ -3039,6 +3119,18 @@ static void on_stdin(void *userdata, int fd, uint32_t mask)
     }
     if (!(mask & SPA_IO_IN))
         return;
+
+    /* If the buffer is full with no newline in sight we are looking at an
+     * oversized garbage line. Drop it and resync - the old code called
+     * read() with count 0 here, mistook the immediate return of 0 for EOF,
+     * and tore the whole engine down mid-session. */
+    if (stdin_len >= (int)sizeof(stdin_buf) - 1)
+    {
+        stdin_len = 0;
+        stdin_buf[0] = '\0';
+        fprintf(stderr, "[ghelper-audio] discarded oversized stdin line\n");
+        return;
+    }
 
     int n = (int)read(fd, stdin_buf + stdin_len, sizeof(stdin_buf) - 1 - stdin_len);
     if (n <= 0)
@@ -3313,11 +3405,20 @@ int main(int argc, char *argv[])
     if (app->timer)
         pw_loop_destroy_source(pw_main_loop_get_loop(app->loop), app->timer);
 
-    pw_stream_destroy(app->sink_out_stream);
-    pw_stream_destroy(app->sink_in_stream);
-    pw_stream_destroy(app->mon_stream);
-    pw_stream_destroy(app->out_stream);
-    pw_stream_destroy(app->in_stream);
+    /* Guard every destroy: mon_stream (and in pathological startup-failure
+     * paths, others) may legitimately be NULL, and pw_stream_destroy(NULL)
+     * faults on PipeWire 1.6.x - the old unguarded sequence SIGSEGV'd on
+     * every clean shutdown where the monitor was never enabled. */
+    if (app->sink_out_stream)
+        pw_stream_destroy(app->sink_out_stream);
+    if (app->sink_in_stream)
+        pw_stream_destroy(app->sink_in_stream);
+    if (app->mon_stream)
+        pw_stream_destroy(app->mon_stream);
+    if (app->out_stream)
+        pw_stream_destroy(app->out_stream);
+    if (app->in_stream)
+        pw_stream_destroy(app->in_stream);
     pw_main_loop_destroy(app->loop);
     rnnoise_destroy(g_sink_ch_r.rn);
     rnnoise_destroy(g_sink_ch_l.rn);

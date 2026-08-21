@@ -898,11 +898,34 @@ def load_config() -> AudioConfig:
 
 def save_config(cfg: AudioConfig) -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
+    # PID-unique temp name: the GUI and CLI tools can save concurrently, and
+    # a shared temp path would let their writes interleave before the rename.
+    tmp = CONFIG_FILE.with_name(f"{CONFIG_FILE.name}.{os.getpid()}.tmp")
     try:
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        # Write to a sibling temp file and atomically rename so a crash or
+        # power loss mid-write can never leave a truncated config.json behind.
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(asdict(cfg), f, indent=2)
+        tmp.replace(CONFIG_FILE)
     except Exception:
-        pass
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def pid_is_dusky_audio(pid: int) -> bool:
+    """True only if /proc/<pid>/cmdline belongs to this application.
+
+    PID files can outlive their process; once the kernel recycles the PID it
+    may belong to any unrelated program. Every consumer of PID_FILE /
+    GUI_PID_FILE verifies ownership through here before signalling, so a
+    stale file can never get an innocent process killed."""
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return False
+    return b"dusky_audio_studio" in raw
 
 
 def get_daemon_pid() -> int | None:
@@ -911,6 +934,8 @@ def get_daemon_pid() -> int | None:
             with open(PID_FILE, "r", encoding="utf-8") as f:
                 pid = int(f.read().strip())
             os.kill(pid, 0)
+            if not pid_is_dusky_audio(pid):
+                raise ValueError("pid recycled by another process")
             return pid
         except (OSError, ValueError):
             PID_FILE.unlink(missing_ok=True)
@@ -1413,6 +1438,9 @@ class AudioDspServer:
         # Create UNIX domain socket
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.sock.bind(str(SOCK_PATH))
+        # Owner-only: the socket accepts arbitrary DSP commands and must not
+        # be reachable by other local users regardless of umask.
+        os.chmod(SOCK_PATH, 0o600)
         self.sock.listen(10)
         self.sock.settimeout(0.5)
 
@@ -1794,6 +1822,8 @@ def run_gtk_app() -> None:
             with open(GUI_PID_FILE, "r", encoding="utf-8") as f:
                 old_pid = int(f.read().strip())
             os.kill(old_pid, 0)
+            if not pid_is_dusky_audio(old_pid):
+                raise ValueError("pid recycled by another process")
             os.kill(old_pid, signal.SIGTERM)
             GUI_PID_FILE.unlink(missing_ok=True)
             return
@@ -3419,8 +3449,8 @@ def main() -> None:
             cfg.vocoder_release_ms = 30
             cfg.vocoder_follow = True
             cfg.vocoder_pitch_shift = 0
-            cfg.vocoder_matrix = 50
-            cfg.vocoder_mix = 70
+            cfg.vocoder_matrix = 0
+            cfg.vocoder_mix = 0
             save_config(cfg)
             sync_config_to_daemon(cfg)
             print("Voice FX reset to Natural Clean.")
