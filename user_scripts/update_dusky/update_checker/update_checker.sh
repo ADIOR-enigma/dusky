@@ -25,6 +25,9 @@ declare -ri TIMEOUT_SEC=15
 declare -ri TIMEOUT_KILL_SEC=2
 # Covers the worst-case lock hold time: primary fetch + HTTPS fallback fetch.
 declare -ri LOCK_WAIT_SEC=$(( (TIMEOUT_SEC + TIMEOUT_KILL_SEC) * 2 + 1 ))
+# Interactive TUI should not block 35s on a stale lock held by a background job.
+declare -ri LOCK_WAIT_TUI_SEC=3
+declare -ri OFFLINE_CHECK_SEC=3
 declare -r LOCK_BASENAME="dusky_git_fetch.${UID}.lock"
 
 # TUI settings
@@ -60,6 +63,20 @@ _debug() {
 
 _sleep() {
     /usr/bin/sleep "${1:-1}"
+}
+
+# Fast offline probe: 3s max vs 34s fetch timeout. Uses bash /dev/tcp (no ICMP)
+# and falls back to ping if /dev/tcp is blocked. Returns 0 if online.
+_has_network() {
+    # TCP probe to github.com:443 (most reliable, no ICMP filtering) - 2s timeout
+    if /usr/bin/timeout 2 bash -c 'exec 3<>/dev/tcp/github.com/443' 2>/dev/null; then
+        return 0
+    fi
+    # Fallback ICMP probe for environments where /dev/tcp is filtered (2s)
+    if /usr/bin/timeout 2 /usr/bin/ping -q -c1 -W1 1.1.1.1 >/dev/null 2>&1; then
+        return 0
+    fi
+    return 1
 }
 
 _strip_ansi() {
@@ -343,6 +360,18 @@ robust_fetch() {
     local lock_file='' remote_url='' https_url='' redacted_url='' fetch_remote='' fetch_refspec=''
     local lock_fd=-1
     local -i rc=1
+    local _fetch_mode="bg"
+    if [[ ${1:-} == "--tui" ]]; then
+        _fetch_mode="tui"
+        shift
+    fi
+
+    # Fast offline check: fail in ~2-3s instead of blocking 2×17s fetch timeouts.
+    if ! _has_network; then
+        FETCH_INFO="Network unavailable (offline check failed)"
+        _debug "Offline probe failed - skipping fetch"
+        return 1
+    fi
 
     if ! fetch_remote=$(get_fetch_remote); then
         FETCH_INFO="No suitable remote configured"
@@ -374,7 +403,18 @@ robust_fetch() {
         return 1
     fi
 
-    if ! /usr/bin/flock -w "$LOCK_WAIT_SEC" "$lock_fd"; then
+    # TUI uses short wait (3s) so it never blocks 35s on a
+    # background --num job. Background mode keeps full wait to avoid
+    # flapping when two timers race. Explicit --tui flag is preferred;
+    # fallback to tty check for any direct calls.
+    local -i _lock_wait=$LOCK_WAIT_SEC
+    if [[ $_fetch_mode == "tui" ]]; then
+        _lock_wait=$LOCK_WAIT_TUI_SEC
+    elif [[ -t 0 && -t 1 ]]; then
+        _lock_wait=$LOCK_WAIT_TUI_SEC
+    fi
+    _debug "Lock wait: ${_lock_wait}s (mode=${_fetch_mode})"
+    if ! /usr/bin/flock -w "$_lock_wait" "$lock_fd"; then
         FETCH_INFO="Another update check is already running"
         _debug "Could not acquire fetch lock: $lock_file"
         exec {lock_fd}>&-
@@ -678,8 +718,10 @@ load_commits() {
     local -a raw_commits=()
     local line='' hash='' msg='' safe_msg=''
 
+    # Limit log to visible rows: TOTAL_COMMITS is already known via
+    # rev-list count above, so fetching 100s of commits is wasteful.
     mapfile -t raw_commits < <(
-        "${GIT_CMD[@]}" --no-pager log "HEAD..${upstream}" \
+        "${GIT_CMD[@]}" --no-pager log --max-count="$MAX_DISPLAY_ROWS" "HEAD..${upstream}" \
             --no-color --pretty=format:'%h|%s' 2>/dev/null
     ) || true
 
@@ -696,12 +738,20 @@ load_commits() {
         COMMIT_MSGS+=("$msg")
     done
 
-    TOTAL_COMMITS=${#COMMIT_HASHES[@]}
-
-    if (( TOTAL_COMMITS == 0 )); then
+    # Preserve true behind-count for the header, but ensure we have
+    # at least something to display when behind >0.
+    if (( ${#COMMIT_HASHES[@]} == 0 )); then
         COMMIT_HASHES=("WARN")
         COMMIT_MSGS=("Detected $count updates but log was empty")
         TOTAL_COMMITS=1
+    else
+        # If we are behind more than we fetched (log was capped), keep
+        # the true count for the header while hashes hold only the visible slice.
+        if (( count > ${#COMMIT_HASHES[@]} )); then
+            TOTAL_COMMITS=$count
+        else
+            TOTAL_COMMITS=${#COMMIT_HASHES[@]}
+        fi
     fi
 }
 
@@ -912,13 +962,13 @@ main() {
 
     printf '\n%sFetching updates...%s\n' "$C_CYAN" "$C_RESET"
 
-    if ! robust_fetch; then
+    if ! robust_fetch --tui; then
         printf '%s[WARNING] Fetch failed: %s%s\n' "$C_YELLOW" "$FETCH_INFO" "$C_RESET"
         FETCH_STATUS="FAIL"
-        _sleep 2
+        _sleep 0.5
     else
         printf '%s[OK] %s%s\n' "$C_GREEN" "$FETCH_INFO" "$C_RESET"
-        _sleep 1
+        _sleep 0.25
     fi
 
     load_commits
