@@ -520,33 +520,43 @@ run_background_check() {
     fi
 
     if ! validate_environment; then
-        write_state_file -1 || true
+        _debug "validate_environment failed"
+        if (( have_previous_state )); then
+            _debug "Preserving previous state ${previous_count} (validate failed)"
+        else
+            write_state_file -1 || true
+        fi
         exit 0
     fi
 
     if ! robust_fetch; then
         _debug "Fetch failed: $FETCH_INFO"
-        if [[ $FETCH_INFO == "Another update check is already running" ]]; then
-            _debug "Leaving existing state file unchanged"
-            if (( ! have_previous_state )); then
-                write_state_file -1 || true
-            fi
-            exit 0
+        if (( have_previous_state )); then
+            _debug "Preserving previous state ${previous_count} (fetch failed: $FETCH_INFO)"
+        else
+            write_state_file -1 || true
         fi
-        write_state_file -1 || true
         exit 0
     fi
 
     if ! upstream=$(get_upstream_ref); then
-        _debug "No upstream found, writing -2"
-        write_state_file -2 || true
+        _debug "No upstream found"
+        if (( have_previous_state )); then
+            _debug "Preserving previous state ${previous_count} (no upstream)"
+        else
+            write_state_file -2 || true
+        fi
         exit 0
     fi
     _debug "Upstream: $upstream"
 
     if ! _git_rev_count count "HEAD..${upstream}"; then
-        _debug "Failed to count commits behind, writing -1"
-        write_state_file -1 || true
+        _debug "Failed to count commits behind"
+        if (( have_previous_state )); then
+            _debug "Preserving previous state ${previous_count} (rev-count failed)"
+        else
+            write_state_file -1 || true
+        fi
         exit 0
     fi
     _debug "Commits behind: $count"
