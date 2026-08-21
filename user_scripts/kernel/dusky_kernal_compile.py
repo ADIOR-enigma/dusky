@@ -56,15 +56,18 @@ except ImportError:
 
 from rich import box
 from rich.align import Align
-from rich.console import Console
+from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
 from rich.progress import (
     BarColumn,
     DownloadColumn,
+    MofNCompleteColumn,
     Progress,
     SpinnerColumn,
     TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
     TransferSpeedColumn,
 )
 from rich.prompt import Confirm, Prompt
@@ -1389,6 +1392,24 @@ def compile_kernel() -> None:
         toolchain_name = "LLVM/Clang (ThinLTO)" if use_llvm else "GCC"
         console.print(f"\n[bold green]Building linux-{version}-dusky using {toolchain_name} with {cores} threads...[/bold green]\n")
 
+        # Estimate total steps for progress bar (bleeding-edge: dry-run count)
+        total_steps: int | None = None
+        try:
+            with console.status("[dim]Estimating total compile steps for ETA...[/dim]"):
+                dr = subprocess.run(
+                    make_base + ["-n", "all"],
+                    cwd=kernel_dir,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                cnt = dr.stdout.count(" CC ") + dr.stdout.count(" LD ") + dr.stdout.count(" AR ") + dr.stdout.count(" HOSTCC ")
+                if cnt >= 500:
+                    total_steps = cnt
+                    console.print(f"[dim]Estimated {total_steps} steps - progress bar will show ETA[/dim]")
+        except Exception:
+            total_steps = None
+
         build_cmd = make_base + [
             f"-j{cores}",
             "PACMAN_PKGBASE=linux-dusky",
@@ -1412,7 +1433,36 @@ def compile_kernel() -> None:
         )
 
         try:
-            with Live(console=console, auto_refresh=True, refresh_per_second=8) as live:
+            # Progress bar with ETA + Live log panel
+            progress = Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                MofNCompleteColumn(),
+                TextColumn("•"),
+                TimeElapsedColumn(),
+                TextColumn("•"),
+                TimeRemainingColumn(),
+                console=console,
+                transient=False,
+            )
+            task_id = progress.add_task(
+                f"[cyan]Compiling linux-{version} ({toolchain_name})[/cyan]",
+                total=total_steps,
+            )
+            # Group progress bar + log panel
+            def _make_renderable():
+                return Group(
+                    progress,
+                    Panel(
+                        "\n".join(log_lines) if log_lines else "[dim]Starting build...[/dim]",
+                        title=f"[bold cyan]Compiling linux-{version} ({toolchain_name})[/bold cyan]",
+                        border_style="blue",
+                        padding=(0, 2),
+                    ),
+                )
+
+            with Live(_make_renderable(), console=console, auto_refresh=True, refresh_per_second=8) as live:
                 if build_proc.stdout is None:
                     raise RuntimeError("Failed to capture build output stream")
                 for line in iter(build_proc.stdout.readline, ""):
@@ -1420,14 +1470,10 @@ def compile_kernel() -> None:
                     if not clean:
                         continue
                     log_lines.append(clean)
-                    live.update(
-                        Panel(
-                            "\n".join(log_lines),
-                            title=f"[bold cyan]Compiling linux-{version} ({toolchain_name})[/bold cyan]",
-                            border_style="blue",
-                            padding=(0, 2),
-                        )
-                    )
+                    # Advance progress for each CC/LD/AR line (real work)
+                    if any(k in clean for k in (" CC ", " LD ", " AR ", " HOSTCC ")):
+                        progress.advance(task_id)
+                    live.update(_make_renderable())
                 build_proc.stdout.close()
             build_proc.wait()
         except KeyboardInterrupt:
