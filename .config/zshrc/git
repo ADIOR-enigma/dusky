@@ -3,14 +3,14 @@
 function git_dusky() {
     /usr/bin/git --git-dir="$HOME/dusky/" --work-tree="$HOME" "$@"
 }
-alias git_dusky=git_dusky
 
 # 2. Add List Function (Filters missing files gracefully with warning fallback)
 function git_dusky_add_list() {
     (
         cd "$HOME" || return 0
         if [[ ! -f .git_dusky_list ]]; then
-            echo "\033[33m⚠ Warning: .git_dusky_list not found in $HOME\033[0m"
+            printf '\033[33m⚠ Warning: .git_dusky_list not found in %s — skipping manifest staging.\033[0m\n' "$HOME"
+            git_dusky diff HEAD
             return 0
         fi
 
@@ -40,17 +40,21 @@ function git_dusky_add_list() {
         done < .git_dusky_list
 
         if (( ${#missing[@]} > 0 )); then
-            echo "\033[33m⚠ Warning: ${#missing[@]} file(s) in .git_dusky_list missing on disk:\033[0m"
+            printf '\033[33m⚠ Warning: %d file(s) in .git_dusky_list missing on disk:\033[0m\n' "${#missing[@]}"
             for m in "${missing[@]}"; do
-                echo "  \033[90m➔ $m\033[0m"
+                printf '  \033[90m➔ %s\033[0m\n' "$m"
             done
         fi
 
         if (( ${#valid[@]} > 0 )); then
-            printf '%s\0' "${valid[@]}" | git_dusky add --pathspec-from-file=- --pathspec-file-nul 2>/dev/null
+            if ! printf '%s\0' "${valid[@]}" | git_dusky add --pathspec-from-file=- --pathspec-file-nul; then
+                printf '\033[31m✖ git add failed for manifest paths\033[0m\n'
+            fi
         fi
 
-        git_dusky add -u 2>/dev/null
+        if ! git_dusky add -u; then
+            printf '\033[31m✖ git add -u failed\033[0m\n'
+        fi
     )
     return 0
 }
@@ -58,8 +62,38 @@ function git_dusky_add_list() {
 # 3. Alias for discarding all local changes (both staged and unstaged) and revert the state of tracked files to exactly match the last commit (HEAD), this is a destructive operation. (DANGER ZONE)
 alias git_dusky_restore='echo "git --git-dir=$HOME/dusky/ --work-tree=$HOME reset --hard HEAD" && git_dusky reset --hard HEAD'
 
-# 4. Delta/Diff Alias
-alias gitdelta='git_dusky_add_list && git_dusky diff HEAD'
+# 4. Delta/Diff
+#    gitdelta        -> uncommitted working-tree changes vs HEAD (unchanged habit)
+#    gitdelta <N>    -> Nth-most-recent commit: colored header (hash · author ·
+#                       date · subject), per-file stat, full delta-rendered patch.
+#                       1 = last commit, 2 = one older, …
+function gitdelta() {
+    if (( $# == 0 )); then
+        git_dusky_add_list && git_dusky diff HEAD
+        return $?
+    fi
+
+    local n="${1}"
+    if [[ ! "$n" =~ ^[0-9]+$ ]] || (( n < 1 )); then
+        echo "Usage: gitdelta [N]  —  no arg: uncommitted changes · 1 = last commit · 2 = one older · …"
+        return 1
+    fi
+
+    if ! git_dusky rev-parse --verify --quiet "HEAD~$((n - 1))" >/dev/null; then
+        echo "No commit that far back — history is shorter than ${n}."
+        return 1
+    fi
+
+    git_dusky show \
+        --color=always \
+        --decorate=short \
+        --date=format-local:'%Y-%m-%d %H:%M' \
+        --format='%C(bold blue)󰏖 %h%C(reset) %C(bold green)%an%C(reset) %C(dim)%ad%C(reset)%d%n%C(bold yellow)%s%C(reset)' \
+        --stat \
+        --patch \
+        "HEAD~$((n - 1))" \
+        | delta --paging=never
+}
 
 # 5. Lazygit Bare Repo Alias
 alias lazygit_dusky='lazygit --git-dir=$HOME/dusky/ --work-tree=$HOME'
@@ -80,18 +114,33 @@ function git_dusky_push() {
         return 1
     fi
 
-    echo -n "Commit message for '$rel_path': "
-    read -r msg
-    if [[ -z "$msg" ]]; then
-        echo "Aborted: Commit message is required."
-        return 1
-    fi
-
     (
-        cd "$HOME"
-        git_dusky add "$rel_path"
-        git_dusky commit -m "$msg ($rel_path)"
-        git_dusky push
+        cd "$HOME" || return 1
+
+        if ! git_dusky add "$rel_path"; then
+            echo "Error: git add failed — nothing committed or pushed."
+            return 1
+        fi
+
+        echo -n "Commit message for '$rel_path': "
+        local msg
+        read -r msg
+        if [[ -z "$msg" ]]; then
+            echo "Aborted: Commit message is required."
+            return 1
+        fi
+
+        if ! git_dusky commit -m "$msg ($rel_path)"; then
+            echo "Commit failed — nothing pushed (working tree state untouched)."
+            return 1
+        fi
+
+        if ! git_dusky push; then
+            local br
+            br=$(git_dusky branch --show-current)
+            echo "Plain push failed — retrying with upstream setup (-u origin ${br:-main})..."
+            git_dusky push -u origin "${br:-main}"
+        fi
     )
 }
 
