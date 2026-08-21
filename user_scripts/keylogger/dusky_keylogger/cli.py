@@ -60,6 +60,20 @@ def _get_store(args: argparse.Namespace) -> KeyStore:
             os.chmod(store.path, 0o600)
         except OSError:
             pass
+        # If an old-schema (v1) DB is present, migrate before readers query
+        # columns that only exist in v2. Cheap read-only check first.
+        try:
+            import sqlite3
+
+            conn = sqlite3.connect(f"file:{store.path.as_posix()}?mode=ro", uri=True)
+            try:
+                uv = int(conn.execute("PRAGMA user_version").fetchone()[0])
+            finally:
+                conn.close()
+            if uv < 2:
+                store.init_db()
+        except sqlite3.Error:
+            pass
     return store
 
 
@@ -298,8 +312,11 @@ def _resolve_transcript_path(
     return base / filename
 
 
-def _format_markdown(text: str, period: str, start: datetime, end: datetime) -> str:
+def _format_markdown(
+    text: str, period: str, start: datetime, end: datetime, db_path: Path | None = None
+) -> str:
     """Wrap raw transcript in markdown with metadata header."""
+    db_note = str(db_path) if db_path else "the configured data_dir/keys.db"
     header = (
         f"# Dusky Keylogger — Transcript\n\n"
         f"- **Period:** `{period}`  \n"
@@ -308,7 +325,7 @@ def _format_markdown(text: str, period: str, start: datetime, end: datetime) -> 
         f"- **Characters:** `{len(text):,}`  \n"
         f"- **Note:** Backspace rendered as `⌫`, Enter as newline, Tab as tab.  \n"
         f"  This file lives in an ephemeral directory (e.g., `/tmp`) and is cleared on reboot.  \n"
-        f"  Persistent counts stay in `~/.config/dusky/settings/keylogger/data/keys.db` until you delete them.\n\n"
+        f"  Persistent counts stay in `{db_note}` until you delete them.\n\n"
         f"---\n\n"
     )
     # Ensure markdown code fence doesn't break if transcript contains ```
@@ -358,30 +375,35 @@ def cmd_text(args: argparse.Namespace) -> int:
             parts.append("\t")
     raw_text = "".join(parts)
     # Apply markdown wrapper if requested
-    output_text = _format_markdown(raw_text, args.period, start, end) if fmt == "markdown" else raw_text
+    output_text = (
+        _format_markdown(raw_text, args.period, start, end, db_path=store.path)
+        if fmt == "markdown"
+        else raw_text
+    )
 
     out_path = _resolve_transcript_path(args, args.period, fmt)
     try:
-        # Auto-create transcript dir for fresh installs; don't chmod /tmp itself,
-        # only the file (and leaf dir if we created it).
+        # Auto-create transcript dir for fresh installs; don't chmod the system
+        # tmp root itself, only the file (and leaf dir if we created it).
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        # If parent is not /tmp and not /temp, tighten to 0700 for privacy;
-        # for /tmp itself we leave its 1777 as is.
-        try:
-            import os
+        import os
+        import tempfile
 
-            # Only chmod leaf if it's not the system /tmp
-            if out_path.parent.resolve() not in {Path("/tmp").resolve(), Path("/temp").resolve()}:
+        # Only chmod leaf if it's not the system tmp root (keep 1777 semantics).
+        try:
+            if out_path.parent.resolve() != Path(tempfile.gettempdir()).resolve():
                 os.chmod(out_path.parent, 0o700)
         except OSError:
             pass
-        out_path.write_text(output_text, encoding="utf-8")
-        try:
-            import os
-
-            os.chmod(out_path, 0o600)
-        except OSError:
-            pass
+        # Create with 0600 from the start: no world-readable window, and
+        # O_NOFOLLOW refuses to write through a pre-planted symlink in /tmp.
+        fd = os.open(
+            out_path,
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
+            0o600,
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(output_text)
     except OSError as exc:
         console.print(f"[red]Could not write transcript to {out_path}: {exc}[/]")
         return 1
@@ -454,8 +476,8 @@ def cmd_seed(args: argparse.Namespace) -> int:
         inserted += store.insert_many(rows[i : i + CHUNK])
     console.print(
         f"[green]Seeded {inserted:,} demo events across {args.days} day(s).[/]\n"
-        "[dim]These are synthetic test records. Remove them with: "
-        "rm ~/.config/dusky/settings/keylogger/data/keys.db*  (or old ~/.local/share/dusky-keylogger/keys.db*)[/]"
+        f"[dim]These are synthetic test records. Remove them with: "
+        f"rm {store.path}[/]"
     )
     return 0
 

@@ -511,6 +511,15 @@ class KeyStore:
             int(row[1]) if row[1] is not None else None,
         )
 
+    def max_id(self) -> int:
+        """Latest event rowid -- O(1) change detector for dashboard caches."""
+        try:
+            with self._connect() as conn:
+                row = conn.execute("SELECT MAX(id) FROM events").fetchone()
+            return int(row[0]) if row and row[0] is not None else 0
+        except sqlite3.Error:
+            return 0
+
     def iter_between(
         self, start: datetime, end: datetime
     ) -> Iterator[EventRow]:

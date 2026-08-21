@@ -6,9 +6,11 @@ This file exists for backward compatibility for any external import of
 
 try:
     from .dashboard_tui import main  # noqa: F401
-except ImportError as e:
+except ImportError as _e:
     # Fallback if dashboard_tui not available
+    _msg = str(_e)
+
     def main(*_a, **_kw):  # type: ignore
-        raise RuntimeError(f"dashboard_tui not available: {e}")
+        raise RuntimeError(f"dashboard_tui not available: {_msg}")
 
 __all__ = ["main"]

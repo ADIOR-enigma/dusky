@@ -5,7 +5,6 @@ estimated WPM, top keys, and hourly activity -- for today, this ISO
 week, this month, or the full history.
 """
 
-import calendar
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
 

@@ -176,16 +176,27 @@ def cmd_status(_args: argparse.Namespace) -> int:
     else:
         print(f"Service file:   {C_YELLOW}not installed{C_RESET}")
 
-    data_dir = Path(home) / ".local" / "share" / "dusky-keylogger"
-    db = data_dir / "keys.db"
+    # New canonical data dir first, then legacy migration source.
+    new_data = Path(home) / ".config" / "dusky" / "settings" / "keylogger" / "data"
+    legacy_data = Path(home) / ".local" / "share" / "dusky-keylogger"
+    db = new_data / "keys.db"
+    shown_legacy = False
+    if not db.exists():
+        legacy_db = legacy_data / "keys.db"
+        if legacy_db.exists():
+            db = legacy_db
+            shown_legacy = True
     if db.exists():
         try:
             conn = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
             total = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
             conn.close()
-        except Exception:
-            total = "?"
-        print(f"Database:       {db} -- {total:,} events")
+            label = f"{db} -- {int(total):,} events"
+            if shown_legacy:
+                label += f"  {C_YELLOW}(legacy path; canonical is {new_data}){C_RESET}"
+            print(f"Database:       {label}")
+        except Exception as exc:
+            print(f"Database:       {db} -- unreadable ({exc})")
     else:
         print(f"Database:       {C_YELLOW}no data yet{C_RESET}")
 
@@ -227,7 +238,7 @@ def cmd_dry_run(_args: argparse.Namespace) -> int:
     else:
         print(f"  2. Add user '{user}' to the 'input' group (usermod -aG input).")
     print(f"  3. Create venv at {venv_dir(home)} (uv --python 3.14, else venv+pip).")
-    print("  4. Install package + deps from pyproject.toml (evdev, textual).")
+    print("  4. Install package + deps from pyproject.toml (evdev, rich).")
     print(f"  5. Install systemd service {SERVICE_FILE}.")
     if _args.enable:
         print("  6. systemctl enable --now dusky_keylogger")
@@ -339,7 +350,9 @@ def install_service(venv_py: str, user: str, home: str) -> None:
     if not SERVICE_TEMPLATE.exists():
         fail(f"Service template missing: {SERVICE_TEMPLATE}")
     data_dir = f"{home}/.config/dusky/settings/keylogger/data"
-    config_dir = f"{home}/.config/dusky-keylogger"
+    # Canonical config dir (writable under ProtectSystem=strict so the daemon
+    # can auto-create/backfill config.json inside its sandbox).
+    config_dir = f"{home}/.config/dusky/settings/keylogger"
     template = string.Template(SERVICE_TEMPLATE.read_text(encoding="utf-8"))
     rendered = template.substitute(
         USER=user,

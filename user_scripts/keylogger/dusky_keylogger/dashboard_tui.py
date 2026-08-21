@@ -43,7 +43,7 @@ import termios
 import threading
 import time
 import traceback
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -57,7 +57,7 @@ from rich.text import Text
 # Local imports with fallback (installed vs. direct script run)
 # ---------------------------------------------------------------------------
 try:
-    from .daemon import default_data_dir, load_config  # type: ignore
+    from .daemon import default_data_dir  # type: ignore
     from .stats import card_totals, hourly_series, summarize, period_range  # type: ignore
     from .storage import KeyStore  # type: ignore
     from . import keycodes as kc  # type: ignore
@@ -79,13 +79,13 @@ except ImportError:
                 "dusky_keylogger", _here / "__init__.py", submodule_search_locations=[str(_here)]
             )
             if _pkg_spec and _pkg_spec.loader:
-                _pkg_mod = importlib.util.module_from_spec(_pkg_spec)
+                _pkg_mod = _ilu.module_from_spec(_pkg_spec)
                 sys.modules["dusky_keylogger"] = _pkg_mod
                 _pkg_spec.loader.exec_module(_pkg_mod)  # type: ignore[attr-defined]
         except Exception:
             pass
     try:
-        from dusky_keylogger.daemon import default_data_dir, load_config  # type: ignore
+        from dusky_keylogger.daemon import default_data_dir  # type: ignore
         from dusky_keylogger.stats import card_totals, hourly_series, summarize, period_range  # type: ignore
         from dusky_keylogger.storage import KeyStore  # type: ignore
         from dusky_keylogger import keycodes as kc  # type: ignore
@@ -95,12 +95,12 @@ except ImportError:
         # but daemon itself does `from . import __version__` which now resolves because
         # we pre-loaded dusky_keylogger package above.
         try:
-            from dusky_keylogger.daemon import default_data_dir, load_config  # type: ignore
+            from dusky_keylogger.daemon import default_data_dir  # type: ignore
             from dusky_keylogger.stats import card_totals, hourly_series, summarize, period_range  # type: ignore
             from dusky_keylogger.storage import KeyStore  # type: ignore
             from dusky_keylogger import keycodes as kc  # type: ignore
         except ImportError:
-            from daemon import default_data_dir, load_config  # type: ignore
+            from daemon import default_data_dir  # type: ignore
             from stats import card_totals, hourly_series, summarize, period_range  # type: ignore
             from storage import KeyStore  # type: ignore
             import keycodes as kc  # type: ignore
@@ -352,7 +352,7 @@ def load_theme_colors() -> dict[str, str]:
     colors = DEFAULT_COLORS.copy()
     if THEME_FILE.exists():
         try:
-            with open(THEME_FILE, "r", encoding="utf-8") as f:
+            with open(THEME_FILE, encoding="utf-8") as f:
                 user = json.load(f)
                 if isinstance(user, dict):
                     for key, fb in DEFAULT_COLORS.items():
@@ -447,35 +447,91 @@ def _get_cycled_period(cur: str, step: int = 1) -> str:
     return PERIOD_LIST[(idx + step) % len(PERIOD_LIST)]
 
 
+# ---------------------------------------------------------------------------
+# Query cache -- rebuild expensive aggregates only when the events table
+# actually changed (MAX(id) is an O(1) rowid probe). The render loop runs at
+# ~4 fps; without this, large databases re-scan per frame (measured ~1s/frame
+# for summarize and ~3s for transcript rebuilds on 380k rows).
+# ---------------------------------------------------------------------------
+_QUERY_CACHE: dict[tuple[str, tuple], tuple[int, Any]] = {}
+
+
+def _cached(store: Any, key: tuple, compute: Any) -> Any:
+    """Return cached compute() while store.max_id() is unchanged."""
+    if store is None:
+        return compute()
+    try:
+        ver = store.max_id()
+    except Exception:
+        return compute()
+    ck = (str(getattr(store, "path", "")), key)
+    hit = _QUERY_CACHE.get(ck)
+    if hit is not None and hit[0] == ver:
+        return hit[1]
+    val = compute()
+    if len(_QUERY_CACHE) > 64:
+        _QUERY_CACHE.clear()
+    _QUERY_CACHE[ck] = (ver, val)
+    return val
+
+
 def _transcript_line_count(store: Any, period: str) -> int:
     """Efficient native-Python transcript line count (single DB scan).
 
     Mirrors render_transcript_panel's entry logic but only counts lines:
     one per ENTER + trailing buffer. Used for auto-follow and scroll clamping
     without rebuilding full entries list. Returns at least 1 for empty state.
+    Cached per (store, period); invalidated when new events are written.
     """
+    entries = _cached(store, ("transcript_entries", period), lambda: _transcript_entries(store, period))
+    return max(1, len(entries))
+
+
+def _transcript_entries(store: Any, period: str) -> list[tuple[str, str]]:
+    """Build (HH:MM:SS, text) transcript lines for a period, newest last."""
     try:
         start, end = period_range(period)
-    except Exception:
-        return 1
-    count = 0
-    has_pending = False
+    except Exception as e:
+        log_error(f"period_range transcript {e}")
+        start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        end = datetime.now()
+    entries: list[tuple[str, str]] = []
+    cur_text: list[str] = []
+    cur_time: str | None = None
     try:
         for row in store.iter_between(start, end):
+            try:
+                t_str = datetime.fromtimestamp(row.ts_ms / 1000).strftime("%H:%M:%S")
+            except Exception:
+                t_str = "--:--:--"
             if row.kind == kc.KIND_PRINTABLE and row.char:
-                has_pending = True
-            elif row.kind in (kc.KIND_BACKSPACE, kc.KIND_TAB, kc.KIND_DELETE):
-                has_pending = True
+                if cur_time is None:
+                    cur_time = t_str
+                cur_text.append(row.char)
+            elif row.kind == kc.KIND_BACKSPACE:
+                if cur_time is None:
+                    cur_time = t_str
+                cur_text.append("⌫")
             elif row.kind == kc.KIND_ENTER:
-                count += 1
-                has_pending = False
-            # ignore other kinds (modifiers, etc.) — they don't produce transcript chars
-        if has_pending:
-            count += 1
-        return max(1, count)
+                entries.append((cur_time or t_str, "".join(cur_text)))
+                cur_text = []
+                cur_time = None
+            elif row.kind == kc.KIND_TAB:
+                if cur_time is None:
+                    cur_time = t_str
+                cur_text.append("\t")
+            elif row.kind == kc.KIND_DELETE:
+                if cur_time is None:
+                    cur_time = t_str
+                cur_text.append("⌦")
+        if cur_text:
+            entries.append((cur_time or "--:--:--", "".join(cur_text)))
     except Exception as e:
-        log_error(f"_transcript_line_count {e}")
-        return 1
+        log_error(f"transcript iter_between {e}")
+        return [("--:--:--", f"[error: {e}]")]
+    if not entries:
+        return [("--:--:--", "[no typed text]")]
+    return entries
 
 
 # ---------------------------------------------------------------------------
@@ -525,7 +581,6 @@ def render_cards_panel(cards: dict[str, int], colors: dict[str, str]) -> Table:
     fg = colors.get("fg", "#efe0d5")
     accent = colors.get("accent", "#ffb779")
     muted = colors.get("muted", "#a08c7a")
-    warning = colors.get("warning", "#e3c0a5")
     tbl = Table(box=None, expand=True, show_header=False, pad_edge=False)
     for _ in PERIOD_LIST:
         tbl.add_column(justify="center", ratio=1)
@@ -595,12 +650,11 @@ def render_hourly_panel(store: KeyStore, colors: dict[str, str], day: str | None
     """Hourly histogram (0–23) — bars use high-contrast accent, zebra-striped."""
     fg = colors.get("fg", "#efe0d5")
     accent = colors.get("accent", "#ffb779")
-    muted = colors.get("muted", "#a08c7a")
     cursor_bg = colors.get("cursor_bg", "#2a221c")
     if day is None:
         day = datetime.now().strftime("%Y-%m-%d")
     try:
-        hourly = hourly_series(store, day)
+        hourly = _cached(store, ("hourly", day), lambda: hourly_series(store, day))
     except Exception as e:
         log_error(f"hourly_series error: {e}")
         hourly = [(h, 0) for h in range(24)]
@@ -631,14 +685,10 @@ def render_daily_panel(store: KeyStore, colors: dict[str, str], days: int = 14) 
     success = colors.get("success", "#c3cb98")
     cursor_bg = colors.get("cursor_bg", "#2a221c")
     try:
-        from .stats import daily_series as _daily
-        series = _daily(store, days)
-    except Exception:
-        try:
-            series = store.daily_totals(days)
-        except Exception as e:
-            log_error(f"daily_totals error: {e}")
-            series = []
+        series = _cached(store, ("daily", days), lambda: store.daily_totals(days))
+    except Exception as e:
+        log_error(f"daily_totals error: {e}")
+        series = []
     max_v = max((v for _, v in series), default=1)
     if max_v == 0:
         max_v = 1
@@ -758,55 +808,16 @@ def render_transcript_panel(
 ) -> Panel:
     """Scrollable transcript — beautiful, high-contrast, timestamped, realtime.
 
-    Reconstructs typed text for the period with per-line timestamps (efficient native
-    Python, single DB scan). Each line is `HH:MM:SS` of its first keystroke + text.
-    Windowed `lines[scroll:scroll+height]` with live auto-follow to bottom.
+    Reconstructs typed text for the period with per-line timestamps. Entries
+    are built once per data change (cached); each frame only windows them.
+    Each line is `HH:MM:SS` of its first keystroke + text.
     """
     fg = colors.get("fg", "#efe0d5")
     accent = colors.get("accent", "#ffb779")
     muted = colors.get("muted", "#a08c7a")
-    try:
-        start, end = period_range(period)
-    except Exception as e:
-        log_error(f"period_range transcript {e}")
-        start, end = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0), datetime.now()
-    entries: list[tuple[str, str]] = []
-    cur_text: list[str] = []
-    cur_time: str | None = None
-    try:
-        for row in store.iter_between(start, end):
-            try:
-                t_str = datetime.fromtimestamp(row.ts_ms / 1000).strftime("%H:%M:%S")
-            except Exception:
-                t_str = "--:--:--"
-            if row.kind == kc.KIND_PRINTABLE and row.char:
-                if cur_time is None:
-                    cur_time = t_str
-                cur_text.append(row.char)
-            elif row.kind == kc.KIND_BACKSPACE:
-                if cur_time is None:
-                    cur_time = t_str
-                cur_text.append("⌫")
-            elif row.kind == kc.KIND_ENTER:
-                line = "".join(cur_text)
-                entries.append((cur_time or t_str, line))
-                cur_text = []
-                cur_time = None
-            elif row.kind == kc.KIND_TAB:
-                if cur_time is None:
-                    cur_time = t_str
-                cur_text.append("\t")
-            elif row.kind == kc.KIND_DELETE:
-                if cur_time is None:
-                    cur_time = t_str
-                cur_text.append("⌦")
-        if cur_text:
-            entries.append((cur_time or datetime.now().strftime("%H:%M:%S"), "".join(cur_text)))
-    except Exception as e:
-        log_error(f"transcript iter_between {e}")
-        entries = [("--:--:--", f"[error: {e}]")]
-    if not entries:
-        entries = [("--:--:--", "[no typed text]")]
+    entries = _cached(
+        store, ("transcript_entries", period), lambda: _transcript_entries(store, period)
+    )
     # New → old: reverse so newest at top (user request) — lazy load as scroll
     entries = list(reversed(entries))
     total_lines = len(entries)
@@ -844,9 +855,9 @@ def render_recent_panel(store: KeyStore, colors: dict[str, str], scroll: int = 0
     success = colors.get("success", "#c3cb98")
     warning = colors.get("warning", "#e3c0a5")
     cursor_bg = colors.get("cursor_bg", "#2a221c")
-    # Fetch larger pool to allow scrolling (100 rows)
+    # Fetch larger pool to allow scrolling (100 rows); cached per data change
     try:
-        rows = store.recent(100)
+        rows = _cached(store, ("recent",), lambda: store.recent(100))
     except Exception as e:
         log_error(f"recent fetch {e}")
         rows = []
@@ -1015,7 +1026,6 @@ def _build_layout_impl(
     warning = colors.get("warning", "#e3c0a5")
     fg = colors.get("fg", "#efe0d5")
     muted = colors.get("muted", "#a08c7a")
-    cursor_bg = colors.get("cursor_bg", "#2a221c")
 
     # Ensure store exists (read-only, may be empty)
     if store is None:
@@ -1035,12 +1045,24 @@ def _build_layout_impl(
 
     # Gather stats safely — request ALL keys (1000) for complete, scrollable Keys view
     try:
-        current_stats = summarize(store, period, limit_keys=1000) if store is not None else None  # type: ignore[arg-type]
+        current_stats = (
+            _cached(
+                store,
+                ("stats", period),
+                lambda: summarize(store, period, limit_keys=1000),  # type: ignore[arg-type]
+            )
+            if store is not None
+            else None
+        )
     except Exception as e:
         log_error(f"summarize {period}: {e}")
         current_stats = None
     try:
-        cards = card_totals(store) if store is not None else {p: 0 for p in PERIOD_LIST}  # type: ignore[arg-type]
+        cards = (
+            _cached(store, ("cards",), lambda: card_totals(store))  # type: ignore[arg-type]
+            if store is not None
+            else {p: 0 for p in PERIOD_LIST}
+        )
     except Exception as e:
         log_error(f"card_totals: {e}")
         cards = {p: 0 for p in PERIOD_LIST}
@@ -1084,7 +1106,7 @@ def _build_layout_impl(
     header.append("  Total: ", style=f"{fg}")
     header.append(f"{current_stats.total_keys:,}", style=f"bold {success}")
     header.append(" keys", style=f"{fg}")
-    header.append(f"  DB: ", style=f"{muted}")
+    header.append("  DB: ", style=f"{muted}")
     try:
         db_name = store.path.name if store and hasattr(store, "path") else "keys.db"  # type: ignore
     except Exception:
@@ -1156,7 +1178,12 @@ def _build_layout_impl(
         scroll = int(scrolls.get("recent", 0))
         panel = render_recent_panel(store, colors, scroll=scroll, height=th)  # type: ignore[arg-type]
         try:
-            total_r = len(store.recent(100)) if store else 0  # type: ignore[union-attr]
+            recent_rows = (
+                _cached(store, ("recent",), lambda: store.recent(100))  # type: ignore[arg-type,union-attr]
+                if store is not None
+                else []
+            )
+            total_r = len(recent_rows)
             max_s = max(0, total_r - th)
             scrolls["recent"] = max(0, min(scroll, max_s))
         except Exception:
@@ -1547,6 +1574,8 @@ def run_live_dashboard(store_path: str | Path | None = None) -> None:
         ) as live:
             input_buf = bytearray()
             running = True
+            last_frame_sig: tuple | None = None
+            last_push_at = time.monotonic()
             while running:
                 try:
                     ready, _, _ = select.select([fd], [], [], 0.25)
@@ -1663,6 +1692,7 @@ def run_live_dashboard(store_path: str | Path | None = None) -> None:
                             # Enter could expand? No sub-view; keep as view cycle forward
                             view = _get_cycled_view(view, 1)
                         case "refresh":
+                            _QUERY_CACHE.clear()
                             cache.reload(force=True)
                         case _:
                             pass
@@ -1671,6 +1701,18 @@ def run_live_dashboard(store_path: str | Path | None = None) -> None:
                     break
                 if not got_keys:
                     cache.reload(force=False)
+                # Idle skip: re-render only when input arrived, the data
+                # version (MAX(id)) changed, or layout inputs changed.
+                try:
+                    data_ver = cache.store.max_id() if cache.store is not None else 0  # type: ignore[union-attr]
+                except Exception:
+                    data_ver = -1
+                frame_sig = (data_ver, period, view, console.height, cache.colors_ts)
+                if not got_keys and frame_sig == last_frame_sig and (
+                    time.monotonic() - last_push_at) < 2.0:
+                    continue
+                last_frame_sig = frame_sig
+                last_push_at = time.monotonic()
                 # Transcript: new at top (reverse chronological), live, efficient native Python
                 # New lines inserted at top (index 0), so staying at scroll 0 shows newest.
                 # If user scrolled down viewing older, keep offset stable by shifting down.

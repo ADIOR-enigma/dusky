@@ -4,7 +4,7 @@ Always-on keystroke statistics daemon for Arch Linux (Kernel 7.1+, Python 3.14.6
 
 Captures raw physical key presses from kernel `/dev/input/event*` via evdev
 (bypassing Wayland/X11), classifies them, resolves US-layout characters,
-and persists them to SQLite WAL. Analytics via CLI and a Textual TUI.
+and persists them to SQLite WAL. Analytics via CLI and a Rich live dashboard.
 
 This is a statistics daemon, not a stealth logger. It runs as your user,
 under systemd, with the data directory mode 0700.
@@ -33,7 +33,7 @@ systemctl status dusky_keylogger
 dusky daemon                  # foreground (systemd uses this)
 dusky stats --period week
 dusky stats --period today --json
-dusky dashboard               # Textual TUI
+dusky dashboard               # live Rich dashboard (matugen theme)
 dusky status
 dusky devices
 dusky events --limit 40
@@ -42,7 +42,8 @@ dusky seed --days 7           # synthetic data, testing only
 
 ## Data
 
-Default: `~/.local/share/dusky-keylogger/keys.db`
-Override: `DUSKY_KEYLOGGER_DATA_DIR`.
+Default: `~/.config/dusky/settings/keylogger/data/keys.db`
+Override: `DUSKY_KEYLOGGER_DATA_DIR` or `config.json` `data_dir`.
+Legacy `~/.local/share/dusky-keylogger/` is detected by `install.py --status`.
 
 Keystroke databases contain passwords you typed. Treat the file as secret.
