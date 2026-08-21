@@ -67,6 +67,7 @@ CHECK_CMDS: dict[str, str] = {
     "spicetify": "spicetify",
     "pywalfox": "pywalfox",
     "dolphin": "dolphin",
+    "papirus-folders": "papirus-folders",
 }
 
 # Track all explicitly registered keys for auto-discovery
@@ -504,13 +505,13 @@ SCHEMA: dict[int, list[ConfigItem]] = {
             extended_help="**Dusky Sites Web Theme**\n\nGenerates CSS overrides for web applications."
         ),
         ConfigItem(
-            label="Icon Colors",
-            key="papirus_icon_theme",
+            label="Papirus Folders",
+            key="papirus-folders",
             scope="DEFAULT",
             type_="bool",
-            default=False,
+            default=True,
             group="Icons",
-            extended_help="**Papirus Icon Folder Recolor**\n\nTriggers Papirus folder color generation script."
+            extended_help="**Papirus Folders (Lab Best-of-Breed)**\n\nNative matugen Lab-distance mapping of `colors.primary` to closest Papirus palette (adwaita, black, blue, bluegrey, breeze, brown, carmine, cyan, darkcyan, deeporange, green, grey, indigo, magenta, nordic, orange, palebrown, paleorange, pink, red, teal, violet, white, yaru, yellow) via `colors_to_compare` + `closest_color`.\n\nRuns `sudo -n papirus-folders -C {{closest_color}} --theme Papirus-Dark -u` (requires `aur/papirus-folders` + NOPASSWD drop-in at `/etc/sudoers.d/papirus-folders`) + live `gsettings` toggle `Adwaita → Papirus-Dark` so Dolphin/Nautilus reload instantly. See `~/.config/matugen/templates/papirus-color:1` and `~/.config/matugen/config.toml:48`.\n\nLegacy `papirus_icon_theme` (sh/awk) superseded — kept commented for reference."
         ),
         ConfigItem(
             label="Standalone Commands",
@@ -544,7 +545,7 @@ SCHEMA: dict[int, list[ConfigItem]] = {
             default=None,
             group="Presets",
             preset_payload={
-                "gtk3": True, "gtk4": True, "icon_theme": True, "qt5ct": True, "qt6ct": True,
+                "gtk3": True, "gtk4": True, "icon_theme": True, "papirus-folders": True, "qt5ct": True, "qt6ct": True,
                 "kdeglobals": True, "hyprland": True, "hyprlock": True, "waybar": True,
                 "wlogout": True, "rofi": True, "mako": True, "theme_notify": True,
                 "hyprpolkitagent": True, "dusky_tui": True, "dusky_visualizer_colors": True,
