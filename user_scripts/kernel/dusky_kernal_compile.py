@@ -5,13 +5,13 @@ Dusky Kernel Compiler — 2026.08 Production Grade
 Target: Arch Linux rolling, Kernel 7.1.x+, systemd 261+, Python 3.14+
 Toolchain: LLVM/Clang + lld (with ThinLTO) or GCC fallback, rustc/bindgen (with rustavailable probe)
 Methodology: pacman -T Provides resolution, modprobed-db hardware profiling + systemd service,
-             kernel.org SHA-256 verification, LSMOD + expanded LMC_KEEP localmodconfig,
-             vmlinux BTF preservation (enabling sched_ext), pacman-pkg with isolated PKGDEST.
+             kernel.org SHA-256 verification, interactive release picker (mainline default),
+             LSMOD + expanded LMC_KEEP localmodconfig, vmlinux BTF preservation (enabling
+             sched_ext), pacman-pkg with isolated PKGDEST.
 """
 from __future__ import annotations
 
 import argparse
-import asyncio
 import atexit
 import gzip
 import hashlib
@@ -27,7 +27,7 @@ import time
 import urllib.error
 import urllib.request
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Literal
@@ -64,6 +64,8 @@ from rich.table import Table
 console = Console()
 
 # --- Global Paths & Constants ---
+USER_AGENT = "dusky-kernel/2026.08"
+
 DEPENDENCIES = [
     "base-devel",
     "bc",
@@ -126,38 +128,44 @@ class DuskyState:
     enable_sched_ext: bool = True
     enable_thin_lto: bool = True
 
+    _FIELDS = (
+        "use_imported_config",
+        "prefer_llvm",
+        "enable_rust",
+        "enable_sched_ext",
+        "enable_thin_lto",
+    )
+
+    @staticmethod
+    def _as_bool(value: object, default: bool) -> bool:
+        return value if isinstance(value, bool) else default
+
     @classmethod
     def load(cls) -> DuskyState:
-        DUSKY_DIR.mkdir(parents=True, exist_ok=True)
-        if DUSKY_STATE_FILE.exists():
-            try:
+        defaults = cls()
+        try:
+            if DUSKY_STATE_FILE.exists():
                 with open(DUSKY_STATE_FILE, "r") as f:
                     data = json.load(f)
-                    return cls(
-                        use_imported_config=data.get("use_imported_config", True),
-                        prefer_llvm=data.get("prefer_llvm", True),
-                        enable_rust=data.get("enable_rust", True),
-                        enable_sched_ext=data.get("enable_sched_ext", True),
-                        enable_thin_lto=data.get("enable_thin_lto", True),
-                    )
-            except Exception:
-                pass
-        return cls()
+                if not isinstance(data, dict):
+                    return defaults
+                return cls(
+                    **{
+                        name: cls._as_bool(data.get(name), getattr(defaults, name))
+                        for name in cls._FIELDS
+                    }
+                )
+        except (OSError, json.JSONDecodeError):
+            pass
+        return defaults
 
     def save(self) -> None:
         DUSKY_DIR.mkdir(parents=True, exist_ok=True)
-        with open(DUSKY_STATE_FILE, "w") as f:
-            json.dump(
-                {
-                    "use_imported_config": self.use_imported_config,
-                    "prefer_llvm": self.prefer_llvm,
-                    "enable_rust": self.enable_rust,
-                    "enable_sched_ext": self.enable_sched_ext,
-                    "enable_thin_lto": self.enable_thin_lto,
-                },
-                f,
-                indent=4,
-            )
+        payload = {name: getattr(self, name) for name in self._FIELDS}
+        tmp_file = DUSKY_STATE_FILE.with_suffix(".json.tmp")
+        with open(tmp_file, "w") as f:
+            json.dump(payload, f, indent=4)
+        os.replace(tmp_file, DUSKY_STATE_FILE)
 
 
 # --- Sudo Keepalive Daemon ---
@@ -191,10 +199,14 @@ def ensure_sudo() -> None:
 
 
 def get_username() -> str:
+    for var in ("LOGNAME", "USER"):
+        val = os.environ.get(var)
+        if val:
+            return val
     try:
         return os.getlogin()
-    except Exception:
-        return os.environ.get("USER") or Path.home().name
+    except OSError:
+        return Path.home().name
 
 
 # --- Toolchain Probing ---
@@ -206,31 +218,39 @@ def check_llvm_available() -> bool:
     return is_tool_available("clang") and is_tool_available("llvm-ar") and is_tool_available("lld")
 
 
-def probe_rust_support(kernel_dir: Path, use_llvm: bool) -> bool:
-    """Check if rustc, bindgen, rust-src and kernel 'rustavailable' probe all pass."""
-    if not (is_tool_available("rustc") and is_tool_available("bindgen")):
-        return False
-    
-    # Check rust-src presence
-    try:
-        r = subprocess.run(["rustc", "--print", "sysroot"], capture_output=True, text=True, check=True)
-        sysroot = Path(r.stdout.strip())
-        rust_src = sysroot / "lib" / "rustlib" / "src" / "rust"
-        if not rust_src.exists():
-            return False
-    except Exception:
-        return False
+def probe_rust_support(kernel_dir: Path, use_llvm: bool) -> tuple[bool, str]:
+    """Check rustc, bindgen, rust-src and the kernel 'rustavailable' probe.
 
-    # Execute make rustavailable against kernel tree
+    Returns (ok, reason). Reason explains the failure for user feedback.
+    """
+    if not is_tool_available("rustc"):
+        return False, "rustc not found in PATH"
+    if not is_tool_available("bindgen"):
+        return False, "bindgen not found in PATH"
+
     try:
-        cmd = ["make"]
-        if use_llvm:
-            cmd.extend(["LLVM=1", "LLVM_IAS=1"])
-        cmd.append("rustavailable")
+        r = subprocess.run(
+            ["rustc", "--print", "sysroot"], capture_output=True, text=True, check=True
+        )
+        rust_src = Path(r.stdout.strip()) / "lib" / "rustlib" / "src" / "rust"
+        if not rust_src.exists():
+            return False, f"rust-src missing at {rust_src}"
+    except (OSError, subprocess.CalledProcessError):
+        return False, "failed to query rustc sysroot"
+
+    cmd = ["make"]
+    if use_llvm:
+        cmd.extend(["LLVM=1", "LLVM_IAS=1"])
+    cmd.append("rustavailable")
+    try:
         res = subprocess.run(cmd, cwd=kernel_dir, capture_output=True, text=True)
-        return res.returncode == 0
-    except Exception:
-        return False
+        if res.returncode != 0:
+            detail = (res.stdout + res.stderr).strip().splitlines()
+            reason = detail[-1] if detail else f"exit code {res.returncode}"
+            return False, f"kernel reports toolchain incompatible ({reason})"
+    except OSError as e:
+        return False, str(e)
+    return True, "available"
 
 
 def get_cpu_vendor() -> Literal["amd", "intel", "generic"]:
@@ -241,14 +261,14 @@ def get_cpu_vendor() -> Literal["amd", "intel", "generic"]:
                 return "amd"
             elif "genuineintel" in content:
                 return "intel"
-    except Exception:
+    except OSError:
         pass
     return "generic"
 
 
 # --- Dependency & Package Resolution ---
 def missing_packages(pkgs: list[str]) -> list[str]:
-    """Use pacman -T to evaluate package satisfaction including Provides (e.g. zlib-ng-compat)."""
+    """Use pacman -T to evaluate package satisfaction including Provides."""
     r = subprocess.run(["pacman", "-T"] + pkgs, capture_output=True, text=True)
     return [ln.strip() for ln in r.stdout.splitlines() if ln.strip()]
 
@@ -292,58 +312,141 @@ def install_aur_package(pkg_name: str) -> None:
                 shutil.rmtree(build_dir, ignore_errors=True)
 
 
-# --- Kernel Fetching & Cryptographic Verification ---
-def get_latest_kernel() -> tuple[str, str]:
-    """Return (version, source_url) from kernel.org API. Prefers non-EOL stable, else mainline."""
-    try:
-        req = urllib.request.Request(
-            "https://www.kernel.org/releases.json",
-            headers={"User-Agent": "dusky-kernel/2026.08"},
-        )
-        with urllib.request.urlopen(req, timeout=15) as response:
-            data = json.loads(response.read().decode())
-            stable = None
-            mainline = None
-            for release in data.get("releases", []):
-                if release.get("moniker") == "stable" and not release.get("iseol"):
-                    stable = (release["version"], release["source"])
-                    break
-            for release in data.get("releases", []):
-                if release.get("moniker") == "mainline":
-                    mainline = (release["version"], release["source"])
-                    break
-            if stable:
-                return stable
-            if mainline:
-                return mainline
-            raise ValueError("No stable or mainline release found in kernel.org JSON")
-    except Exception as e:
-        console.print(f"[bold red]Fatal:[/bold red] kernel.org API failed: {e}")
-        sys.exit(1)
+# --- kernel.org Release Discovery & Cryptographic Verification ---
+def version_key(version: str) -> tuple[int, ...] | None:
+    """Sort key for kernel versions. '7.2' < '7.2.1' < '7.3-rc1' < '7.3'.
+
+    Release candidates sort below the final release of the same series.
+    Returns None for non-numeric versions (e.g. 'next-20260820').
+    """
+    m = re.match(r"^(\d+(?:\.\d+)*)(?:-rc(\d+))?$", version.strip())
+    if not m:
+        return None
+    nums = tuple(int(part) for part in m.group(1).split("."))
+    rc = m.group(2)
+    return (*nums, -int(rc)) if rc else (*nums, 0)
 
 
-def get_sha256_for_tarball(tarball_name: str) -> str | None:
+def normalize_releases(data: dict) -> list[dict]:
+    """Filter kernel.org releases.json to mainline + non-EOL stables, best first."""
+    priority = {"mainline": 0, "stable": 1}
+    candidates: list[dict] = []
+    seen: set[str] = set()
+    for release in data.get("releases", []):
+        moniker = release.get("moniker")
+        version = release.get("version")
+        url = release.get("source")
+        if moniker not in priority or not version or not url:
+            continue
+        if release.get("iseol"):
+            continue
+        key = version_key(version)
+        if key is None or version in seen:
+            continue
+        seen.add(version)
+        candidates.append({"version": version, "url": url, "moniker": moniker, "key": key})
+    candidates.sort(key=lambda c: (priority[c["moniker"]], [-v for v in c["key"]]))
+    return candidates
+
+
+def fetch_releases() -> list[dict]:
+    """Fetch and normalize available kernel.org releases. Raises on total failure."""
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(
+                "https://www.kernel.org/releases.json",
+                headers={"User-Agent": USER_AGENT},
+            )
+            with urllib.request.urlopen(req, timeout=15) as response:
+                data = json.loads(response.read().decode())
+            candidates = normalize_releases(data)
+            if candidates:
+                return candidates
+            raise ValueError("no usable mainline/stable releases in kernel.org JSON")
+        except Exception as e:
+            last_error = e
+            if attempt < 2:
+                time.sleep(2 * (attempt + 1))
+    raise RuntimeError(f"kernel.org API failed after retries: {last_error}")
+
+
+def pick_release(candidates: list[dict]) -> tuple[str, str]:
+    """Interactive release selection. Default is entry #1 (current mainline)."""
+    table = Table(title="Available kernel.org Releases", box=box.SIMPLE_HEAVY)
+    table.add_column("#", style="bold green", justify="right")
+    table.add_column("Moniker", style="cyan")
+    table.add_column("Version", style="bold white")
+    table.add_column("Source", style="dim")
+    for idx, cand in enumerate(candidates, start=1):
+        table.add_row(str(idx), cand["moniker"], cand["version"], cand["url"])
+    console.print(table)
+
+    choice = Prompt.ask(
+        "\n[bold cyan]Select kernel version to compile[/bold cyan]",
+        choices=[str(i) for i in range(1, len(candidates) + 1)],
+        default="1",
+    )
+    selected = candidates[int(choice) - 1]
+    return selected["version"], selected["url"]
+
+
+def sha256sums_urls(version: str) -> list[str]:
+    """Official sha256sums.asc locations for a given kernel version.
+
+    Final releases live in v<major>.x; release candidates additionally live
+    in v<major>.x/testing.
+    """
+    m = re.match(r"^(\d+)\.", version)
+    major = m.group(1) if m else "7"
+    base = f"https://cdn.kernel.org/pub/linux/kernel/v{major}.x"
+    urls = []
+    if "-rc" in version:
+        urls.append(f"{base}/testing/sha256sums.asc")
+    urls.append(f"{base}/sha256sums.asc")
+    return urls
+
+
+def _http_get_bytes(url: str, timeout: int, attempts: int = 3) -> bytes:
+    last_error: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                return response.read()
+        except Exception as e:
+            last_error = e
+            if attempt < attempts - 1:
+                time.sleep(2 * (attempt + 1))
+    raise last_error if last_error else RuntimeError(f"fetch failed: {url}")
+
+
+def get_sha256_for_tarball(tarball_name: str, version: str) -> str | None:
     """Fetch official sha256sums.asc from kernel.org and locate hash for target tarball."""
-    try:
-        url = "https://cdn.kernel.org/pub/linux/kernel/v7.x/sha256sums.asc"
-        req = urllib.request.Request(url, headers={"User-Agent": "dusky-kernel/2026.08"})
-        with urllib.request.urlopen(req, timeout=15) as response:
-            content = response.read().decode("utf-8")
+    for url in sha256sums_urls(version):
+        try:
+            content = _http_get_bytes(url, timeout=15).decode("utf-8")
             for line in content.splitlines():
                 parts = line.strip().split()
                 if len(parts) == 2 and parts[1] == tarball_name:
                     return parts[0]
-    except Exception as e:
-        console.print(f"[dim]Note: sha256sums.asc lookup skipped ({e})[/dim]")
+        except Exception as e:
+            console.print(f"[dim]Note: {url} lookup failed ({e})[/dim]")
     return None
 
 
-def download_and_verify_file(url: str, dest: Path) -> None:
-    """Download source archive and verify SHA-256 checksum if sha256sums.asc is available."""
-    tarball_name = dest.name
-    expected_sha256 = get_sha256_for_tarball(tarball_name)
+def hash_file(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(1024 * 1024):
+            hasher.update(chunk)
+    return hasher.hexdigest()
 
-    req = urllib.request.Request(url, headers={"User-Agent": "dusky-kernel/2026.08"})
+
+def download_and_verify_file(url: str, dest: Path, expected_sha256: str | None) -> None:
+    """Download source archive; verify SHA-256 when an official hash is available."""
+    tarball_name = dest.name
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
         with urllib.request.urlopen(req, timeout=60) as response:
             total_str = response.headers.get("Content-Length")
@@ -366,22 +469,66 @@ def download_and_verify_file(url: str, dest: Path) -> None:
                         hasher.update(buf)
                         progress.advance(task, advance=len(buf))
 
-            digest = hasher.hexdigest()
-            if expected_sha256:
-                if digest.lower() == expected_sha256.lower():
-                    console.print("[bold green]::[/bold green] SHA-256 Checksum Verified Successfully.")
-                else:
-                    if dest.exists():
-                        dest.unlink()
-                    raise ValueError(
-                        f"Checksum mismatch! Expected {expected_sha256}, got {digest}"
-                    )
-            else:
-                console.print(f"[dim]:: Downloaded SHA-256: {digest}[/dim]")
-    except Exception:
+        digest = hasher.hexdigest()
+        if expected_sha256:
+            if digest.lower() != expected_sha256.lower():
+                raise ValueError(
+                    f"Checksum mismatch! Expected {expected_sha256}, got {digest}"
+                )
+            console.print("[bold green]::[/bold green] SHA-256 Checksum Verified Successfully.")
+        else:
+            console.print(
+                f"[bold yellow]::[/bold yellow] WARNING: Proceeding WITHOUT checksum "
+                f"verification. Downloaded SHA-256: {digest}"
+            )
+    except BaseException:
         if dest.exists():
             dest.unlink(missing_ok=True)
         raise
+
+
+def _confirm_unverified_download() -> None:
+    console.print(
+        "[bold red]::[/bold red] Official sha256sums.asc could not be retrieved from "
+        "kernel.org. The download cannot be verified."
+    )
+    if not Confirm.ask(
+        "[bold yellow]Download and install this kernel UNVERIFIED?[/bold yellow]", default=False
+    ):
+        raise RuntimeError("Aborted: unwilling to proceed without checksum verification.")
+
+
+def ensure_tarball(version: str, url: str, tarball: Path) -> None:
+    """Guarantee a present (and verifiably intact, when possible) source tarball.
+
+    Reuses an existing download only after re-verifying its SHA-256 against
+    kernel.org; corrupt/truncated leftovers are discarded and re-downloaded.
+    Consent is requested before anything unverified happens, and the existing
+    file is never destroyed unless a replacement download is actually approved.
+    """
+    expected = get_sha256_for_tarball(tarball.name, version)
+    unverified_accepted = False
+
+    if tarball.exists() and tarball.stat().st_size > 0:
+        if expected:
+            actual = hash_file(tarball)
+            if actual.lower() == expected.lower():
+                console.print(f"[green]::[/green] Reusing verified tarball {tarball.name}.")
+                return
+            console.print(
+                f"[yellow]::[/yellow] Existing tarball failed verification "
+                f"(expected {expected}, got {actual}). Re-downloading..."
+            )
+            tarball.unlink()
+        else:
+            _confirm_unverified_download()
+            unverified_accepted = True
+            tarball.unlink()
+
+    if expected is None and not unverified_accepted:
+        _confirm_unverified_download()
+
+    download_and_verify_file(url, tarball, expected)
 
 
 def tarball_name_from_url(version: str, url: str) -> str:
@@ -407,7 +554,7 @@ def count_db_modules() -> int:
     try:
         with open(DB_FILE, "r") as f:
             return sum(1 for line in f if line.strip() and not line.startswith("#"))
-    except Exception:
+    except OSError:
         return 0
 
 
@@ -435,6 +582,18 @@ def export_active_config(target_file: Path) -> bool:
     return False
 
 
+def is_plausible_kernel_config(path: Path) -> bool:
+    """Reject empty/garbage config files before they are injected into a build."""
+    try:
+        if path.stat().st_size < 1000:
+            return False
+        with open(path, "r", errors="replace") as f:
+            head = "".join(f.readline() for _ in range(200))
+        return bool(re.search(r'^CONFIG_\w+=', head, re.MULTILINE))
+    except OSError:
+        return False
+
+
 def find_built_packages(pkg_dir: Path) -> list[Path]:
     """Locate finished .pkg.tar.zst packages in isolated PKGDEST directory."""
     if not pkg_dir.is_dir():
@@ -455,21 +614,25 @@ def initialize_tracking() -> None:
     console.print("[bold cyan]::[/bold cyan] Initializing local modprobed database...")
     subprocess.run(["modprobed-db", "store"], capture_output=True, check=False)
 
-    console.print("[bold cyan]::[/bold cyan] Enabling systemd user daemon & linger...")
-    r = subprocess.run(
+    console.print("[bold cyan]::[/bold cyan] Enabling systemd user daemon & timer...")
+    r_service = subprocess.run(
         ["systemctl", "--user", "enable", "--now", "modprobed-db.service"],
         capture_output=True,
         text=True,
     )
-    if r.returncode != 0:
-        subprocess.run(["systemctl", "--user", "enable", "--now", "modprobed-db.timer"], capture_output=True, check=False)
+    if r_service.returncode != 0:
+        subprocess.run(
+            ["systemctl", "--user", "enable", "--now", "modprobed-db.timer"],
+            capture_output=True,
+            check=False,
+        )
 
     subprocess.run(["sudo", "loginctl", "enable-linger", get_username()], check=False)
 
     console.print(
         Panel(
             "[bold green]Daemon Initialization Complete![/bold green]\n\n"
-            "modprobed-db timer tracks hardware modules automatically.\n"
+            "modprobed-db service + timer track hardware modules automatically.\n"
             "Use your hardware (USB drives, Wi-Fi, audio, Bluetooth) to populate DB.",
             border_style="green",
             padding=(1, 2),
@@ -543,10 +706,15 @@ def manage_dusky_state() -> None:
         elif choice == "2":
             if not DUSKY_SAVED_CONFIG.exists():
                 console.print("\n[bold red]Error: No exported config found. Run option 1 first.[/bold red]")
+            elif not is_plausible_kernel_config(DUSKY_SAVED_CONFIG):
+                console.print(
+                    "\n[bold red]Error: Saved config exists but looks invalid/corrupt. "
+                    "Re-export it via option 1.[/bold red]"
+                )
             else:
                 state.use_imported_config = not state.use_imported_config
                 state.save()
-                console.print(f"\n[bold green]Config Auto-Import updated.[/bold green]")
+                console.print("\n[bold green]Config Auto-Import updated.[/bold green]")
             Prompt.ask("\n[dim]Press Enter to continue...[/dim]")
         elif choice == "3":
             state.prefer_llvm = not state.prefer_llvm
@@ -585,11 +753,27 @@ def run_empirical_diagnostics() -> None:
     unit_enabled = r_unit.stdout.strip() if r_unit.returncode == 0 else "disabled/missing"
     console.print(f"[bold white]modprobed-db systemd unit:[/bold white] [cyan]{unit_enabled}[/cyan]")
 
+    r_timer = subprocess.run(["systemctl", "--user", "is-active", "modprobed-db.timer"], capture_output=True, text=True)
+    timer_active = r_timer.stdout.strip() if r_timer.returncode == 0 else "inactive/missing"
+    console.print(f"[bold white]modprobed-db systemd timer:[/bold white] [cyan]{timer_active}[/cyan]")
+
     r_linger = subprocess.run(["loginctl", "show-user", get_username(), "-p", "Linger"], capture_output=True, text=True)
     linger_val = r_linger.stdout.strip() if r_linger.returncode == 0 else "Linger=no"
     console.print(f"[bold white]User Session Linger:[/bold white] [cyan]{linger_val}[/cyan]")
 
-    # 4. Kernel Config Capabilities (sched_ext, BTF, etc.)
+    # 4. Storage & Saved Config
+    BUILD_DIR.mkdir(parents=True, exist_ok=True)
+    free_gb = shutil.disk_usage(str(BUILD_DIR)).free / (1024**3)
+    console.print(f"[bold white]Build Dir Free Space ({BUILD_DIR}):[/bold white] [cyan]{free_gb:.1f} GB[/cyan]")
+    if DUSKY_SAVED_CONFIG.exists():
+        size_kb = DUSKY_SAVED_CONFIG.stat().st_size / 1024
+        ok = is_plausible_kernel_config(DUSKY_SAVED_CONFIG)
+        status = "[green]valid[/green]" if ok else "[red]INVALID[/red]"
+        console.print(f"[bold white]Saved Config:[/bold white] [cyan]{size_kb:.0f} KB, {status}[/cyan]")
+    else:
+        console.print("[bold white]Saved Config:[/bold white] [yellow]Missing[/yellow]")
+
+    # 5. Kernel Config Capabilities (sched_ext, BTF, etc.)
     if Path("/proc/config.gz").exists():
         try:
             with gzip.open("/proc/config.gz", "rt") as f:
@@ -602,6 +786,74 @@ def run_empirical_diagnostics() -> None:
             pass
 
     Prompt.ask("\n[dim]Press Enter to return to main menu...[/dim]")
+
+
+# --- Kconfig Matrix (pure builder, unit-testable) ---
+def build_config_matrix(use_llvm: bool, enable_thin_lto: bool) -> list[str]:
+    """Assemble scripts/config arguments for hardening & performance policy."""
+    cfg_args = [
+        # 1. BTF & sched_ext preservation (CRITICAL)
+        # Keep CONFIG_DEBUG_INFO_BTF=y so CONFIG_SCHED_CLASS_EXT (sched_ext) works!
+        "-e", "DEBUG_INFO",
+        "-e", "DEBUG_INFO_DWARF5",
+        "-e", "DEBUG_INFO_BTF",
+        "-d", "DEBUG_INFO_BTF_MODULES",  # Disable per-module BTF to save build time
+        "-d", "DEBUG_INFO_DWARF4",
+        "-d", "DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT",
+        "-e", "DEBUG_INFO_COMPRESSED_NONE",
+        "-d", "DEBUG_INFO_NONE",
+
+        # 2. Keyring cleanup (prevent build error on missing local certs)
+        "--set-str", "SYSTEM_TRUSTED_KEYS", "",
+        "--set-str", "SYSTEM_REVOCATION_KEYS", "",
+
+        # 3. Performance & Scheduler Optimizations
+        "-e", "SCHED_CLASS_EXT",
+        "-e", "CC_OPTIMIZE_FOR_PERFORMANCE",
+        "-e", "TCP_CONG_ADVANCED",
+        "-e", "TCP_CONG_BBR",
+        "--set-str", "DEFAULT_TCP_CONG", "bbr",
+        "-e", "KERNEL_ZSTD",
+        "-e", "MODULE_COMPRESS_ZSTD",
+        "-e", "HZ_1000",
+    ]
+
+    if use_llvm and enable_thin_lto:
+        cfg_args.extend(["-e", "LTO_CLANG_THIN", "-d", "LTO_NONE"])
+
+    if os.uname().machine == "x86_64":
+        cfg_args.extend(["-e", "X86_NATIVE_CPU"])
+
+    return cfg_args
+
+
+def apply_config_matrix(kernel_dir: Path, cfg_args: list[str]) -> None:
+    scripts_cfg = str(kernel_dir / "scripts" / "config")
+    subprocess.run([scripts_cfg] + cfg_args, cwd=kernel_dir, check=True)
+
+
+# --- Build Process Safety Helpers ---
+def terminate_process_group(process: subprocess.Popen | None) -> None:
+    """Terminate a build process and its whole session, then reap it."""
+    if process is None or process.poll() is not None:
+        return
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        pass
+    try:
+        process.wait(timeout=5)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        console.print("[red]Warning: build process did not terminate cleanly.[/red]")
 
 
 # --- Main Compilation Pipeline ---
@@ -633,12 +885,17 @@ def compile_kernel() -> None:
     if state.prefer_llvm and not use_llvm:
         console.print("[yellow]:: LLVM toolchain requested but incomplete. Falling back to GCC.[/yellow]")
 
-    version, url = get_latest_kernel()
+    console.print("[bold cyan]::[/bold cyan] Querying kernel.org releases...")
+    candidates = fetch_releases()
+    version, url = pick_release(candidates)
+
     tarball_name = tarball_name_from_url(version, url)
     tarball = BUILD_DIR / tarball_name
     kernel_dir = BUILD_DIR / f"linux-{version}"
     isolated_pkg_dir = PACKAGES_DIR / f"linux-{version}"
 
+    build_proc: subprocess.Popen | None = None
+    log_lines: deque[str] = deque(maxlen=20)
     try:
         # Check source tree sanity
         if kernel_dir.exists() and not is_valid_kernel_tree(kernel_dir):
@@ -647,8 +904,7 @@ def compile_kernel() -> None:
 
         if not is_valid_kernel_tree(kernel_dir):
             console.print(f"\n[bold cyan]::[/bold cyan] Fetching Linux kernel source [bold]linux-{version}[/bold]...")
-            if not tarball.exists() or tarball.stat().st_size == 0:
-                download_and_verify_file(url, tarball)
+            ensure_tarball(version, url, tarball)
 
             if kernel_dir.exists():
                 shutil.rmtree(kernel_dir, ignore_errors=True)
@@ -670,10 +926,17 @@ def compile_kernel() -> None:
             make_base.extend(["LLVM=1", "LLVM_IAS=1"])
 
         # --- Config Injection ---
+        injected = False
         if state.use_imported_config and DUSKY_SAVED_CONFIG.exists():
-            console.print("[bold green]::[/bold green] Injecting saved Dusky kernel config...")
-            shutil.copy(DUSKY_SAVED_CONFIG, kernel_dir / ".config")
-        else:
+            if is_plausible_kernel_config(DUSKY_SAVED_CONFIG):
+                console.print("[bold green]::[/bold green] Injecting saved Dusky kernel config...")
+                shutil.copy(DUSKY_SAVED_CONFIG, kernel_dir / ".config")
+                injected = True
+            else:
+                console.print(
+                    "[yellow]:: Saved Dusky config is corrupt/invalid; falling back to live system config.[/yellow]"
+                )
+        if not injected:
             console.print("[bold cyan]::[/bold cyan] Cloning live host kernel config...")
             if not Path("/proc/config.gz").exists():
                 subprocess.run(["sudo", "modprobe", "configs"], check=False)
@@ -705,54 +968,33 @@ def compile_kernel() -> None:
 
         # --- Hardening & BTF Preservation Matrix ---
         console.print("[bold cyan]::[/bold cyan] Applying Arch 2026 Kernel Hardening & Performance Matrix...")
-        scripts_cfg = [str(kernel_dir / "scripts" / "config")]
-
-        cfg_args = [
-            # 1. BTF & sched_ext preservation (CRITICAL)
-            # Keep CONFIG_DEBUG_INFO_BTF=y so CONFIG_SCHED_CLASS_EXT (sched_ext) works!
-            "-e", "DEBUG_INFO",
-            "-e", "DEBUG_INFO_DWARF5",
-            "-e", "DEBUG_INFO_BTF",
-            "-d", "DEBUG_INFO_BTF_MODULES",  # Disable per-module BTF to save build time
-            "-d", "DEBUG_INFO_DWARF4",
-            "-d", "DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT",
-            "-e", "DEBUG_INFO_COMPRESSED_NONE",
-            "-d", "DEBUG_INFO_NONE",
-
-            # 2. Keyring cleanup (prevent build error on missing local certs)
-            "--set-str", "SYSTEM_TRUSTED_KEYS", "",
-            "--set-str", "SYSTEM_REVOCATION_KEYS", "",
-
-            # 3. Performance & Scheduler Optimizations
-            "-e", "SCHED_CLASS_EXT",
-            "-e", "CC_OPTIMIZE_FOR_PERFORMANCE",
-            "-e", "TCP_CONG_BBR",
-            "--set-str", "DEFAULT_TCP_CONG", "bbr",
-            "-e", "KERNEL_ZSTD",
-            "-e", "MODULE_COMPRESS_ZSTD",
-            "-e", "HZ_1000",
-        ]
-
-        if use_llvm and state.enable_thin_lto:
-            cfg_args.extend(["-e", "LTO_CLANG_THIN", "-d", "LTO_NONE"])
-
-        # CPU Architecture optimizations
-        cpu_vendor = get_cpu_vendor()
-        if os.uname().machine == "x86_64":
-            cfg_args.extend(["-e", "X86_NATIVE_CPU"])
-            if cpu_vendor == "amd":
-                cfg_args.extend(["-e", "MNATIVE_AMD"])
-            elif cpu_vendor == "intel":
-                cfg_args.extend(["-e", "MNATIVE_INTEL"])
-
-        subprocess.run(scripts_cfg + cfg_args, cwd=kernel_dir, check=True)
+        apply_config_matrix(kernel_dir, build_config_matrix(use_llvm, state.enable_thin_lto))
 
         # Check Rust kernel support
-        if state.enable_rust and probe_rust_support(kernel_dir, use_llvm):
-            console.print("[bold green]::[/bold green] Enabling in-tree Rust driver support (CONFIG_RUST=y)...")
-            subprocess.run(scripts_cfg + ["-e", "RUST"], cwd=kernel_dir, check=True)
+        if state.enable_rust:
+            rust_ok, rust_reason = probe_rust_support(kernel_dir, use_llvm)
+            if rust_ok:
+                console.print("[bold green]::[/bold green] Enabling in-tree Rust driver support (CONFIG_RUST=y)...")
+                subprocess.run(
+                    [str(kernel_dir / "scripts" / "config"), "-e", "RUST"],
+                    cwd=kernel_dir,
+                    check=True,
+                )
+            else:
+                console.print(
+                    f"[yellow]:: Rust support requested but unavailable: {rust_reason}. Building without CONFIG_RUST.[/yellow]"
+                )
+                subprocess.run(
+                    [str(kernel_dir / "scripts" / "config"), "-d", "RUST"],
+                    cwd=kernel_dir,
+                    check=False,
+                )
         else:
-            subprocess.run(scripts_cfg + ["-d", "RUST"], cwd=kernel_dir, check=False)
+            subprocess.run(
+                [str(kernel_dir / "scripts" / "config"), "-d", "RUST"],
+                cwd=kernel_dir,
+                check=False,
+            )
 
         (kernel_dir / "localversion").write_text("-dusky")
 
@@ -783,8 +1025,8 @@ def compile_kernel() -> None:
         build_env = os.environ.copy()
         build_env["PKGDEST"] = str(isolated_pkg_dir)
 
-        # Run process in its own session group for clean signal handling
-        process = subprocess.Popen(
+        # Run process in its own session for clean signal handling
+        build_proc = subprocess.Popen(
             build_cmd,
             cwd=kernel_dir,
             env=build_env,
@@ -792,14 +1034,14 @@ def compile_kernel() -> None:
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
-            preexec_fn=os.setsid,
+            start_new_session=True,
         )
 
-        log_lines: deque[str] = deque(maxlen=20)
         try:
             with Live(console=console, auto_refresh=True, refresh_per_second=8) as live:
-                assert process.stdout
-                for line in iter(process.stdout.readline, ""):
+                if build_proc.stdout is None:
+                    raise RuntimeError("Failed to capture build output stream")
+                for line in iter(build_proc.stdout.readline, ""):
                     clean = line.strip()
                     if not clean:
                         continue
@@ -812,20 +1054,18 @@ def compile_kernel() -> None:
                             padding=(0, 2),
                         )
                     )
-                process.stdout.close()
-            process.wait()
+                build_proc.stdout.close()
+            build_proc.wait()
         except KeyboardInterrupt:
             console.print("\n[bold yellow]Compilation interrupted by user. Terminating process group...[/bold yellow]")
-            try:
-                os.killpg(os.getpgid(process.pid), signal.SIGTERM)
-                time.sleep(1)
-                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-            except Exception:
-                pass
+            terminate_process_group(build_proc)
             return
 
-        if process.returncode != 0:
-            console.print("\n[bold red]Fatal:[/bold red] Kernel compilation failed. Config preserved.")
+        if build_proc.returncode != 0:
+            console.print(f"\n[bold red]Fatal:[/bold red] Kernel compilation failed (exit {build_proc.returncode}). Config preserved.")
+            console.print("[dim]--- Last build output ---[/dim]")
+            for ln in list(log_lines)[-12:]:
+                console.print(f"[dim]  {ln}[/dim]")
             return
 
         console.print("\n[bold cyan]::[/bold cyan] Resolving generated Arch packages...")
@@ -839,27 +1079,34 @@ def compile_kernel() -> None:
         for p in valid_pkgs:
             console.print(f"  [dim]{p.name}[/dim]")
 
-        subprocess.run(["sudo", "pacman", "-U", "--noconfirm"] + [str(p) for p in valid_pkgs], check=True)
+        subprocess.run(
+            ["sudo", "pacman", "-U", "--needed", "--noconfirm"] + [str(p) for p in valid_pkgs],
+            check=True,
+        )
 
         console.print(
             Panel(
                 f"[bold green]Mission Accomplished![/bold green]\n\n"
                 f"Dusky Kernel [bold]linux-{version}-dusky[/bold] installed successfully.\n"
-                "Bootloader and initramfs hooks completed automatically via pacman.",
+                "initramfs generation ran automatically via pacman hooks.\n"
+                "[dim]Note: systemd-boot detects new kernels automatically; GRUB users may need 'grub-mkconfig -o /boot/grub/grub.cfg'. Verify your boot entry before rebooting.[/dim]",
                 border_style="green",
                 padding=(1, 2),
             )
         )
 
     except KeyboardInterrupt:
+        terminate_process_group(build_proc)
         console.print("\n[bold yellow]Interrupted.[/bold yellow]")
     except subprocess.CalledProcessError as e:
+        terminate_process_group(build_proc)
         console.print(f"\n[bold red]Subprocess failed:[/bold red] {e}")
         if e.stderr:
             err = e.stderr.decode() if isinstance(e.stderr, bytes) else e.stderr
             console.print(f"[dim]{err[-2000:]}[/dim]")
     except Exception as e:
-        console.print(f"\n[bold red]Error:[/bold red] {e}")
+        terminate_process_group(build_proc)
+        console.print(f"\n[bold red]Error:[/bold red] [{type(e).__name__}] {e}")
 
 
 # --- Main Menu & CLI Routing ---
@@ -897,39 +1144,57 @@ def main_menu() -> None:
         console.print(table)
 
         choice = Prompt.ask("\n[bold cyan]Select[/bold cyan]", choices=["1", "2", "3", "4", "5", "6"], default="6")
-        if choice == SystemAction.INIT:
-            initialize_tracking()
-            Prompt.ask("\n[dim]Press Enter to return to menu...[/dim]")
-        elif choice == SystemAction.MONITOR:
-            monitor_modules()
-        elif choice == SystemAction.COMPILE:
-            compile_kernel()
-            Prompt.ask("\n[dim]Press Enter to return to menu...[/dim]")
-        elif choice == SystemAction.CONFIG:
-            manage_dusky_state()
-        elif choice == SystemAction.VERIFY:
-            run_empirical_diagnostics()
-        elif choice == SystemAction.EXIT:
+        if choice == SystemAction.EXIT:
             console.print("\n[bold cyan]Exiting Dusky Kernel Compiler. May your uptime be long![/bold cyan]\n")
             break
+        try:
+            if choice == SystemAction.INIT:
+                initialize_tracking()
+                Prompt.ask("\n[dim]Press Enter to return to menu...[/dim]")
+            elif choice == SystemAction.MONITOR:
+                monitor_modules()
+            elif choice == SystemAction.COMPILE:
+                compile_kernel()
+                Prompt.ask("\n[dim]Press Enter to return to menu...[/dim]")
+            elif choice == SystemAction.CONFIG:
+                manage_dusky_state()
+            elif choice == SystemAction.VERIFY:
+                run_empirical_diagnostics()
+        except KeyboardInterrupt:
+            console.print("\n[bold yellow]Action cancelled by user.[/bold yellow]")
+        except Exception as e:
+            console.print(f"\n[bold red]Action failed:[/bold red] [{type(e).__name__}] {e}")
+            Prompt.ask("\n[dim]Press Enter to return to menu...[/dim]")
 
 
 def parse_cli_args() -> None:
     parser = argparse.ArgumentParser(description="Dusky Kernel Compiler 2026.08 Engine")
     parser.add_argument("--verify", action="store_true", help="Run empirical diagnostics and exit")
-    parser.add_argument("--check-latest", action="store_true", help="Check latest kernel.org version and exit")
+    parser.add_argument("--check-latest", action="store_true", help="Check latest kernel.org versions and exit")
     args = parser.parse_args()
 
     if args.verify:
         run_empirical_diagnostics()
         sys.exit(0)
     elif args.check_latest:
-        v, u = get_latest_kernel()
-        console.print(f"Latest Kernel Version: [bold green]{v}[/bold green]\nSource URL: {u}")
+        try:
+            candidates = fetch_releases()
+        except Exception as e:
+            console.print(f"[bold red]Fatal:[/bold red] {e}")
+            sys.exit(1)
+        for cand in candidates[:5]:
+            console.print(
+                f"[cyan]{cand['moniker']}[/cyan]: [bold green]{cand['version']}[/bold green] — {cand['url']}"
+            )
         sys.exit(0)
 
 
+def _sigterm_to_interrupt(signum: int, frame: object) -> None:
+    raise KeyboardInterrupt
+
+
 if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, _sigterm_to_interrupt)
     parse_cli_args()
     try:
         main_menu()
