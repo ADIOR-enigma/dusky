@@ -275,26 +275,27 @@ def get_packages_dir() -> Path:
     return get_build_dir() / "packages"
 
 
+def _strip_markup(text: str) -> str:
+    """Strip rich markup [bold ...] for readline prompt length calculation."""
+    return re.sub(r"\[/?[^\]]*\]", "", text)
+
+
 def prompt_path_with_tab_completion(prompt_text: str) -> str:
-    """Native tab completion for filesystem paths (fixes spaces-on-tab). Uses readline if available."""
+    """Native tab completion for filesystem paths (fixes spaces-on-tab + backspace deleting prompt)."""
     if not _READLINE_AVAILABLE:
-        # Fallback to rich Prompt (no tab completion)
         return Prompt.ask(prompt_text, default="", show_default=False)
     # Configure readline completer for paths
     def _path_completer(text: str, state: int) -> str | None:
         try:
-            # Handle ~ expansion for matching, but preserve original prefix
             expanded = os.path.expanduser(text) if text else ""
             pattern = (expanded + "*") if text else "*"
             matches = _glob.glob(pattern)  # type: ignore
             if state < len(matches):
                 m = matches[state]
-                # Convert back ~/ if original started with ~
                 if text.startswith("~"):
                     home = str(Path.home())
                     if m.startswith(home):
                         m = "~" + m[len(home) :]
-                # Add trailing slash for directories to allow deep tabbing
                 try:
                     if Path(os.path.expanduser(m)).is_dir() and not m.endswith("/"):
                         m += "/"
@@ -307,24 +308,95 @@ def prompt_path_with_tab_completion(prompt_text: str) -> str:
 
     old_completer = readline.get_completer()
     old_delims = readline.get_completer_delims()
-    old_bind = readline.get_completer_delims()
     try:
         readline.set_completer(_path_completer)
-        # Only break on whitespace for path completion; keep '/' as part of word
         readline.set_completer_delims(" \t\n;")
         readline.parse_and_bind("tab: complete")
-        # Print prompt with rich, then use built-in input() which respects readline
-        console.print(prompt_text, end="")
+        # Use input(prompt) with stripped markup so readline knows prompt length (fixes backspace wiping line)
+        clean = _strip_markup(prompt_text)
         try:
-            return input()
+            return input(clean)
         except EOFError:
             return ""
     finally:
         try:
             readline.set_completer(old_completer)
             readline.set_completer_delims(old_delims)
+            readline.parse_and_bind("tab: self-insert")
+            readline.parse_and_bind("set editing-mode emacs")
         except Exception:
             pass
+
+
+def prompt_choice_fixed(prompt_text: str, choices: list[str], default: str) -> str:
+    """Choice prompt that never deletes the prompt on backspace (fixes rich+readline ANSI bug)."""
+    # Disable completer for choices - we want plain input, not path completion
+    old_completer = readline.get_completer() if _READLINE_AVAILABLE else None
+    old_delims = readline.get_completer_delims() if _READLINE_AVAILABLE else None
+    try:
+        if _READLINE_AVAILABLE:
+            readline.set_completer(None)
+            readline.parse_and_bind("tab: self-insert")
+        # Strip markup for readline prompt length
+        clean = _strip_markup(prompt_text)
+        # Build rich prompt for display, but pass clean to input for readline
+        # We print rich markup separately, then use input(clean) so readline knows length
+        # Actually use console.print for colors, but input with clean for readline
+        # To keep colors, print rich then input with empty? Instead use input(clean) with no rich.
+        # We do: print rich prompt, then input("") but readline won't know prompt length -> bug.
+        # So we use input(clean) directly and let it print (no rich colors for prompt, but functional)
+        # For choices, we can just use rich Prompt but with readline disabled to avoid bug
+        # Simpler: use Prompt.ask with readline disabled
+        if _READLINE_AVAILABLE:
+            # Use sys.stdin.readline to bypass readline's prompt-length bug (backspace won't wipe line)
+            choices_str = "/".join(choices)
+            full_prompt = f"{prompt_text} [dim][{choices_str}] ({default}):[/dim] "
+            while True:
+                console.print(full_prompt, end="")
+                try:
+                    raw = sys.stdin.readline()
+                    if not raw:  # EOF
+                        return default
+                    raw = raw.strip()
+                    if not raw:
+                        return default
+                    if raw in choices:
+                        return raw
+                    console.print(f"[red]Invalid: {raw}. Choose {choices_str}[/red]")
+                except EOFError:
+                    return default
+        # Fallback to rich if readline not available
+        return Prompt.ask(prompt_text, choices=choices, default=default)
+    finally:
+        if _READLINE_AVAILABLE:
+            try:
+                readline.set_completer(old_completer)
+                readline.set_completer_delims(old_delims)
+            except Exception:
+                pass
+
+
+def prompt_enter_fixed(prompt_text: str) -> str:
+    """Press-Enter prompt that never wipes line on backspace (bypasses readline)."""
+    old_completer = readline.get_completer() if _READLINE_AVAILABLE else None
+    old_delims = readline.get_completer_delims() if _READLINE_AVAILABLE else None
+    try:
+        if _READLINE_AVAILABLE:
+            readline.set_completer(None)
+            readline.parse_and_bind("tab: self-insert")
+        console.print(prompt_text, end="")
+        try:
+            sys.stdin.readline()
+        except EOFError:
+            pass
+        return ""
+    finally:
+        if _READLINE_AVAILABLE:
+            try:
+                readline.set_completer(old_completer)
+                readline.set_completer_delims(old_delims)
+            except Exception:
+                pass
 
 
 # --- Sudo Keepalive Daemon ---
@@ -534,7 +606,7 @@ def pick_release(candidates: list[dict]) -> tuple[str, str]:
         table.add_row(str(idx), cand["moniker"], cand["version"], cand["url"])
     console.print(table)
 
-    choice = Prompt.ask(
+    choice = prompt_choice_fixed(
         "\n[bold cyan]Select kernel version to compile[/bold cyan]",
         choices=[str(i) for i in range(1, len(candidates) + 1)],
         default="1",
@@ -841,7 +913,8 @@ def manage_dusky_state() -> None:
                 Panel(
                     Align.center(info_text),
                     title="[bold cyan]Dusky Configuration Manager[/bold cyan]",
-                    border_style="blue",
+                    border_style="bright_blue",
+                    box=box.ROUNDED,
                     expand=False,
                     padding=(1, 2),
                 )
@@ -858,14 +931,14 @@ def manage_dusky_state() -> None:
         table.add_row("6.", "Back to Main Menu")
         console.print(table)
 
-        choice = Prompt.ask("\n[bold cyan]Select[/bold cyan]", choices=["1", "2", "3", "4", "5", "6"], default="6")
+        choice = prompt_choice_fixed("\n[bold cyan]Select[/bold cyan]", choices=["1", "2", "3", "4", "5", "6"], default="6")
         if choice == "1":
             DUSKY_DIR.mkdir(parents=True, exist_ok=True)
             if export_active_config(DUSKY_SAVED_CONFIG):
                 console.print(f"\n[bold green]Success:[/bold green] Exported config to {DUSKY_SAVED_CONFIG}")
             else:
                 console.print("\n[bold red]Error:[/bold red] Could not locate valid active config.")
-            Prompt.ask("\n[dim]Press Enter to continue...[/dim]")
+            prompt_enter_fixed("\n[dim]Press Enter to continue...[/dim]")
         elif choice == "2":
             if not DUSKY_SAVED_CONFIG.exists():
                 console.print("\n[bold red]Error: No exported config found. Run option 1 first.[/bold red]")
@@ -878,17 +951,17 @@ def manage_dusky_state() -> None:
                 state.use_imported_config = not state.use_imported_config
                 state.save()
                 console.print("\n[bold green]Config Auto-Import updated.[/bold green]")
-            Prompt.ask("\n[dim]Press Enter to continue...[/dim]")
+            prompt_enter_fixed("\n[dim]Press Enter to continue...[/dim]")
         elif choice == "3":
             state.prefer_llvm = not state.prefer_llvm
             state.save()
             console.print(f"\n[bold green]LLVM Mode set to {state.prefer_llvm}.[/bold green]")
-            Prompt.ask("\n[dim]Press Enter to continue...[/dim]")
+            prompt_enter_fixed("\n[dim]Press Enter to continue...[/dim]")
         elif choice == "4":
             state.enable_rust = not state.enable_rust
             state.save()
             console.print(f"\n[bold green]Rust kernel support set to {state.enable_rust}.[/bold green]")
-            Prompt.ask("\n[dim]Press Enter to continue...[/dim]")
+            prompt_enter_fixed("\n[dim]Press Enter to continue...[/dim]")
         elif choice == "5":
             console.print("\n[bold cyan]Current build dir:[/bold cyan] " + str(get_build_dir()))
             console.print("[dim]Examples: /mnt/zram1/dusky_build  (ZRAM block device, e.g. /dev/zram1 formatted as ext4, RAM-backed)[/dim]")
@@ -921,7 +994,7 @@ def manage_dusky_state() -> None:
                         if free_gb < 25:
                             console.print(f"[bold yellow]Warning: only {free_gb:.1f} GB free at {candidate} ({fs_info}) - needs 25-30GB.[/bold yellow]")
                             if not Confirm.ask("Save anyway?", default=False):
-                                Prompt.ask("\n[dim]Press Enter to continue...[/dim]")
+                                prompt_enter_fixed("\n[dim]Press Enter to continue...[/dim]")
                                 continue
                         state.custom_build_dir = str(candidate)
                         state.save()
@@ -933,7 +1006,7 @@ def manage_dusky_state() -> None:
                                 console.print("[dim]ZRAM/RAM detected - excellent for avoiding SSD writes (RAM-backed, zstd-compressed if you used mkfs).[/dim]")
                     except Exception as e:
                         console.print(f"[bold red]Cannot use {candidate}: {e}[/bold red]")
-            Prompt.ask("\n[dim]Press Enter to continue...[/dim]")
+            prompt_enter_fixed("\n[dim]Press Enter to continue...[/dim]")
         else:
             break
 
@@ -998,7 +1071,7 @@ def run_empirical_diagnostics() -> None:
         except Exception:
             pass
 
-    Prompt.ask("\n[dim]Press Enter to return to main menu...[/dim]")
+    prompt_enter_fixed("\n[dim]Press Enter to return to main menu...[/dim]")
 
 
 # --- Kconfig Matrix (pure builder, unit-testable) ---
@@ -1357,8 +1430,8 @@ def main_menu() -> None:
                         f"[dim]Arch Linux • Kernel 7.1+ • localmodconfig + LMC_KEEP • pacman-pkg[/dim]\n"
                         f"[dim]Toolchain: {llvm_info} • Config: {config_status} • Build: {build_label}[/dim]"
                     ),
-                    box=box.DOUBLE,
-                    border_style="blue",
+                    box=box.ROUNDED,
+                    border_style="bright_blue",
                     expand=False,
                     padding=(1, 2),
                 )
@@ -1376,7 +1449,7 @@ def main_menu() -> None:
         console.print(table)
 
         try:
-            choice = Prompt.ask("\n[bold cyan]Select[/bold cyan]", choices=["1", "2", "3", "4", "5", "6"], default="6")
+            choice = prompt_choice_fixed("\n[bold cyan]Select[/bold cyan]", choices=["1", "2", "3", "4", "5", "6"], default="6")
         except EOFError:
             console.print("\n[bold cyan]Input stream closed. Exiting Dusky Kernel Compiler.[/bold cyan]\n")
             break
@@ -1386,12 +1459,12 @@ def main_menu() -> None:
         try:
             if choice == SystemAction.INIT:
                 initialize_tracking()
-                Prompt.ask("\n[dim]Press Enter to return to menu...[/dim]")
+                prompt_enter_fixed("\n[dim]Press Enter to return to menu...[/dim]")
             elif choice == SystemAction.MONITOR:
                 monitor_modules()
             elif choice == SystemAction.COMPILE:
                 compile_kernel()
-                Prompt.ask("\n[dim]Press Enter to return to menu...[/dim]")
+                prompt_enter_fixed("\n[dim]Press Enter to return to menu...[/dim]")
             elif choice == SystemAction.CONFIG:
                 manage_dusky_state()
             elif choice == SystemAction.VERIFY:
@@ -1400,7 +1473,7 @@ def main_menu() -> None:
             console.print("\n[bold yellow]Action cancelled by user.[/bold yellow]")
         except Exception as e:
             console.print(f"\n[bold red]Action failed:[/bold red] [{type(e).__name__}] {e}")
-            Prompt.ask("\n[dim]Press Enter to return to menu...[/dim]")
+            prompt_enter_fixed("\n[dim]Press Enter to return to menu...[/dim]")
 
 
 def parse_cli_args() -> None:
