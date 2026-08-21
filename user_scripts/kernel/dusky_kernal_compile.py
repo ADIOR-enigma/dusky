@@ -154,7 +154,7 @@ class DuskyState:
                         for name in cls._FIELDS
                     }
                 )
-        except (OSError, json.JSONDecodeError):
+        except (OSError, ValueError):
             pass
         return defaults
 
@@ -229,7 +229,11 @@ def probe_rust_support(kernel_dir: Path, use_llvm: bool) -> tuple[bool, str]:
 
     try:
         r = subprocess.run(
-            ["rustc", "--print", "sysroot"], capture_output=True, text=True, check=True
+            ["rustc", "--print", "sysroot"],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            check=True,
         )
         rust_src = Path(r.stdout.strip()) / "lib" / "rustlib" / "src" / "rust"
         if not rust_src.exists():
@@ -242,7 +246,9 @@ def probe_rust_support(kernel_dir: Path, use_llvm: bool) -> tuple[bool, str]:
         cmd.extend(["LLVM=1", "LLVM_IAS=1"])
     cmd.append("rustavailable")
     try:
-        res = subprocess.run(cmd, cwd=kernel_dir, capture_output=True, text=True)
+        res = subprocess.run(
+            cmd, cwd=kernel_dir, capture_output=True, text=True, errors="replace"
+        )
         if res.returncode != 0:
             detail = (res.stdout + res.stderr).strip().splitlines()
             reason = detail[-1] if detail else f"exit code {res.returncode}"
@@ -540,7 +546,7 @@ def count_db_modules() -> int:
     try:
         with open(DB_FILE, "r") as f:
             return sum(1 for line in f if line.strip() and not line.startswith("#"))
-    except OSError:
+    except (OSError, ValueError):
         return 0
 
 
