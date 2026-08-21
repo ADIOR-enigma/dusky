@@ -30,7 +30,6 @@ from collections import deque
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal
 from urllib.parse import urlparse
 
 # --- Preflight Checks ---
@@ -251,19 +250,6 @@ def probe_rust_support(kernel_dir: Path, use_llvm: bool) -> tuple[bool, str]:
     except OSError as e:
         return False, str(e)
     return True, "available"
-
-
-def get_cpu_vendor() -> Literal["amd", "intel", "generic"]:
-    try:
-        with open("/proc/cpuinfo", "r") as f:
-            content = f.read().lower()
-            if "authenticamd" in content:
-                return "amd"
-            elif "genuineintel" in content:
-                return "intel"
-    except OSError:
-        pass
-    return "generic"
 
 
 # --- Dependency & Package Resolution ---
@@ -1143,7 +1129,11 @@ def main_menu() -> None:
         table.add_row("6.", "Exit")
         console.print(table)
 
-        choice = Prompt.ask("\n[bold cyan]Select[/bold cyan]", choices=["1", "2", "3", "4", "5", "6"], default="6")
+        try:
+            choice = Prompt.ask("\n[bold cyan]Select[/bold cyan]", choices=["1", "2", "3", "4", "5", "6"], default="6")
+        except EOFError:
+            console.print("\n[bold cyan]Input stream closed. Exiting Dusky Kernel Compiler.[/bold cyan]\n")
+            break
         if choice == SystemAction.EXIT:
             console.print("\n[bold cyan]Exiting Dusky Kernel Compiler. May your uptime be long![/bold cyan]\n")
             break
