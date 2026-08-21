@@ -382,6 +382,11 @@ robust_fetch() {
         if ! origin_to_https_url "$remote_url" https_url; then
             FETCH_INFO="Primary fetch failed and no HTTPS fallback is available"
             _debug "URL format not recognized"
+        elif [[ $https_url == "$remote_url" ]]; then
+            # Already HTTPS: retrying the identical URL would just burn the
+            # full timeout again for zero benefit.
+            FETCH_INFO="Primary fetch failed"
+            _debug "HTTPS fallback identical to primary URL - skipped"
         else
             _redact_url "$https_url" redacted_url
             _debug "HTTPS URL: $redacted_url"
@@ -447,7 +452,7 @@ run_background_check() {
     fi
 
     if ! validate_environment; then
-        write_state_file -1
+        write_state_file -1 || true
         exit 0
     fi
 
@@ -456,32 +461,37 @@ run_background_check() {
         if [[ $FETCH_INFO == "Another update check is already running" ]]; then
             _debug "Leaving existing state file unchanged"
             if (( ! have_previous_state )); then
-                write_state_file -1
+                write_state_file -1 || true
             fi
             exit 0
         fi
-        write_state_file -1
+        write_state_file -1 || true
         exit 0
     fi
 
     if ! upstream=$(get_upstream_ref); then
         _debug "No upstream found, writing -2"
-        write_state_file -2
+        write_state_file -2 || true
         exit 0
     fi
     _debug "Upstream: $upstream"
 
     if ! _git_rev_count count "HEAD..${upstream}"; then
         _debug "Failed to count commits behind, writing -1"
-        write_state_file -1
+        write_state_file -1 || true
         exit 0
     fi
     _debug "Commits behind: $count"
 
-    write_state_file "$count"
+    # Failure-tolerant: a broken state file must never abort the run (set -e)
+    # nor suppress the user-facing desktop notification below.
+    write_state_file "$count" || true
 
+    # Notify on every fresh crossing of the threshold. Negative sentinels
+    # (-1 error / -2 no-upstream) count as "not yet alerted" so a recovered
+    # check still alerts instead of staying silent forever.
     if (( count >= NOTIFY_THRESHOLD )) &&
-       (( ! have_previous_state || (previous_count >= 0 && previous_count < NOTIFY_THRESHOLD) )) &&
+       (( ! have_previous_state || previous_count < NOTIFY_THRESHOLD )) &&
        [[ -x /usr/bin/notify-send ]]; then
         /usr/bin/timeout --kill-after=1 2 \
             /usr/bin/notify-send -u normal -t 5000 -i software-update-available \
@@ -818,10 +828,15 @@ nav_step() {
 
 nav_page() {
     local -i d=$1
-    (( TOTAL_COMMITS == 0 )) && return
+    (( TOTAL_COMMITS == 0 )) && return 0
     SELECTED_ROW=$(( SELECTED_ROW + d * MAX_DISPLAY_ROWS ))
-    (( SELECTED_ROW < 0 )) && SELECTED_ROW=0
-    (( SELECTED_ROW >= TOTAL_COMMITS )) && SELECTED_ROW=$(( TOTAL_COMMITS - 1 ))
+    # NOTE: never end on a bare false test - set -e would kill the TUI (rc=1).
+    if (( SELECTED_ROW < 0 )); then
+        SELECTED_ROW=0
+    elif (( SELECTED_ROW >= TOTAL_COMMITS )); then
+        SELECTED_ROW=$(( TOTAL_COMMITS - 1 ))
+    fi
+    return 0
 }
 
 nav_edge() {
@@ -886,6 +901,7 @@ main() {
 
     local key='' seq='' ch=''
     local -i ui_ok=0
+    local -i read_rc=0
 
     while true; do
         if terminal_fits_ui; then
@@ -896,7 +912,16 @@ main() {
             draw_terminal_too_small
         fi
 
-        IFS= read -rsn1 key || break
+        # Poll with a 1s ceiling instead of blocking forever: a read timeout
+        # (rc > 128) loops back so terminal resizes get picked up and repainted.
+        key=''
+        read_rc=0
+        IFS= read -rsn1 -t 1 key || read_rc=$?
+        if (( read_rc > 128 )); then
+            continue
+        elif (( read_rc != 0 )); then
+            break
+        fi
 
         if (( ! ui_ok )); then
             case "$key" in
