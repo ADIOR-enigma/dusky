@@ -17,6 +17,13 @@ import importlib.metadata
 import json
 import logging
 import os
+
+""" Python 3.14.7 (daemon venv) does not have os.MFD_NOEXEC_SEAL.
+The constant only exist in newer CPython """
+
+if not hasattr(os, 'MFD_NOEXEC_SEAL'):
+    os.MFD_NOEXEC_SEAL = 0x0008
+
 from pathlib import Path
 import shutil
 import signal
