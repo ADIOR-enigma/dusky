@@ -87,14 +87,6 @@ post_hook = '''
   fi
 '''
 
-# Legacy manual method (superseded by native Lab distance above, kept for reference):
-# [templates.papirus_icon_theme]
-# input_path  = '~/.config/matugen/templates/papirus'
-# output_path = '~/.config/matugen/generated/papirus'
-# post_hook   = '''
-#   "$HOME/user_scripts/gtk/papirus_folder_colors.sh" || :
-# '''
-
 [templates.qt5ct]
 input_path  = '~/.config/matugen/templates/qtct-colors.conf'
 output_path = '~/.config/matugen/generated/qt5ct-colors.conf'

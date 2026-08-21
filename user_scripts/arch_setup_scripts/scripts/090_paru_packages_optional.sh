@@ -82,7 +82,7 @@ Media       | otf-atkinsonhyperlegiblemono-nerd | Atkinson Hyperlegible Mono Ner
 Media       | ttf-atkinson-hyperlegible | Atkinson Hyperlegible TTF Font
 Media       | otf-atkinson-hyperlegible | Atkinson Hyperlegible OTF Font
 Media       | awesome-terminal-fonts| fonts/icons for powerlines
-Media       | papirus-folders-git   | folder color themeing for file manager
+Media       | papirus-folders       | folder color theming for Papirus (matugen Lab, stable)
 Media       | ttf-opensans          | Sans-serif typeface commissioned by Google
 Media       | ttf-meslo-nerd        | Patched font Meslo LG from nerd fonts library
 Media       | obs-studio            | Software for video recording and live streaming

@@ -511,7 +511,7 @@ SCHEMA: dict[int, list[ConfigItem]] = {
             type_="bool",
             default=True,
             group="Icons",
-            extended_help="**Papirus Folders (Lab Best-of-Breed)**\n\nNative matugen Lab-distance mapping of `colors.primary` to closest Papirus palette (adwaita, black, blue, bluegrey, breeze, brown, carmine, cyan, darkcyan, deeporange, green, grey, indigo, magenta, nordic, orange, palebrown, paleorange, pink, red, teal, violet, white, yaru, yellow) via `colors_to_compare` + `closest_color`.\n\nRuns `sudo -n papirus-folders -C {{closest_color}} --theme Papirus-Dark -u` (requires `aur/papirus-folders` + NOPASSWD drop-in at `/etc/sudoers.d/papirus-folders`) + live `gsettings` toggle `Adwaita → Papirus-Dark` so Dolphin/Nautilus reload instantly. See `~/.config/matugen/templates/papirus-color:1` and `~/.config/matugen/config.toml:48`.\n\nLegacy `papirus_icon_theme` (sh/awk) superseded — kept commented for reference."
+            extended_help="**Papirus Folders (Lab Best-of-Breed)**\n\nNative matugen Lab-distance mapping of `colors.primary` to closest Papirus palette (adwaita, black, blue, bluegrey, breeze, brown, carmine, cyan, darkcyan, deeporange, green, grey, indigo, magenta, nordic, orange, palebrown, paleorange, pink, red, teal, violet, white, yaru, yellow) via `colors_to_compare` + `closest_color`.\n\nRuns `sudo -n papirus-folders -C {{closest_color}} --theme Papirus-Dark -u` (requires `aur/papirus-folders` + NOPASSWD drop-in at `/etc/sudoers.d/papirus-folders`) + live `gsettings` toggle `Adwaita → Papirus-Dark` so Dolphin/Nautilus reload instantly. See `~/.config/matugen/templates/papirus-color:1` and `~/.config/matugen/config.toml:48`."
         ),
         ConfigItem(
             label="Standalone Commands",

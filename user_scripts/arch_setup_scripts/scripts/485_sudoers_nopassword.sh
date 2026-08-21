@@ -23,7 +23,7 @@ declare -Ar DEFAULT_CUSTOM_DROPINS=(
 declare -ar DEFAULT_BINARIES=(
 
 #    "/usr/bin/powertop"
-#    "/usr/bin/papirus-folders"
+    "/usr/bin/papirus-folders"
     "/usr/bin/rfkill"
     "/usr/bin/smartctl"
     "/usr/bin/tlp"
