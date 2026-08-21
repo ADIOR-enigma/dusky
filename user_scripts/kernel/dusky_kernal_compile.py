@@ -98,6 +98,7 @@ DEPENDENCIES = [
     "git",
     "rsync",
     "python",
+    "aria2",
 ]
 
 MODPROBED_DB_AUR = "modprobed-db"
@@ -667,10 +668,45 @@ def hash_file(path: Path) -> str:
     return hasher.hexdigest()
 
 
-def download_and_verify_file(url: str, dest: Path, expected_sha256: str | None) -> None:
-    """Download source archive; verify SHA-256 when an official hash is available."""
+def _ensure_aria2_available() -> bool:
+    """Ensure aria2c is available, auto-installing via pacman if missing (bleeding-edge: 16-conn)."""
+    if is_tool_available("aria2c"):
+        return True
+    console.print("[cyan]::[/cyan] aria2 not found - auto-installing for accelerated download (16x)...")
+    try:
+        # Try pacman (extra/aria2) - DEPENDENCIES now includes aria2
+        subprocess.run(["sudo", "pacman", "-S", "--needed", "--noconfirm", "aria2"], check=True)
+        return is_tool_available("aria2c")
+    except Exception as e:
+        console.print(f"[yellow]::[/yellow] aria2 auto-install failed ({e}), falling back to urllib.")
+        return False
+
+
+def _download_with_aria2(url: str, dest: Path) -> None:
+    """Download via aria2c with resume, 16 connections, retry. Raises on failure."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "aria2c",
+        "-x", "16", "-s", "16", "-k", "1M",
+        "--retry-wait=2", "--max-tries=5",
+        "--allow-overwrite=true", "--auto-file-renaming=false",
+        "-c",  # resume
+        "--console-log-level=warn", "--summary-interval=0",
+        "--header", f"User-Agent: {USER_AGENT}",
+        "-d", str(dest.parent),
+        "-o", dest.name,
+        url,
+    ]
+    # aria2c has its own progress; we just run it
+    console.print(f"[cyan]::[/cyan] Downloading via aria2c (16x) -> {dest.name}...")
+    subprocess.run(cmd, check=True)
+
+
+def _download_with_urllib(url: str, dest: Path) -> str:
+    """Fallback urllib download with progress, returns hex digest."""
     tarball_name = dest.name
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    hasher = hashlib.sha256()
     try:
         with urllib.request.urlopen(req, timeout=60) as response:
             total_str = response.headers.get("Content-Length")
@@ -681,7 +717,6 @@ def download_and_verify_file(url: str, dest: Path, expected_sha256: str | None) 
             else:
                 columns.extend([TextColumn("[cyan]{task.completed} bytes"), TransferSpeedColumn()])
 
-            hasher = hashlib.sha256()
             with Progress(*columns, console=console) as progress:
                 task = progress.add_task(f"Downloading {tarball_name}...", total=total_size)
                 with open(dest, "wb") as out_file:
@@ -692,22 +727,66 @@ def download_and_verify_file(url: str, dest: Path, expected_sha256: str | None) 
                         out_file.write(buf)
                         hasher.update(buf)
                         progress.advance(task, advance=len(buf))
-
-        digest = hasher.hexdigest()
-        if expected_sha256:
-            if digest.lower() != expected_sha256.lower():
-                raise ValueError(
-                    f"Checksum mismatch! Expected {expected_sha256}, got {digest}"
-                )
-            console.print("[bold green]::[/bold green] SHA-256 Checksum Verified Successfully.")
-        else:
-            console.print(
-                f"[bold yellow]::[/bold yellow] WARNING: Proceeding WITHOUT checksum "
-                f"verification. Downloaded SHA-256: {digest}"
-            )
+        return hasher.hexdigest()
     except BaseException:
         if dest.exists():
-            dest.unlink(missing_ok=True)
+            # Keep partial for potential resume if user retries with aria2, but urllib can't resume
+            # For urllib fallback, we clean up to avoid corrupt verify
+            try:
+                if dest.stat().st_size == 0:
+                    dest.unlink(missing_ok=True)
+            except Exception:
+                pass
+        raise
+
+
+def download_and_verify_file(url: str, dest: Path, expected_sha256: str | None) -> None:
+    """Download source archive via aria2 (16x, resume) with urllib fallback; verify SHA-256."""
+    tarball_name = dest.name
+    # Prefer aria2c if available (or can be auto-installed)
+    use_aria = _ensure_aria2_available() if not is_tool_available("aria2c") else True
+    # Actually check again after ensure
+    if is_tool_available("aria2c"):
+        use_aria = True
+    else:
+        use_aria = False
+
+    digest: str | None = None
+    try:
+        if use_aria:
+            try:
+                _download_with_aria2(url, dest)
+                # aria2 done, compute hash
+                digest = hash_file(dest)
+            except subprocess.CalledProcessError as e:
+                console.print(f"[yellow]:: aria2 failed ({e}), falling back to urllib...[/yellow]")
+                # Don't delete partial - aria2 -c will resume next time, but we try urllib fallback
+                # For urllib fallback, we need to remove partial to avoid mixing
+                if dest.exists():
+                    # Keep it for next aria2 resume, but urllib will overwrite
+                    pass
+                digest = _download_with_urllib(url, dest)
+            except Exception as e:
+                console.print(f"[yellow]:: aria2 error ({e}), falling back to urllib...[/yellow]")
+                digest = _download_with_urllib(url, dest)
+        else:
+            digest = _download_with_urllib(url, dest)
+
+        # Verify
+        if expected_sha256:
+            if digest.lower() != expected_sha256.lower():
+                raise ValueError(f"Checksum mismatch! Expected {expected_sha256}, got {digest}")
+            console.print("[bold green]::[/bold green] SHA-256 Checksum Verified Successfully.")
+        else:
+            console.print(f"[bold yellow]::[/bold yellow] WARNING: Proceeding WITHOUT checksum verification. Downloaded SHA-256: {digest}")
+    except BaseException:
+        # Only delete if we have no resume capability (urllib) and destination is corrupt
+        # For aria2, keep partial for resume
+        if not is_tool_available("aria2c") and dest.exists():
+            # urllib fallback failed - keep partial? But we already handled
+            pass
+        # If we used urllib and file is zero or we're aborting unverified, let caller decide
+        # Ensure_tarball will handle discarding on next run via hash check
         raise
 
 
