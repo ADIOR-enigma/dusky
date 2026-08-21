@@ -1415,21 +1415,64 @@ _dusky_orphan_report() {
 }
 
 _dusky_act_move_preview() {
-    local dir="${1:-}" cur last pct rest next
+    local dir="${1:-}" cur last pct rest next base env_pct
     case "$dir" in left|right|up|down|hidden) ;; *) return 0 ;; esac
     cur="$(_dusky_read preview_layout)"
     [[ -n "$cur" ]] || cur="${DUSKY_PREVIEW_WINDOW:-right,70%,border-left,wrap}"
     last="$(_dusky_read preview_last)"
     [[ -n "$last" ]] || last="${DUSKY_PREVIEW_WINDOW:-right,70%,border-left,wrap}"
 
-    local base="$cur"
+    base="$cur"
     [[ "$base" == "hidden" ]] && base="$last"
     if [[ "$base" =~ ^(up|down|left|right),([0-9]+)%(.*)$ ]]; then
         pct="${BASH_REMATCH[2]}"
         rest="${BASH_REMATCH[3]}"
+        base="${BASH_REMATCH[1]}"
     else
         pct=70
         rest=',border-left,wrap'
+        base="right"
+    fi
+
+    # Honor live FZF preview size after manual mouse-drag of the divider.
+    # FZF exports FZF_PREVIEW_COLUMNS / FZF_PREVIEW_LINES to every transform.
+    # If those indicate the divider was dragged, use them as the base pct to
+    # avoid snapping back to the stale file value.
+    if [[ "$cur" != "hidden" && "$cur" =~ ^(up|down|left|right),([0-9]+)% ]]; then
+        local cur_edge_now="${BASH_REMATCH[1]}"
+        if [[ "$cur_edge_now" == "right" || "$cur_edge_now" == "left" ]]; then
+            if [[ "${FZF_PREVIEW_COLUMNS:-}" =~ ^[0-9]+$ && "${FZF_COLUMNS:-}" =~ ^[0-9]+$ ]] \
+                && (( FZF_COLUMNS > 0 && FZF_PREVIEW_COLUMNS > 0 && FZF_PREVIEW_COLUMNS < FZF_COLUMNS )); then
+                env_pct=$(( (FZF_PREVIEW_COLUMNS * 100 + FZF_COLUMNS/2) / FZF_COLUMNS ))
+                if (( env_pct >= 5 && env_pct <= 95 )); then
+                    # Only override for same-axis moves; cross-axis keeps file pct.
+                    if [[ "$dir" == "left" || "$dir" == "right" || "$dir" == "hidden" ]]; then
+                        pct=$env_pct
+                    elif [[ "$cur_edge_now" == "$dir" ]]; then
+                        pct=$env_pct
+                    fi
+                fi
+            fi
+        else
+            if [[ "${FZF_PREVIEW_LINES:-}" =~ ^[0-9]+$ && "${FZF_LINES:-}" =~ ^[0-9]+$ ]] \
+                && (( FZF_LINES > 0 && FZF_PREVIEW_LINES > 0 && FZF_PREVIEW_LINES < FZF_LINES )); then
+                env_pct=$(( (FZF_PREVIEW_LINES * 100 + FZF_LINES/2) / FZF_LINES ))
+                if (( env_pct >= 5 && env_pct <= 95 )); then
+                    if [[ "$dir" == "up" || "$dir" == "down" || "$dir" == "hidden" ]]; then
+                        pct=$env_pct
+                    fi
+                fi
+            fi
+        fi
+    else
+        # Fallback: if base is hidden (last) but we are showing, still try to infer
+        if [[ "$base" == "right" || "$base" == "left" ]]; then
+            if [[ "${FZF_PREVIEW_COLUMNS:-}" =~ ^[0-9]+$ && "${FZF_COLUMNS:-}" =~ ^[0-9]+$ ]] \
+                && (( FZF_COLUMNS > 0 && FZF_PREVIEW_COLUMNS > 0 && FZF_PREVIEW_COLUMNS < FZF_COLUMNS )); then
+                env_pct=$(( (FZF_PREVIEW_COLUMNS * 100 + FZF_COLUMNS/2) / FZF_COLUMNS ))
+                (( env_pct >= 5 && env_pct <= 95 )) && pct=$env_pct
+            fi
+        fi
     fi
 
     if [[ "$dir" == "hidden" ]]; then
@@ -1440,8 +1483,14 @@ _dusky_act_move_preview() {
         fi
     else
         local border="border-left"
-        [[ "$dir" == "up" ]] && border="border-bottom"
-        [[ "$dir" == "down" ]] && border="border-top"
+        case "$dir" in
+            left)  border="border-right" ;;
+            right) border="border-left" ;;
+            up)    border="border-bottom" ;;
+            down)  border="border-top" ;;
+        esac
+        (( pct < 10 )) && pct=10
+        (( pct > 90 )) && pct=90
         next="${dir},${pct}%,${border},wrap"
     fi
 
@@ -1454,7 +1503,7 @@ _dusky_act_move_preview() {
 }
 
 _dusky_act_resize_preview() {
-    local dir="${1:-}" cur edge pct rest new next
+    local dir="${1:-}" cur edge pct rest new next env_pct
     case "$dir" in left|right|up|down) ;; *) return 0 ;; esac
     cur="$(_dusky_read preview_layout)"
     [[ -n "$cur" ]] || cur="${DUSKY_PREVIEW_WINDOW:-right,70%,border-left,wrap}"
@@ -1465,14 +1514,36 @@ _dusky_act_resize_preview() {
     pct="${BASH_REMATCH[2]}"
     rest="${BASH_REMATCH[3]}"
 
+    # Seamless mouse-drag awareness: if the user dragged the divider with the
+    # mouse, FZF's live preview size (FZF_PREVIEW_COLUMNS / LINES) will differ
+    # from the stale file value. Use the live value as the base to avoid the
+    # "snap back" reported on Alt+Left/Right after a manual drag.
+    if [[ "$edge" == "right" || "$edge" == "left" ]]; then
+        if [[ "${FZF_PREVIEW_COLUMNS:-}" =~ ^[0-9]+$ && "${FZF_COLUMNS:-}" =~ ^[0-9]+$ ]] \
+            && (( FZF_COLUMNS > 0 && FZF_PREVIEW_COLUMNS > 0 && FZF_PREVIEW_COLUMNS < FZF_COLUMNS )); then
+            env_pct=$(( (FZF_PREVIEW_COLUMNS * 100 + FZF_COLUMNS/2) / FZF_COLUMNS ))
+            if (( env_pct >= 5 && env_pct <= 95 )); then
+                pct=$env_pct
+            fi
+        fi
+    else
+        if [[ "${FZF_PREVIEW_LINES:-}" =~ ^[0-9]+$ && "${FZF_LINES:-}" =~ ^[0-9]+$ ]] \
+            && (( FZF_LINES > 0 && FZF_PREVIEW_LINES > 0 && FZF_PREVIEW_LINES < FZF_LINES )); then
+            env_pct=$(( (FZF_PREVIEW_LINES * 100 + FZF_LINES/2) / FZF_LINES ))
+            if (( env_pct >= 5 && env_pct <= 95 )); then
+                pct=$env_pct
+            fi
+        fi
+    fi
+
     new=$pct
     case "$edge:$dir" in
         right:left|left:right|up:down|down:up) (( new += 5 )) ;;
         right:right|left:left|up:up|down:down) (( new -= 5 )) ;;
         *) return 0 ;;
     esac
-    (( new < 15 )) && new=15
-    (( new > 85 )) && new=85
+    (( new < 10 )) && new=10
+    (( new > 90 )) && new=90
     if (( new == pct )); then
         printf 'bell'
         return 0
@@ -1944,6 +2015,7 @@ main() {
         --no-hscroll \
         --ellipsis='' \
         --highlight-line \
+        --scrollbar='││' \
         --ghost='filter by hash, author, message…' \
         --prompt=' :: Time Machine ❯ ' \
         --pointer='' \
@@ -1960,6 +2032,8 @@ main() {
         --preview-window="${DUSKY_PREVIEW_WINDOW}" \
         --preview-label='  commit  ' \
         --preview-label-pos=center \
+        --margin=1 \
+        --padding=0 \
         --bind="$start_bind" \
         --bind="resize:refresh-preview+transform-header(${w} header)+reload-sync(${w} list)" \
         --bind="alt-m:transform:${w} toggle-vim" \
@@ -1995,13 +2069,17 @@ main() {
         --bind="ctrl-d:half-page-down" --bind="ctrl-u:half-page-up" \
         --bind="q:abort" \
         --bind="/:change-prompt( 󰍉 search ❯ )+enable-search+unbind(${DUSKY_VIM_KEYS})" \
+        --bind="shift-up:preview-up" --bind="shift-down:preview-down" \
+        --bind="shift-scroll-up:preview-up" --bind="shift-scroll-down:preview-down" \
+        --bind="scroll-up:up" --bind="scroll-down:down" \
+        --bind="preview-scroll-up:preview-up" --bind="preview-scroll-down:preview-down" \
         --color="bg:${MATUGEN_BG},bg+:${MATUGEN_MUTED},fg:${MATUGEN_FG},fg+:${MATUGEN_FG}" \
         --color="hl:${MATUGEN_ACCENT},hl+:${MATUGEN_ACCENT},pointer:${MATUGEN_SUCCESS},marker:${MATUGEN_SUCCESS}" \
         --color="prompt:${MATUGEN_ACCENT},spinner:${MATUGEN_ACCENT},info:${MATUGEN_ACCENT},header:${MATUGEN_ACCENT}" \
         --color="border:${MATUGEN_MUTED},label:${MATUGEN_ACCENT},preview-border:${MATUGEN_MUTED},preview-label:${MATUGEN_ACCENT}" \
         --color="footer:${MATUGEN_FG},footer-border:${MATUGEN_MUTED},footer-label:${MATUGEN_ACCENT}" \
         --color="list-border:${MATUGEN_MUTED},header-border:${MATUGEN_MUTED},input-border:${MATUGEN_MUTED}" \
-        --color="ghost:${MATUGEN_MUTED},gutter:${MATUGEN_BG}" \
+        --color="ghost:${MATUGEN_MUTED},gutter:${MATUGEN_BG},scrollbar:${MATUGEN_MUTED},preview-scrollbar:${MATUGEN_ACCENT}" \
         <"${DUSKY_STATE_DIR}/list"
 
     local stay
