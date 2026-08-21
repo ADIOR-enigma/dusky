@@ -32,6 +32,16 @@ from enum import StrEnum
 from pathlib import Path
 from urllib.parse import urlparse
 
+# readline for native shell-like tab completion (bleeding-edge: no extra deps)
+try:
+    import readline  # type: ignore
+    import glob as _glob
+
+    _READLINE_AVAILABLE = True
+except ImportError:
+    _READLINE_AVAILABLE = False
+    _glob = None  # type: ignore
+
 # --- Preflight Checks ---
 if sys.version_info < (3, 14):
     sys.exit(f"Fatal: Python 3.14+ required. Found Python {sys.version.split()[0]}")
@@ -248,7 +258,7 @@ def is_ram_backed(path: Path) -> bool:
                 return True
     except Exception:
         pass
-    # Final heuristic for non-mounted yet paths (e.g., /mnt/zram/new_build)
+    # Final heuristic for non-mounted yet paths (e.g., /mnt/zram1/new_build)
     return "zram" in str(path) or get_fs_type(target) in ("tmpfs", "ramfs", "zram")
 
 
@@ -263,6 +273,58 @@ def get_build_dir() -> Path:
 
 def get_packages_dir() -> Path:
     return get_build_dir() / "packages"
+
+
+def prompt_path_with_tab_completion(prompt_text: str) -> str:
+    """Native tab completion for filesystem paths (fixes spaces-on-tab). Uses readline if available."""
+    if not _READLINE_AVAILABLE:
+        # Fallback to rich Prompt (no tab completion)
+        return Prompt.ask(prompt_text, default="", show_default=False)
+    # Configure readline completer for paths
+    def _path_completer(text: str, state: int) -> str | None:
+        try:
+            # Handle ~ expansion for matching, but preserve original prefix
+            expanded = os.path.expanduser(text) if text else ""
+            pattern = (expanded + "*") if text else "*"
+            matches = _glob.glob(pattern)  # type: ignore
+            if state < len(matches):
+                m = matches[state]
+                # Convert back ~/ if original started with ~
+                if text.startswith("~"):
+                    home = str(Path.home())
+                    if m.startswith(home):
+                        m = "~" + m[len(home) :]
+                # Add trailing slash for directories to allow deep tabbing
+                try:
+                    if Path(os.path.expanduser(m)).is_dir() and not m.endswith("/"):
+                        m += "/"
+                except Exception:
+                    pass
+                return m
+            return None
+        except Exception:
+            return None
+
+    old_completer = readline.get_completer()
+    old_delims = readline.get_completer_delims()
+    old_bind = readline.get_completer_delims()
+    try:
+        readline.set_completer(_path_completer)
+        # Only break on whitespace for path completion; keep '/' as part of word
+        readline.set_completer_delims(" \t\n;")
+        readline.parse_and_bind("tab: complete")
+        # Print prompt with rich, then use built-in input() which respects readline
+        console.print(prompt_text, end="")
+        try:
+            return input()
+        except EOFError:
+            return ""
+    finally:
+        try:
+            readline.set_completer(old_completer)
+            readline.set_completer_delims(old_delims)
+        except Exception:
+            pass
 
 
 # --- Sudo Keepalive Daemon ---
@@ -775,10 +837,14 @@ def manage_dusky_state() -> None:
             f"[dim]Backup Config:[/dim] {'Present' if DUSKY_SAVED_CONFIG.exists() else 'Missing'}\n"
         )
         console.print(
-            Panel(
-                Align.center(info_text),
-                title="[bold cyan]Dusky Configuration Manager[/bold cyan]",
-                border_style="blue",
+            Align.center(
+                Panel(
+                    Align.center(info_text),
+                    title="[bold cyan]Dusky Configuration Manager[/bold cyan]",
+                    border_style="blue",
+                    expand=False,
+                    padding=(1, 2),
+                )
             )
         )
         table = Table(show_header=False, box=box.SIMPLE)
@@ -825,15 +891,12 @@ def manage_dusky_state() -> None:
             Prompt.ask("\n[dim]Press Enter to continue...[/dim]")
         elif choice == "5":
             console.print("\n[bold cyan]Current build dir:[/bold cyan] " + str(get_build_dir()))
-            console.print("[dim]Examples: /mnt/zram/dusky_build   (ZRAM block device, e.g. /dev/zram1 formatted as ext4, RAM-backed)[/dim]")
+            console.print("[dim]Examples: /mnt/zram1/dusky_build  (ZRAM block device, e.g. /dev/zram1 formatted as ext4, RAM-backed)[/dim]")
             console.print("[dim]          /tmp/dusky_build        (tmpfs, RAM-backed, uncompressed)[/dim]")
             console.print("[dim]          ~/dusky_build           (default, disk - btrfs/ext4)[/dim]")
             console.print("[dim]Env override DUSKY_BUILD_DIR also works for one-off builds.[/dim]")
-            raw = Prompt.ask(
-                "\n[bold cyan]Enter new build directory[/bold cyan] (empty to reset to default, 'cancel' to abort)",
-                default="",
-                show_default=False,
-            )
+            console.print("[dim]Tab completion: type /mnt/z[TAB] -> /mnt/zram1/[/dim]")
+            raw = prompt_path_with_tab_completion("\n[bold cyan]Enter new build directory[/bold cyan] (empty to reset to default, 'cancel' to abort): ")
             if raw.strip().lower() == "cancel":
                 console.print("[yellow]Cancelled.[/yellow]")
             elif not raw.strip():
@@ -865,7 +928,7 @@ def manage_dusky_state() -> None:
                         console.print(f"[bold green]Build dir set to: {candidate} ({fs_info}, {free_gb:.1f} GB free)[/bold green]")
                         if ram_backed:
                             if fs_info == "tmpfs":
-                                console.print("[dim]tmpfs detected - RAM-backed, very fast, but uses uncompressed RAM. Prefer ZRAM (zstd-compressed, e.g. /mnt/zram).[/dim]")
+                                console.print("[dim]tmpfs detected - RAM-backed, very fast, but uses uncompressed RAM. Prefer ZRAM (zstd-compressed, e.g. /mnt/zram1).[/dim]")
                             else:
                                 console.print("[dim]ZRAM/RAM detected - excellent for avoiding SSD writes (RAM-backed, zstd-compressed if you used mkfs).[/dim]")
                     except Exception as e:
@@ -1287,14 +1350,18 @@ def main_menu() -> None:
             build_label = f"[dim]{effective_build}[/dim]"
 
         console.print(
-            Panel(
-                Align.center(
-                    f"[bold cyan]Dusky Kernel Compiler[/bold cyan] [dim]- 2026.08 Production[/dim]\n"
-                    f"[dim]Arch Linux • Kernel 7.1+ • localmodconfig + LMC_KEEP • pacman-pkg[/dim]\n"
-                    f"[dim]Toolchain: {llvm_info} • Config: {config_status} • Build: {build_label}[/dim]"
-                ),
-                box=box.DOUBLE,
-                border_style="blue",
+            Align.center(
+                Panel(
+                    Align.center(
+                        f"[bold cyan]Dusky Kernel Compiler[/bold cyan] [dim]- 2026.08 Production[/dim]\n"
+                        f"[dim]Arch Linux • Kernel 7.1+ • localmodconfig + LMC_KEEP • pacman-pkg[/dim]\n"
+                        f"[dim]Toolchain: {llvm_info} • Config: {config_status} • Build: {build_label}[/dim]"
+                    ),
+                    box=box.DOUBLE,
+                    border_style="blue",
+                    expand=False,
+                    padding=(1, 2),
+                )
             )
         )
         table = Table(show_header=False, box=box.SIMPLE)
@@ -1340,7 +1407,7 @@ def parse_cli_args() -> None:
     parser = argparse.ArgumentParser(description="Dusky Kernel Compiler 2026.08 Engine")
     parser.add_argument("--verify", action="store_true", help="Run empirical diagnostics and exit")
     parser.add_argument("--check-latest", action="store_true", help="Check latest kernel.org versions and exit")
-    parser.add_argument("--build-dir", type=str, default=None, help="Override build directory (supports ZRAM/tmpfs, e.g. /mnt/zram/dusky_build or /tmp/dusky_build)")
+    parser.add_argument("--build-dir", type=str, default=None, help="Override build directory (supports ZRAM/tmpfs, e.g. /mnt/zram1/dusky_build or /tmp/dusky_build)")
     args = parser.parse_args()
 
     if args.build_dir:
