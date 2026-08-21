@@ -95,6 +95,14 @@ CORE_USER_DEFS = {
         "Notification Timestamp Daemon",
         "Background daemon that tracks exact arrival timestamps for Mako desktop notifications and caches them for QuickPanel and Rofi displays.",
     ),
+    "modprobed-db.service": (
+        "Hardware Profiler",
+        "Records used kernel modules to `~/.config/modprobed.db` for `localmodconfig`. Keep enabled for lean native kernels.",
+    ),
+    "modprobed-db.timer": (
+        "Profiler Timer",
+        "Triggers profiler every 6h to refresh hardware DB. Enabled via service.",
+    ),
 }
 
 CORE_SYSTEM_DEFS = {
