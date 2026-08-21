@@ -2,6 +2,12 @@
 # ==============================================================================
 #  DUSKY UPDATER (v9.6.0)
 # ==============================================================================
+import sys
+
+if sys.version_info < (3, 14):
+    sys.stdout.write("\033[1;31m[FATAL]\033[0m Dusky requires Python 3.14+ bleeding-edge architecture.\n")
+    sys.exit(1)
+
 import argparse
 import asyncio
 import atexit
@@ -27,7 +33,6 @@ import sqlite3
 import stat
 import struct
 import subprocess
-import sys
 import tempfile
 import termios
 import time
@@ -40,11 +45,6 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Literal, Optional
-
-# --- Enforcement: Bleeding-Edge Python 3.14+ ---
-if sys.version_info < (3, 14):
-    sys.stdout.write("\033[1;31m[FATAL]\033[0m Dusky requires Python 3.14+ bleeding-edge architecture.\n")
-    sys.exit(1)
 
 VERSION = "9.6.0"
 SCRIPT_DIR: Path = Path(__file__).resolve().parent
@@ -143,6 +143,26 @@ def state_dir() -> Path:
     return p
 
 
+def ensure_secure_dir(path: Path) -> bool:
+    if path.is_symlink():
+        return False
+    if path.exists() and not path.is_dir():
+        return False
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        path.chmod(0o700)
+    except OSError:
+        return False
+
+    try:
+        st = path.stat()
+        is_owner = st.st_uid == os.getuid()
+        is_writable = os.access(path, os.W_OK)
+        return is_owner and is_writable and not path.is_symlink()
+    except OSError:
+        return False
+
+
 def lock_path() -> Path:
     lock_file = GLOBAL_CONFIG.get("paths", {}).get("lock_file", "lock")
     return runtime_dir() / lock_file
@@ -236,7 +256,7 @@ _INTERACTIVE_RE = re.compile(
 )
 _HEX_COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
 ANSI_STRIP_REGEX = re.compile(
-    r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x1b]*(?:\x07|\x1B\\))"
+    r"\x1B(?:[@-Z\\_-]|\[[0-?]*[ -/]*[@-~]|\][^\x1b]*(?:\x07|\x1B\\))"
 )
 PCT_REGEX = re.compile(r"(?<!\d)(?:100(?:\.0+)?|\d{1,2}(?:\.\d+)?)%")
 SPEED_ETA_REGEX = re.compile(
@@ -1581,63 +1601,6 @@ class SleepInhibitor:
 
 
 # ==============================================================================
-#  PRE-FLIGHT BOOTSTRAP & DEPENDENCY RESOLUTION
-# ==============================================================================
-def bootstrap_dependencies() -> bool:
-    if any(flag in sys.argv for flag in {"-h", "--help", "--version", "--doctor", "--list", "--list-once", "--forget-once"}):
-        return False
-
-    missing = [
-        pkg for mod, pkg in [("textual", "python-textual"), ("rich", "python-rich")]
-        if importlib.util.find_spec(mod) is None
-    ]
-    if missing:
-        sys.stdout.write(f"\033[1;33m[DUSKY BOOTSTRAP]\033[0m Resolving dependencies: {', '.join(missing)}\n")
-        if not SudoEngine.preflight():
-            sys.exit(1)
-        try:
-            cmd = SudoEngine.sudo_prefix() + ['pacman', '-S', '--noconfirm'] + missing
-            subprocess.run(cmd, check=True)
-            importlib.invalidate_caches()
-            importlib.reload(site)
-        except subprocess.CalledProcessError:
-            sys.stdout.write("\033[1;31m[FATAL]\033[0m Dependency resolution failed.\n")
-            sys.exit(1)
-        return True
-    return False
-
-
-SUDO_ALREADY_ACQUIRED = bootstrap_dependencies()
-
-try:
-    from rich.markup import escape
-    from rich.syntax import Syntax
-    from rich.text import Text
-    from textual import events, on
-    from textual.app import App, ComposeResult
-    from textual.binding import Binding
-    from textual.containers import Container, Horizontal, Vertical
-    from textual.reactive import reactive
-    from textual.screen import ModalScreen
-    from textual.widgets import (
-        Button,
-        ContentSwitcher,
-        Input,
-        Label,
-        ListItem,
-        ListView,
-        OptionList,
-        ProgressBar,
-        RichLog,
-        Static,
-    )
-    from textual.widgets.option_list import Option
-except ImportError:
-    sys.stdout.write("\033[1;31m[FATAL]\033[0m UI library import failed post-resolution. Ensure Arch mirrors are synced.\n")
-    sys.exit(1)
-
-
-# ==============================================================================
 #  CLI ARGUMENT PARSING & CONFIGURATION
 # ==============================================================================
 OPT_DRY_RUN = False
@@ -1732,11 +1695,7 @@ def list_active_scripts(profile: 'ProfileConfig'):
     sys.exit(0)
 
 
-def parse_args():
-    global OPT_DRY_RUN, OPT_SKIP_SYNC, OPT_SYNC_ONLY, OPT_FORCE
-    global OPT_STOP_ON_FAIL, OPT_ALLOW_DIVERGED_RESET, OPT_PROFILE_NAME
-    global OPT_POST_SELF_UPDATE
-
+def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument('--help', '-h', action='store_true')
     parser.add_argument('--version', action='store_true')
@@ -1752,12 +1711,21 @@ def parse_args():
     parser.add_argument('--list-once', action='store_true')
     parser.add_argument('--forget-once', nargs='+', metavar='SCRIPT', default=None)
     parser.add_argument('--post-self-update', action='store_true')
+    return parser
 
+
+def parse_args():
+    global OPT_DRY_RUN, OPT_SKIP_SYNC, OPT_SYNC_ONLY, OPT_FORCE
+    global OPT_STOP_ON_FAIL, OPT_ALLOW_DIVERGED_RESET, OPT_PROFILE_NAME
+    global OPT_POST_SELF_UPDATE
+
+    parser = _build_arg_parser()
     args, unknown = parser.parse_known_args()
 
     if unknown:
         sys.stderr.write(f"Error: Unknown option {unknown[0]}\n")
-        show_help()
+        parser.print_usage(sys.stderr)
+        sys.exit(2)
 
     if args.help:
         show_help()
@@ -1975,6 +1943,10 @@ def load_profile(name_or_path: str) -> ProfileConfig:
         available = list_profiles()
         if available:
             p = available[0]
+            sys.stderr.write(
+                f"[WARN] Profile '{name_or_path}' not found; "
+                f"falling back to '{p.stem}' ({p})\n"
+            )
         else:
             sys.stderr.write(f"[FATAL] Profile not found: {name_or_path}\n")
             sys.exit(1)
@@ -2028,178 +2000,6 @@ def load_profile(name_or_path: str) -> ProfileConfig:
         )
     except Exception as e:
         sys.stderr.write(f"[FATAL] Failed to load profile '{p}': {e}\n")
-        sys.exit(1)
-
-
-# ==============================================================================
-#  STORAGE, LOGGING & LOCKING UTILITIES
-# ==============================================================================
-ACTIVE_LOG_BASE_DIR = None
-ACTIVE_BACKUP_BASE_DIR = None
-RUNTIME_DIR = None
-LOCK_FILE = None
-LOCK_FD = None
-LOG_FILE = None
-RUN_TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-CLR_RED = "\033[1;31m"
-CLR_GRN = "\033[1;32m"
-CLR_YLW = "\033[1;33m"
-CLR_BLU = "\033[1;34m"
-CLR_CYN = "\033[1;36m"
-CLR_RST = "\033[0m"
-
-
-def strip_ansi(text: str) -> str:
-    return ANSI_STRIP_REGEX.sub('', text)
-
-
-def log(level: str, msg: str):
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    prefix = f"[{level}]"
-
-    if level == "INFO":
-        prefix = f"{CLR_BLU}[INFO ]{CLR_RST}"
-    elif level == "OK":
-        prefix = f"{CLR_GRN}[OK   ]{CLR_RST}"
-    elif level == "WARN":
-        prefix = f"{CLR_YLW}[WARN ]{CLR_RST}"
-    elif level == "ERROR":
-        prefix = f"{CLR_RED}[ERROR]{CLR_RST}"
-    elif level == "SECTION":
-        prefix = f"\n{CLR_CYN}═══════{CLR_RST}"
-
-    if 'app' in globals() and globals()['app'] is not None and getattr(globals()['app'], '_running', False):
-        with suppress(Exception):
-            globals()['app'].log_main(msg)
-    else:
-        if level == "SECTION":
-            sys.stdout.write(f"{prefix} {msg}\n")
-        elif level == "RAW":
-            sys.stdout.write(f"{msg}\n")
-        else:
-            sys.stdout.write(f"{prefix} {msg}\n")
-        sys.stdout.flush()
-
-    if LOG_FILE and GLOBAL_CONFIG.get("logging", {}).get("enabled", True):
-        with suppress(OSError):
-            stripped = strip_ansi(msg)
-            with open(LOG_FILE, "a", encoding="utf-8") as f:
-                f.write(f"[{timestamp}] [{level:<7s}] {stripped}\n")
-
-
-def desktop_notify(summary: str, body: str, urgency: str = "normal") -> None:
-    if OPT_DRY_RUN:
-        return
-    DesktopNotifier.notify(summary, body, urgency)
-
-
-def auto_prune() -> None:
-    log_days = GLOBAL_CONFIG.get("paths", {}).get("log_retention_days", 14)
-    backup_days = GLOBAL_CONFIG.get("paths", {}).get("backup_retention_days", 14)
-    now_sec = time.time()
-
-    if log_days > 0:
-        cutoff = now_sec - (log_days * 86400)
-        l_dir = logs_dir()
-        if l_dir.is_dir():
-            with suppress(Exception):
-                for f in l_dir.glob("dusky_update_*.log"):
-                    if f.is_file() and f.stat().st_mtime < cutoff:
-                        with suppress(OSError):
-                            f.unlink()
-
-    if backup_days > 0:
-        cutoff = now_sec - (backup_days * 86400)
-        b_dir = backups_dir()
-        if b_dir.is_dir():
-            backup_prefixes = (
-                "full_snapshot_", "your_changes_", "moved_aside_",
-                "manual_merge_", "repo_history_",
-                # Legacy prefixes included to ensure older backups are still cleaned up
-                "pre_reset_", "user_mods_", "untracked_collisions_",
-                "needs_merge_"
-            )
-            with suppress(Exception):
-                for d in b_dir.iterdir():
-                    if d.is_dir() and any(d.name.startswith(p) for p in backup_prefixes):
-                        if d.stat().st_mtime < cutoff:
-                            with suppress(OSError):
-                                shutil.rmtree(d, ignore_errors=True)
-
-
-def ensure_secure_dir(path: Path) -> bool:
-    if path.is_symlink():
-        return False
-    if path.exists() and not path.is_dir():
-        return False
-    try:
-        path.mkdir(parents=True, exist_ok=True)
-        path.chmod(0o700)
-    except OSError:
-        return False
-
-    try:
-        st = path.stat()
-        is_owner = st.st_uid == os.getuid()
-        is_writable = os.access(path, os.W_OK)
-        return is_owner and is_writable and not path.is_symlink()
-    except OSError:
-        return False
-
-
-def make_private_dir_under(base: Path, folder_name: str) -> Optional[Path]:
-    if not ensure_secure_dir(base):
-        return None
-    candidate = base / folder_name
-    try:
-        candidate.mkdir(mode=0o700)
-        candidate.chmod(0o700)
-        return candidate
-    except FileExistsError:
-        for i in range(2, 100):
-            candidate = base / f"{folder_name}_{i}"
-            try:
-                candidate.mkdir(mode=0o700)
-                candidate.chmod(0o700)
-                return candidate
-            except FileExistsError:
-                continue
-            except OSError:
-                break
-    except OSError:
-        pass
-    return None
-
-
-def make_private_file_under(base: Path, prefix: str, suffix: str = ".log") -> Optional[Path]:
-    if not ensure_secure_dir(base):
-        return None
-    try:
-        fd, path = tempfile.mkstemp(prefix=prefix, suffix=suffix, dir=base)
-        os.close(fd)
-        p = Path(path)
-        p.chmod(0o600)
-        return p
-    except Exception:
-        return None
-
-
-def setup_storage_roots():
-    global ACTIVE_LOG_BASE_DIR, ACTIVE_BACKUP_BASE_DIR
-    l_dir = logs_dir()
-    b_dir = backups_dir()
-
-    if ensure_secure_dir(l_dir):
-        ACTIVE_LOG_BASE_DIR = l_dir
-    else:
-        sys.stderr.write(f"Error: Cannot create log directory: {l_dir}\n")
-        sys.exit(1)
-
-    if ensure_secure_dir(b_dir):
-        ACTIVE_BACKUP_BASE_DIR = b_dir
-    else:
-        sys.stderr.write(f"Error: Cannot create backup directory: {b_dir}\n")
         sys.exit(1)
 
 
@@ -2306,6 +2106,420 @@ def acquire_lock() -> bool:
 
 def release_lock() -> None:
     _cleanup_lock()
+
+
+# ==============================================================================
+#  STRUCTURAL PATTERN MATCHING & PARSING
+# ==============================================================================
+@dataclass(slots=True)
+class DuskyTask:
+    name: str
+    mode: Literal['U', 'S', 'GIT']
+    ignore_fail: bool
+    interactive: bool
+    args: list[str]
+    interactive_override: bool | None = None
+    status: Literal['pending', 'running', 'success', 'failed', 'skipped'] = 'pending'
+    resolved_path: Optional[Path] = None
+    interpreter: Optional[list[str]] = None
+    path_state: str = "ok"  # "ok", "missing", "conflict"
+
+    # Extended Orchestrator Subsystem Fields
+    condition: str | None = None
+    timeout: float | None = None
+    retry: int = 0
+    retry_delay: float = 1.0
+    once: bool = False
+    once_mode: str = "content"
+    once_scope: str = "profile"
+    checksum: str = ""
+    state_key: str = ""
+    duration: float = 0.0
+    conflict_note: str = ""
+
+
+def parse_manifest(profile: ProfileConfig) -> list[DuskyTask]:
+    tasks = [
+        DuskyTask("Git Bare Repo Validation", 'GIT', False, False, []),
+        DuskyTask("Fetch Upstream & Diff", 'GIT', False, False, []),
+        DuskyTask("Forensic Collision Backup", 'GIT', False, False, []),
+        DuskyTask("Atomic Snapshot (CoW)", 'GIT', False, False, []),
+        DuskyTask("Apply Bare Updates (Reset)", 'GIT', False, False, [])
+    ]
+
+    interactive_heuristics = {'reboot_post_lua_update.sh', 'tui_matugen.py', 'dusky_firefox_tui.sh'}
+
+    for entry in profile.sequence:
+        entry = entry.strip()
+        if not entry or entry.startswith('#'):
+            continue
+
+        parts = [p.strip() for p in entry.split("|", 2)]
+
+        if len(parts) == 1:
+            mode, flags_raw, cmd_part = "U", "", parts[0]
+        elif len(parts) == 2:
+            mode, cmd_part = parts[0], parts[1]
+            flags_raw = ""
+        elif len(parts) == 3:
+            mode, flags_raw, cmd_part = parts[0], parts[1], parts[2]
+        else:
+            continue
+
+        cmd_tokens: list[str] | None = None
+        with suppress(Exception):
+            cmd_tokens = shlex.split(cmd_part)
+        if not cmd_tokens:
+            cmd_tokens = cmd_part.split()
+
+        if not cmd_tokens:
+            continue
+
+        script_name, *args = cmd_tokens
+
+        ignore_fail = False
+        interactive = False
+        interactive_override = None
+        condition = None
+        timeout = None
+        retry = 0
+        retry_delay = 1.0
+        once = False
+        once_mode = "content"
+        once_scope = "profile"
+
+        raw_flags = [tok.strip() for part in flags_raw.split(",") for tok in part.split() if tok.strip()]
+        for f in raw_flags:
+            key, has_val, val = f.partition(":")
+            key_l = key.strip().lower()
+            val_stripped = val.strip()
+            val_l = val_stripped.lower()
+            if not has_val:
+                match key_l:
+                    case "true" | "ignore" | "ignore-fail":
+                        ignore_fail = True
+                    case "interactive" | "tui" | "prompt" | "fullscreen" | "tty" | "suspend":
+                        interactive = True
+                        interactive_override = True
+                    case "no-interactive" | "noninteractive" | "inline" | "embedded":
+                        interactive = False
+                        interactive_override = False
+                    case "once" | "run_once" | "sticky":
+                        once = True
+                    case _:
+                        pass
+            else:
+                match key_l, val_l:
+                    case ("once", "content" | "hash"):
+                        once, once_mode = True, "content"
+                    case ("once", "forever" | "exact" | "permanent"):
+                        once, once_mode = True, "forever"
+                    case ("once", "sealed" | "locked"):
+                        once, once_mode = True, "sealed"
+                    case ("once", "profile" | "local"):
+                        once, once_scope = True, "profile"
+                    case ("once", "global" | "machine"):
+                        once, once_scope = True, "global"
+                    case ("if", _):
+                        # Value case must be preserved: env vars, paths and
+                        # systemd units are case-sensitive.
+                        condition = val_stripped if condition is None else f"{condition},{val_stripped}"
+                    case ("timeout", _):
+                        with suppress(ValueError):
+                            timeout = float(val_stripped)
+                    case ("retry", _):
+                        with suppress(ValueError):
+                            retry = max(0, int(val_stripped))
+                    case ("retry_delay", _):
+                        with suppress(ValueError):
+                            retry_delay = max(0.0, float(val_stripped))
+                    case _:
+                        pass
+
+        if not interactive and script_name in interactive_heuristics:
+            interactive = True
+
+        tasks.append(DuskyTask(
+            name=script_name, mode=mode,  # type: ignore
+            ignore_fail=ignore_fail, interactive=interactive,
+            interactive_override=interactive_override,
+            condition=condition, timeout=timeout, retry=retry,
+            retry_delay=retry_delay, once=once,
+            once_mode=once_mode, once_scope=once_scope, args=args
+        ))
+    return tasks
+
+
+# ==============================================================================
+#  PRE-FLIGHT BOOTSTRAP & DEPENDENCY RESOLUTION
+# ==============================================================================
+def bootstrap_dependencies() -> bool:
+    if any(flag in sys.argv for flag in {"-h", "--help", "--version", "--doctor", "--list", "--list-once", "--forget-once"}):
+        return False
+
+    missing = [
+        pkg for mod, pkg in [("textual", "python-textual"), ("rich", "python-rich")]
+        if importlib.util.find_spec(mod) is None
+    ]
+    if missing:
+        sys.stdout.write(f"\033[1;33m[DUSKY BOOTSTRAP]\033[0m Resolving dependencies: {', '.join(missing)}\n")
+        if not SudoEngine.preflight():
+            sys.exit(1)
+        try:
+            cmd = SudoEngine.sudo_prefix() + ['pacman', '-S', '--noconfirm'] + missing
+            subprocess.run(cmd, check=True)
+            importlib.invalidate_caches()
+            importlib.reload(site)
+        except subprocess.CalledProcessError:
+            sys.stdout.write("\033[1;31m[FATAL]\033[0m Dependency resolution failed.\n")
+            sys.exit(1)
+        return True
+    return False
+
+
+def _early_info_dispatch() -> None:
+    """Validate CLI arguments and serve informational subcommands without
+    requiring the TUI stack.
+
+    Runs unconditionally so unknown options are rejected BEFORE
+    bootstrap_dependencies() gets a chance to touch the system, and so the
+    info flags never hard-fail on a missing textual/rich (bootstrap
+    deliberately skips dependency installation for them)."""
+    parser = _build_arg_parser()
+    args, unknown = parser.parse_known_args()
+    if unknown:
+        sys.stderr.write(f"Error: Unknown option {unknown[0]}\n")
+        parser.print_usage(sys.stderr)
+        sys.exit(2)
+
+    if not (args.help or args.version or args.doctor or args.list
+            or args.list_once or args.forget_once):
+        return
+
+    if args.help:
+        show_help()
+    if args.version:
+        show_version()
+    if args.doctor:
+        run_doctor()
+
+    if args.list_once:
+        store = OnceStore()
+        try:
+            store.print_list()
+        finally:
+            store.close()
+        sys.exit(0)
+
+    if args.forget_once:
+        setup_runtime_dir()
+        if not acquire_lock():
+            sys.exit(1)
+        store = OnceStore()
+        try:
+            for script in args.forget_once:
+                removed = store.forget(script)
+                sys.stdout.write(f"Forgot {removed} marker(s): {script}\n")
+        finally:
+            store.close()
+        sys.exit(0)
+
+    if args.list:
+        profile = load_profile(args.profile)
+        profile.tasks = parse_manifest(profile)
+        list_active_scripts(profile)
+
+
+_early_info_dispatch()
+SUDO_ALREADY_ACQUIRED = bootstrap_dependencies()
+
+try:
+    from rich.markup import escape
+    from rich.syntax import Syntax
+    from rich.text import Text
+    from textual import events, on
+    from textual.app import App, ComposeResult
+    from textual.binding import Binding
+    from textual.containers import Container, Horizontal, Vertical
+    from textual.reactive import reactive
+    from textual.screen import ModalScreen
+    from textual.widgets import (
+        Button,
+        ContentSwitcher,
+        Input,
+        Label,
+        ListItem,
+        ListView,
+        OptionList,
+        ProgressBar,
+        RichLog,
+        Static,
+    )
+    from textual.widgets.option_list import Option
+except ImportError:
+    sys.stdout.write("\033[1;31m[FATAL]\033[0m UI library import failed post-resolution. Ensure Arch mirrors are synced.\n")
+    sys.exit(1)
+
+
+# ==============================================================================
+#  STORAGE, LOGGING & LOCKING UTILITIES
+# ==============================================================================
+ACTIVE_LOG_BASE_DIR = None
+ACTIVE_BACKUP_BASE_DIR = None
+RUNTIME_DIR = None
+LOCK_FILE = None
+LOCK_FD = None
+LOG_FILE = None
+RUN_TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+CLR_RED = "\033[1;31m"
+CLR_GRN = "\033[1;32m"
+CLR_YLW = "\033[1;33m"
+CLR_BLU = "\033[1;34m"
+CLR_CYN = "\033[1;36m"
+CLR_RST = "\033[0m"
+
+
+def strip_ansi(text: str) -> str:
+    return ANSI_STRIP_REGEX.sub('', text)
+
+
+def log(level: str, msg: str):
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    prefix = f"[{level}]"
+
+    if level == "INFO":
+        prefix = f"{CLR_BLU}[INFO ]{CLR_RST}"
+    elif level == "OK":
+        prefix = f"{CLR_GRN}[OK   ]{CLR_RST}"
+    elif level == "WARN":
+        prefix = f"{CLR_YLW}[WARN ]{CLR_RST}"
+    elif level == "ERROR":
+        prefix = f"{CLR_RED}[ERROR]{CLR_RST}"
+    elif level == "SECTION":
+        prefix = f"\n{CLR_CYN}═══════{CLR_RST}"
+
+    if 'app' in globals() and globals()['app'] is not None and getattr(globals()['app'], '_running', False):
+        with suppress(Exception):
+            globals()['app'].log_main(msg)
+    else:
+        if level == "SECTION":
+            sys.stdout.write(f"{prefix} {msg}\n")
+        elif level == "RAW":
+            sys.stdout.write(f"{msg}\n")
+        else:
+            sys.stdout.write(f"{prefix} {msg}\n")
+        sys.stdout.flush()
+
+    if LOG_FILE and GLOBAL_CONFIG.get("logging", {}).get("enabled", True):
+        with suppress(OSError):
+            stripped = strip_ansi(msg)
+            with open(LOG_FILE, "a", encoding="utf-8") as f:
+                f.write(f"[{timestamp}] [{level:<7s}] {stripped}\n")
+
+
+def desktop_notify(summary: str, body: str, urgency: str = "normal") -> None:
+    if OPT_DRY_RUN:
+        return
+    DesktopNotifier.notify(summary, body, urgency)
+
+
+def auto_prune() -> None:
+    log_days = GLOBAL_CONFIG.get("paths", {}).get("log_retention_days", 14)
+    backup_days = GLOBAL_CONFIG.get("paths", {}).get("backup_retention_days", 14)
+    now_sec = time.time()
+
+    if log_days > 0:
+        cutoff = now_sec - (log_days * 86400)
+        l_dir = logs_dir()
+        if l_dir.is_dir():
+            with suppress(Exception):
+                for f in l_dir.glob("dusky_update_*.log"):
+                    if f.is_file() and f.stat().st_mtime < cutoff:
+                        with suppress(OSError):
+                            f.unlink()
+            # Per-run orchestrator directories ({stamp}_{profile}_{run_id})
+            # created by RunLogger. The strict double-timestamp shape only
+            # matches updater-generated dirs, never arbitrary user folders.
+            run_dir_re = re.compile(r"^\d{8}_\d{6}_.+_\d{8}_\d{6}$")
+            with suppress(Exception):
+                for d in l_dir.iterdir():
+                    if d.is_dir() and not d.is_symlink() and run_dir_re.fullmatch(d.name):
+                        if d.stat().st_mtime < cutoff:
+                            shutil.rmtree(d, ignore_errors=True)
+
+    if backup_days > 0:
+        cutoff = now_sec - (backup_days * 86400)
+        b_dir = backups_dir()
+        if b_dir.is_dir():
+            backup_prefixes = (
+                "full_snapshot_", "your_changes_", "moved_aside_",
+                "manual_merge_", "repo_history_",
+                # Legacy prefixes included to ensure older backups are still cleaned up
+                "pre_reset_", "user_mods_", "untracked_collisions_",
+                "needs_merge_"
+            )
+            with suppress(Exception):
+                for d in b_dir.iterdir():
+                    if d.is_dir() and any(d.name.startswith(p) for p in backup_prefixes):
+                        if d.stat().st_mtime < cutoff:
+                            with suppress(OSError):
+                                shutil.rmtree(d, ignore_errors=True)
+
+
+def make_private_dir_under(base: Path, folder_name: str) -> Optional[Path]:
+    if not ensure_secure_dir(base):
+        return None
+    candidate = base / folder_name
+    try:
+        candidate.mkdir(mode=0o700)
+        candidate.chmod(0o700)
+        return candidate
+    except FileExistsError:
+        for i in range(2, 100):
+            candidate = base / f"{folder_name}_{i}"
+            try:
+                candidate.mkdir(mode=0o700)
+                candidate.chmod(0o700)
+                return candidate
+            except FileExistsError:
+                continue
+            except OSError:
+                break
+    except OSError:
+        pass
+    return None
+
+
+def make_private_file_under(base: Path, prefix: str, suffix: str = ".log") -> Optional[Path]:
+    if not ensure_secure_dir(base):
+        return None
+    try:
+        fd, path = tempfile.mkstemp(prefix=prefix, suffix=suffix, dir=base)
+        os.close(fd)
+        p = Path(path)
+        p.chmod(0o600)
+        return p
+    except Exception:
+        return None
+
+
+def setup_storage_roots():
+    global ACTIVE_LOG_BASE_DIR, ACTIVE_BACKUP_BASE_DIR
+    l_dir = logs_dir()
+    b_dir = backups_dir()
+
+    if ensure_secure_dir(l_dir):
+        ACTIVE_LOG_BASE_DIR = l_dir
+    else:
+        sys.stderr.write(f"Error: Cannot create log directory: {l_dir}\n")
+        sys.exit(1)
+
+    if ensure_secure_dir(b_dir):
+        ACTIVE_BACKUP_BASE_DIR = b_dir
+    else:
+        sys.stderr.write(f"Error: Cannot create backup directory: {b_dir}\n")
+        sys.exit(1)
 
 
 async def wait_for_process(proc: asyncio.subprocess.Process, timeout: float | None = None) -> int:
@@ -2623,137 +2837,6 @@ CompletionDialog, TaskSearchScreen, LogSearchScreen, ConfirmQuitScreen, HelpScre
 #  MANIFEST & PATH CONSTANTS
 # ==============================================================================
 # WORK_TREE and GIT_DIR are configured in PATH RESOLUTION UTILITIES (with env overrides)
-
-
-# ==============================================================================
-#  STRUCTURAL PATTERN MATCHING & PARSING
-# ==============================================================================
-@dataclass(slots=True)
-class DuskyTask:
-    name: str
-    mode: Literal['U', 'S', 'GIT']
-    ignore_fail: bool
-    interactive: bool
-    args: list[str]
-    interactive_override: bool | None = None
-    status: Literal['pending', 'running', 'success', 'failed', 'skipped'] = 'pending'
-    resolved_path: Optional[Path] = None
-    interpreter: Optional[list[str]] = None
-    path_state: str = "ok"  # "ok", "missing", "conflict"
-
-    # Extended Orchestrator Subsystem Fields
-    condition: str | None = None
-    timeout: float | None = None
-    retry: int = 0
-    retry_delay: float = 1.0
-    once: bool = False
-    once_mode: str = "content"
-    once_scope: str = "profile"
-    checksum: str = ""
-    state_key: str = ""
-    duration: float = 0.0
-    conflict_note: str = ""
-
-
-def parse_manifest(profile: ProfileConfig) -> list[DuskyTask]:
-    tasks = [
-        DuskyTask("Git Bare Repo Validation", 'GIT', False, False, []),
-        DuskyTask("Fetch Upstream & Diff", 'GIT', False, False, []),
-        DuskyTask("Forensic Collision Backup", 'GIT', False, False, []),
-        DuskyTask("Atomic Snapshot (CoW)", 'GIT', False, False, []),
-        DuskyTask("Apply Bare Updates (Reset)", 'GIT', False, False, [])
-    ]
-
-    interactive_heuristics = {'reboot_post_lua_update.sh', 'tui_matugen.py', 'dusky_firefox_tui.sh'}
-
-    for entry in profile.sequence:
-        entry = entry.strip()
-        if not entry or entry.startswith('#'):
-            continue
-
-        parts = [p.strip() for p in entry.split("|", 2)]
-
-        if len(parts) == 1:
-            mode, flags_raw, cmd_part = "U", "", parts[0]
-        elif len(parts) == 2:
-            mode, cmd_part = parts[0], parts[1]
-            flags_raw = ""
-        elif len(parts) == 3:
-            mode, flags_raw, cmd_part = parts[0], parts[1], parts[2]
-        else:
-            continue
-
-        cmd_tokens: list[str] | None = None
-        with suppress(Exception):
-            cmd_tokens = shlex.split(cmd_part)
-        if not cmd_tokens:
-            cmd_tokens = cmd_part.split()
-
-        if not cmd_tokens:
-            continue
-
-        script_name, *args = cmd_tokens
-
-        ignore_fail = False
-        interactive = False
-        interactive_override = None
-        condition = None
-        timeout = None
-        retry = 0
-        retry_delay = 1.0
-        once = False
-        once_mode = "content"
-        once_scope = "profile"
-
-        raw_flags = [tok.strip().lower() for part in flags_raw.split(",") for tok in part.split() if tok.strip()]
-        for f in raw_flags:
-            match f.split(":", 1):
-                case ["true" | "ignore" | "ignore-fail"]:
-                    ignore_fail = True
-                case ["interactive" | "tui" | "prompt" | "fullscreen" | "tty" | "suspend"]:
-                    interactive = True
-                    interactive_override = True
-                case ["no-interactive" | "noninteractive" | "inline" | "embedded"]:
-                    interactive = False
-                    interactive_override = False
-                case ["once" | "run_once" | "sticky"]:
-                    once = True
-                case ["once", "content" | "hash"]:
-                    once, once_mode = True, "content"
-                case ["once", "forever" | "exact" | "permanent"]:
-                    once, once_mode = True, "forever"
-                case ["once", "sealed" | "locked"]:
-                    once, once_mode = True, "sealed"
-                case ["once", "profile" | "local"]:
-                    once, once_scope = True, "profile"
-                case ["once", "global" | "machine"]:
-                    once, once_scope = True, "global"
-                case ["if", cond_val]:
-                    condition = cond_val if condition is None else f"{condition},{cond_val}"
-                case ["timeout", val]:
-                    with suppress(ValueError):
-                        timeout = float(val)
-                case ["retry", val]:
-                    with suppress(ValueError):
-                        retry = max(0, int(val))
-                case ["retry_delay", val]:
-                    with suppress(ValueError):
-                        retry_delay = max(0.0, float(val))
-                case _:
-                    pass
-
-        if not interactive and script_name in interactive_heuristics:
-            interactive = True
-
-        tasks.append(DuskyTask(
-            name=script_name, mode=mode,  # type: ignore
-            ignore_fail=ignore_fail, interactive=interactive,
-            interactive_override=interactive_override,
-            condition=condition, timeout=timeout, retry=retry,
-            retry_delay=retry_delay, once=once,
-            once_mode=once_mode, once_scope=once_scope, args=args
-        ))
-    return tasks
 
 
 def is_script_interactive(script_path: Path) -> bool:
@@ -3156,6 +3239,26 @@ class GitEngine:
         except Exception as e:
             return 1, "", str(e)
 
+    async def _run_raw_bytes(self, *args: str, timeout_sec: int = 30) -> tuple[int, bytes]:
+        """Like _run_raw, but returns the exact stdout bytes (no strip/decode),
+        so restored files stay byte-identical to their git blob."""
+        cmd = self.git_cmd_base + list(args)
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=_git_env(), start_new_session=True
+            )
+            try:
+                async with asyncio.timeout(timeout_sec):
+                    stdout, _ = await proc.communicate()
+            except TimeoutError:
+                with suppress(ProcessLookupError, PermissionError, OSError):
+                    os.killpg(proc.pid, signal.SIGKILL)
+                    await proc.wait()
+                return 124, b""
+            return proc.returncode, stdout
+        except Exception:
+            return 1, b""
+
     def _tlog(self, msg: str, idx: int, also_main: bool = False):
         self.app.log_task(msg, idx)  # type: ignore
         if also_main:
@@ -3184,11 +3287,11 @@ class GitEngine:
                     True,
                 )
                 continue
-            rc_old, old_body, _ = await self._run_raw("show", f"{local_head}:{rel}", timeout_sec=30)
-            if rc_old == 0 and old_body:
+            rc_old, old_bytes = await self._run_raw_bytes("show", f"{local_head}:{rel}", timeout_sec=30)
+            if rc_old == 0 and old_bytes:
                 try:
                     target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_text(old_body + "\n", encoding="utf-8")
+                    target.write_bytes(old_bytes)
                     self._tlog(
                         f"\n[bold {THEME['warning']}]Invalid incoming update blocked:[/] {rel}\n"
                         f"    Restored your last working version from your previous local commit.\n    Reason: {why}",
@@ -5944,27 +6047,6 @@ class DuskyApp(App):
 if __name__ == "__main__":
     try:
         args = parse_args()
-
-        if args.list_once:
-            store = OnceStore()
-            try:
-                store.print_list()
-            finally:
-                store.close()
-            sys.exit(0)
-
-        if args.forget_once:
-            setup_runtime_dir()
-            if not acquire_lock():
-                sys.exit(1)
-            store = OnceStore()
-            try:
-                for script in args.forget_once:
-                    removed = store.forget(script)
-                    sys.stdout.write(f"Forgot {removed} marker(s): {script}\n")
-            finally:
-                store.close()
-            sys.exit(0)
 
         profile = load_profile(OPT_PROFILE_NAME)
         tasks = parse_manifest(profile)
