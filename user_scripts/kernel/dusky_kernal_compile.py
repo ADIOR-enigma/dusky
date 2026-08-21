@@ -1405,21 +1405,28 @@ def compile_kernel() -> None:
                     out = e.stdout.decode() if isinstance(e.stdout, bytes) else (e.stdout or "")
                     if not out and e.stderr:
                         out = e.stderr.decode() if isinstance(e.stderr, bytes) else str(e.stderr)
-                cnt = out.count("CC ") + out.count("LD ") + out.count("AR ") + out.count("HOSTCC ")
+                # Count all compile/link steps - live shows CC, LD, AR, HOSTCC, OBJCOPY, AS
+                cnt = (
+                    out.count("CC ")
+                    + out.count("LD ")
+                    + out.count("AR ")
+                    + out.count("HOSTCC ")
+                    + out.count("OBJCOPY ")
+                    + out.count("AS ")
+                )
                 if cnt < 500:
                     cnt = out.count(" CC ") + out.count(" LD ")
                 if cnt >= 500:
                     total_steps = cnt
                     console.print(f"[dim]Estimated {total_steps} steps - progress bar will show ETA[/dim]")
                 else:
-                    # Fallback heuristic: lean localmodconfig ~ 2500-3500 (233 modules * ~12), full ~ 7000
                     try:
                         db_cnt = count_db_modules()
-                        heuristic = max(2500, db_cnt * 12)
+                        heuristic = max(3000, db_cnt * 14)
                         total_steps = heuristic
                         console.print(f"[dim]Dry-run cnt={cnt} too low, using heuristic {total_steps} steps (db {db_cnt} modules) - ETA enabled[/dim]")
                     except Exception:
-                        total_steps = 3000
+                        total_steps = 3500
                         console.print(f"[dim]Could not estimate steps (cnt={cnt}), using fallback {total_steps} - ETA enabled[/dim]")
         except Exception as e:
             console.print(f"[dim]Estimate failed: {e}, progress will be indeterminate[/dim]")
@@ -1520,11 +1527,18 @@ def compile_kernel() -> None:
                     if not clean:
                         continue
                     log_lines.append(clean)
-                    # Advance progress for each CC/LD/AR line (real work) - handles both "CC " at start and " CC " in dry-run
-                    if clean.startswith(("CC ", "LD ", "AR ", "HOSTCC ", "CC\t", "LD\t")) or any(
-                        k in clean for k in (" CC ", " LD ", " AR ", " HOSTCC ")
-                    ):
+                    # Advance for all compile steps - live shows CC, LD, AR, HOSTCC, OBJCOPY, AS
+                    if clean.startswith(
+                        ("CC ", "LD ", "AR ", "HOSTCC ", "OBJCOPY ", "AS ", "CC\t", "LD\t")
+                    ) or any(k in clean for k in (" CC ", " LD ", " AR ", " HOSTCC ", " OBJCOPY ", " AS ")):
                         progress.advance(task_id)
+                        # Auto-extend if underestimated (your 13626 -> 14657) - keep ETA moving instead of 0:00:00
+                        try:
+                            _t = progress.tasks[task_id]
+                            if _t.total is not None and _t.completed >= _t.total:
+                                progress.update(task_id, total=_t.total + 1000)
+                        except Exception:
+                            pass
                     live.update(_make_renderable())
                 build_proc.stdout.close()
             build_proc.wait()
