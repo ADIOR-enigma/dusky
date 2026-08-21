@@ -464,6 +464,7 @@ _dusky_state_init() {
     printf '%s\n' "present" >"${DUSKY_STATE_DIR}/phase"
     printf '%s\n' "none"    >"${DUSKY_STATE_DIR}/stash"
     printf '%s\n' "${DUSKY_CFG_PREVIEW_MODE:-side}" >"${DUSKY_STATE_DIR}/preview_mode"
+    printf '%s\n' "commits" >"${DUSKY_STATE_DIR}/mode"
     printf '%s\n' "${DUSKY_CFG_SCOPE:-all}"         >"${DUSKY_STATE_DIR}/scope"
     printf '%s\n' "0"       >"${DUSKY_STATE_DIR}/stay"
     printf '%s\n' "${DUSKY_CFG_VIM_MODE:-false}"   >"${DUSKY_STATE_DIR}/vim_mode"
@@ -474,6 +475,9 @@ _dusky_state_init() {
     : >"${DUSKY_STATE_DIR}/head_line"
     rm -f -- "${DUSKY_STATE_DIR}/confirm_wipe"
     rm -f -- "${DUSKY_STATE_DIR}/conflicts"
+    rm -f -- "${DUSKY_STATE_DIR}/drill_sha" \
+             "${DUSKY_STATE_DIR}/drill_short" \
+             "${DUSKY_STATE_DIR}/files_index"
 }
 
 _dusky_read() {
@@ -799,6 +803,10 @@ _dusky_header_line() {
 }
 
 _dusky_git_list() {
+    if [[ "$(_dusky_read_mode)" == "files" ]]; then
+        _dusky_git_list_files
+        return 0
+    fi
     _dusky_compute_widths
     local scope head home
     scope="$(_dusky_read scope)"
@@ -960,6 +968,7 @@ _dusky_help_text() {
 
   ${a}Inspect & Preview Layout${r}
     ${s}[ALT-P]${r}          Cycle preview content: side → inline → stat → files → vs_present
+    ${s}[TAB]${r}            Browse changed files of selected commit (click a file = its diff)
     ${s}[ALT-LEFT/RGHT]${r}  Resize preview pane split (±5%)
     ${s}[ALT-UP/DOWN]${r}    Resize vertical preview pane split (±5%)
     ${s}[ALT-H/J/K/L]${r}    Move preview pane (Left / Bottom / Top / Right)
@@ -994,6 +1003,174 @@ _dusky_ghost_preview() {
     printf '  %s╰─────────────────────────────────────────────╯%s\n' "$DUSKY_ANSI_DIM" "$DUSKY_ANSI_RESET"
 }
 
+# -----------------------------------------------------------------------------
+# 8b. File browser — drill into a commit's changed files (TAB toggle)
+#     mode=commits  → list/preview behave exactly as before.
+#     mode=files    → list emits x<ordinal> rows of drill_sha; preview renders
+#                     that single file's old-vs-new diff. Index of paths is
+#                     kept in files_index (ordinal → path), so tokens stay
+#                     short, unique, and shell-safe in fzf placeholders.
+# -----------------------------------------------------------------------------
+_dusky_read_mode() {
+    local m
+    m="$(_dusky_read mode)"
+    [[ "$m" == "files" ]] || m="commits"
+    printf '%s\n' "$m"
+}
+
+_dusky_is_merge() {
+    _gr rev-parse --verify --quiet "$1^2" >/dev/null 2>&1
+}
+
+_dusky_name_status() {
+    local sha="$1" base="${2:-}"
+    if [[ -n "$base" ]]; then
+        _gr -c core.pager=cat diff --name-status "$base" "$sha" 2>/dev/null || true
+    else
+        _gr -c core.pager=cat diff-tree --root --no-commit-id --name-status -r "$sha" 2>/dev/null || true
+    fi
+}
+
+_dusky_changed_files_block() {
+    local sha="$1" base="${2:-}"
+    local raw="" st_path st path stc
+    local total=0 shown=0 max=40
+    local -a rows=()
+    raw="$(_dusky_name_status "$sha" "$base")"
+    while IFS=$'\t' read -r st path; do
+        [[ -n "$st" && -n "$path" ]] || continue
+        [[ "$path" =~ [[:cntrl:]] ]] && continue
+        rows+=("${st}"$'\t'"${path}")
+        (( total++ )) || true
+    done <<<"$raw"
+
+    if (( total == 0 )); then
+        if [[ -z "$base" ]] && _dusky_is_merge "$sha"; then
+            printf '%s● merge commit — per-file listing unavailable%s\n' \
+                "$DUSKY_ANSI_DIM" "$DUSKY_ANSI_RESET"
+        else
+            printf '%s(no file changes)%s\n' "$DUSKY_ANSI_DIM" "$DUSKY_ANSI_RESET"
+        fi
+        return 0
+    fi
+
+    printf '%s󰐖 CHANGED FILES%s %s(%d)%s %s· [TAB] browse%s\n' \
+        "$DUSKY_ANSI_BOLD" "$DUSKY_ANSI_RESET" \
+        "$DUSKY_ANSI_DIM" "$total" "$DUSKY_ANSI_RESET" \
+        "$DUSKY_ANSI_DIM" "$DUSKY_ANSI_RESET"
+    for st_path in "${rows[@]}"; do
+        (( shown < max )) || break
+        st="${st_path%%$'\t'*}"
+        path="${st_path#*$'\t'}"
+        case "$st" in
+            A)   stc="$DUSKY_ANSI_SUCCESS" ;;
+            D)   stc="$DUSKY_ANSI_ERROR" ;;
+            M|T) stc="$DUSKY_ANSI_ACCENT" ;;
+            *)   stc="$DUSKY_ANSI_FG" ;;
+        esac
+        printf '  %s%-2s%s %s%s%s\n' \
+            "$stc" "$st" "$DUSKY_ANSI_RESET" \
+            "$DUSKY_ANSI_FG" "$path" "$DUSKY_ANSI_RESET"
+        (( shown++ )) || true
+    done
+    if (( total > shown )); then
+        printf '%s  … +%d more — [TAB] to browse all%s\n' \
+            "$DUSKY_ANSI_DIM" "$(( total - shown ))" "$DUSKY_ANSI_RESET"
+    fi
+    printf '%s%s%s\n' "$DUSKY_ANSI_DIM" \
+        '────────────────────────────────────────────' "$DUSKY_ANSI_RESET"
+}
+
+_dusky_files_index_path() {
+    local ord="$1"
+    sed -n "${ord}p" "${DUSKY_STATE_DIR}/files_index" 2>/dev/null || true
+}
+
+_dusky_git_list_files() {
+    local sha idx tmp
+    sha="$(_dusky_read drill_sha)"
+    idx="${DUSKY_STATE_DIR}/files_index"
+    tmp="${idx}.tmp.$$"
+    : >"$tmp"
+    if ! _dusky_valid_hash "$sha"; then
+        printf 'x0\x1f%s(no commit selected)%s\n' "$DUSKY_ANSI_DIM" "$DUSKY_ANSI_RESET"
+        mv -f -- "$tmp" "$idx" 2>/dev/null || true
+        return 0
+    fi
+    if _dusky_is_merge "$sha"; then
+        printf 'x0\x1f%s(merge commit — per-file view unavailable)%s\n' "$DUSKY_ANSI_DIM" "$DUSKY_ANSI_RESET"
+        mv -f -- "$tmp" "$idx" 2>/dev/null || true
+        return 0
+    fi
+    _gr -c core.pager=cat diff-tree --root --no-commit-id --name-status -r "$sha" 2>/dev/null \
+        | gawk \
+            -v FS=$'\t' \
+            -v idx_file="$tmp" \
+            -v reset="${DUSKY_ANSI_RESET}" \
+            -v dim="${DUSKY_ANSI_DIM}" \
+            -v fg="${DUSKY_ANSI_FG}" \
+            -v acc="${DUSKY_ANSI_ACCENT}" \
+            -v ok="${DUSKY_ANSI_SUCCESS}" \
+            -v err="${DUSKY_ANSI_ERROR}" '
+        {
+            st = $1
+            path = $2
+            if (st == "" || path == "") next
+            if (path ~ /[[:cntrl:]]/) next
+            n++
+            c = fg
+            if (st == "A") c = ok
+            else if (st == "D") c = err
+            else if (st == "M" || st == "T") c = acc
+            printf "x%d\x1f  %s%-2s%s %s%s\n", n, c, st, reset, fg, path
+            print path > idx_file
+        }'
+    mv -f -- "$tmp" "$idx" 2>/dev/null || true
+    if [[ ! -s "$idx" ]]; then
+        printf 'x0\x1f%s(no file changes in this commit)%s\n' "$DUSKY_ANSI_DIM" "$DUSKY_ANSI_RESET"
+    fi
+}
+
+_dusky_file_preview() {
+    local token="$1" ord sha short path width diff_out
+    ord="${token#x}"
+    [[ "$ord" =~ ^[0-9]+$ ]] || { _dusky_ghost_preview; return 0; }
+    sha="$(_dusky_read drill_sha)"
+    short="$(_dusky_read drill_short)"
+    path="$(_dusky_files_index_path "$ord")"
+    width="${FZF_PREVIEW_COLUMNS:-120}"
+
+    printf '%sΔ %s%s%s  %s%s%s\n' \
+        "$DUSKY_ANSI_ACCENT" \
+        "$DUSKY_ANSI_BOLD" "${short:-?}" "$DUSKY_ANSI_RESET" \
+        "$DUSKY_ANSI_FG" "$path" "$DUSKY_ANSI_RESET"
+    printf '%s[TAB / ESC] back to commits%s\n\n' \
+        "$DUSKY_ANSI_DIM" "$DUSKY_ANSI_RESET"
+
+    if ! _dusky_valid_hash "$sha" || [[ -z "$path" ]]; then
+        printf '%s(no file selected)%s\n' "$DUSKY_ANSI_DIM" "$DUSKY_ANSI_RESET"
+        return 0
+    fi
+
+    diff_out="$(_gr -c core.pager=cat diff-tree --root -p --no-commit-id --color=always "$sha" -- "$path" 2>/dev/null || true)"
+    if [[ -z "$diff_out" ]] && _dusky_is_merge "$sha"; then
+        diff_out="$(_gr -c core.pager=cat show --color=always --format= "$sha" -- "$path" 2>/dev/null || true)"
+    fi
+    if [[ -z "$diff_out" ]]; then
+        printf '%s(no textual diff for this path)%s\n' "$DUSKY_ANSI_DIM" "$DUSKY_ANSI_RESET"
+        return 0
+    fi
+    printf '%s\n' "$diff_out" \
+        | delta --paging=never --dark --side-by-side --line-numbers --width="$width"
+}
+
+_dusky_git_list_commit_pos() {
+    local short="$1" hit
+    hit="$(_dusky_git_list 2>/dev/null | gawk -v FS=$'\x1f' -v want="$short" '$1 == want { print NR; exit }')"
+    [[ "$hit" =~ ^[0-9]+$ ]] || return 1
+    printf '%s\n' "$hit"
+}
+
 _dusky_git_preview() {
     local hash="${1:-}"
     local mode
@@ -1002,6 +1179,11 @@ _dusky_git_preview() {
 
     if [[ "$mode" == "help" ]]; then
         _dusky_help_text
+        return 0
+    fi
+
+    if [[ "$(_dusky_read_mode)" == "files" && "$hash" =~ ^x[0-9]+$ ]]; then
+        _dusky_file_preview "$hash"
         return 0
     fi
 
@@ -1019,10 +1201,14 @@ _dusky_git_preview() {
     local width="${FZF_PREVIEW_COLUMNS:-120}"
     case "$mode" in
         side)
+            _dusky_changed_files_block "$hash"
+            printf '\n'
             _gr -c core.pager=cat show --color=always --decorate --abbrev-commit "$hash" \
                 | delta --paging=never --dark --side-by-side --line-numbers --width="$width"
             ;;
         inline)
+            _dusky_changed_files_block "$hash"
+            printf '\n'
             _gr -c core.pager=cat show --color=always --decorate --abbrev-commit "$hash" \
                 | delta --paging=never --dark --line-numbers --width="$width"
             ;;
@@ -1037,6 +1223,8 @@ _dusky_git_preview() {
             ;;
         vs_present)
             if [[ -n "${DUSKY_PRESENT_SHA:-}" ]]; then
+                _dusky_changed_files_block "$hash" "${DUSKY_PRESENT_SHA}"
+                printf '\n'
                 printf '%sΔ present %s → %s%s\n\n' \
                     "$DUSKY_ANSI_ACCENT" \
                     "$(_gr rev-parse --short "$DUSKY_PRESENT_SHA")" \
@@ -1145,6 +1333,19 @@ _dusky_clipboard() {
 
 _dusky_git_copy() {
     local hash="${1:-}" mode="${2:-short}"
+    if [[ "$(_dusky_read_mode)" == "files" && "$hash" =~ ^x[0-9]+$ ]]; then
+        local ord fpath
+        ord="${hash#x}"
+        fpath="$(_dusky_files_index_path "$ord")"
+        if [[ -n "$fpath" ]]; then
+            _dusky_clipboard "$fpath"
+            _dusky_note "copied" "$fpath"
+            _dusky_notify "File Path Copied" "$fpath"
+        else
+            _dusky_note "skip" "no path to copy"
+        fi
+        return 0
+    fi
     if ! _dusky_valid_hash "$hash"; then
         _dusky_note "skip" "no hash to copy"
         return 0
@@ -1225,6 +1426,10 @@ _dusky_toggle_help() {
 }
 
 _dusky_toggle_scope() {
+    if [[ "$(_dusky_read_mode)" == "files" ]]; then
+        _dusky_note "blocked" "leave file browser (TAB) to change scope"
+        return 0
+    fi
     local cur
     cur="$(_dusky_read scope)"
     if [[ "$cur" == "all" ]]; then
@@ -1296,6 +1501,12 @@ _dusky_prompt_line() {
     if [[ "$stay" == "1" ]]; then
         left="STAY ${left}"
     fi
+    if [[ "$(_dusky_read_mode)" == "files" ]]; then
+        local ds
+        ds="$(_dusky_read drill_short)"
+        [[ -n "$ds" ]] || ds="?"
+        left="files ${ds}"
+    fi
     if [[ -f "${DUSKY_STATE_DIR}/confirm_wipe" ]]; then
         printf ' :: %s · CONFIRM WIPE (press Ctrl-W again) ❯ ' "$left"
         return 0
@@ -1335,6 +1546,9 @@ _dusky_footer_line() {
     elif (( orphans > 0 )); then
         extra="  │  ${orphans} orphan stash(es) — ALT-O to apply"
     fi
+    if [[ "$(_dusky_read_mode)" == "files" ]]; then
+        extra="${extra}  │  TAB/ESC back to commits"
+    fi
 
     printf 'HEAD %s  %s  stash:%s  scope:%s  preview:%s  stay:%s  present:%s%s' \
         "$head" "$br" "$stash" "$scope" "$mode" "$stay" \
@@ -1342,6 +1556,13 @@ _dusky_footer_line() {
 }
 
 _dusky_preview_label() {
+    if [[ "$(_dusky_read_mode)" == "files" ]]; then
+        local s
+        s="$(_dusky_read drill_short)"
+        [[ -n "$s" ]] || s="?"
+        printf '  files @ %s  ' "$s"
+        return 0
+    fi
     local mode
     mode="$(_dusky_read preview_mode)"
     case "$mode" in
@@ -1356,6 +1577,9 @@ _dusky_preview_label() {
 }
 
 _dusky_pos_head() {
+    if [[ "$(_dusky_read_mode)" == "files" ]]; then
+        return 0
+    fi
     local n
     n="$(_dusky_read head_line)"
     [[ "$n" =~ ^[0-9]+$ ]] || n=1
@@ -1376,11 +1600,54 @@ _dusky_refresh_chain() {
 
 _dusky_act_enter() {
     local hash="${1:-}"
+    if [[ "$(_dusky_read_mode)" == "files" ]]; then
+        _dusky_act_commits_impl
+        return 0
+    fi
     if ! _dusky_valid_hash "$hash"; then
         printf 'bell+transform-footer(%s footer)\n' "$(_dusky_w)"
         return 0
     fi
     _dusky_git_checkout "$hash" || true
+    printf '%s\n' "$(_dusky_refresh_chain)"
+}
+
+_dusky_act_commits_impl() {
+    local sha short n=""
+    sha="$(_dusky_read drill_sha)"
+    _dusky_write mode "commits"
+    if _dusky_valid_hash "$sha"; then
+        short="$(_gr rev-parse --short=7 "$sha" 2>/dev/null || true)"
+        if [[ -n "$short" ]]; then
+            n="$(_dusky_git_list_commit_pos "$short" || true)"
+        fi
+    fi
+    if [[ "$n" =~ ^[0-9]+$ ]] && (( n > 0 )); then
+        printf 'reload-sync(%s list)+pos(%d)+transform-prompt(%s prompt)+transform-footer(%s footer)+transform-preview-label(%s preview-label)\n' \
+            "$(_dusky_w)" "$n" "$(_dusky_w)" "$(_dusky_w)" "$(_dusky_w)"
+    else
+        printf '%s\n' "$(_dusky_refresh_chain)"
+    fi
+}
+
+_dusky_act_files() {
+    local token="${1:-}" target="" short
+    if [[ "$(_dusky_read_mode)" == "files" ]]; then
+        _dusky_act_commits_impl
+        return 0
+    fi
+    if _dusky_valid_hash "$token"; then
+        target="$(_gr rev-parse --verify --quiet "${token}^{commit}" 2>/dev/null || true)"
+    fi
+    if [[ -z "$target" ]]; then
+        printf 'bell+transform-footer(%s footer)\n' "$(_dusky_w)"
+        return 0
+    fi
+    short="$(_gr rev-parse --short=7 "$target" 2>/dev/null || true)"
+    [[ -n "$short" ]] || short="${target:0:7}"
+    _dusky_write mode "files"
+    _dusky_write drill_sha "$target"
+    _dusky_write drill_short "$short"
     printf '%s\n' "$(_dusky_refresh_chain)"
 }
 
@@ -1398,6 +1665,7 @@ _dusky_act_wipe() {
 
 _dusky_act_return() {
     rm -f -- "${DUSKY_STATE_DIR}/confirm_wipe"
+    _dusky_write mode "commits"
     _dusky_git_return || true
     printf '%s+transform(%s pos-head)\n' "$(_dusky_refresh_chain)" "$(_dusky_w)"
 }
@@ -1599,6 +1867,10 @@ _dusky_toggle_vim() {
 }
 
 _dusky_key_escape() {
+    if [[ "$(_dusky_read_mode)" == "files" ]]; then
+        _dusky_act_commits_impl
+        return 0
+    fi
     local prompt="${FZF_PROMPT:-}" input_state="${FZF_INPUT_STATE:-}"
     local vim_mode
     vim_mode="$(_dusky_read vim_mode)"
@@ -1654,6 +1926,7 @@ _dusky_worker_dispatch() {
         preview-label)        _dusky_preview_label "$@" ;;
         pos-head)             _dusky_pos_head "$@" ;;
         act-enter)            _dusky_act_enter "$@" ;;
+        act-files)            _dusky_act_files "$@" ;;
         act-wipe)             _dusky_act_wipe "$@" ;;
         act-return)           _dusky_act_return "$@" ;;
         move-preview)         _dusky_act_move_preview "$@" ;;
@@ -2049,6 +2322,7 @@ main() {
         --bind="alt-v:transform:${w} move-preview hidden" \
         --bind="enter:transform:${w} act-enter {1}" \
         --bind="double-click:transform:${w} act-enter {1}" \
+        --bind="tab:transform:${w} act-files {1}" \
         --bind="ctrl-r:transform:${w} act-return" \
         --bind="ctrl-w:transform:${w} act-wipe" \
         --bind="alt-r:execute(${w} restore-interactive)+reload-sync(${w} list)+transform-prompt(${w} prompt)+transform-footer(${w} footer)" \
