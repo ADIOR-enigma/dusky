@@ -1595,8 +1595,6 @@ def choose_release(profile: KernelProfile, releases: Sequence[Release]) -> Relea
             if r.version == pin:
                 ok("Pinned to %s (%s)" % (r.version, r.moniker))
                 return r
-        # A pin that kernel.org has already rotated out is still buildable if
-        # the tarball exists on the CDN; synthesise the entry.
         synth = Release(version=pin, moniker="pinned", released="", iseol=False)
         if http_exists(synth.tarball_url):
             warn("%s is no longer in releases.json but the tarball exists" % pin)
@@ -1604,28 +1602,52 @@ def choose_release(profile: KernelProfile, releases: Sequence[Release]) -> Relea
         raise NetworkError("pinned version %s is not available on kernel.org" % pin)
 
     picks = candidates_for(profile, releases)
-    if not picks:
-        raise NetworkError("no release matches channel '%s'"
-                           % profile.g("release", "channel"))
-    if not interactive():
-        ok("Selected %s (%s)" % (picks[0].version, picks[0].moniker))
-        return picks[0]
+    default_release = picks[0] if picks else releases[0]
 
-    rule("Kernel release  (channel: %s)" % profile.g("release", "channel"))
+    if not interactive():
+        ok("Selected %s (%s)" % (default_release.version, default_release.moniker))
+        return default_release
+
+    rule("Kernel release selection")
+    display_releases: list[Release] = [default_release]
+    seen_versions = {default_release.version}
+
+    for r in releases:
+        if not r.iseol and r.version not in seen_versions:
+            display_releases.append(r)
+            seen_versions.add(r.version)
+
     rows = []
-    for i, r in enumerate(picks[:12], 1):
+    limit = min(len(display_releases), 8)
+    for i, r in enumerate(display_releases[:limit], 1):
         flags = []
+        if i == 1:
+            flags.append(C.GREEN + "[profile default: %s]" % profile.g("release", "channel") + C.RESET)
         if r.is_rc:
             flags.append(C.YELLOW + "rc" + C.RESET)
-        if i == 1:
-            flags.append(C.GREEN + "newest" + C.RESET)
         rows.append([C.ACCENT + str(i) + C.RESET,
                      C.BOLD + r.version + C.RESET,
                      r.moniker, r.released or "-", " ".join(flags)])
+
+    rows.append([C.ACCENT + "c" + C.RESET, C.BOLD + "Custom" + C.RESET, "manual", "-", "type exact version string"])
     table(["#", "version", "moniker", "released", ""], rows)
     say("")
-    idx = ask_index("Kernel", min(len(picks), 12), 1)
-    return picks[idx - 1]
+
+    raw = ask("Kernel version (1-%d or 'c' for custom)" % limit, "1").strip()
+    if raw.lower() == "c" or (raw and not raw.isdigit() and "." in raw):
+        custom_ver = raw if "." in raw else ask("Enter exact kernel version (e.g. 7.2 or 7.1.9)", default_release.version).strip()
+        for r in releases:
+            if r.version == custom_ver:
+                ok("Selected %s (%s)" % (r.version, r.moniker))
+                return r
+        synth = Release(version=custom_ver, moniker="custom", released="", iseol=False)
+        ok("Selected custom version %s" % custom_ver)
+        return synth
+
+    idx = int(raw) if (raw.isdigit() and 1 <= int(raw) <= limit) else 1
+    chosen = display_releases[idx - 1]
+    ok("Selected %s (%s)" % (chosen.version, chosen.moniker))
+    return chosen
 
 
 # --------------------------------------------------------------------------- #
@@ -1670,10 +1692,10 @@ def expected_sha256(release: Release) -> str | None:
     else:
         warn("gpg not installed; checksum-only verification")
 
-    want_names = {release.tarball, "linux-%s.tar.gz" % release.version}
+    target_name = release.tarball
     for line in text.splitlines():
         parts = line.split()
-        if len(parts) == 2 and len(parts[0]) == 64 and parts[1].lstrip("*") in want_names:
+        if len(parts) == 2 and len(parts[0]) == 64 and parts[1].lstrip("*") == target_name:
             return parts[0].lower()
     return None
 
@@ -2487,6 +2509,9 @@ def build_config_matrix(p: KernelProfile, *, rust_ok: bool) -> list[Op]:
             E("AUTOFS_FS"), E("TMPFS_POSIX_ACL"), E("TMPFS_XATTR"),
             E("EFIVAR_FS"), E("EFI_STUB"), E("EFI_MIXED"),
             E("BLK_DEV_INITRD"), E("BINFMT_MISC"), E("UNIX")))
+    # Storage, Device-Mapper & Crypto essentials for mkinitcpio (sd-encrypt / LUKS)
+    extend((E("BLK_DEV_DM"), M("DM_CRYPT"), M("DM_INTEGRITY"), M("DM_BUFIO"),
+            M("DM_SNAPSHOT"), M("DM_MIRROR"), M("CRYPTO_USER")))
     extend((E("SECURITY"), E("SECURITY_SELINUX"), E("SECURITY_APPARMOR"),
             E("SECURITY_LANDLOCK"), E("SECURITY_YAMA"),
             S("LSM", "landlock,lockdown,yama,integrity,bpf")))
@@ -2704,9 +2729,8 @@ def pkgdest_for(p: KernelProfile, tree: Path) -> Path:
 
 
 def write_localversion(tree: Path, p: KernelProfile) -> None:
-    (tree / "localversion").write_text(p.localversion() + "\n", encoding="utf-8")
-    for stale in tree.glob("localversion-*"):
-        stale.unlink()
+    for stale in tree.glob("localversion*"):
+        stale.unlink(missing_ok=True)
     ok("localversion = " + p.localversion())
 
 
@@ -2890,6 +2914,8 @@ def compile_kernel(tree: Path, p: KernelProfile, env: Mapping[str, str],
     rule("Compile")
     jobs = p.g("compiler", "jobs") or cpu_count()
     dest = Path(env["PKGDEST"])
+    for stale_pkg in dest.glob("*.pkg.tar.*"):
+        stale_pkg.unlink(missing_ok=True)
 
     argv = [
         "make",
@@ -2911,20 +2937,22 @@ def compile_kernel(tree: Path, p: KernelProfile, env: Mapping[str, str],
         rc = run_stream(argv, cwd=tree, env=env, on_line=live.feed)
         errors = list(live.errors)
 
-    took = time.monotonic() - t0
     if rc != 0:
-        for line in errors[-15:]:
-            err(line)
-        raise BuildError("make pacman-pkg failed (rc=%d) after %s"
-                         % (rc, hms(took)))
-    ok("Compiled in %s" % hms(took))
+        say("")
+        warn("make pacman-pkg returned exit code %d" % rc)
+        if errors:
+            rule("Last compiler output")
+            for line in errors[-12:]:
+                say("  " + C.RED + line + C.RESET)
+        raise BuildError("compilation failed (make rc=%d)" % rc)
+
+    dt = time.monotonic() - t0
+    ok("Compiled in " + hms(dt))
 
     pkgs = sorted(dest.glob("*.pkg.tar.*"))
     if not pkgs:
-        # The kernel's pacman-pkg target builds inside the tree when PKGDEST is
-        # not honoured by the local makepkg.conf; sweep the fallback location.
-        pkgs = sorted((tree / "pacman").rglob("*.pkg.tar.*"))
-        for pkg in pkgs:
+        # Fallback: search the kernel tree if pacman-pkg placed them there
+        for pkg in tree.glob("*.pkg.tar.*"):
             shutil.move(str(pkg), dest / pkg.name)
         pkgs = sorted(dest.glob("*.pkg.tar.*"))
     if not pkgs:
@@ -2942,10 +2970,17 @@ def compile_kernel(tree: Path, p: KernelProfile, env: Mapping[str, str],
 
 def install_packages(pkgdir: Path) -> list[Path]:
     rule("Install")
-    pkgs = sorted(pkgdir.glob("*.pkg.tar.*"))
-    pkgs = [p for p in pkgs if not p.name.endswith(".sig")]
-    if not pkgs:
+    all_pkgs = sorted(pkgdir.glob("*.pkg.tar.*"))
+    all_pkgs = [p for p in all_pkgs if not p.name.endswith(".sig")]
+    if not all_pkgs:
         raise BuildError("no packages found in " + str(pkgdir))
+    # Deduplicate: if multiple builds exist in PKGDEST, keep only the newest per component
+    by_comp: dict[str, Path] = {}
+    for p in all_pkgs:
+        comp = "headers" if "-headers-" in p.name else "kernel"
+        if comp not in by_comp or p.stat().st_mtime > by_comp[comp].stat().st_mtime:
+            by_comp[comp] = p
+    pkgs = sorted(by_comp.values(), key=lambda p: (0 if "-headers-" not in p.name else 1, p.name))
     for pkg in pkgs:
         say("  " + C.CYAN + pkg.name + C.RESET)
     if not ask_yes("Install these package(s) with pacman -U?", True):
@@ -2991,6 +3026,12 @@ def refresh_boot(p: KernelProfile) -> None:
                 ok("initramfs regenerated for " + p.pkgbase)
     if have("bootctl") and Path("/boot/loader").is_dir():
         subprocess.call(SUDO.argv(["bootctl", "update"]))
+        if kver:
+            for entry_file in Path("/boot/loader/entries").glob(f"*{kver}*.conf"):
+                rc = subprocess.call(SUDO.argv(["bootctl", "set-default", entry_file.name]))
+                if rc == 0:
+                    ok("Set systemd-boot default to " + entry_file.name)
+                break
         ok("systemd-boot updated")
     grub_cfg = Path("/boot/grub/grub.cfg")
     if have("grub-mkconfig") and grub_cfg.parent.is_dir():
