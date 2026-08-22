@@ -3,11 +3,14 @@
 """
 Dusky Kernel Compiler — 2026.08 Production Grade
 Target: Arch Linux rolling, Kernel 7.1.x+, systemd 261+, Python 3.14+
-Toolchain: LLVM/Clang + lld (with ThinLTO) or GCC fallback, rustc/bindgen (with rustavailable probe)
+Toolchain: LLVM/Clang + lld (ThinLTO/full/thin-dist) or GCC fallback, rustc/bindgen (rustavailable probe)
+Profiles: TOML-driven kernel profiles (~/user_scripts/kernel/kernel_profiles/*.toml) controlling
+          scheduler patches (CachyOS BORE), HZ/tickless/preempt, THP, LTO mode, governor,
+          zswap/MGLRU/SLUB policy and release channel — CachyOS prepare() parity.
 Methodology: pacman -T Provides resolution, modprobed-db hardware profiling + systemd service,
-             kernel.org SHA-256 verification, interactive release picker (mainline default),
+             kernel.org SHA-256 verification, interactive release picker (per-profile channel),
              LSMOD + expanded LMC_KEEP localmodconfig, vmlinux BTF preservation (enabling
-             sched_ext), pacman-pkg with isolated PKGDEST.
+             sched_ext), pacman-pkg with isolated PKGDEST per profile.
 """
 from __future__ import annotations
 
@@ -24,10 +27,11 @@ import subprocess
 import sys
 import threading
 import time
+import tomllib
 import urllib.error
 import urllib.request
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from urllib.parse import urlparse
@@ -111,6 +115,10 @@ DEFAULT_BUILD_DIR = Path.home() / "dusky_build"
 DUSKY_DIR = XDG_CONFIG / "dusky" / "settings" / "dusky_kernel"
 DUSKY_STATE_FILE = DUSKY_DIR / "state.json"
 DUSKY_SAVED_CONFIG = DUSKY_DIR / "kernel.config"
+PROFILES_DIR = Path(
+    os.environ.get("DUSKY_PROFILES_DIR", str(Path(__file__).resolve().parent / "kernel_profiles"))
+)
+CACHYOS_PATCH_BASE = "https://raw.githubusercontent.com/CachyOS/kernel-patches/master"
 
 # Expanded LMC_KEEP for modern 2026 laptops & desktops (USB4/TB, NVMe, Wi-Fi 7, GPU, sched_ext, BPF)
 LMC_KEEP_PREFIXES = (
@@ -121,6 +129,181 @@ LMC_KEEP_PREFIXES = (
     "drivers/accel:drivers/pci:drivers/media:drivers/i2c:drivers/spi:"
     "kernel/sched:kernel/bpf:net/sched"
 )
+
+
+# --- Kernel Profiles (TOML-driven, CachyOS-inspired) ---
+HZ_CHOICES = (100, 250, 300, 500, 600, 750, 1000)
+_SUFFIX_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+
+_PROFILE_SPEC: dict[str, dict[str, object]] = {
+    "meta": {"name": str, "description": str, "suffix": str},
+    "release": {"channel": ("mainline", "stable", "lts")},
+    "scheduler": {"type": ("vanilla", "bore")},
+    "cpu": {"opt": ("native",), "default_governor": ("schedutil", "performance")},
+    "timing": {
+        "hz": HZ_CHOICES,
+        "tickless": ("periodic", "idle", "full"),
+        "preempt": ("full", "lazy"),
+    },
+    "memory": {
+        "thp": ("always", "madvise"),
+        "mglru": bool,
+        "zswap_default_on": bool,
+        "slub_tiny": bool,
+    },
+    "compiler": {"optimize": ("o3", "o2"), "lto": ("none", "thin", "full", "thin_dist")},
+    "power": {"wq_power_efficient": bool},
+    "network": {"congestion": ("bbr", "cubic"), "qdisc": ("fq", "fq_codel")},
+}
+
+
+class ProfileError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class KernelProfile:
+    source_file: str
+    name: str
+    description: str
+    suffix: str
+    channel: str
+    scheduler: str
+    cpu_opt: str
+    governor: str
+    hz: int
+    tickless: str
+    preempt: str
+    thp: str
+    mglru: bool
+    zswap_default_on: bool
+    slub_tiny: bool
+    optimize: str
+    lto: str
+    wq_power_efficient: bool
+    congestion: str
+    qdisc: str
+
+    @property
+    def localversion(self) -> str:
+        return f"-{self.suffix}"
+
+    @property
+    def pkgbase(self) -> str:
+        return f"linux-{self.suffix}"
+
+    @staticmethod
+    def _fail(source: str, msg: str) -> None:
+        raise ProfileError(f"{source}: {msg}")
+
+    @classmethod
+    def _check(cls, source: str, dotted: str, value: object, spec: object) -> None:
+        if isinstance(spec, tuple):
+            if spec and all(isinstance(s, str) for s in spec):
+                valid = " | ".join(spec)  # type: ignore[union-attr]
+                ok = isinstance(value, str) and value in spec
+            else:
+                valid = " | ".join(str(s) for s in spec)  # type: ignore[union-attr]
+                ok = isinstance(value, int) and not isinstance(value, bool) and value in spec
+            if not ok:
+                cls._fail(source, f"{dotted}: {value!r} is invalid (valid: {valid})")
+        elif spec is str:
+            if not isinstance(value, str) or not value.strip():
+                cls._fail(source, f"{dotted}: must be a non-empty string")
+        elif spec is bool:
+            if not isinstance(value, bool):
+                cls._fail(source, f"{dotted}: must be true or false")
+
+    @classmethod
+    def from_dict(cls, data: object, source: str) -> KernelProfile:
+        if not isinstance(data, dict):
+            cls._fail(source, "top-level structure must be a TOML table")
+        unknown_sections = set(data) - set(_PROFILE_SPEC)
+        if unknown_sections:
+            cls._fail(source, f"unknown section(s): {', '.join(sorted(unknown_sections))}")
+        values: dict[str, object] = {}
+        for section, keys in _PROFILE_SPEC.items():
+            if section not in data:
+                cls._fail(source, f"missing required section [{section}]")
+            sect = data[section]
+            if not isinstance(sect, dict):
+                cls._fail(source, f"[{section}] must be a table")
+            unknown_keys = set(sect) - set(keys)
+            if unknown_keys:
+                cls._fail(source, f"unknown key(s) in [{section}]: {', '.join(sorted(unknown_keys))}")
+            for key, spec in keys.items():
+                if key not in sect:
+                    cls._fail(source, f"missing required key '{key}' in [{section}]")
+                cls._check(source, f"{section}.{key}", sect[key], spec)
+                values[key] = sect[key]
+        suffix = str(values["suffix"])
+        if not _SUFFIX_RE.match(suffix):
+            cls._fail(source, f"meta.suffix: {suffix!r} must match lowercase-dns style (e.g. dusky-gaming)")
+        return cls(
+            source_file=source,
+            name=str(values["name"]),
+            description=str(values["description"]),
+            suffix=suffix,
+            channel=str(values["channel"]),
+            scheduler=str(values["type"]),
+            cpu_opt=str(values["opt"]),
+            governor=str(values["default_governor"]),
+            hz=int(values["hz"]),
+            tickless=str(values["tickless"]),
+            preempt=str(values["preempt"]),
+            thp=str(values["thp"]),
+            mglru=bool(values["mglru"]),
+            zswap_default_on=bool(values["zswap_default_on"]),
+            slub_tiny=bool(values["slub_tiny"]),
+            optimize=str(values["optimize"]),
+            lto=str(values["lto"]),
+            wq_power_efficient=bool(values["wq_power_efficient"]),
+            congestion=str(values["congestion"]),
+            qdisc=str(values["qdisc"]),
+        )
+
+
+def load_profiles() -> list[KernelProfile]:
+    """Parse every *.toml in PROFILES_DIR; invalid files are skipped with a warning."""
+    profiles: list[KernelProfile] = []
+    seen: set[str] = set()
+    if not PROFILES_DIR.is_dir():
+        console.print(f"[yellow]:: Profiles directory not found: {PROFILES_DIR}[/yellow]")
+        return profiles
+    for path in sorted(PROFILES_DIR.glob("*.toml")):
+        try:
+            with open(path, "rb") as f:
+                data = tomllib.load(f)
+            profile = KernelProfile.from_dict(data, path.name)
+        except (ProfileError, tomllib.TOMLDecodeError, OSError) as e:
+            console.print(f"[yellow]:: Skipping invalid profile {path.name}: {e}[/yellow]")
+            continue
+        if profile.name in seen:
+            console.print(f"[yellow]:: Skipping {path.name}: duplicate profile name '{profile.name}'[/yellow]")
+            continue
+        seen.add(profile.name)
+        profiles.append(profile)
+    return profiles
+
+
+def find_profile(profiles: list[KernelProfile], name: str | None) -> KernelProfile | None:
+    if not name:
+        return None
+    return next((p for p in profiles if p.name == name), None)
+
+
+def saved_config_path(profile_name: str | None) -> Path:
+    if not profile_name:
+        return DUSKY_DIR / "kernel.config"
+    return DUSKY_DIR / f"kernel.config.{profile_name}"
+
+
+def summarize_profile(p: KernelProfile) -> str:
+    lto_label = p.lto.replace("_", "-").upper()
+    return (
+        f"{p.scheduler.upper()} • {p.hz}Hz/{p.tickless}/{p.preempt} • "
+        f"THP:{p.thp} • {p.optimize.upper()}+{lto_label} • gov:{p.governor}"
+    )
 
 
 class SystemAction(StrEnum):
@@ -138,15 +321,14 @@ class DuskyState:
     prefer_llvm: bool = True
     enable_rust: bool = True
     enable_sched_ext: bool = True
-    enable_thin_lto: bool = True
     custom_build_dir: str | None = None
+    selected_profile: str | None = None
 
     _FIELDS = (
         "use_imported_config",
         "prefer_llvm",
         "enable_rust",
         "enable_sched_ext",
-        "enable_thin_lto",
     )
 
     @staticmethod
@@ -175,6 +357,7 @@ class DuskyState:
                     for name in cls._FIELDS
                 }
                 kwargs["custom_build_dir"] = cls._as_optional_str(data.get("custom_build_dir"))
+                kwargs["selected_profile"] = cls._as_optional_str(data.get("selected_profile"))
                 return cls(**kwargs)
         except (OSError, ValueError):
             pass
@@ -184,6 +367,7 @@ class DuskyState:
         DUSKY_DIR.mkdir(parents=True, exist_ok=True)
         payload = {name: getattr(self, name) for name in self._FIELDS}
         payload["custom_build_dir"] = self.custom_build_dir
+        payload["selected_profile"] = self.selected_profile
         tmp_file = DUSKY_STATE_FILE.with_suffix(".json.tmp")
         with open(tmp_file, "w") as f:
             json.dump(payload, f, indent=4)
@@ -556,8 +740,8 @@ def version_key(version: str) -> tuple[int, ...] | None:
 
 
 def normalize_releases(data: dict) -> list[dict]:
-    """Filter kernel.org releases.json to mainline + non-EOL stables, best first."""
-    priority = {"mainline": 0, "stable": 1}
+    """Filter kernel.org releases.json to mainline + stable + non-EOL longterm, best first."""
+    priority = {"mainline": 0, "stable": 1, "longterm": 2}
     candidates: list[dict] = []
     seen: set[str] = set()
     for release in data.get("releases", []):
@@ -599,23 +783,35 @@ def fetch_releases() -> list[dict]:
     raise RuntimeError(f"kernel.org API failed after retries: {last_error}")
 
 
-def pick_release(candidates: list[dict]) -> tuple[str, str]:
-    """Interactive release selection. Default is entry #1 (current mainline)."""
-    table = Table(title="Available kernel.org Releases", box=box.SIMPLE_HEAVY)
+CHANNEL_MONIKERS = {
+    "mainline": ("mainline", "stable"),
+    "stable": ("stable",),
+    "lts": ("longterm",),
+}
+
+
+def pick_release(candidates: list[dict], channel: str = "mainline") -> tuple[str, str]:
+    """Interactive release selection restricted to the profile's channel."""
+    allowed = CHANNEL_MONIKERS.get(channel) or CHANNEL_MONIKERS["mainline"]
+    filtered = [c for c in candidates if c["moniker"] in allowed]
+    if not filtered:
+        console.print(f"[yellow]:: No non-EOL '{channel}' releases found; showing all channels.[/yellow]")
+        filtered = candidates
+    table = Table(title=f"Available kernel.org Releases [channel: {channel}]", box=box.SIMPLE_HEAVY)
     table.add_column("#", style="bold green", justify="right")
     table.add_column("Moniker", style="cyan")
     table.add_column("Version", style="bold white")
     table.add_column("Source", style="dim")
-    for idx, cand in enumerate(candidates, start=1):
+    for idx, cand in enumerate(filtered, start=1):
         table.add_row(str(idx), cand["moniker"], cand["version"], cand["url"])
     console.print(table)
 
     choice = prompt_choice_fixed(
         "\n[bold cyan]Select kernel version to compile[/bold cyan]",
-        choices=[str(i) for i in range(1, len(candidates) + 1)],
+        choices=[str(i) for i in range(1, len(filtered) + 1)],
         default="1",
     )
-    selected = candidates[int(choice) - 1]
+    selected = filtered[int(choice) - 1]
     return selected["version"], selected["url"]
 
 
@@ -854,6 +1050,73 @@ def is_valid_kernel_tree(kernel_dir: Path) -> bool:
     return "VERSION" in head and (kernel_dir / "scripts").is_dir()
 
 
+# --- CachyOS Scheduler Patch Stage ---
+def kernel_major(version: str) -> str:
+    m = re.match(r"^(\d+\.\d+)", version.strip())
+    return m.group(1) if m else version
+
+
+def scheduler_patch_urls(profile: KernelProfile, version: str) -> list[str]:
+    if profile.scheduler != "bore":
+        return []
+    return [f"{CACHYOS_PATCH_BASE}/{kernel_major(version)}/sched/0001-bore-cachy.patch"]
+
+
+def _cached_patch(url: str, cache_dir: Path) -> Path:
+    """Download once per major-version patch file; atomic write into cache dir."""
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    dest = cache_dir / url.rsplit("/", 1)[-1]
+    if not dest.exists() or dest.stat().st_size == 0:
+        content = _http_get_bytes(url, timeout=30)
+        tmp = dest.with_name(dest.name + ".part")
+        tmp.write_bytes(content)
+        os.replace(tmp, dest)
+    return dest
+
+
+def apply_profile_patches(kernel_dir: Path, profile: KernelProfile, version: str, cache_dir: Path) -> KernelProfile:
+    """Apply profile scheduler patches to a vanilla tree; degrade gracefully to vanilla EEVDF."""
+    urls = scheduler_patch_urls(profile, version)
+    effective = profile
+    for url in urls:
+        name = url.rsplit("/", 1)[-1]
+        console.print(f"[cyan]::[/cyan] Fetching CachyOS scheduler patch [bold]{name}[/bold]...")
+        try:
+            patch_file = _cached_patch(url, cache_dir)
+            probe = subprocess.run(
+                ["patch", "-Np1", "--dry-run", "--forward", "-i", str(patch_file)],
+                cwd=kernel_dir,
+                capture_output=True,
+                text=True,
+            )
+            if probe.returncode != 0:
+                detail = (probe.stdout + "\n" + probe.stderr).strip()[-600:]
+                raise RuntimeError(f"dry-run rejected the patch:\n{detail}")
+            applied = subprocess.run(
+                ["patch", "-Np1", "--forward", "-i", str(patch_file)],
+                cwd=kernel_dir,
+                capture_output=True,
+                text=True,
+            )
+            if applied.returncode != 0:
+                detail = (applied.stderr or "").strip()[-600:]
+                raise RuntimeError(f"application failed:\n{detail}")
+            console.print(f"[green]::[/green] Applied {name} (BORE scheduler active for this build).")
+        except Exception as e:
+            console.print(f"[bold yellow]:: Patch stage failed:[/bold yellow] {e}")
+            console.print(
+                "[dim]CachyOS patches are cut against their fork; they can lag vanilla mid-cycle.[/dim]"
+            )
+            if not Confirm.ask(
+                "[bold yellow]Continue WITHOUT the scheduler patch (vanilla EEVDF)?[/bold yellow]",
+                default=True,
+            ):
+                raise RuntimeError("Aborted by user after patch failure.")
+            console.print("[cyan]:: Falling back to vanilla EEVDF scheduler for this build.[/cyan]")
+            effective = replace(effective, scheduler="vanilla")
+    return effective
+
+
 def count_db_modules() -> int:
     if not DB_FILE.exists():
         return 0
@@ -970,12 +1233,25 @@ def monitor_modules() -> None:
 
 def manage_dusky_state() -> None:
     state = DuskyState.load()
+    profiles = load_profiles()
     while True:
         console.clear()
         config_status = "ACTIVE" if state.use_imported_config else "INACTIVE"
         config_color = "green" if state.use_imported_config else "yellow"
-        llvm_status = "ENABLED (ThinLTO)" if state.prefer_llvm else "GCC DEFAULT"
+        llvm_status = "ENABLED (LTO per profile)" if state.prefer_llvm else "GCC DEFAULT"
         rust_status = "ENABLED" if state.enable_rust else "DISABLED"
+        active_profile = find_profile(profiles, state.selected_profile)
+        profile_line = (
+            f"[bold green]{active_profile.name}[/bold green] [dim]({summarize_profile(active_profile)})[/dim]"
+            if active_profile
+            else "[yellow]not set (chosen at compile time)[/yellow]"
+        )
+        saved_configs = sorted(DUSKY_DIR.glob("kernel.config*"))
+        saved_summary = (
+            ", ".join(p.name.replace("kernel.config", "").lstrip(".") or "legacy" for p in saved_configs)
+            if saved_configs
+            else "none yet"
+        )
         effective_build = get_build_dir()
         build_source = "CUSTOM" if effective_build != DEFAULT_BUILD_DIR else "DEFAULT"
         build_color = "cyan" if effective_build != DEFAULT_BUILD_DIR else "dim"
@@ -983,12 +1259,14 @@ def manage_dusky_state() -> None:
         ram_backed = is_ram_backed(effective_build)
 
         info_text = (
+            f"[bold white]Profiles Directory:[/bold white] {PROFILES_DIR} "
+            f"[dim]({'all valid' if len(profiles) == len(list(PROFILES_DIR.glob('*.toml'))) else 'some invalid/missing'} • {len(profiles)} loaded)[/dim]\n"
+            f"[bold white]Active Profile:[/bold white] {profile_line}\n"
             f"[bold white]Config Directory:[/bold white] {DUSKY_DIR}\n"
             f"[bold white]Build Directory:[/bold white] [bold {build_color}]{effective_build}[/bold {build_color}] [dim]({build_source} • {fs_type}{', RAM' if ram_backed else ''})[/dim]\n"
-            f"[bold white]Auto-Import Config:[/bold white] [bold {config_color}]{config_status}[/bold {config_color}]\n"
+            f"[bold white]Auto-Import Config:[/bold white] [bold {config_color}]{config_status}[/bold {config_color}] [dim](saved: {saved_summary})[/dim]\n"
             f"[bold white]LLVM/Clang Mode:[/bold white] [cyan]{llvm_status}[/cyan]\n"
             f"[bold white]Rust Kernel Support:[/bold white] [cyan]{rust_status}[/cyan]\n"
-            f"[dim]Backup Config:[/dim] {'Present' if DUSKY_SAVED_CONFIG.exists() else 'Missing'}\n"
         )
         console.print(
             Align.center(
@@ -1005,9 +1283,9 @@ def manage_dusky_state() -> None:
         table = Table(show_header=False, box=box.SIMPLE)
         table.add_column("Option", style="bold green", justify="right")
         table.add_column("Description", style="white")
-        table.add_row("1.", "Export Live System Config to Dusky Directory")
+        table.add_row("1.", "Export Live System Config for Active Profile")
         table.add_row("2.", "Toggle Config Auto-Import")
-        table.add_row("3.", "Toggle LLVM/Clang Toolchain (ThinLTO)")
+        table.add_row("3.", "Toggle LLVM/Clang Toolchain (LTO mode comes from profiles)")
         table.add_row("4.", "Toggle Rust Kernel Abstractions")
         table.add_row("5.", "Set / Change Build Directory (ZRAM/disk)")
         table.add_row("6.", "Back to Main Menu")
@@ -1015,16 +1293,25 @@ def manage_dusky_state() -> None:
 
         choice = prompt_choice_fixed("\n[bold cyan]Select[/bold cyan]", choices=["1", "2", "3", "4", "5", "6"], default="6")
         if choice == "1":
-            DUSKY_DIR.mkdir(parents=True, exist_ok=True)
-            if export_active_config(DUSKY_SAVED_CONFIG):
-                console.print(f"\n[bold green]Success:[/bold green] Exported config to {DUSKY_SAVED_CONFIG}")
+            if not profiles:
+                console.print("\n[bold red]Error:[/bold red] No valid profiles found; cannot export.")
             else:
-                console.print("\n[bold red]Error:[/bold red] Could not locate valid active config.")
+                target = find_profile(profiles, state.selected_profile) or select_profile(profiles, state)
+                dest = saved_config_path(target.name)
+                DUSKY_DIR.mkdir(parents=True, exist_ok=True)
+                if export_active_config(dest):
+                    console.print(f"\n[bold green]Success:[/bold green] Exported config to {dest}")
+                else:
+                    console.print("\n[bold red]Error:[/bold red] Could not locate valid active config.")
             prompt_enter_fixed("\n[dim]Press Enter to continue...[/dim]")
         elif choice == "2":
-            if not DUSKY_SAVED_CONFIG.exists():
-                console.print("\n[bold red]Error: No exported config found. Run option 1 first.[/bold red]")
-            elif not is_plausible_kernel_config(DUSKY_SAVED_CONFIG):
+            active_cfg = saved_config_path(state.selected_profile)
+            if not active_cfg.exists():
+                console.print(
+                    "\n[bold red]Error: No exported config found for the active profile. "
+                    "Run option 1 first.[/bold red]"
+                )
+            elif not is_plausible_kernel_config(active_cfg):
                 console.print(
                     "\n[bold red]Error: Saved config exists but looks invalid/corrupt. "
                     "Re-export it via option 1.[/bold red]"
@@ -1133,13 +1420,22 @@ def run_empirical_diagnostics() -> None:
     console.print(f"[bold white]Build Dir ({src_label}, {fs_type}):[/bold white] [cyan]{effective_build} — {free_gb:.1f} GB free[/cyan]")
     if is_ram_backed(effective_build):
         console.print(f"[dim]  -> RAM-backed ({fs_type}) - zero SSD wear, contents lost on reboot/poweroff[/dim]")
-    if DUSKY_SAVED_CONFIG.exists():
-        size_kb = DUSKY_SAVED_CONFIG.stat().st_size / 1024
-        ok = is_plausible_kernel_config(DUSKY_SAVED_CONFIG)
-        status = "[green]valid[/green]" if ok else "[red]INVALID[/red]"
-        console.print(f"[bold white]Saved Config:[/bold white] [cyan]{size_kb:.0f} KB, {status}[/cyan]")
-    else:
-        console.print("[bold white]Saved Config:[/bold white] [yellow]Missing[/yellow]")
+
+    # 4b. Profiles & per-profile saved configs
+    profiles = load_profiles()
+    console.print(f"\n[bold white]Profiles ({len(profiles)}) from {PROFILES_DIR}:[/bold white]")
+    if not profiles:
+        console.print("[yellow]  No valid TOML profiles found.[/yellow]")
+    for p in profiles:
+        cfg_file = saved_config_path(p.name)
+        if cfg_file.exists():
+            size_kb = cfg_file.stat().st_size / 1024
+            ok = is_plausible_kernel_config(cfg_file)
+            cfg_status = f"[cyan]{size_kb:.0f} KB, {'valid' if ok else '[red]INVALID[/red]'}[/cyan]"
+        else:
+            cfg_status = "[dim]no saved config yet[/dim]"
+        remembered = " [green](last used)[/green]" if p.name == DuskyState.load().selected_profile else ""
+        console.print(f"  [bold white]{p.name}{remembered}:[/bold white] {p.description}\n    [dim]{summarize_profile(p)} • config: {cfg_status}[/dim]")
 
     # 5. Kernel Config Capabilities (sched_ext, BTF, etc.)
     if Path("/proc/config.gz").exists():
@@ -1156,9 +1452,17 @@ def run_empirical_diagnostics() -> None:
     prompt_enter_fixed("\n[dim]Press Enter to return to main menu...[/dim]")
 
 
-# --- Kconfig Matrix (pure builder, unit-testable) ---
-def build_config_matrix(use_llvm: bool, enable_thin_lto: bool) -> list[str]:
-    """Assemble scripts/config arguments for hardening & performance policy."""
+# --- Kconfig Matrix (profile-driven, mirrors CachyOS PKGBUILD prepare()) ---
+LTO_MODE_CONFIG = {
+    "none": ("LTO_NONE", ("LTO_CLANG_THIN", "LTO_CLANG_FULL", "LTO_CLANG_THIN_DIST")),
+    "thin": ("LTO_CLANG_THIN", ("LTO_CLANG_THIN_DIST", "LTO_CLANG_FULL", "LTO_NONE")),
+    "thin_dist": ("LTO_CLANG_THIN_DIST", ("LTO_CLANG_THIN", "LTO_CLANG_FULL", "LTO_NONE")),
+    "full": ("LTO_CLANG_FULL", ("LTO_CLANG_THIN", "LTO_CLANG_THIN_DIST", "LTO_NONE")),
+}
+
+
+def build_config_matrix(profile: KernelProfile, use_llvm: bool) -> list[str]:
+    """Assemble scripts/config arguments translating a KernelProfile into Kconfig policy."""
     cfg_args = [
         # 1. BTF & sched_ext preservation (CRITICAL)
         # Keep CONFIG_DEBUG_INFO_BTF=y so CONFIG_SCHED_CLASS_EXT (sched_ext) works!
@@ -1175,22 +1479,128 @@ def build_config_matrix(use_llvm: bool, enable_thin_lto: bool) -> list[str]:
         "--set-str", "SYSTEM_TRUSTED_KEYS", "",
         "--set-str", "SYSTEM_REVOCATION_KEYS", "",
 
-        # 3. Performance & Scheduler Optimizations
+        # 3. Common baseline: sched_ext + fast compression
         "-e", "SCHED_CLASS_EXT",
-        "-e", "CC_OPTIMIZE_FOR_PERFORMANCE",
-        "-e", "TCP_CONG_ADVANCED",
-        "-e", "TCP_CONG_BBR",
-        "--set-str", "DEFAULT_TCP_CONG", "bbr",
         "-e", "KERNEL_ZSTD",
         "-e", "MODULE_COMPRESS_ZSTD",
-        "-e", "HZ_1000",
     ]
 
-    if use_llvm and enable_thin_lto:
-        cfg_args.extend(["-e", "LTO_CLANG_THIN", "-d", "LTO_NONE"])
+    # Scheduler flavor
+    if profile.scheduler == "bore":
+        cfg_args.extend(["-e", "SCHED_BORE"])
 
+    # CPU codegen: always native per Dusky policy (single-machine builds)
     if os.uname().machine == "x86_64":
-        cfg_args.extend(["-e", "X86_NATIVE_CPU"])
+        cfg_args.extend(["-d", "GENERIC_CPU", "-d", "MZEN4", "-e", "X86_NATIVE_CPU"])
+
+    # Tick rate: disable every sibling choice so olddefconfig resolves deterministically
+    for hz in HZ_CHOICES:
+        if hz != profile.hz:
+            cfg_args.extend(["-d", f"HZ_{hz}"])
+    cfg_args.extend(["-e", f"HZ_{profile.hz}", "--set-val", "HZ", str(profile.hz)])
+
+    # Tickless mode (exact CachyOS toggle sets)
+    match profile.tickless:
+        case "periodic":
+            cfg_args.extend([
+                "-d", "NO_HZ_IDLE", "-d", "NO_HZ_FULL", "-d", "NO_HZ", "-d", "NO_HZ_COMMON",
+                "-e", "HZ_PERIODIC",
+            ])
+        case "idle":
+            cfg_args.extend([
+                "-d", "HZ_PERIODIC", "-d", "NO_HZ_FULL",
+                "-e", "NO_HZ_IDLE", "-e", "NO_HZ", "-e", "NO_HZ_COMMON",
+            ])
+        case "full":
+            cfg_args.extend([
+                "-d", "HZ_PERIODIC", "-d", "NO_HZ_IDLE", "-d", "CONTEXT_TRACKING_FORCE",
+                "-e", "NO_HZ_FULL_NODEF", "-e", "NO_HZ_FULL", "-e", "NO_HZ", "-e", "NO_HZ_COMMON",
+                "-e", "CONTEXT_TRACKING",
+            ])
+
+    # Preemption model
+    match profile.preempt:
+        case "full":
+            cfg_args.extend(["-e", "PREEMPT", "-d", "PREEMPT_LAZY"])
+        case "lazy":
+            cfg_args.extend(["-d", "PREEMPT", "-e", "PREEMPT_LAZY"])
+
+    # Optimization level
+    match profile.optimize:
+        case "o3":
+            cfg_args.extend(["-d", "CC_OPTIMIZE_FOR_PERFORMANCE", "-e", "CC_OPTIMIZE_FOR_PERFORMANCE_O3"])
+        case "o2":
+            cfg_args.extend(["-e", "CC_OPTIMIZE_FOR_PERFORMANCE", "-d", "CC_OPTIMIZE_FOR_PERFORMANCE_O3"])
+
+    # Default cpufreq governor
+    if profile.governor == "performance":
+        cfg_args.extend(["-d", "CPU_FREQ_DEFAULT_GOV_SCHEDUTIL", "-e", "CPU_FREQ_DEFAULT_GOV_PERFORMANCE"])
+    else:
+        cfg_args.extend(["-e", "CPU_FREQ_DEFAULT_GOV_SCHEDUTIL", "-d", "CPU_FREQ_DEFAULT_GOV_PERFORMANCE"])
+
+    # Transparent Hugepages
+    if profile.thp == "always":
+        cfg_args.extend(["-d", "TRANSPARENT_HUGEPAGE_MADVISE", "-e", "TRANSPARENT_HUGEPAGE_ALWAYS"])
+    else:
+        cfg_args.extend(["-d", "TRANSPARENT_HUGEPAGE_ALWAYS", "-e", "TRANSPARENT_HUGEPAGE_MADVISE"])
+
+    # LTO family (LLVM-only; GCC fallback forces none)
+    lto_mode = profile.lto if use_llvm else "none"
+    lto_enable, lto_disable = LTO_MODE_CONFIG[lto_mode]
+    for sym in lto_disable:
+        cfg_args.extend(["-d", sym])
+    cfg_args.extend(["-e", lto_enable])
+
+    # Networking: congestion control + default qdisc (CachyOS-style explicit defaults)
+    if profile.congestion == "bbr":
+        cfg_args.extend([
+            "-m", "TCP_CONG_CUBIC",
+            "-d", "DEFAULT_CUBIC",
+            "-e", "TCP_CONG_BBR",
+            "-e", "DEFAULT_BBR",
+            "--set-str", "DEFAULT_TCP_CONG", "bbr",
+        ])
+    else:
+        cfg_args.extend(["-e", "DEFAULT_CUBIC", "--set-str", "DEFAULT_TCP_CONG", "cubic"])
+    if profile.qdisc == "fq":
+        cfg_args.extend([
+            "-m", "NET_SCH_FQ_CODEL",
+            "-e", "NET_SCH_FQ",
+            "-d", "DEFAULT_FQ_CODEL",
+            "-e", "DEFAULT_FQ",
+        ])
+    else:
+        cfg_args.extend([
+            "-m", "NET_SCH_FQ",
+            "-e", "NET_SCH_FQ_CODEL",
+            "-d", "DEFAULT_FQ",
+            "-e", "DEFAULT_FQ_CODEL",
+        ])
+
+    # Memory policy
+    if profile.mglru:
+        cfg_args.extend(["-e", "LRU_GEN", "-e", "LRU_GEN_ENABLED"])
+    else:
+        cfg_args.extend(["-d", "LRU_GEN", "-d", "LRU_GEN_ENABLED"])
+    if profile.zswap_default_on:
+        cfg_args.extend([
+            "-e", "ZSWAP",
+            "-e", "ZSWAP_DEFAULT_ON",
+            "-e", "ZSWAP_COMPRESSOR_DEFAULT_ZSTD",
+            "--set-str", "ZSWAP_COMPRESSOR_DEFAULT", "zstd",
+            "-e", "ZSWAP_ZPOOL_DEFAULT_ZSMALLOC",
+            "--set-str", "ZSWAP_ZPOOL_DEFAULT", "zsmalloc",
+        ])
+    if profile.slub_tiny:
+        cfg_args.extend(["-e", "SLUB_TINY"])
+    else:
+        cfg_args.extend(["-d", "SLUB_TINY"])
+
+    # Power policy
+    if profile.wq_power_efficient:
+        cfg_args.extend(["-e", "WQ_POWER_EFFICIENT"])
+    else:
+        cfg_args.extend(["-d", "WQ_POWER_EFFICIENT"])
 
     return cfg_args
 
@@ -1224,8 +1634,35 @@ def terminate_process_group(process: subprocess.Popen | None) -> None:
         console.print("[red]Warning: build process did not terminate cleanly.[/red]")
 
 
+# --- Profile Selection ---
+def select_profile(profiles: list[KernelProfile], state: DuskyState) -> KernelProfile:
+    """Interactive profile picker; remembers the choice across runs."""
+    remembered = find_profile(profiles, state.selected_profile)
+    table = Table(title="Dusky Kernel Profiles", box=box.SIMPLE_HEAVY)
+    table.add_column("#", style="bold green", justify="right")
+    table.add_column("Profile", style="bold white")
+    table.add_column("Description", style="cyan")
+    table.add_column("Key settings", style="dim")
+    for idx, p in enumerate(profiles, start=1):
+        marker = " [green](last used)[/green]" if remembered is p else ""
+        table.add_row(str(idx), p.name + marker, p.description, summarize_profile(p))
+    console.print(table)
+
+    default = str(profiles.index(remembered) + 1) if remembered else "1"
+    choice = prompt_choice_fixed(
+        "\n[bold cyan]Select kernel profile[/bold cyan]",
+        choices=[str(i) for i in range(1, len(profiles) + 1)],
+        default=default,
+    )
+    profile = profiles[int(choice) - 1]
+    if state.selected_profile != profile.name:
+        state.selected_profile = profile.name
+        state.save()
+    return profile
+
+
 # --- Main Compilation Pipeline ---
-def compile_kernel() -> None:
+def compile_kernel(profile_name: str | None = None) -> None:
     if count_db_modules() < 100:
         console.print(
             Panel(
@@ -1255,6 +1692,22 @@ def compile_kernel() -> None:
     install_dependencies()
 
     state = DuskyState.load()
+
+    profiles = load_profiles()
+    if not profiles:
+        console.print(f"[bold red]Fatal:[/bold red] No valid profiles found in {PROFILES_DIR}.")
+        return
+    requested = profile_name or os.environ.get("DUSKY_PROFILE")
+    profile = find_profile(profiles, requested)
+    if profile is None:
+        if requested:
+            console.print(f"[yellow]:: Requested profile '{requested}' not found; opening picker.[/yellow]")
+        profile = select_profile(profiles, state)
+    console.print(
+        f"\n[bold cyan]::[/bold cyan] Profile [bold]{profile.name}[/bold]: {profile.description}\n"
+        f"[dim]   {summarize_profile(profile)} • channel:{profile.channel} • {profile.pkgbase}[/dim]"
+    )
+
     # Re-resolve in case user changed dir in config manager after initial check
     effective_build = get_build_dir()
     effective_packages = get_packages_dir()
@@ -1264,12 +1717,12 @@ def compile_kernel() -> None:
 
     console.print("[bold cyan]::[/bold cyan] Querying kernel.org releases...")
     candidates = fetch_releases()
-    version, url = pick_release(candidates)
+    version, url = pick_release(candidates, profile.channel)
 
     tarball_name = tarball_name_from_url(version, url)
     tarball = effective_build / tarball_name
     kernel_dir = effective_build / f"linux-{version}"
-    isolated_pkg_dir = effective_packages / f"linux-{version}"
+    isolated_pkg_dir = effective_packages / f"{profile.pkgbase}-{version}"
 
     build_proc: subprocess.Popen | None = None
     log_lines: deque[str] = deque(maxlen=20)
@@ -1297,21 +1750,25 @@ def compile_kernel() -> None:
 
         isolated_pkg_dir.mkdir(parents=True, exist_ok=True)
 
+        # --- Scheduler Patch Stage (CachyOS kernel-patches, cached per major version) ---
+        profile = apply_profile_patches(kernel_dir, profile, version, effective_build / "cachyos_patch_cache")
+
         # Base Make command definition
         make_base = ["make"]
         if use_llvm:
             make_base.extend(["LLVM=1", "LLVM_IAS=1"])
 
         # --- Config Injection ---
+        profile_cfg = saved_config_path(profile.name)
         injected = False
-        if state.use_imported_config and DUSKY_SAVED_CONFIG.exists():
-            if is_plausible_kernel_config(DUSKY_SAVED_CONFIG):
-                console.print("[bold green]::[/bold green] Injecting saved Dusky kernel config...")
-                shutil.copy(DUSKY_SAVED_CONFIG, kernel_dir / ".config")
+        if state.use_imported_config and profile_cfg.exists():
+            if is_plausible_kernel_config(profile_cfg):
+                console.print(f"[bold green]::[/bold green] Injecting saved '{profile.name}' kernel config...")
+                shutil.copy(profile_cfg, kernel_dir / ".config")
                 injected = True
             else:
                 console.print(
-                    "[yellow]:: Saved Dusky config is corrupt/invalid; falling back to live system config.[/yellow]"
+                    "[yellow]:: Saved profile config is corrupt/invalid; falling back to live system config.[/yellow]"
                 )
         if not injected:
             console.print("[bold cyan]::[/bold cyan] Cloning live host kernel config...")
@@ -1344,8 +1801,8 @@ def compile_kernel() -> None:
         subprocess.run(make_base + ["scripts"], cwd=kernel_dir, stdout=subprocess.DEVNULL, check=True)
 
         # --- Hardening & BTF Preservation Matrix ---
-        console.print("[bold cyan]::[/bold cyan] Applying Arch 2026 Kernel Hardening & Performance Matrix...")
-        apply_config_matrix(kernel_dir, build_config_matrix(use_llvm, state.enable_thin_lto))
+        console.print(f"[bold cyan]::[/bold cyan] Applying profile matrix for [bold]{profile.name}[/bold]...")
+        apply_config_matrix(kernel_dir, build_config_matrix(profile, use_llvm))
 
         # Check Rust kernel support
         if state.enable_rust:
@@ -1373,7 +1830,7 @@ def compile_kernel() -> None:
                 check=False,
             )
 
-        (kernel_dir / "localversion").write_text("-dusky")
+        (kernel_dir / "localversion").write_text(profile.localversion)
 
         # Resolve config dependencies cleanly
         subprocess.run(make_base + ["olddefconfig"], cwd=kernel_dir, stdout=subprocess.DEVNULL, check=True)
@@ -1382,9 +1839,9 @@ def compile_kernel() -> None:
             subprocess.run(make_base + ["nconfig"], cwd=kernel_dir, check=True)
             subprocess.run(make_base + ["olddefconfig"], cwd=kernel_dir, stdout=subprocess.DEVNULL, check=True)
 
-        # Save active config back to Dusky state
+        # Save active config back to Dusky state (per-profile)
         DUSKY_DIR.mkdir(parents=True, exist_ok=True)
-        shutil.copy(kernel_dir / ".config", DUSKY_SAVED_CONFIG)
+        shutil.copy(kernel_dir / ".config", profile_cfg)
         state.use_imported_config = True
         state.save()
 
@@ -1464,12 +1921,16 @@ def compile_kernel() -> None:
             console.print(f"[dim]Clean check skipped: {e}[/dim]")
 
         cores = os.cpu_count() or 4
-        toolchain_name = "LLVM/Clang (ThinLTO)" if use_llvm else "GCC"
-        console.print(f"\n[bold green]Building linux-{version}-dusky using {toolchain_name} with {cores} threads...[/bold green]\n")
+        lto_label = (profile.lto if use_llvm else "none").replace("_", "-").upper()
+        toolchain_name = f"LLVM/Clang ({lto_label})" if use_llvm else "GCC"
+        console.print(
+            f"\n[bold green]Building linux-{version}{profile.localversion} "
+            f"[{profile.name}] using {toolchain_name} with {cores} threads...[/bold green]\n"
+        )
 
         build_cmd = make_base + [
             f"-j{cores}",
-            "PACMAN_PKGBASE=linux-dusky",
+            f"PACMAN_PKGBASE={profile.pkgbase}",
             "PACMAN_EXTRAPACKAGES=headers",
             "pacman-pkg",
         ]
@@ -1572,20 +2033,24 @@ def compile_kernel() -> None:
 
         # Autonomous boot entry (systemd-boot + GRUB) - no manual kernel-install needed next time
         try:
-            # Find actual installed kver (e.g., 7.2.0-dusky from /usr/lib/modules/*dusky)
+            # Find actual installed kver from /usr/lib/modules matching this profile's localversion
             kver = None
             try:
-                dusky_mods = sorted(Path("/usr/lib/modules").glob("*-dusky"))
-                if dusky_mods:
+                profile_mods = sorted(Path("/usr/lib/modules").glob(f"*{profile.localversion}"))
+                if profile_mods:
                     # Pick latest by mtime
-                    dusky_mods.sort(key=lambda p: p.stat().st_mtime)
-                    kver = dusky_mods[-1].name
+                    profile_mods.sort(key=lambda p: p.stat().st_mtime)
+                    kver = profile_mods[-1].name
             except Exception:
                 pass
             if not kver:
-                # Fallback: version is 7.2 -> 7.2.0-dusky, else 7.2.1 -> 7.2.1-dusky
-                kver = f"{version}.0-dusky" if version.count(".") == 1 else f"{version}-dusky"
-            vmlinuz_str = "/boot/vmlinuz-linux-dusky"
+                # Fallback: version is 7.2 -> 7.2.0-dusky-x, else 7.2.1 -> 7.2.1-dusky-x
+                kver = (
+                    f"{version}.0{profile.localversion}"
+                    if version.count(".") == 1
+                    else f"{version}{profile.localversion}"
+                )
+            vmlinuz_str = f"/boot/vmlinuz-{profile.pkgbase}"
             # Autonomous: try systemd-boot and GRUB without fragile /boot permission checks (0700)
             # kernel-install and bootctl will fail gracefully if not applicable
             try:
@@ -1615,14 +2080,15 @@ def compile_kernel() -> None:
             except Exception as e:
                 console.print(f"[dim]GRUB note: {e}[/dim]")
         except Exception as e:
-            console.print(f"[dim]Boot entry auto-creation note: {e} (manual: sudo kernel-install add <kver> /boot/vmlinuz-linux-dusky)[/dim]")
+            console.print(f"[dim]Boot entry auto-creation note: {e} (manual: sudo kernel-install add <kver> {vmlinuz_str})[/dim]")
 
         console.print(
             Panel(
                 f"[bold green]Mission Accomplished![/bold green]\n\n"
-                f"Dusky Kernel [bold]linux-{version}-dusky[/bold] installed successfully.\n"
+                f"Dusky Kernel [bold]linux-{version}{profile.localversion}[/bold] "
+                f"(profile: {profile.name}) installed successfully.\n"
                 "initramfs generation ran automatically via pacman hooks.\n"
-                "[dim]Boot entry ensured automatically for systemd-boot/GRUB. Verify with: bootctl list | grep -A2 dusky[/dim]",
+                f"[dim]Boot entry ensured automatically for systemd-boot/GRUB. Verify with: bootctl list | grep -A2 {profile.suffix}[/dim]",
                 border_style="green",
                 padding=(1, 2),
             )
@@ -1647,12 +2113,19 @@ def main_menu() -> None:
     while True:
         console.clear()
         state = DuskyState.load()
+        profiles = load_profiles()
+        active_profile = find_profile(profiles, state.selected_profile)
+        profile_label = (
+            f"[bold green]{active_profile.name}[/bold green]"
+            if active_profile
+            else "[yellow]unselected[/yellow]"
+        )
         config_status = (
             "[bold green]IMPORTED[/bold green]"
-            if state.use_imported_config and DUSKY_SAVED_CONFIG.exists()
+            if state.use_imported_config and saved_config_path(state.selected_profile).exists()
             else "[dim]LIVE[/dim]"
         )
-        llvm_info = "[cyan]LLVM/ThinLTO[/cyan]" if state.prefer_llvm and check_llvm_available() else "[yellow]GCC[/yellow]"
+        llvm_info = "[cyan]LLVM[/cyan]" if state.prefer_llvm and check_llvm_available() else "[yellow]GCC[/yellow]"
         effective_build = get_build_dir()
         build_label = str(effective_build)
         if effective_build != DEFAULT_BUILD_DIR:
@@ -1665,8 +2138,8 @@ def main_menu() -> None:
                 Panel(
                     Align.center(
                         f"[bold cyan]Dusky Kernel Compiler[/bold cyan] [dim]- 2026.08 Production[/dim]\n"
-                        f"[dim]Arch Linux • Kernel 7.1+ • localmodconfig + LMC_KEEP • pacman-pkg[/dim]\n"
-                        f"[dim]Toolchain: {llvm_info} • Config: {config_status} • Build: {build_label}[/dim]"
+                        f"[dim]Arch Linux • TOML profiles • localmodconfig + LMC_KEEP • pacman-pkg[/dim]\n"
+                        f"[dim]Profile: {profile_label} • Toolchain: {llvm_info} • Config: {config_status} • Build: {build_label}[/dim]"
                     ),
                     box=box.ROUNDED,
                     border_style="bright_blue",
@@ -1718,6 +2191,8 @@ def parse_cli_args() -> None:
     parser = argparse.ArgumentParser(description="Dusky Kernel Compiler 2026.08 Engine")
     parser.add_argument("--verify", action="store_true", help="Run empirical diagnostics and exit")
     parser.add_argument("--check-latest", action="store_true", help="Check latest kernel.org versions and exit")
+    parser.add_argument("--list-profiles", action="store_true", help="List available TOML profiles and exit")
+    parser.add_argument("--profile", type=str, default=None, help="Preselect a kernel profile by name (e.g. gaming)")
     parser.add_argument("--build-dir", type=str, default=None, help="Override build directory (supports ZRAM/tmpfs, e.g. /mnt/zram1/dusky_build or /tmp/dusky_build)")
     args = parser.parse_args()
 
@@ -1729,6 +2204,28 @@ def parse_cli_args() -> None:
         # Persist for this run via env, and offer to save
         os.environ["DUSKY_BUILD_DIR"] = str(resolved)
         console.print(f"[dim]Using build dir override: {resolved}[/dim]")
+
+    if args.profile:
+        profiles = load_profiles()
+        if find_profile(profiles, args.profile) is None:
+            console.print(f"[bold red]Unknown profile: {args.profile}. Available: {', '.join(p.name for p in profiles) or 'none'}[/bold red]")
+            sys.exit(1)
+        os.environ["DUSKY_PROFILE"] = args.profile
+        console.print(f"[dim]Profile preselected: {args.profile}[/dim]")
+
+    if args.list_profiles:
+        profiles = load_profiles()
+        if not profiles:
+            console.print(f"[yellow]No valid profiles in {PROFILES_DIR}[/yellow]")
+        else:
+            table = Table(title=f"Dusky Profiles ({PROFILES_DIR})", box=box.SIMPLE_HEAVY)
+            table.add_column("Name", style="bold white")
+            table.add_column("Description", style="cyan")
+            table.add_column("Key settings", style="dim")
+            for p in profiles:
+                table.add_row(p.name, p.description, summarize_profile(p))
+            console.print(table)
+        sys.exit(0)
 
     if args.verify:
         run_empirical_diagnostics()

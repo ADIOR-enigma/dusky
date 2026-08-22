@@ -1,0 +1,37 @@
+# Dusky kernel profile: minimal RAM footprint (small VMs, old laptops, containers).
+[meta]
+name = "low_ram"
+description = "EEVDF + THP madvise + zswap-on + SLUB tiny + -O2; every saved byte counts"
+suffix = "dusky-lowram"
+
+[release]
+channel = "stable"
+
+[scheduler]
+type = "vanilla"
+
+[cpu]
+opt = "native"
+default_governor = "schedutil"
+
+[timing]
+hz = 500
+tickless = "idle"
+preempt = "lazy"
+
+[memory]
+thp = "madvise"
+mglru = true
+zswap_default_on = true
+slub_tiny = true
+
+[compiler]
+optimize = "o2"
+lto = "thin"
+
+[power]
+wq_power_efficient = true
+
+[network]
+congestion = "bbr"
+qdisc = "fq"

@@ -1,0 +1,37 @@
+# Dusky kernel profile: absolute maximum throughput and efficiency on native hardware.
+[meta]
+name = "maximum_performance"
+description = "BORE + -O3 + ThinLTO + 1000Hz + THP always; native CPU codegen, schedutil governor"
+suffix = "dusky-maxperf"
+
+[release]
+channel = "mainline"
+
+[scheduler]
+type = "bore"
+
+[cpu]
+opt = "native"
+default_governor = "schedutil"
+
+[timing]
+hz = 1000
+tickless = "full"
+preempt = "full"
+
+[memory]
+thp = "always"
+mglru = true
+zswap_default_on = false
+slub_tiny = false
+
+[compiler]
+optimize = "o3"
+lto = "thin"
+
+[power]
+wq_power_efficient = false
+
+[network]
+congestion = "bbr"
+qdisc = "fq"

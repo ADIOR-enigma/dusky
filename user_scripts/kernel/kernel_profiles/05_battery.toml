@@ -1,0 +1,37 @@
+# Dusky kernel profile: battery life for laptops.
+[meta]
+name = "battery"
+description = "Laptop battery: power-efficient workqueues, 300Hz idle tick, lazy preempt, zswap"
+suffix = "dusky-battery"
+
+[release]
+channel = "stable"
+
+[scheduler]
+type = "vanilla"
+
+[cpu]
+opt = "native"
+default_governor = "schedutil"
+
+[timing]
+hz = 300
+tickless = "idle"
+preempt = "lazy"
+
+[memory]
+thp = "madvise"
+mglru = true
+zswap_default_on = true
+slub_tiny = false
+
+[compiler]
+optimize = "o2"
+lto = "thin"
+
+[power]
+wq_power_efficient = true
+
+[network]
+congestion = "bbr"
+qdisc = "fq"

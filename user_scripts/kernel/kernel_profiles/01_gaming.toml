@@ -1,0 +1,37 @@
+# Dusky kernel profile: gaming rigs plugged into the wall.
+[meta]
+name = "gaming"
+description = "BORE + performance governor + 1000Hz full-tickless full-preempt; lowest frame-time variance"
+suffix = "dusky-gaming"
+
+[release]
+channel = "mainline"
+
+[scheduler]
+type = "bore"
+
+[cpu]
+opt = "native"
+default_governor = "performance"
+
+[timing]
+hz = 1000
+tickless = "full"
+preempt = "full"
+
+[memory]
+thp = "always"
+mglru = true
+zswap_default_on = false
+slub_tiny = false
+
+[compiler]
+optimize = "o3"
+lto = "thin"
+
+[power]
+wq_power_efficient = false
+
+[network]
+congestion = "bbr"
+qdisc = "fq"
