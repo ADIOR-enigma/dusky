@@ -9,7 +9,7 @@ priority = 40
 tags = []
 
 [release]
-channel = "stable"
+channel = "mainline"
 pin = ""
 allow_rc = false
 min_version = ""
@@ -28,7 +28,7 @@ reproducible = true
 extra_config = {}
 
 [cpu]
-arch = "generic_v3"
+arch = "native"
 governor = "schedutil"
 amd_pstate = "undefined"
 mitigations = true
@@ -82,7 +82,7 @@ mptcp = true
 nf_conntrack_procfs = false
 
 [modules]
-mode = "expanded"
+mode = "strict"
 modprobed_db = true
 lmc_keep_extra = []
 manage_service = true

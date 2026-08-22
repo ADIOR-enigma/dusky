@@ -9,7 +9,7 @@ priority = 30
 tags = []
 
 [release]
-channel = "stable"
+channel = "mainline"
 pin = ""
 allow_rc = false
 min_version = ""
@@ -82,7 +82,7 @@ mptcp = true
 nf_conntrack_procfs = false
 
 [modules]
-mode = "expanded"
+mode = "strict"
 modprobed_db = true
 lmc_keep_extra = []
 manage_service = true
