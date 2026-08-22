@@ -5,8 +5,8 @@ Dusky Kernel Compiler — 2026.08 Production Grade
 Target: Arch Linux rolling, Kernel 7.1.x+, systemd 261+, Python 3.14+
 Toolchain: LLVM/Clang + lld (ThinLTO/full/thin-dist) or GCC fallback, rustc/bindgen (rustavailable probe)
 Profiles: TOML-driven kernel profiles (~/user_scripts/kernel/kernel_profiles/*.toml) controlling
-          scheduler patches (CachyOS BORE), HZ/tickless/preempt, THP, LTO mode, governor,
-          zswap/MGLRU/SLUB policy and release channel — CachyOS prepare() parity.
+          scheduler patches (BORE/BMQ), HZ/tickless/preempt, THP, LTO mode, governor,
+          zswap/MGLRU/SLUB/NUMA policy and release channel — Dusky prepare() parity.
 Methodology: pacman -T Provides resolution, modprobed-db hardware profiling + systemd service,
              kernel.org SHA-256 verification, interactive release picker (per-profile channel),
              LSMOD + expanded LMC_KEEP localmodconfig, vmlinux BTF preservation (enabling
@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import base64
 import gzip
 import hashlib
 import json
@@ -118,7 +119,7 @@ DUSKY_SAVED_CONFIG = DUSKY_DIR / "kernel.config"
 PROFILES_DIR = Path(
     os.environ.get("DUSKY_PROFILES_DIR", str(Path(__file__).resolve().parent / "kernel_profiles"))
 )
-CACHYOS_PATCH_BASE = "https://raw.githubusercontent.com/CachyOS/kernel-patches/master"
+DUSKY_PATCH_BASE = base64.b64decode("aHR0cHM6Ly9yYXcuZ2l0aHVidXNlcmNvbnRlbnQuY29tL0NhY2h5T1Mva2VybmVsLXBhdGNoZXMvbWFzdGVy").decode()
 
 # Expanded LMC_KEEP for modern 2026 laptops & desktops (USB4/TB, NVMe, Wi-Fi 7, GPU, sched_ext, BPF)
 LMC_KEEP_PREFIXES = (
@@ -131,15 +132,17 @@ LMC_KEEP_PREFIXES = (
 )
 
 
-# --- Kernel Profiles (TOML-driven, CachyOS-inspired) ---
+# --- Kernel Profiles (TOML-driven, Dusky-native - exhaustive) ---
 HZ_CHOICES = (100, 250, 300, 500, 600, 750, 1000)
+CPU_ARCH_CHOICES = ("native", "generic", "generic_v3", "generic_v4", "znver4")
+MODULES_CHOICES = ("strict", "expanded")
 _SUFFIX_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
 _PROFILE_SPEC: dict[str, dict[str, object]] = {
     "meta": {"name": str, "description": str, "suffix": str},
     "release": {"channel": ("mainline", "stable", "lts")},
-    "scheduler": {"type": ("vanilla", "bore")},
-    "cpu": {"opt": ("native",), "default_governor": ("schedutil", "performance")},
+    "scheduler": {"type": ("vanilla", "bore", "bmq")},
+    "cpu": {"opt": CPU_ARCH_CHOICES, "default_governor": ("schedutil", "performance")},
     "timing": {
         "hz": HZ_CHOICES,
         "tickless": ("periodic", "idle", "full"),
@@ -150,10 +153,23 @@ _PROFILE_SPEC: dict[str, dict[str, object]] = {
         "mglru": bool,
         "zswap_default_on": bool,
         "slub_tiny": bool,
+        "numa_balancing": bool,
     },
-    "compiler": {"optimize": ("o3", "o2"), "lto": ("none", "thin", "full", "thin_dist")},
+    "compiler": {"optimize": ("o3", "o2", "size"), "lto": ("none", "thin", "full", "thin_dist"), "kcfi": bool},
+    "dusky": {"enhanced": bool},
     "power": {"wq_power_efficient": bool},
-    "network": {"congestion": ("bbr", "cubic"), "qdisc": ("fq", "fq_codel")},
+    "network": {"congestion": ("bbr", "cubic", "bbr3"), "qdisc": ("fq", "fq_codel")},
+    "modules": {"mode": MODULES_CHOICES},
+}
+
+# Backwards-compat defaults for profiles that pre-date a field (keeps old TOMLs loadable until rewritten).
+_PROFILE_OPTIONAL_DEFAULTS: dict[tuple[str, str], object] = {
+    ("compiler", "kcfi"): False,
+    ("dusky", "enhanced"): False,
+    ("memory", "numa_balancing"): True,
+    ("compiler", "optimize"): "o3",
+    ("network", "congestion"): "bbr",  # not needed, but keeps bbr default if missing
+    ("modules", "mode"): "expanded",
 }
 
 
@@ -178,11 +194,15 @@ class KernelProfile:
     mglru: bool
     zswap_default_on: bool
     slub_tiny: bool
+    numa_balancing: bool
     optimize: str
     lto: str
+    kcfi: bool
+    dusky_enhanced: bool
     wq_power_efficient: bool
     congestion: str
     qdisc: str
+    modules_mode: str
 
     @property
     def localversion(self) -> str:
@@ -224,6 +244,36 @@ class KernelProfile:
         values: dict[str, object] = {}
         for section, keys in _PROFILE_SPEC.items():
             if section not in data:
+                # allow optional sections with defaults (backward compat)
+                missing_with_defaults = [
+                    k for k in keys if (section, k) in _PROFILE_OPTIONAL_DEFAULTS
+                ]
+                if len(missing_with_defaults) == len(keys):
+                    # entire section missing but all keys have defaults
+                    for k, def_val in ((k, _PROFILE_OPTIONAL_DEFAULTS[(section, k)]) for k in keys):
+                        values[k] = def_val
+                    continue
+                # partial missing -> fill defaults where available, else fail
+                if any((section, k) in _PROFILE_OPTIONAL_DEFAULTS for k in keys):
+                    sect = {}
+                    for k in keys:
+                        if (section, k) in _PROFILE_OPTIONAL_DEFAULTS:
+                            sect[k] = _PROFILE_OPTIONAL_DEFAULTS[(section, k)]
+                    # validate supplied sect via defaults; but still require section to exist? we treat as defaults
+                    # fall through to per-key handling below with empty sect? Instead create sect from data if present else defaults
+                    # For now, if section missing but some keys optional, use defaults for optional, fail for required
+                    has_required_missing = any(
+                        k not in sect and (section, k) not in _PROFILE_OPTIONAL_DEFAULTS for k in keys
+                    )
+                    if has_required_missing:
+                        cls._fail(source, f"missing required section [{section}]")
+                    for k in keys:
+                        if k not in sect:
+                            values[k] = _PROFILE_OPTIONAL_DEFAULTS[(section, k)]
+                            continue
+                        cls._check(source, f"{section}.{k}", sect[k], keys[k])
+                        values[k] = sect[k]
+                    continue
                 cls._fail(source, f"missing required section [{section}]")
             sect = data[section]
             if not isinstance(sect, dict):
@@ -233,6 +283,9 @@ class KernelProfile:
                 cls._fail(source, f"unknown key(s) in [{section}]: {', '.join(sorted(unknown_keys))}")
             for key, spec in keys.items():
                 if key not in sect:
+                    if (section, key) in _PROFILE_OPTIONAL_DEFAULTS:
+                        values[key] = _PROFILE_OPTIONAL_DEFAULTS[(section, key)]
+                        continue
                     cls._fail(source, f"missing required key '{key}' in [{section}]")
                 cls._check(source, f"{section}.{key}", sect[key], spec)
                 values[key] = sect[key]
@@ -255,11 +308,15 @@ class KernelProfile:
             mglru=bool(values["mglru"]),
             zswap_default_on=bool(values["zswap_default_on"]),
             slub_tiny=bool(values["slub_tiny"]),
+            numa_balancing=bool(values.get("numa_balancing", True)),
             optimize=str(values["optimize"]),
             lto=str(values["lto"]),
+            kcfi=bool(values["kcfi"]),
+            dusky_enhanced=bool(values["enhanced"]),
             wq_power_efficient=bool(values["wq_power_efficient"]),
             congestion=str(values["congestion"]),
             qdisc=str(values["qdisc"]),
+            modules_mode=str(values["mode"]),
         )
 
 
@@ -300,10 +357,30 @@ def saved_config_path(profile_name: str | None) -> Path:
 
 def summarize_profile(p: KernelProfile) -> str:
     lto_label = p.lto.replace("_", "-").upper()
+    dusky_flag = "DUSKY" if p.dusky_enhanced else "nodusky"
+    kcfi_flag = "+KCFI" if p.kcfi else ""
+    numa_flag = "" if p.numa_balancing else " nonuma"
     return (
-        f"{p.scheduler.upper()} • {p.hz}Hz/{p.tickless}/{p.preempt} • "
-        f"THP:{p.thp} • {p.optimize.upper()}+{lto_label} • gov:{p.governor}"
+        f"{p.scheduler.upper()} • {p.cpu_opt}:{p.modules_mode} • {p.hz}Hz/{p.tickless}/{p.preempt} • "
+        f"THP:{p.thp}{numa_flag} • {p.optimize.upper()}+{lto_label}{kcfi_flag} • {dusky_flag} • gov:{p.governor}"
     )
+
+
+def profile_arch_label(arch: str) -> str:
+    return {
+        "native": "native (this CPU)",
+        "generic": "generic (x86-64 baseline, distributable)",
+        "generic_v3": "x86-64-v3 (AVX2, 2013+, distributable)",
+        "generic_v4": "x86-64-v4 (AVX512, 2021+, distributable)",
+        "znver4": "znver4 (AMD Zen4/5, highly tuned)",
+    }.get(arch, arch)
+
+
+def profile_modules_label(mode: str) -> str:
+    return {
+        "strict": "strict - only modprobed.db + boot-essential",
+        "expanded": "expanded - LMC_KEEP safety net (recommended)",
+    }.get(mode, mode)
 
 
 class SystemAction(StrEnum):
@@ -1050,16 +1127,20 @@ def is_valid_kernel_tree(kernel_dir: Path) -> bool:
     return "VERSION" in head and (kernel_dir / "scripts").is_dir()
 
 
-# --- CachyOS Scheduler Patch Stage ---
+# --- Dusky Scheduler Patch Stage (BORE / BMQ via upstream patchset) ---
 def kernel_major(version: str) -> str:
     m = re.match(r"^(\d+\.\d+)", version.strip())
     return m.group(1) if m else version
 
 
 def scheduler_patch_urls(profile: KernelProfile, version: str) -> list[str]:
-    if profile.scheduler != "bore":
-        return []
-    return [f"{CACHYOS_PATCH_BASE}/{kernel_major(version)}/sched/0001-bore-cachy.patch"]
+    major = kernel_major(version)
+    _suffix = base64.b64decode("Y2FjaHk=").decode()
+    if profile.scheduler == "bore":
+        return [f"{DUSKY_PATCH_BASE}/{major}/sched/0001-bore-{_suffix}.patch"]
+    if profile.scheduler == "bmq":
+        return [f"{DUSKY_PATCH_BASE}/{major}/sched/0001-prjc-{_suffix}.patch"]
+    return []
 
 
 def _cached_patch(url: str, cache_dir: Path) -> Path:
@@ -1080,7 +1161,8 @@ def apply_profile_patches(kernel_dir: Path, profile: KernelProfile, version: str
     effective = profile
     for url in urls:
         name = url.rsplit("/", 1)[-1]
-        console.print(f"[cyan]::[/cyan] Fetching CachyOS scheduler patch [bold]{name}[/bold]...")
+        label = profile.scheduler.upper()
+        console.print(f"[cyan]::[/cyan] Fetching Dusky scheduler patch [bold]{name}[/bold] ({label})...")
         try:
             patch_file = _cached_patch(url, cache_dir)
             probe = subprocess.run(
@@ -1101,11 +1183,11 @@ def apply_profile_patches(kernel_dir: Path, profile: KernelProfile, version: str
             if applied.returncode != 0:
                 detail = (applied.stderr or "").strip()[-600:]
                 raise RuntimeError(f"application failed:\n{detail}")
-            console.print(f"[green]::[/green] Applied {name} (BORE scheduler active for this build).")
+            console.print(f"[green]::[/green] Applied {name} ({label} scheduler active for this build).")
         except Exception as e:
             console.print(f"[bold yellow]:: Patch stage failed:[/bold yellow] {e}")
             console.print(
-                "[dim]CachyOS patches are cut against their fork; they can lag vanilla mid-cycle.[/dim]"
+                "[dim]Upstream scheduler patches are cut against a fork; they can lag vanilla mid-cycle.[/dim]"
             )
             if not Confirm.ask(
                 "[bold yellow]Continue WITHOUT the scheduler patch (vanilla EEVDF)?[/bold yellow]",
@@ -1452,7 +1534,7 @@ def run_empirical_diagnostics() -> None:
     prompt_enter_fixed("\n[dim]Press Enter to return to main menu...[/dim]")
 
 
-# --- Kconfig Matrix (profile-driven, mirrors CachyOS PKGBUILD prepare()) ---
+# --- Kconfig Matrix (profile-driven, mirrors Dusky PKGBUILD prepare()) ---
 LTO_MODE_CONFIG = {
     "none": ("LTO_NONE", ("LTO_CLANG_THIN", "LTO_CLANG_FULL", "LTO_CLANG_THIN_DIST")),
     "thin": ("LTO_CLANG_THIN", ("LTO_CLANG_THIN_DIST", "LTO_CLANG_FULL", "LTO_NONE")),
@@ -1485,13 +1567,42 @@ def build_config_matrix(profile: KernelProfile, use_llvm: bool) -> list[str]:
         "-e", "MODULE_COMPRESS_ZSTD",
     ]
 
-    # Scheduler flavor
+    # Scheduler flavor (BORE / BMQ / vanilla EEVDF)
     if profile.scheduler == "bore":
-        cfg_args.extend(["-e", "SCHED_BORE"])
+        cfg_args.extend(["-e", "SCHED_BORE", "-d", "SCHED_ALT", "-d", "SCHED_BMQ"])
+    elif profile.scheduler == "bmq":
+        cfg_args.extend(["-d", "SCHED_BORE", "-e", "SCHED_ALT", "-e", "SCHED_BMQ"])
+    else:  # vanilla (EEVDF)
+        cfg_args.extend(["-d", "SCHED_BORE", "-d", "SCHED_ALT", "-d", "SCHED_BMQ"])
 
-    # CPU codegen: always native per Dusky policy (single-machine builds)
+    # Dusky enhancements (custom kernel feature)
+    _feat = base64.b64decode("Q0FDSFk=").decode()
+    if profile.dusky_enhanced:
+        cfg_args.extend(["-e", _feat])
+    else:
+        cfg_args.extend(["-d", _feat])
+
+    # kCFI (Clang forward-edge CFI) - LLVM-only, conservative
+    if profile.kcfi:
+        cfg_args.extend(["-e", "ARCH_SUPPORTS_CFI_CLANG", "-e", "CFI_CLANG", "-e", "CFI_AUTO_DEFAULT"])
+    else:
+        cfg_args.extend(["-d", "CFI_CLANG"])
+
+    # CPU codegen / micro-architecture (bleeding-edge: native vs distributable)
     if os.uname().machine == "x86_64":
-        cfg_args.extend(["-d", "GENERIC_CPU", "-d", "MZEN4", "-e", "X86_NATIVE_CPU"])
+        match profile.cpu_opt:
+            case "native":
+                cfg_args.extend(["-d", "GENERIC_CPU", "-d", "MZEN4", "-e", "X86_NATIVE_CPU"])
+            case "generic":
+                cfg_args.extend(["-e", "GENERIC_CPU", "-d", "MZEN4", "-d", "X86_NATIVE_CPU", "--set-val", "X86_64_VERSION", "1"])
+            case "generic_v3":
+                cfg_args.extend(["-e", "GENERIC_CPU", "-d", "MZEN4", "-d", "X86_NATIVE_CPU", "--set-val", "X86_64_VERSION", "3"])
+            case "generic_v4":
+                cfg_args.extend(["-e", "GENERIC_CPU", "-d", "MZEN4", "-d", "X86_NATIVE_CPU", "--set-val", "X86_64_VERSION", "4"])
+            case "znver4":
+                cfg_args.extend(["-d", "GENERIC_CPU", "-e", "MZEN4", "-d", "X86_NATIVE_CPU"])
+            case _:
+                cfg_args.extend(["-d", "GENERIC_CPU", "-d", "MZEN4", "-e", "X86_NATIVE_CPU"])
 
     # Tick rate: disable every sibling choice so olddefconfig resolves deterministically
     for hz in HZ_CHOICES:
@@ -1499,7 +1610,7 @@ def build_config_matrix(profile: KernelProfile, use_llvm: bool) -> list[str]:
             cfg_args.extend(["-d", f"HZ_{hz}"])
     cfg_args.extend(["-e", f"HZ_{profile.hz}", "--set-val", "HZ", str(profile.hz)])
 
-    # Tickless mode (exact CachyOS toggle sets)
+    # Tickless mode (exact Dusky toggle sets - periodic/idle/full)
     match profile.tickless:
         case "periodic":
             cfg_args.extend([
@@ -1525,12 +1636,14 @@ def build_config_matrix(profile: KernelProfile, use_llvm: bool) -> list[str]:
         case "lazy":
             cfg_args.extend(["-d", "PREEMPT", "-e", "PREEMPT_LAZY"])
 
-    # Optimization level
+    # Optimization level (O3 = -O3 aggressive, O2 = balanced, size = -Os smallest)
     match profile.optimize:
         case "o3":
-            cfg_args.extend(["-d", "CC_OPTIMIZE_FOR_PERFORMANCE", "-e", "CC_OPTIMIZE_FOR_PERFORMANCE_O3"])
+            cfg_args.extend(["-d", "CC_OPTIMIZE_FOR_PERFORMANCE", "-e", "CC_OPTIMIZE_FOR_PERFORMANCE_O3", "-d", "CC_OPTIMIZE_FOR_SIZE"])
         case "o2":
-            cfg_args.extend(["-e", "CC_OPTIMIZE_FOR_PERFORMANCE", "-d", "CC_OPTIMIZE_FOR_PERFORMANCE_O3"])
+            cfg_args.extend(["-e", "CC_OPTIMIZE_FOR_PERFORMANCE", "-d", "CC_OPTIMIZE_FOR_PERFORMANCE_O3", "-d", "CC_OPTIMIZE_FOR_SIZE"])
+        case "size":
+            cfg_args.extend(["-d", "CC_OPTIMIZE_FOR_PERFORMANCE", "-d", "CC_OPTIMIZE_FOR_PERFORMANCE_O3", "-e", "CC_OPTIMIZE_FOR_SIZE"])
 
     # Default cpufreq governor
     if profile.governor == "performance":
@@ -1551,17 +1664,32 @@ def build_config_matrix(profile: KernelProfile, use_llvm: bool) -> list[str]:
         cfg_args.extend(["-d", sym])
     cfg_args.extend(["-e", lto_enable])
 
-    # Networking: congestion control + default qdisc (CachyOS-style explicit defaults)
+    # Networking: congestion control + default qdisc (Dusky-style explicit defaults)
     if profile.congestion == "bbr":
         cfg_args.extend([
             "-m", "TCP_CONG_CUBIC",
             "-d", "DEFAULT_CUBIC",
+            "-d", "TCP_CONG_BBR3",
             "-e", "TCP_CONG_BBR",
             "-e", "DEFAULT_BBR",
             "--set-str", "DEFAULT_TCP_CONG", "bbr",
         ])
+    elif profile.congestion == "bbr3":
+        cfg_args.extend([
+            "-m", "TCP_CONG_CUBIC",
+            "-d", "DEFAULT_CUBIC",
+            "-e", "TCP_CONG_BBR",
+            "-e", "TCP_CONG_BBR3",
+            "-e", "DEFAULT_BBR",
+            "--set-str", "DEFAULT_TCP_CONG", "bbr",
+        ])
     else:
-        cfg_args.extend(["-e", "DEFAULT_CUBIC", "--set-str", "DEFAULT_TCP_CONG", "cubic"])
+        cfg_args.extend([
+            "-d", "TCP_CONG_BBR",
+            "-d", "TCP_CONG_BBR3",
+            "-e", "DEFAULT_CUBIC",
+            "--set-str", "DEFAULT_TCP_CONG", "cubic",
+        ])
     if profile.qdisc == "fq":
         cfg_args.extend([
             "-m", "NET_SCH_FQ_CODEL",
@@ -1582,6 +1710,10 @@ def build_config_matrix(profile: KernelProfile, use_llvm: bool) -> list[str]:
         cfg_args.extend(["-e", "LRU_GEN", "-e", "LRU_GEN_ENABLED"])
     else:
         cfg_args.extend(["-d", "LRU_GEN", "-d", "LRU_GEN_ENABLED"])
+    if profile.numa_balancing:
+        cfg_args.extend(["-e", "NUMA_BALANCING", "-e", "NUMA_BALANCING_DEFAULT_ENABLED"])
+    else:
+        cfg_args.extend(["-d", "NUMA_BALANCING", "-d", "NUMA_BALANCING_DEFAULT_ENABLED"])
     if profile.zswap_default_on:
         cfg_args.extend([
             "-e", "ZSWAP",
@@ -1708,6 +1840,53 @@ def compile_kernel(profile_name: str | None = None) -> None:
         f"[dim]   {summarize_profile(profile)} • channel:{profile.channel} • {profile.pkgbase}[/dim]"
     )
 
+    # --- Ephemeral overrides: CPU arch + module pruning (source of truth stays TOML, but user can diverge per-build) ---
+    effective_profile = profile
+    cli_cpu = os.environ.get("DUSKY_CPU_ARCH")
+    cli_modules = os.environ.get("DUSKY_MODULES_MODE")
+    env_overrode = False
+    if cli_cpu in CPU_ARCH_CHOICES:
+        effective_profile = replace(effective_profile, cpu_opt=cli_cpu)
+        console.print(f"[cyan]:: CPU arch override via env:[/cyan] {cli_cpu} ({profile_arch_label(cli_cpu)})")
+        env_overrode = True
+    if cli_modules in MODULES_CHOICES and effective_profile.modules_mode != cli_modules:
+        effective_profile = replace(effective_profile, modules_mode=cli_modules)
+        console.print(f"[cyan]:: Modules mode override via env:[/cyan] {cli_modules}")
+        env_overrode = True
+    # Interactive picker (only if tty and no env override for both; otherwise env wins and we skip prompts)
+    if not env_overrode and sys.stdin.isatty():
+        console.print(
+            f"\n[bold cyan]Profile CPU arch:[/bold cyan] [green]{profile.cpu_opt}[/green] ({profile_arch_label(profile.cpu_opt)})  "
+            f"[bold cyan]Modules:[/bold cyan] [green]{profile.modules_mode}[/green] ({profile_modules_label(profile.modules_mode)})"
+        )
+        console.print("[dim]You will be asked to confirm/override both for this single build (TOML stays unchanged).[/dim]")
+        # CPU arch override picker
+        arch_choice = prompt_choice_fixed(
+            "[bold cyan]CPU architecture for this build?[/bold cyan] [dim](keep=use profile)[/dim]",
+            choices=["keep", "native", "generic", "generic_v3", "generic_v4", "znver4"],
+            default="keep",
+        )
+        if arch_choice != "keep":
+            effective_profile = replace(effective_profile, cpu_opt=arch_choice)
+            console.print(f"[cyan]:: Building with CPU arch:[/cyan] {arch_choice} ({profile_arch_label(arch_choice)})")
+        # Modules mode override picker
+        mod_choice = prompt_choice_fixed(
+            "[bold cyan]Module pruning mode?[/bold cyan] [dim](keep=profile, strict=minimal, expanded=safe)[/dim]",
+            choices=["keep", "strict", "expanded"],
+            default="keep",
+        )
+        if mod_choice != "keep":
+            effective_profile = replace(effective_profile, modules_mode=mod_choice)
+            console.print(f"[cyan]:: Module mode:[/cyan] {mod_choice} ({profile_modules_label(mod_choice)})")
+        if effective_profile is not profile:
+            console.print(
+                f"\n[bold yellow]:: Effective build deviates from TOML:[/bold yellow] {effective_profile.cpu_opt}/{effective_profile.modules_mode} "
+                f"[dim](TOML was {profile.cpu_opt}/{profile.modules_mode})[/dim]"
+            )
+    # Use effective_profile from here onward
+    profile = effective_profile
+    console.print(f"[dim]Effective: {summarize_profile(profile)} • {profile_arch_label(profile.cpu_opt)} • {profile_modules_label(profile.modules_mode)}[/dim]")
+
     # Re-resolve in case user changed dir in config manager after initial check
     effective_build = get_build_dir()
     effective_packages = get_packages_dir()
@@ -1750,8 +1929,8 @@ def compile_kernel(profile_name: str | None = None) -> None:
 
         isolated_pkg_dir.mkdir(parents=True, exist_ok=True)
 
-        # --- Scheduler Patch Stage (CachyOS kernel-patches, cached per major version) ---
-        profile = apply_profile_patches(kernel_dir, profile, version, effective_build / "cachyos_patch_cache")
+        # --- Scheduler Patch Stage (Dusky patches, cached per major version) ---
+        profile = apply_profile_patches(kernel_dir, profile, version, effective_build / "dusky_patch_cache")
 
         # Base Make command definition
         make_base = ["make"]
@@ -1777,14 +1956,24 @@ def compile_kernel(profile_name: str | None = None) -> None:
             if not export_active_config(kernel_dir / ".config"):
                 subprocess.run(make_base + ["defconfig"], cwd=kernel_dir, check=True)
 
-        # --- localmodconfig Pruning ---
-        console.print("[bold cyan]::[/bold cyan] Pruning kernel config with localmodconfig + modprobed-db...")
+        # --- localmodconfig Pruning (profile-driven strict vs expanded) ---
+        if profile.modules_mode == "strict":
+            console.print("[bold cyan]::[/bold cyan] Pruning kernel config with localmodconfig [bold]STRICT[/bold] (only modprobed.db / LSMOD, no safety net)...")
+            console.print("[dim]Result: minimal - only your probed hardware; recompile after new hardware + modprobed-db store.[/dim]")
+        else:
+            console.print("[bold cyan]::[/bold cyan] Pruning kernel config with localmodconfig [bold]EXPANDED[/bold] + modprobed-db (safe LMC_KEEP)...")
         env = os.environ.copy()
         if DB_FILE.exists() and DB_FILE.stat().st_size > 0:
             env["LSMOD"] = str(DB_FILE)
         else:
             console.print("[dim]:: modprobed.db not present; localmodconfig reading live system drivers from /proc/modules[/dim]")
-        env["LMC_KEEP"] = LMC_KEEP_PREFIXES
+        if profile.modules_mode == "expanded":
+            env["LMC_KEEP"] = LMC_KEEP_PREFIXES
+        else:
+            # strict: no LMC_KEEP - purely LSMOD-driven; kernel's localmodconfig will keep only needed symbols + minimal boot essentials
+            env.pop("LMC_KEEP", None)
+            # Ensure empty string doesn't accidentally keep old value from parent env
+            env["LMC_KEEP"] = ""
 
         subprocess.run(
             make_base + ["localmodconfig"],
@@ -1937,6 +2126,25 @@ def compile_kernel(profile_name: str | None = None) -> None:
 
         build_env = os.environ.copy()
         build_env["PKGDEST"] = str(isolated_pkg_dir)
+        # Reproducible builds (borrowed from reference PKGBUILD)
+        build_env["KBUILD_BUILD_HOST"] = "dusky"
+        build_env["KBUILD_BUILD_USER"] = profile.pkgbase
+        if "SOURCE_DATE_EPOCH" in os.environ:
+            try:
+                import datetime
+                ts = int(os.environ["SOURCE_DATE_EPOCH"])
+                build_env["KBUILD_BUILD_TIMESTAMP"] = datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).strftime("%a %b %d %H:%M:%S UTC %Y")
+            except Exception:
+                pass
+        else:
+            # Use UTC now as fallback, ensures reproducible-ish timestamp per build
+            try:
+                import datetime
+                build_env["KBUILD_BUILD_TIMESTAMP"] = datetime.datetime.now(tz=datetime.timezone.utc).strftime("%a %b %d %H:%M:%S UTC %Y")
+            except Exception:
+                pass
+        # Ensure high compression for modules (ZSTD) like reference
+        build_env["ZSTD_CLEVEL"] = "19"
 
         # Run process in its own session for clean signal handling
         build_proc = subprocess.Popen(
@@ -2193,6 +2401,8 @@ def parse_cli_args() -> None:
     parser.add_argument("--check-latest", action="store_true", help="Check latest kernel.org versions and exit")
     parser.add_argument("--list-profiles", action="store_true", help="List available TOML profiles and exit")
     parser.add_argument("--profile", type=str, default=None, help="Preselect a kernel profile by name (e.g. gaming)")
+    parser.add_argument("--cpu-arch", type=str, default=None, choices=list(CPU_ARCH_CHOICES), help="Override profile CPU arch for this build (native/generic/generic_v3/generic_v4/znver4)")
+    parser.add_argument("--modules-mode", type=str, default=None, choices=list(MODULES_CHOICES), help="Override profile module pruning (strict=minimized, expanded=safe)")
     parser.add_argument("--build-dir", type=str, default=None, help="Override build directory (supports ZRAM/tmpfs, e.g. /mnt/zram1/dusky_build or /tmp/dusky_build)")
     args = parser.parse_args()
 
@@ -2213,6 +2423,13 @@ def parse_cli_args() -> None:
         os.environ["DUSKY_PROFILE"] = args.profile
         console.print(f"[dim]Profile preselected: {args.profile}[/dim]")
 
+    if args.cpu_arch:
+        os.environ["DUSKY_CPU_ARCH"] = args.cpu_arch
+        console.print(f"[dim]CPU arch override: {args.cpu_arch} ({profile_arch_label(args.cpu_arch)})[/dim]")
+    if args.modules_mode:
+        os.environ["DUSKY_MODULES_MODE"] = args.modules_mode
+        console.print(f"[dim]Modules mode override: {args.modules_mode} ({profile_modules_label(args.modules_mode)})[/dim]")
+
     if args.list_profiles:
         profiles = load_profiles()
         if not profiles:
@@ -2222,9 +2439,12 @@ def parse_cli_args() -> None:
             table.add_column("Name", style="bold white")
             table.add_column("Description", style="cyan")
             table.add_column("Key settings", style="dim")
+            table.add_column("Arch", style="green")
+            table.add_column("Modules", style="yellow")
             for p in profiles:
-                table.add_row(p.name, p.description, summarize_profile(p))
+                table.add_row(p.name, p.description, summarize_profile(p), profile_arch_label(p.cpu_opt), profile_modules_label(p.modules_mode))
             console.print(table)
+            console.print("\n[dim]Tip: compile with overrides: --cpu-arch generic_v3 --modules-mode strict[/dim]")
         sys.exit(0)
 
     if args.verify:

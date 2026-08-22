@@ -1,9 +1,9 @@
-# Dusky kernel profile: gaming - BORE + performance governor + 1000Hz full-tickless full-preempt; lowest frame-time variance
+# Dusky kernel profile: minimal_strict - STRICT minimal: native + BORE + 1000Hz; only probed drivers, tiny kernel, fastest compile
 # Source of truth - all tunables live here. Overrides at compile-time are ephemeral.
 [meta]
-name = "gaming"
-description = "BORE + performance governor + 1000Hz full-tickless full-preempt; lowest frame-time variance"
-suffix = "dusky-gaming"
+name = "minimal_strict"
+description = "STRICT minimal: native + BORE + 1000Hz; only probed drivers, tiny kernel, fastest compile"
+suffix = "dusky-minimal"
 
 [release]
 channel = "mainline"
@@ -13,7 +13,7 @@ type = "bore"
 
 [cpu]
 opt = "native"
-default_governor = "performance"
+default_governor = "schedutil"
 
 [timing]
 hz = 1000
@@ -43,4 +43,4 @@ congestion = "bbr"
 qdisc = "fq"
 
 [modules]
-mode = "expanded"
+mode = "strict"

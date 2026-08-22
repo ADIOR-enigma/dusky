@@ -1,19 +1,19 @@
-# Dusky kernel profile: gaming - BORE + performance governor + 1000Hz full-tickless full-preempt; lowest frame-time variance
+# Dusky kernel profile: generic_v4 - Distributable v4 (AVX512, 2021+) + BORE + 1000Hz; modern fleet, expanded modules
 # Source of truth - all tunables live here. Overrides at compile-time are ephemeral.
 [meta]
-name = "gaming"
-description = "BORE + performance governor + 1000Hz full-tickless full-preempt; lowest frame-time variance"
-suffix = "dusky-gaming"
+name = "generic_v4"
+description = "Distributable v4 (AVX512, 2021+) + BORE + 1000Hz; modern fleet, expanded modules"
+suffix = "dusky-v4"
 
 [release]
-channel = "mainline"
+channel = "stable"
 
 [scheduler]
 type = "bore"
 
 [cpu]
-opt = "native"
-default_governor = "performance"
+opt = "generic_v4"
+default_governor = "schedutil"
 
 [timing]
 hz = 1000

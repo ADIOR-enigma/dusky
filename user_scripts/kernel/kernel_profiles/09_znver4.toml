@@ -1,9 +1,9 @@
-# Dusky kernel profile: gaming - BORE + performance governor + 1000Hz full-tickless full-preempt; lowest frame-time variance
+# Dusky kernel profile: znver4 - AMD Zen4/5 tuned (znver4) + BORE + 1000Hz; peak on Zen4/5, non-portable
 # Source of truth - all tunables live here. Overrides at compile-time are ephemeral.
 [meta]
-name = "gaming"
-description = "BORE + performance governor + 1000Hz full-tickless full-preempt; lowest frame-time variance"
-suffix = "dusky-gaming"
+name = "znver4"
+description = "AMD Zen4/5 tuned (znver4) + BORE + 1000Hz; peak on Zen4/5, non-portable"
+suffix = "dusky-znver4"
 
 [release]
 channel = "mainline"
@@ -12,7 +12,7 @@ channel = "mainline"
 type = "bore"
 
 [cpu]
-opt = "native"
+opt = "znver4"
 default_governor = "performance"
 
 [timing]

@@ -1,4 +1,5 @@
-# Dusky kernel profile: battery life for laptops.
+# Dusky kernel profile: battery - Laptop battery: power-efficient workqueues, 300Hz idle tick, lazy preempt, zswap
+# Source of truth - all tunables live here. Overrides at compile-time are ephemeral.
 [meta]
 name = "battery"
 description = "Laptop battery: power-efficient workqueues, 300Hz idle tick, lazy preempt, zswap"
@@ -24,10 +25,15 @@ thp = "madvise"
 mglru = true
 zswap_default_on = true
 slub_tiny = false
+numa_balancing = true
 
 [compiler]
 optimize = "o2"
 lto = "thin"
+kcfi = false
+
+[dusky]
+enhanced = false
 
 [power]
 wq_power_efficient = true
@@ -35,3 +41,6 @@ wq_power_efficient = true
 [network]
 congestion = "bbr"
 qdisc = "fq"
+
+[modules]
+mode = "expanded"

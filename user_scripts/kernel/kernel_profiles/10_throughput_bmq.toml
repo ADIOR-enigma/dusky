@@ -1,19 +1,19 @@
-# Dusky kernel profile: gaming - BORE + performance governor + 1000Hz full-tickless full-preempt; lowest frame-time variance
+# Dusky kernel profile: throughput_bmq - BMQ throughput scheduler + -O3 + 1000Hz; batch workloads, expanded modules
 # Source of truth - all tunables live here. Overrides at compile-time are ephemeral.
 [meta]
-name = "gaming"
-description = "BORE + performance governor + 1000Hz full-tickless full-preempt; lowest frame-time variance"
-suffix = "dusky-gaming"
+name = "throughput_bmq"
+description = "BMQ throughput scheduler + -O3 + 1000Hz; batch workloads, expanded modules"
+suffix = "dusky-bmq"
 
 [release]
-channel = "mainline"
+channel = "stable"
 
 [scheduler]
-type = "bore"
+type = "bmq"
 
 [cpu]
 opt = "native"
-default_governor = "performance"
+default_governor = "schedutil"
 
 [timing]
 hz = 1000

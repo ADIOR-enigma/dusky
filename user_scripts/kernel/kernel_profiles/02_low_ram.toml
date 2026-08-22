@@ -1,4 +1,5 @@
-# Dusky kernel profile: minimal RAM footprint (small VMs, old laptops, containers).
+# Dusky kernel profile: low_ram - EEVDF + THP madvise + zswap-on + SLUB tiny + -O2; every saved byte counts
+# Source of truth - all tunables live here. Overrides at compile-time are ephemeral.
 [meta]
 name = "low_ram"
 description = "EEVDF + THP madvise + zswap-on + SLUB tiny + -O2; every saved byte counts"
@@ -24,10 +25,15 @@ thp = "madvise"
 mglru = true
 zswap_default_on = true
 slub_tiny = true
+numa_balancing = true
 
 [compiler]
 optimize = "o2"
 lto = "thin"
+kcfi = false
+
+[dusky]
+enhanced = false
 
 [power]
 wq_power_efficient = true
@@ -35,3 +41,6 @@ wq_power_efficient = true
 [network]
 congestion = "bbr"
 qdisc = "fq"
+
+[modules]
+mode = "expanded"
