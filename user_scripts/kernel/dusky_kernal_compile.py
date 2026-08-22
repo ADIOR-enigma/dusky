@@ -1773,13 +1773,18 @@ def is_valid_kernel_tree(path: Path) -> bool:
 
 def tree_version(path: Path) -> str:
     fields: dict[str, str] = {}
-    for line in (path / "Makefile").read_text(encoding="utf-8",
-                                              errors="replace").splitlines()[:8]:
-        m = re.match(r"^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)\s*=\s*(.*)$", line)
-        if m:
-            fields[m.group(1)] = m.group(2).strip()
-    return "%s.%s.%s%s" % (fields.get("VERSION", "?"), fields.get("PATCHLEVEL", "?"),
-                           fields.get("SUBLEVEL", "0"), fields.get("EXTRAVERSION", ""))
+    makefile = path / "Makefile"
+    if not makefile.is_file():
+        return "unknown"
+    try:
+        for line in makefile.read_text(encoding="utf-8", errors="replace").splitlines()[:8]:
+            m = re.match(r"^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)\s*=\s*(.*)$", line)
+            if m:
+                fields[m.group(1)] = m.group(2).strip()
+        return "%s.%s.%s%s" % (fields.get("VERSION", "?"), fields.get("PATCHLEVEL", "?"),
+                               fields.get("SUBLEVEL", "0"), fields.get("EXTRAVERSION", ""))
+    except OSError:
+        return "unknown"
 
 
 def unpack(tarball: Path, release: Release, force: bool) -> Path:
@@ -1841,12 +1846,14 @@ def patch_candidates(sched: str, version: str) -> list[str]:
     names: list[str]
     match sched:
         case "bore":
-            names = ["0001-bore-%s.patch" % pkg, "0001-bore.patch",
-                     "bore/0001-bore-%s.patch" % pkg]
+            names = ["0001-bore-cachy.patch", "0001-bore.patch",
+                     "0001-bore-%s.patch" % pkg, "bore/0001-bore-cachy.patch",
+                     "bore/0001-bore.patch", "bore/0001-bore-%s.patch" % pkg]
             subdirs = ["sched", "misc", ""]
         case "bmq":
-            names = ["0001-prjc-%s.patch" % pkg, "0001-prjc.patch",
-                     "0001-bmq.patch"]
+            names = ["0001-prjc-cachy.patch", "0001-prjc.patch",
+                     "0001-bmq.patch", "0001-prjc-%s.patch" % pkg,
+                     "sched/0001-prjc-cachy.patch", "sched/0001-prjc.patch"]
             subdirs = ["sched", "misc", ""]
         case _:
             return []
@@ -2379,15 +2386,15 @@ def build_config_matrix(p: KernelProfile, *, rust_ok: bool) -> list[Op]:
 
     match s["compiler"]["debug_info"]:
         case "none":
-            extend((E("DEBUG_INFO_NONE"), D("DEBUG_INFO_DWARF5"),
-                    D("DEBUG_INFO_BTF"), D("DEBUG_INFO_BTF_MODULES"),
-                    D("PAHOLE_HAS_SPLIT_BTF"), D("GDB_SCRIPTS"),
-                    D("DEBUG_INFO_REDUCED")))
+            # Preserve core vmlinux BTF for sched_ext and modern BPF; disable per-module BTF for speed & small size
+            extend((E("DEBUG_INFO"), E("DEBUG_INFO_DWARF5"), E("DEBUG_INFO_BTF"),
+                    D("DEBUG_INFO_BTF_MODULES"), D("PAHOLE_HAS_SPLIT_BTF"),
+                    D("GDB_SCRIPTS"), D("DEBUG_INFO_REDUCED"), D("DEBUG_INFO_NONE")))
         case "reduced":
-            extend((D("DEBUG_INFO_NONE"), E("DEBUG_INFO_DWARF5"),
-                    E("DEBUG_INFO_REDUCED"), D("DEBUG_INFO_BTF")))
+            extend((D("DEBUG_INFO_NONE"), E("DEBUG_INFO"), E("DEBUG_INFO_DWARF5"),
+                    E("DEBUG_INFO_REDUCED"), E("DEBUG_INFO_BTF"), D("DEBUG_INFO_BTF_MODULES")))
         case "full":
-            extend((D("DEBUG_INFO_NONE"), E("DEBUG_INFO_DWARF5"),
+            extend((D("DEBUG_INFO_NONE"), E("DEBUG_INFO"), E("DEBUG_INFO_DWARF5"),
                     D("DEBUG_INFO_REDUCED"), E("DEBUG_INFO_BTF"),
                     E("DEBUG_INFO_BTF_MODULES")))
 
@@ -2461,6 +2468,13 @@ def build_config_matrix(p: KernelProfile, *, rust_ok: bool) -> list[Op]:
     add(E("TCP_CONG_ADVANCED"))
 
     # -------------------------------------------------- correctness / distro
+    # Keyring decoupling: clear distro certificate paths to avoid build failure
+    add(S("SYSTEM_TRUSTED_KEYS", ""))
+    add(S("SYSTEM_REVOCATION_KEYS", ""))
+
+    # Sched_ext: Extensible BPF scheduler class (Linux 6.12+)
+    add(E("SCHED_CLASS_EXT"))
+
     # Namespaces: Arch userspace (systemd-nspawn, flatpak, podman, bubblewrap,
     # Steam's pressure-vessel, browser sandboxes) hard-requires USER_NS.
     extend((E("NAMESPACES"), E("USER_NS"), E("PID_NS"), E("NET_NS"),
@@ -2532,6 +2546,7 @@ def cpu_arch_ops(arch: str) -> list[Op]:
         # ignores symbols that do not exist and olddefconfig drops the rest.
         vendor = detect_cpu_vendor()
         ops.append(E("MNATIVE_AMD" if vendor == "amd" else "MNATIVE_INTEL"))
+        ops.append(E("X86_NATIVE_CPU"))
         ops.append(V("X86_64_VERSION", 1))
         return ops
     for flag, sym, val in ARCH_KCONFIG.get(arch, ()):
@@ -2580,19 +2595,14 @@ def apply_matrix(tree: Path, ops: Sequence[Op]) -> None:
 
 def finalize_config(tree: Path, env: Mapping[str, str]) -> None:
     """
-    'make prepare' realises the scripts, then 'yes "" | make config' answers any
-    brand-new symbol the matrix did not know about, then olddefconfig collapses
-    the result deterministically. Doing all three is what prevents an
-    interactive prompt from stalling an unattended build.
+    Realises the configuration and scripts deterministically without interactive stalls.
     """
     rule("Resolve configuration")
     info("make olddefconfig")
     run(["make", *make_flags(env), "olddefconfig"], cwd=tree, env=env, timeout=1200)
     info("make prepare")
     run(["make", *make_flags(env), "prepare"], cwd=tree, env=env, timeout=1800)
-    info("make config (defaults for any new symbol)")
-    run(["make", *make_flags(env), "config"], cwd=tree, env=env,
-        stdin_text="\n" * 4000, timeout=1200, check=False)
+    info("make olddefconfig (final)")
     run(["make", *make_flags(env), "olddefconfig"], cwd=tree, env=env, timeout=1200)
     ok("Configuration finalised")
 
@@ -2881,7 +2891,13 @@ def compile_kernel(tree: Path, p: KernelProfile, env: Mapping[str, str],
     jobs = p.g("compiler", "jobs") or cpu_count()
     dest = Path(env["PKGDEST"])
 
-    argv = ["make", "-j%d" % jobs, *make_flags(env)]
+    argv = [
+        "make",
+        "-j%d" % jobs,
+        *make_flags(env),
+        "PACMAN_PKGBASE=%s" % p.pkgbase,
+        "PACMAN_EXTRAPACKAGES=headers",
+    ]
     if env.get("LLVM") != "1":
         argv += ["CC=gcc", "HOSTCC=gcc"]
     argv.append("pacman-pkg")
@@ -2947,13 +2963,26 @@ def install_packages(pkgdir: Path) -> list[Path]:
 def refresh_boot(p: KernelProfile) -> None:
     rule("Boot entries")
     kver = installed_kver(p)
-    if kver and have("kernel-install") and Path("/etc/kernel/entry-token").exists():
-        vmlinuz = Path("/usr/lib/modules") / kver / "vmlinuz"
-        if vmlinuz.is_file():
-            rc = subprocess.call(SUDO.argv(["kernel-install", "add", kver,
-                                            str(vmlinuz)]))
-            if rc == 0:
-                ok("kernel-install add %s" % kver)
+    vmlinuz = None
+    if kver:
+        for cand in (
+            Path("/boot") / ("vmlinuz-" + p.pkgbase),
+            Path("/boot") / ("vmlinuz-linux-" + p.suffix.strip("-")),
+            Path("/boot") / ("vmlinuz-" + p.suffix.strip("-")),
+            Path("/usr/lib/modules") / kver / "vmlinuz",
+        ):
+            if cand.is_file():
+                vmlinuz = cand
+                break
+
+    if kver and vmlinuz and have("kernel-install"):
+        info("kernel-install add %s %s" % (kver, vmlinuz))
+        rc = subprocess.call(SUDO.argv(["kernel-install", "add", kver, str(vmlinuz)]))
+        if rc == 0:
+            ok("kernel-install registered %s" % kver)
+        else:
+            warn("kernel-install returned %d" % rc)
+
     if have("mkinitcpio") and kver:
         preset = Path("/etc/mkinitcpio.d") / (p.pkgbase + ".preset")
         if preset.is_file():
@@ -3390,126 +3419,112 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def initialize_hardware_profiler() -> None:
-    """Menu 1: install deps + modprobed-db + systemd timer (idempotent)."""
+    """Menu 1: install toolchains + modprobed-db + systemd timer."""
+    banner()
+    rule("Initialize Hardware Profiler & Toolchains")
     try:
-        from pathlib import Path as _P
-        # Try to probe toolchain to know deps
-        try:
-            probe = probe_toolchain(Toolchain.LLVM)  # type: ignore[name-defined]
-        except Exception:
-            probe = probe_toolchain(Toolchain.GCC)  # type: ignore[name-defined]
-        # Ensure host packages via existing helper if available
-        if 'check_dependencies' in globals():
-            try:
-                check_dependencies(discover_profiles()[0])  # type: ignore
-            except Exception:
-                pass
+        SUDO.acquire()
+        profiles = discover_profiles()
+        sample_profile = profiles[0] if profiles else None
+        if sample_profile:
+            check_dependencies(sample_profile)
+
         # modprobed-db
         if not have("modprobed-db"):
-            helper = which("paru") or which("yay")
+            info("Resolving modprobed-db from AUR...")
+            helper = shutil.which("paru") or shutil.which("yay")
             if helper:
-                run([str(helper), "-S", "--noconfirm", "--needed", "modprobed-db"], check=False)
+                rc = subprocess.call([str(helper), "-S", "--noconfirm", "--needed", "modprobed-db"])
+                if rc != 0:
+                    warn("AUR helper failed to install modprobed-db")
             else:
-                warn("no AUR helper (paru/yay) - install modprobed-db manually")
-        db = ensure_modprobed_db(discover_profiles()[0]) if 'ensure_modprobed_db' in globals() else locate_modprobed_db()
-        if db:
-            ok(f"modprobed-db ready: {db}")
+                info("No AUR helper found. Building modprobed-db via makepkg...")
+                tmp_dir = Path("/tmp") / f"modprobed-db-{os.getpid()}"
+                try:
+                    run(["git", "clone", "https://aur.archlinux.org/modprobed-db.git", str(tmp_dir)])
+                    run(["makepkg", "-si", "--noconfirm"], cwd=tmp_dir)
+                finally:
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        if have("modprobed-db"):
+            info("Capturing current hardware drivers into database...")
+            run(["modprobed-db", "store"], check=False)
+            install_modprobed_units()
+            db_file = MODPROBED_DB
+            count = 0
+            if db_file.is_file():
+                try:
+                    count = sum(1 for ln in db_file.read_text(encoding="utf-8", errors="replace").splitlines()
+                                if ln.strip() and not ln.startswith("#"))
+                except OSError:
+                    count = 0
+            ok(f"modprobed-db initialized successfully ({count} drivers mapped in {db_file})")
         else:
-            warn("modprobed.db not found - use hardware then 'modprobed-db store'")
+            warn("modprobed-db could not be installed automatically. Please install it manually.")
     except Exception as e:
-        err(f"init failed: {e}")
+        err(f"Initialization failed: {e}")
 
 
 def live_hardware_monitor() -> None:
-    """Menu 2: live count of modprobed.db (Ctrl+C to return)."""
+    """Menu 2: live telemetry tracking modprobed.db (Ctrl+C to return)."""
     banner()
-    say(C.ACCENT + "  Live Hardware Telemetry — Ctrl+C to return" + C.RESET)
+    rule("Live Hardware Telemetry Dashboard")
+    say(C.ACCENT + "  Polling modprobed-db store every 2s — Press Ctrl+C to return" + C.RESET)
+    say("")
     try:
         while True:
-            db = locate_modprobed_db()
+            if have("modprobed-db"):
+                run(["modprobed-db", "store"], check=False, capture=True)
             count = 0
-            if db and db.is_file():
+            if MODPROBED_DB.is_file():
                 try:
-                    count = sum(1 for ln in db.read_text().splitlines() if ln.strip() and not ln.startswith("#"))
+                    count = sum(1 for ln in MODPROBED_DB.read_text(encoding="utf-8", errors="replace").splitlines()
+                                if ln.strip() and not ln.startswith("#"))
                 except OSError:
                     count = 0
-            store = which("modprobed-db")
-            if store:
-                run([str(store), "store"], check=False)
-            say(f"Unique drivers mapped: {count}  db={db or 'missing'}")
+            sys.stdout.write(f"\r  {C.BOLD}Unique Drivers Mapped:{C.RESET} {C.GREEN}{count}{C.RESET}  {C.FAINT}(db: {MODPROBED_DB}){C.RESET}   ")
+            sys.stdout.flush()
             time.sleep(2)
     except KeyboardInterrupt:
-        say("telemetry stopped")
+        say("")
+        ok("Telemetry monitor closed")
 
 
 def config_manager_menu() -> None:
-    """Menu 4: show profiles + build dir + toolchain."""
+    """Menu 4: show profiles, build directory, toolchains, and settings."""
     banner()
-    say(C.ACCENT + "  Dusky Config Manager" + C.RESET)
+    rule("Dusky Configuration & Environment Manager")
     try:
         profiles = discover_profiles()
         print_profile_table(profiles)
     except ProfileError as e:
         err(str(e))
     say("")
-    info(f"Profiles dir: {PROFILES_DIR}")
-    info(f"Build dir: {BUILD_DIR}  Cache: {PATCH_CACHE}")
-    info(f"Modprobed db: {locate_modprobed_db() or 'missing'}")
-    try:
-        probe = probe_toolchain(Toolchain.LLVM)  # type: ignore[name-defined]
-        ok(f"LLVM: {probe.clang_path} + {probe.lld_path}")
-    except Exception as e:
-        warn(f"LLVM missing: {e}")
-        try:
-            probe = probe_toolchain(Toolchain.GCC)  # type: ignore[name-defined]
-            ok(f"GCC: {probe.gcc_path}")
-        except Exception:
-            err("no toolchain found")
+    info(f"Profiles Directory: {PROFILES_DIR}")
+    info(f"Build Scratch Dir:  {BUILD_DIR} ({'RAM-backed' if is_ram_backed(BUILD_DIR) else 'Disk'}, {free_gib(BUILD_DIR):.1f} GiB free)")
+    info(f"Modprobed Database: {MODPROBED_DB} ({'Present' if MODPROBED_DB.is_file() else 'Missing'})")
+    say("")
+    rule("Toolchain Probing")
+    clang_ok = have("clang") and have("llvm-ar") and have("lld")
+    say(f"  LLVM/Clang Toolchain: {'[green]Available (ThinLTO)[/green]' if clang_ok else '[yellow]Missing[/yellow]'}")
+    say(f"  GCC Compiler:         {'[green]Available[/green]' if have('gcc') else '[red]Missing[/red]'}")
+    say(f"  Rust Kernel Tooling:  {'[green]Available (rustc + bindgen)[/green]' if (have('rustc') and have('bindgen')) else '[yellow]Missing[/yellow]'}")
 
 
 def empirical_diagnostics_menu() -> None:
-    """Menu 5: host, toolchain, db, mount, profiles."""
-    banner()
-    say(C.ACCENT + "  Empirical Diagnostics" + C.RESET)
-    info(f"Host kernel: {os.uname().release}  Python: {sys.version.split()[0]}")
-    for name in ("clang", "gcc", "rustc", "bindgen", "aria2c", "patch", "make"):
-        p = which(name)
-        say(f"{name:12} {'OK ' + str(p) if p else 'missing'}")
-    db = locate_modprobed_db()
-    if db:
-        try:
-            n = sum(1 for ln in db.read_text().splitlines() if ln.strip() and not ln.startswith("#"))
-            ok(f"modprobed.db: {db} ({n} drivers)")
-        except OSError as e:
-            warn(str(e))
-    else:
-        warn("modprobed.db: missing")
-    for svc in ("modprobed-db.timer", "modprobed-db.service"):
-        res = run(["systemctl", "--user", "is-active", svc], check=False) if have("systemctl") else None
-        state = res.stdout.strip() if res and res.returncode == 0 else "inactive/missing"
-        say(f"{svc:28} {state}")
-    try:
-        m = findmnt(PROFILES_DIR)
-        info(f"Profiles dir fstype: {m.get('FSTYPE','unknown')}")
-    except Exception:
-        pass
-    try:
-        profiles = discover_profiles()
-        info(f"Profiles: {len(profiles)} valid")
-        for p in profiles:
-            say(f"  {p.name:22} {p.g('scheduler','type'):8} {p.g('cpu','arch'):12}")
-    except ProfileError as e:
-        err(str(e))
+    """Menu 5: comprehensive system and capability diagnostics."""
+    args = argparse.Namespace(json=False)
+    do_doctor(args)
 
 
 def interactive_menu() -> int:
-    """Classic 6-item menu - preserves pre-Opus UX."""
+    """Classic 6-item interactive menu."""
     while True:
         banner()
-        say(C.ACCENT + "  Dusky Kernel Compiler — Menu" + C.RESET)
+        say(C.ACCENT + "  Dusky Kernel Compiler — Main Menu" + C.RESET)
         say(" 1) Install Toolchains & Init Hardware Profiler")
         say(" 2) View Live Hardware Telemetry")
-        say(" 3) Compile & Install Kernel (profile picker)")
+        say(" 3) Compile & Install Kernel (Profile Picker)")
         say(" 4) Config Manager & Toolchain Settings")
         say(" 5) Run System Empirical Diagnostics")
         say(" 6) Exit")
@@ -3519,7 +3534,7 @@ def interactive_menu() -> int:
         except DuskyError:
             return 0
         if choice == 6:
-            ok("May your uptime be long!")
+            ok("Exiting Dusky Kernel Compiler. May your uptime be long!")
             return 0
         try:
             if choice == 1:
@@ -3528,16 +3543,25 @@ def interactive_menu() -> int:
             elif choice == 2:
                 live_hardware_monitor()
             elif choice == 3:
-                profiles = discover_profiles()
-                profile = select_profile(profiles, None)
-                ov = Overrides.from_env_and_args(type('A',(),{'cpu_arch':None,'modules_mode':None,'toolchain':None,'lto':None,'jobs':None,'pin':None,'channel':None})())
-                diff = apply_overrides(profile, ov, prompt=True)
-                if diff:
-                    for d in diff:
-                        info(d)
-                # delegate to build via CLI re-invoke to avoid duplicating compile logic
-                import subprocess as _sp
-                _sp.run([sys.executable, str(Path(__file__).resolve()), "--profile", profile.name], check=False)
+                args = argparse.Namespace(
+                    profile=None,
+                    cpu_arch=None,
+                    modules_mode=None,
+                    toolchain=None,
+                    lto=None,
+                    channel=None,
+                    pin=None,
+                    jobs=None,
+                    fresh=False,
+                    configure_only=False,
+                    no_install=False,
+                    no_eta=False,
+                    no_prompt=False,
+                    save_config=True,
+                    yes=False,
+                    verbose=_VERBOSE,
+                )
+                do_build(args)
                 ask("Press Enter to return", "")
             elif choice == 4:
                 config_manager_menu()
@@ -3546,12 +3570,12 @@ def interactive_menu() -> int:
                 empirical_diagnostics_menu()
                 ask("Press Enter to return", "")
         except KeyboardInterrupt:
-            warn("cancelled")
+            warn("Action cancelled by user")
         except DuskyError as e:
             err(str(e))
             ask("Press Enter to return", "")
         except Exception as e:
-            err(f"{type(e).__name__}: {e}")
+            err(f"Action failed: [{type(e).__name__}] {e}")
             ask("Press Enter to return", "")
 
 
