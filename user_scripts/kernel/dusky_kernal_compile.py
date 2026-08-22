@@ -1057,6 +1057,7 @@ class Overrides:
     jobs: int | None = None
     pin: str | None = None
     channel: str | None = None
+    scheduler: str | None = None
 
     @classmethod
     def from_env_and_args(cls, args: argparse.Namespace) -> Self:
@@ -1077,6 +1078,7 @@ class Overrides:
             jobs=int(jobs_raw) if jobs_raw else None,
             pin=pick(args.pin, "DUSKY_PIN", None),
             channel=pick(args.channel, "DUSKY_CHANNEL", CHANNEL_CHOICES),
+            scheduler=pick(getattr(args, "scheduler", None), "DUSKY_SCHEDULER", SCHED_CHOICES),
         )
 
     def any(self) -> bool:
@@ -1108,6 +1110,8 @@ def apply_overrides(p: KernelProfile, o: Overrides, prompt: bool) -> list[str]:
         put("release", "pin", o.pin)
     if o.channel:
         put("release", "channel", o.channel)
+    if o.scheduler:
+        put("scheduler", "type", o.scheduler)
 
     if prompt and interactive():
         rule("Ephemeral overrides")
@@ -3362,6 +3366,8 @@ def build_parser() -> argparse.ArgumentParser:
     ov.add_argument("--toolchain", choices=list(TOOLCHAIN_CHOICES))
     ov.add_argument("--lto", choices=list(LTO_CHOICES))
     ov.add_argument("--channel", choices=list(CHANNEL_CHOICES))
+    ov.add_argument("--scheduler", choices=list(SCHED_CHOICES),
+                    help="override scheduler (eevdf, bore, bmq)")
     ov.add_argument("--pin", metavar="VERSION",
                     help="build this exact kernel version")
     ov.add_argument("-j", "--jobs", type=int, metavar="N")
