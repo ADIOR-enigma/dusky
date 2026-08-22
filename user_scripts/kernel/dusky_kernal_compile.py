@@ -134,7 +134,7 @@ LMC_KEEP_PREFIXES = (
 
 # --- Kernel Profiles (TOML-driven, Dusky-native - exhaustive) ---
 HZ_CHOICES = (100, 250, 300, 500, 600, 750, 1000)
-CPU_ARCH_CHOICES = ("native", "generic", "generic_v3", "generic_v4", "znver4")
+CPU_ARCH_CHOICES = ("native", "generic", "generic_v2", "generic_v3", "generic_v4", "znver4")
 MODULES_CHOICES = ("strict", "expanded")
 _SUFFIX_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
@@ -142,11 +142,11 @@ _PROFILE_SPEC: dict[str, dict[str, object]] = {
     "meta": {"name": str, "description": str, "suffix": str},
     "release": {"channel": ("mainline", "stable", "lts")},
     "scheduler": {"type": ("vanilla", "bore", "bmq")},
-    "cpu": {"opt": CPU_ARCH_CHOICES, "default_governor": ("schedutil", "performance")},
+    "cpu": {"opt": ("native", "generic", "generic_v2", "generic_v3", "generic_v4", "znver4"), "default_governor": ("schedutil", "performance")},
     "timing": {
         "hz": HZ_CHOICES,
         "tickless": ("periodic", "idle", "full"),
-        "preempt": ("full", "lazy"),
+        "preempt": ("full", "lazy", "voluntary", "none"),
     },
     "memory": {
         "thp": ("always", "madvise"),
@@ -1595,6 +1595,8 @@ def build_config_matrix(profile: KernelProfile, use_llvm: bool) -> list[str]:
                 cfg_args.extend(["-d", "GENERIC_CPU", "-d", "MZEN4", "-e", "X86_NATIVE_CPU"])
             case "generic":
                 cfg_args.extend(["-e", "GENERIC_CPU", "-d", "MZEN4", "-d", "X86_NATIVE_CPU", "--set-val", "X86_64_VERSION", "1"])
+            case "generic_v2":
+                cfg_args.extend(["-e", "GENERIC_CPU", "-d", "MZEN4", "-d", "X86_NATIVE_CPU", "--set-val", "X86_64_VERSION", "2"])
             case "generic_v3":
                 cfg_args.extend(["-e", "GENERIC_CPU", "-d", "MZEN4", "-d", "X86_NATIVE_CPU", "--set-val", "X86_64_VERSION", "3"])
             case "generic_v4":
@@ -1629,12 +1631,28 @@ def build_config_matrix(profile: KernelProfile, use_llvm: bool) -> list[str]:
                 "-e", "CONTEXT_TRACKING",
             ])
 
-    # Preemption model
+    # Preemption model (exhaustive - covers 7.2 and lts PREEMPT_DYNAMIC)
     match profile.preempt:
         case "full":
-            cfg_args.extend(["-e", "PREEMPT", "-d", "PREEMPT_LAZY"])
+            cfg_args.extend([
+                "-e", "PREEMPT", "-d", "PREEMPT_LAZY", "-d", "PREEMPT_VOLUNTARY", "-d", "PREEMPT_NONE",
+                "-e", "PREEMPT_DYNAMIC", "-e", "PREEMPT", "-d", "PREEMPT_VOLUNTARY", "-d", "PREEMPT_LAZY", "-d", "PREEMPT_NONE",
+            ])
         case "lazy":
-            cfg_args.extend(["-d", "PREEMPT", "-e", "PREEMPT_LAZY"])
+            cfg_args.extend([
+                "-d", "PREEMPT", "-e", "PREEMPT_LAZY", "-d", "PREEMPT_VOLUNTARY", "-d", "PREEMPT_NONE",
+                "-e", "PREEMPT_DYNAMIC", "-d", "PREEMPT", "-d", "PREEMPT_VOLUNTARY", "-e", "PREEMPT_LAZY", "-d", "PREEMPT_NONE",
+            ])
+        case "voluntary":
+            cfg_args.extend([
+                "-d", "PREEMPT", "-d", "PREEMPT_LAZY", "-e", "PREEMPT_VOLUNTARY", "-d", "PREEMPT_NONE",
+                "-d", "PREEMPT_DYNAMIC", "-d", "PREEMPT", "-e", "PREEMPT_VOLUNTARY", "-d", "PREEMPT_LAZY", "-d", "PREEMPT_NONE",
+            ])
+        case "none":
+            cfg_args.extend([
+                "-d", "PREEMPT", "-d", "PREEMPT_LAZY", "-d", "PREEMPT_VOLUNTARY", "-e", "PREEMPT_NONE",
+                "-d", "PREEMPT_DYNAMIC", "-d", "PREEMPT", "-d", "PREEMPT_VOLUNTARY", "-d", "PREEMPT_LAZY", "-e", "PREEMPT_NONE",
+            ])
 
     # Optimization level (O3 = -O3 aggressive, O2 = balanced, size = -Os smallest)
     match profile.optimize:
@@ -1663,6 +1681,15 @@ def build_config_matrix(profile: KernelProfile, use_llvm: bool) -> list[str]:
     for sym in lto_disable:
         cfg_args.extend(["-d", sym])
     cfg_args.extend(["-e", lto_enable])
+
+    # GCC QR panic screen (better bug reports when not using LTO)
+    if lto_mode == "none":
+        cfg_args.extend([
+            "--set-str", "DRM_PANIC_SCREEN", "qr_code",
+            "-e", "DRM_PANIC_SCREEN_QR_CODE",
+            "--set-str", "DRM_PANIC_SCREEN_QR_CODE_URL", "https://panic.archlinux.org/panic_report#",
+            "--set-val", "DRM_PANIC_SCREEN_QR_VERSION", "40",
+        ])
 
     # Networking: congestion control + default qdisc (Dusky-style explicit defaults)
     if profile.congestion == "bbr":
@@ -1932,10 +1959,10 @@ def compile_kernel(profile_name: str | None = None) -> None:
         # --- Scheduler Patch Stage (Dusky patches, cached per major version) ---
         profile = apply_profile_patches(kernel_dir, profile, version, effective_build / "dusky_patch_cache")
 
-        # Base Make command definition
+        # Base Make command definition (Dusky parity with reference BUILD_FLAGS)
         make_base = ["make"]
         if use_llvm:
-            make_base.extend(["LLVM=1", "LLVM_IAS=1"])
+            make_base.extend(["LLVM=1", "LLVM_IAS=1", "CC=clang", "LD=ld.lld"])
 
         # --- Config Injection ---
         profile_cfg = saved_config_path(profile.name)
@@ -2020,6 +2047,14 @@ def compile_kernel(profile_name: str | None = None) -> None:
             )
 
         (kernel_dir / "localversion").write_text(profile.localversion)
+
+        # Rewrite configuration (reference parity: make prepare; yes "" | make config; olddefconfig)
+        try:
+            subprocess.run(make_base + ["prepare"], cwd=kernel_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            # yes "" | make config ensures all new symbols get default values
+            subprocess.run("yes '' | make " + " ".join(make_base[1:]) + " config >/dev/null 2>&1", shell=True, cwd=kernel_dir, check=False)
+        except Exception:
+            pass
 
         # Resolve config dependencies cleanly
         subprocess.run(make_base + ["olddefconfig"], cwd=kernel_dir, stdout=subprocess.DEVNULL, check=True)
