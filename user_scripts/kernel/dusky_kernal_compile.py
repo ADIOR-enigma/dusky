@@ -2179,7 +2179,9 @@ def build_config_matrix(p: KernelProfile, *, rust_ok: bool) -> list[Op]:
             add(M("ZRAM", optional=True))
             add(E("ZRAM_MULTI_COMP", optional=True))
         case "zram":
-            extend((D("ZSWAP_DEFAULT_ON"), E("ZRAM"), E("ZRAM_DEF_COMP_ZSTD"), E("ZRAM_MULTI_COMP", optional=True)))
+            extend((D("ZSWAP_DEFAULT_ON"), E("ZRAM"), E("ZRAM_BACKEND_ZSTD", optional=True),
+                    E("ZRAM_BACKEND_LZ4", optional=True), E("ZRAM_DEF_COMP_ZSTD", optional=True),
+                    E("ZRAM_MULTI_COMP", optional=True)))
         case "none":
             extend((D("ZSWAP_DEFAULT_ON"), M("ZRAM", optional=True)))
 
