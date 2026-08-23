@@ -3712,9 +3712,9 @@ def interactive_menu() -> int:
         say(C.ACCENT + "  Dusky Kernel Compiler — Main Menu (v5.0.0)" + C.RESET)
         say(" 1) Install Toolchains & Init Hardware Profiler")
         say(" 2) View Live Hardware Telemetry")
-        say(" 3) Compile & Install Kernel (Profile Picker)")
-        say(" 4) Config Manager & Toolchain Settings")
-        say(" 5) Run System Empirical Diagnostics")
+        say(" 3) Run System Empirical Diagnostics")
+        say(" 4) Config Manager & Profile Overview")
+        say(" 5) Compile & Install Kernel (Profile Picker)")
         say(" 6) Exit")
         say("")
         try:
@@ -3733,6 +3733,12 @@ def interactive_menu() -> int:
             elif choice == 2:
                 live_hardware_monitor()
             elif choice == 3:
+                empirical_diagnostics_menu()
+                ask("Press Enter to return", "")
+            elif choice == 4:
+                config_manager_menu()
+                ask("Press Enter to return", "")
+            elif choice == 5:
                 args = argparse.Namespace(
                     profile=None, cpu_arch=None, modules_mode=None, toolchain=None,
                     lto=None, channel=None, pin=None, jobs=None, fresh=False,
@@ -3740,12 +3746,6 @@ def interactive_menu() -> int:
                     no_prompt=False, save_config=True, yes=False, verbose=_VERBOSE,
                 )
                 do_build(args)
-                ask("Press Enter to return", "")
-            elif choice == 4:
-                config_manager_menu()
-                ask("Press Enter to return", "")
-            elif choice == 5:
-                empirical_diagnostics_menu()
                 ask("Press Enter to return", "")
         except KeyboardInterrupt:
             warn("Action cancelled by user")
