@@ -99,7 +99,7 @@ def _default_build_dir() -> Path:
 PROFILES_DIR: Final = _env_path("DUSKY_PROFILES_DIR", SELF_DIR / "kernel_profiles")
 BUILD_DIR: Final = _env_path("DUSKY_BUILD_DIR", _default_build_dir())
 STATE_DIR: Final = _env_path("DUSKY_STATE_DIR", HOME / ".local" / "state" / "dusky-kernel")
-CONFIG_SEED_DIR: Final = _env_path("DUSKY_CONFIG_DIR", SELF_DIR)
+CONFIG_SEED_DIR: Final = _env_path("DUSKY_CONFIG_DIR", HOME / ".config" / "dusky" / "settings" / "dusky_kernel_compile")
 
 SRC_DIR: Final = BUILD_DIR / "src"
 TARBALL_DIR: Final = BUILD_DIR / "tarballs"
@@ -1883,10 +1883,11 @@ def seed_config(tree: Path, profile: KernelProfile) -> str:
 
 
 def save_config_snapshot(tree: Path, profile: KernelProfile) -> None:
+    CONFIG_SEED_DIR.mkdir(parents=True, exist_ok=True)
     dest = CONFIG_SEED_DIR / ("kernel.config.%s" % profile.name)
     try:
         dest.write_text((tree / ".config").read_text(encoding="utf-8"), encoding="utf-8")
-        ok("Saved per-profile baseline: %s" % dest.name)
+        ok("Saved per-profile baseline: %s" % dest)
     except OSError as exc:
         warn("could not save baseline: %s" % exc)
 
@@ -2601,7 +2602,7 @@ def estimate_steps(tree: Path, env: Mapping[str, str]) -> int:
 
 
 class Live:
-    def __init__(self, title: str, total: int, tail: int = 20) -> None:
+    def __init__(self, title: str, total: int, tail: int = 6) -> None:
         self.title = title
         self.total = total
         self.done = 0
@@ -2622,8 +2623,16 @@ class Live:
 
     def __exit__(self, *exc: object) -> None:
         if self.enabled:
-            self._paint(force=True)
-            sys.stdout.write(C.SHOW + "\n")
+            if self.rendered:
+                sys.stdout.write("\x1b[%dA\r\x1b[J" % self.rendered)
+            pct = (100.0 * self.done / self.total) if self.total > 0 else 0.0
+            elapsed = time.monotonic() - self.start
+            sys.stdout.write(C.SHOW)
+            say("  %s%s%s  %s%6.2f%%%s  %s%s/%s%s  \u00b7  %s elapsed" % (
+                C.BOLD, self.title, C.RESET, C.CYAN, pct, C.RESET,
+                C.FAINT, "{:,}".format(self.done),
+                "{:,}".format(self.total) if self.total else "?", C.RESET,
+                hms(elapsed)))
             sys.stdout.flush()
 
     def feed(self, line: str) -> None:
@@ -2632,9 +2641,11 @@ class Live:
                 self.done += 1
             if _ERROR_RE.search(line):
                 self.errors.append(line)
-            self.tail.append(line)
-            if len(self.tail) > self.tail_n:
-                del self.tail[:-self.tail_n]
+            clean = line.strip()
+            if clean:
+                self.tail.append(clean)
+                if len(self.tail) > 20:
+                    del self.tail[:-20]
         if not self.enabled:
             if _ERROR_RE.search(line):
                 print(line)
@@ -2645,10 +2656,11 @@ class Live:
             self._paint()
 
     def _bar(self, width: int) -> str:
+        width = max(10, width)
         if self.total <= 0:
             phase = int((time.monotonic() - self.start) * 8) % max(1, width)
             cells = ["\u2500"] * width
-            for i in range(6):
+            for i in range(min(6, width)):
                 cells[(phase + i) % width] = "\u2501"
             return C.ACCENT + "".join(cells) + C.RESET
         frac = min(1.0, self.done / self.total)
@@ -2662,33 +2674,50 @@ class Live:
             return "elapsed %s" % hms(elapsed)
         rate = self.done / elapsed
         remain = max(0.0, (self.total - self.done) / rate) if rate > 0 else 0.0
-        return "%s elapsed  \u00b7  ~%s left" % (hms(elapsed), hms(remain))
+        return "%s elapsed  \u00b7  ~%s left  \u00b7  %.1f steps/s" % (hms(elapsed), hms(remain), rate)
 
     def _paint(self, force: bool = False) -> None:
-        w = term_width()
-        out: list[str] = []
-        if self.rendered:
-            out.append("\x1b[%dA" % self.rendered)
-        out.append("\x1b[J")
+        try:
+            ts = shutil.get_terminal_size((80, 24))
+            term_w = max(40, ts.columns)
+            term_h = max(10, ts.lines)
+        except OSError:
+            term_w, term_h = 80, 24
+
+        max_tail = max(2, min(self.tail_n, term_h - 7))
+        bar_w = max(10, min(term_w - 6, 80))
 
         pct = (100.0 * self.done / self.total) if self.total > 0 else 0.0
         head = "  %s%s%s  %s%6.2f%%%s  %s%s/%s%s" % (
             C.BOLD, self.title, C.RESET, C.CYAN, pct, C.RESET,
             C.FAINT, "{:,}".format(self.done),
             "{:,}".format(self.total) if self.total else "?", C.RESET)
-        out.append(head)
-        out.append("  " + self._bar(max(20, w - 6)))
-        out.append("  " + C.FAINT + self._eta() + C.RESET)
-        out.append("  " + C.FAINT + "\u2500" * (w - 4) + C.RESET)
+
+        lines: list[str] = [
+            truncate(head, term_w - 2),
+            "  " + self._bar(bar_w),
+            truncate("  " + C.FAINT + self._eta() + C.RESET, term_w - 2),
+            truncate("  " + C.FAINT + "\u2500" * (term_w - 4) + C.RESET, term_w - 2),
+        ]
+
         with self._lock:
             tail = list(self.tail)
-        for ln in tail[-self.tail_n:]:
+        tail_slice = tail[-max_tail:] if max_tail > 0 else []
+        for ln in tail_slice:
             colour = C.RED if _ERROR_RE.search(ln) else C.FAINT
-            out.append("  " + colour + truncate(ln, w - 4) + C.RESET)
-        for _ in range(self.tail_n - len(tail)):
-            out.append("")
-        self.rendered = 4 + self.tail_n
-        sys.stdout.write("\n".join(out) + "\n")
+            lines.append(truncate("    " + colour + ln + C.RESET, term_w - 2))
+        for _ in range(max_tail - len(tail_slice)):
+            lines.append("")
+
+        out: list[str] = []
+        if self.rendered:
+            out.append("\x1b[%dA\r" % self.rendered)
+        for ln in lines:
+            out.append("\x1b[2K" + ln + "\n")
+        out.append("\x1b[J")
+
+        self.rendered = len(lines)
+        sys.stdout.write("".join(out))
         sys.stdout.flush()
 
 
@@ -3690,6 +3719,7 @@ def config_manager_menu() -> None:
         err(str(e))
     say("")
     info(f"Profiles Directory: {PROFILES_DIR}")
+    info(f"Settings Directory: {CONFIG_SEED_DIR}")
     info(f"Build Scratch Dir:  {BUILD_DIR} ({'RAM-backed' if is_ram_backed(BUILD_DIR) else 'Disk'}, {free_gib(BUILD_DIR):.1f} GiB free)")
     info(f"ThinLTO Cache Dir:  {THINLTO_CACHE}")
     info(f"Modprobed Database: {MODPROBED_DB} ({'Present' if MODPROBED_DB.is_file() else 'Missing'})")
