@@ -2262,10 +2262,15 @@ def build_config_matrix(p: KernelProfile, *, rust_ok: bool) -> list[Op]:
     if not s["security"]["randomize_kstack"]:
         add(D("RANDOMIZE_KSTACK_OFFSET_DEFAULT", optional=True))
 
-    # Strip pure debug bloat
+    # Strip pure debug bloat & dangerous fault injection hooks
     extend((D("PAGE_POISONING"), D("DEBUG_PAGEALLOC"), D("DEBUG_LIST"), D("DEBUG_SG"),
             D("DEBUG_PLIST"), D("DEBUG_NOTIFIERS"), D("KFENCE"), D("KASAN"), D("UBSAN"),
-            D("KCSAN"), D("LOCKDEP"), D("PROVE_LOCKING"), D("WERROR")))
+            D("KCSAN"), D("LOCKDEP"), D("PROVE_LOCKING"), D("WERROR"),
+            D("FUNCTION_ERROR_INJECTION", optional=True),
+            D("BPF_KPROBE_OVERRIDE", optional=True),
+            D("FAIL_FUNCTION", optional=True),
+            D("FAULT_INJECTION", optional=True),
+            D("FAULT_INJECTION_DEBUG_FS", optional=True)))
 
     # --------------------------------------------------------------- gaming
     if s["gaming"]["ntsync"]:
@@ -2980,6 +2985,31 @@ def refresh_boot(p: KernelProfile) -> None:
         if rc == 0:
             ok("kernel-install registered %s" % kver)
 
+    if have("bootctl") and Path("/boot/loader/entries").is_dir() and kver:
+        # Customize title and sort-key in systemd-boot entry so menu shows dusky_<profile>
+        entry_title = "dusky_%s" % p.name
+        sort_key = "dusky-%s" % p.name
+        for entry_file in Path("/boot/loader/entries").glob(f"*{kver}*.conf"):
+            try:
+                cp = run(SUDO.argv(["cat", str(entry_file)]), check=False)
+                if cp.returncode == 0 and cp.stdout:
+                    lines = cp.stdout.splitlines()
+                    new_lines = []
+                    for line in lines:
+                        if line.startswith("title "):
+                            new_lines.append("title      " + entry_title)
+                        elif line.startswith("sort-key "):
+                            new_lines.append("sort-key   " + sort_key)
+                        else:
+                            new_lines.append(line)
+                    tmp_entry = Path("/tmp") / entry_file.name
+                    tmp_entry.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+                    run(SUDO.argv(["cp", str(tmp_entry), str(entry_file)]), check=False)
+                    tmp_entry.unlink(missing_ok=True)
+                    ok("Configured systemd-boot entry: %s" % entry_title)
+            except Exception as exc:
+                warn("Could not customize boot entry: %s" % exc)
+
     if have("mkinitcpio") and kver:
         preset = Path("/etc/mkinitcpio.d") / (p.pkgbase + ".preset")
         if preset.is_file():
@@ -3351,7 +3381,7 @@ _DEFAULT_PROFILES: Final[tuple[tuple[str, dict[str, dict[str, Any]], str, str], 
         "cpu": {"arch": "native", "governor": "schedutil", "amd_pstate": "active", "epp": "balance_performance", "mitigations": False, "prefcore": True},
         "timing": {"hz": 1000, "tickless": "idle", "preempt": "lazy", "preempt_dynamic": True},
         "memory": {"thp": "madvise", "thp_defrag": "defer+madvise", "mglru": True, "mglru_mask": 7, "mglru_min_ttl_ms": 1000, "swap_backend": "zram", "zram_size_pct": 100, "numa": True, "numa_balancing": False, "ksm": False, "page_reporting": False},
-        "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "thin", "thinlto_cache": True, "kcfi": True, "debug_info": "reduced", "rust": True, "headers": "auto"},
+        "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "thin", "thinlto_cache": True, "kcfi": False, "debug_info": "reduced", "rust": True, "headers": "auto"},
         "security": {"profile": "extreme", "init_on_alloc": False, "hardened_usercopy": False, "stackprotector": "regular", "mitigations": "off", "acknowledge_risk": True},
         "gaming": {"ntsync": True, "uclamp": True, "max_map_count": 2147483642, "split_lock_mitigate": False},
         "network": {"congestion": "bbr", "qdisc": "fq"},
@@ -3367,7 +3397,7 @@ _DEFAULT_PROFILES: Final[tuple[tuple[str, dict[str, dict[str, Any]], str, str], 
         "cpu": {"arch": "native", "governor": "schedutil", "amd_pstate": "active", "epp": "balance_performance", "prefcore": True},
         "timing": {"hz": 1000, "tickless": "idle", "preempt": "lazy", "preempt_dynamic": True},
         "memory": {"thp": "madvise", "thp_defrag": "defer+madvise", "mglru": True, "mglru_mask": 7, "mglru_min_ttl_ms": 1000, "swap_backend": "zswap", "numa": True, "ksm": True, "damon": True},
-        "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "thin", "thinlto_cache": True, "kcfi": True, "debug_info": "reduced", "rust": True, "headers": "auto"},
+        "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "thin", "thinlto_cache": True, "kcfi": False, "debug_info": "reduced", "rust": True, "headers": "auto"},
         "security": {"profile": "balanced", "init_on_alloc": True, "hardened_usercopy": True, "stackprotector": "strong", "mitigations": "auto"},
         "gaming": {"ntsync": True, "uclamp": True, "max_map_count": 2147483642},
         "network": {"congestion": "bbr", "qdisc": "cake"},
@@ -3383,7 +3413,7 @@ _DEFAULT_PROFILES: Final[tuple[tuple[str, dict[str, dict[str, Any]], str, str], 
         "timing": {"hz": 500, "tickless": "idle", "preempt": "lazy", "preempt_dynamic": True},
         "memory": {"thp": "madvise", "thp_defrag": "defer", "mglru": True, "mglru_mask": 7, "mglru_min_ttl_ms": 0, "swap_backend": "zswap", "numa": True, "numa_balancing": True, "nodes_shift": 6, "ksm": True, "page_reporting": True, "damon": True},
         "storage": {"nvme_poll_queues": 8, "io_scheduler": "none", "blk_wbt": True},
-        "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "thin", "thinlto_cache": True, "kcfi": True, "debug_info": "reduced", "rust": True, "headers": "auto"},
+        "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "thin", "thinlto_cache": True, "kcfi": False, "debug_info": "reduced", "rust": True, "headers": "auto"},
         "security": {"profile": "balanced", "init_on_alloc": True, "mitigations": "auto"},
         "network": {"congestion": "bbr", "qdisc": "fq", "xdp": True},
         "modules": {"mode": "expanded"},
@@ -3397,7 +3427,7 @@ _DEFAULT_PROFILES: Final[tuple[tuple[str, dict[str, dict[str, Any]], str, str], 
         "timing": {"hz": 250, "tickless": "idle", "preempt": "lazy", "preempt_dynamic": True},
         "power": {"wq_power_efficient": True, "cpu_idle_governor": "teo", "rcu_lazy": True, "energy_model": True},
         "memory": {"thp": "madvise", "thp_defrag": "defer+madvise", "mglru": True, "mglru_mask": 7, "mglru_min_ttl_ms": 500, "swap_backend": "zswap", "damon": True},
-        "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "thin", "thinlto_cache": True, "kcfi": True, "debug_info": "reduced", "headers": "auto"},
+        "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "thin", "thinlto_cache": True, "kcfi": False, "debug_info": "reduced", "headers": "auto"},
         "network": {"congestion": "bbr", "qdisc": "fq_codel"},
         "modules": {"mode": "strict", "modprobed_db": True},
     }, "Battery: Battery-first, guided P-states, RCU lazy, TEO idle, power-efficient WQ", "dusky-battery"),
@@ -3429,7 +3459,7 @@ _DEFAULT_PROFILES: Final[tuple[tuple[str, dict[str, dict[str, Any]], str, str], 
         "cpu": {"arch": "generic_v3", "nr_cpus": 512},
         "timing": {"hz": 1000, "tickless": "idle", "preempt": "lazy", "preempt_dynamic": True},
         "memory": {"thp": "madvise", "thp_defrag": "defer+madvise", "mglru": True, "numa": True, "nodes_shift": 6},
-        "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "thin", "thinlto_cache": True, "kcfi": True, "debug_info": "reduced", "headers": "auto"},
+        "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "thin", "thinlto_cache": True, "kcfi": False, "debug_info": "reduced", "headers": "auto"},
         "modules": {"mode": "expanded", "modprobed_db": False},
     }, "Generic v3: Distributable AVX2/BMI2/FMA baseline package", "dusky-v3"),
 
@@ -3440,7 +3470,7 @@ _DEFAULT_PROFILES: Final[tuple[tuple[str, dict[str, dict[str, Any]], str, str], 
         "cpu": {"arch": "generic_v4", "nr_cpus": 512},
         "timing": {"hz": 1000, "tickless": "idle", "preempt": "lazy", "preempt_dynamic": True},
         "memory": {"thp": "madvise", "thp_defrag": "defer+madvise", "mglru": True, "numa": True, "nodes_shift": 6},
-        "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "thin", "thinlto_cache": True, "kcfi": True, "debug_info": "reduced", "headers": "auto"},
+        "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "thin", "thinlto_cache": True, "kcfi": False, "debug_info": "reduced", "headers": "auto"},
         "modules": {"mode": "expanded", "modprobed_db": False},
     }, "Generic v4: Distributable AVX-512 baseline package (Zen4+ / modern Xeon)", "dusky-v4"),
 )

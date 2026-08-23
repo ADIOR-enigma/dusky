@@ -267,7 +267,11 @@ thinlto_cache_size = "20g"
 fdo = "none"
 fdo_profile_dir = ""
 
-# Kernel Control Flow Integrity (kCFI)
+# Kernel Control Flow Integrity (kCFI):
+#   - false : (Recommended default) Disables forward-edge CFI instrumentation.
+#             Required when using out-of-tree proprietary drivers (e.g. nvidia-dkms)
+#             to prevent symbol relocation and type-hash mismatch kernel errors.
+#   - true  : Injects Clang kCFI runtime verification for pure in-tree driver stacks.
 kcfi = false
 
 # Image and module compression:
