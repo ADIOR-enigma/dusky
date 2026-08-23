@@ -220,8 +220,8 @@ compaction_proactiveness = 0
 # Swap Backend (Mutually exclusive: NEVER run zram and zswap together!):
 #   - "zswap" : Compressed RAM writeback cache in front of physical swap
 #   - "zram"  : Compressed RAM block device as swap (100% of RAM)
-#   - "none"  : No compressed swap
-swap_backend = "zswap"
+# Memory backend: "zram" (compressed RAM disk), "zswap" (writeback pool), or "none"
+swap_backend = "zram"
 zswap_compressor = "zstd"
 zswap_zpool = "zsmalloc"
 zram_size_pct = 100

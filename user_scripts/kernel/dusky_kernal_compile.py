@@ -611,7 +611,7 @@ _PROFILE_SPEC: Final[dict[str, tuple[FieldSpec, ...]]] = {
         F("watermark_scale_factor", "int", 200, "kswapd early wake factor (prevents direct reclaim)."),
         F("watermark_boost_factor", "int", 0, "Disable watermark boost stalls."),
         F("compaction_proactiveness", "int", 0, "kcompactd background proactive compaction."),
-        F("swap_backend", "str", "zswap", "zswap (writeback cache) / zram (block device) / none.", SWAP_BACKEND_CHOICES),
+        F("swap_backend", "str", "zram", "zram (block device) / zswap (writeback cache) / none.", SWAP_BACKEND_CHOICES),
         F("zswap_compressor", "str", "zstd", "Zswap compression algorithm."),
         F("zswap_zpool", "str", "zsmalloc", "Zswap memory pool allocator."),
         F("zram_size_pct", "int", 100, "Zram disk size as percentage of physical RAM."),
@@ -2176,11 +2176,12 @@ def build_config_matrix(p: KernelProfile, *, rust_ok: bool) -> list[Op]:
             extend((E("ZSWAP"), E("ZSWAP_DEFAULT_ON"), E("ZSMALLOC"), E("ZSWAP_ZPOOL_DEFAULT_ZSMALLOC", optional=True)))
             add(E("ZSWAP_COMPRESSOR_DEFAULT_" + s["memory"]["zswap_compressor"].upper()))
             add(E("CRYPTO_" + s["memory"]["zswap_compressor"].upper()))
-            add(D("ZRAM", optional=True))
+            add(M("ZRAM", optional=True))
+            add(E("ZRAM_MULTI_COMP", optional=True))
         case "zram":
             extend((D("ZSWAP_DEFAULT_ON"), E("ZRAM"), E("ZRAM_DEF_COMP_ZSTD"), E("ZRAM_MULTI_COMP", optional=True)))
         case "none":
-            extend((D("ZSWAP_DEFAULT_ON"), D("ZRAM", optional=True)))
+            extend((D("ZSWAP_DEFAULT_ON"), M("ZRAM", optional=True)))
 
     if s["memory"]["slub_tiny"]:
         extend((E("SLUB_TINY"), D("SLUB_CPU_PARTIAL", optional=True), D("SLAB_MERGE_DEFAULT")))
@@ -2300,9 +2301,10 @@ def build_config_matrix(p: KernelProfile, *, rust_ok: bool) -> list[Op]:
     else:
         add(D("NTSYNC", optional=True))
     add(E("UCLAMP_TASK") if s["gaming"]["uclamp"] else D("UCLAMP_TASK"))
-    extend((E("FUTEX"), E("FUTEX_PI"), E("INPUT_UINPUT"), E("DRM"), E("DRM_AMDGPU"),
-            E("DRM_I915"), E("DRM_XE", optional=True), E("DRM_NOUVEAU"), E("DRM_SIMPLEDRM"),
-            E("DRM_FBDEV_EMULATION")))
+    extend((E("FUTEX"), E("FUTEX_PI"), E("INPUT_UINPUT"), E("DRM"),
+            M("DRM_AMDGPU", optional=True), M("DRM_I915", optional=True),
+            M("DRM_XE", optional=True), M("DRM_NOUVEAU", optional=True),
+            E("DRM_SIMPLEDRM"), E("DRM_FBDEV_EMULATION")))
 
     # -------------------------------------------------------------- storage
     extend((E("BLK_DEV_NVME"), E("BLK_WBT") if s["storage"]["blk_wbt"] else D("BLK_WBT"),
@@ -3471,7 +3473,7 @@ _DEFAULT_PROFILES: Final[tuple[tuple[str, dict[str, dict[str, Any]], str, str], 
         "rseq": {"slice_extension": True, "slice_ext_nsec": 5000},
         "cpu": {"arch": "native", "governor": "schedutil", "amd_pstate": "active", "epp": "balance_performance", "prefcore": True},
         "timing": {"hz": 1000, "tickless": "idle", "preempt": "lazy", "preempt_dynamic": True},
-        "memory": {"thp": "madvise", "thp_defrag": "defer+madvise", "mglru": True, "mglru_mask": 7, "mglru_min_ttl_ms": 1000, "swap_backend": "zswap", "numa": True, "ksm": True, "damon": True},
+        "memory": {"thp": "madvise", "thp_defrag": "defer+madvise", "mglru": True, "mglru_mask": 7, "mglru_min_ttl_ms": 1000, "swap_backend": "zram", "zram_size_pct": 100, "numa": True, "ksm": True, "damon": True},
         "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "thin", "thinlto_cache": True, "kcfi": False, "debug_info": "reduced", "rust": True, "headers": "auto"},
         "security": {"profile": "balanced", "init_on_alloc": True, "hardened_usercopy": True, "stackprotector": "strong", "mitigations": "auto"},
         "gaming": {"ntsync": True, "uclamp": True, "max_map_count": 2147483642},
@@ -3486,7 +3488,7 @@ _DEFAULT_PROFILES: Final[tuple[tuple[str, dict[str, dict[str, Any]], str, str], 
         "rseq": {"slice_extension": True, "slice_ext_nsec": 20000},
         "cpu": {"arch": "native", "governor": "schedutil", "amd_pstate": "active", "epp": "performance"},
         "timing": {"hz": 500, "tickless": "idle", "preempt": "lazy", "preempt_dynamic": True},
-        "memory": {"thp": "madvise", "thp_defrag": "defer", "mglru": True, "mglru_mask": 7, "mglru_min_ttl_ms": 0, "swap_backend": "zswap", "numa": True, "numa_balancing": True, "nodes_shift": 6, "ksm": True, "page_reporting": True, "damon": True},
+        "memory": {"thp": "madvise", "thp_defrag": "defer", "mglru": True, "mglru_mask": 7, "mglru_min_ttl_ms": 0, "swap_backend": "zram", "zram_size_pct": 100, "numa": True, "numa_balancing": True, "nodes_shift": 6, "ksm": True, "page_reporting": True, "damon": True},
         "storage": {"nvme_poll_queues": 8, "io_scheduler": "none", "blk_wbt": True},
         "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "thin", "thinlto_cache": True, "kcfi": False, "debug_info": "reduced", "rust": True, "headers": "auto"},
         "security": {"profile": "balanced", "init_on_alloc": True, "mitigations": "auto"},
@@ -3501,7 +3503,7 @@ _DEFAULT_PROFILES: Final[tuple[tuple[str, dict[str, dict[str, Any]], str, str], 
         "cpu": {"arch": "native", "governor": "schedutil", "amd_pstate": "guided", "epp": "balance_power"},
         "timing": {"hz": 100, "tickless": "idle", "preempt": "lazy", "preempt_dynamic": True},
         "power": {"wq_power_efficient": True, "cpu_idle_governor": "teo", "rcu_lazy": True, "energy_model": True},
-        "memory": {"thp": "madvise", "thp_defrag": "defer+madvise", "mglru": True, "mglru_mask": 7, "mglru_min_ttl_ms": 500, "swap_backend": "zswap", "damon": True},
+        "memory": {"thp": "madvise", "thp_defrag": "defer+madvise", "mglru": True, "mglru_mask": 7, "mglru_min_ttl_ms": 500, "swap_backend": "zram", "zram_size_pct": 100, "damon": True},
         "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "thin", "thinlto_cache": True, "kcfi": False, "debug_info": "reduced", "headers": "auto"},
         "network": {"congestion": "bbr", "qdisc": "fq_codel"},
         "modules": {"mode": "strict", "modprobed_db": True},
