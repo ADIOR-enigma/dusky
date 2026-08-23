@@ -270,6 +270,51 @@ def debug(msg: str) -> None:
         JOURNAL.write("[debug] " + msg)
 
 
+def send_notification(
+    title: str,
+    message: str,
+    urgency: str = "normal",
+    icon: str = "system-software-update",
+    expire_time_ms: int = 10000,
+) -> None:
+    try:
+        sys.stdout.write("\a")
+        sys.stdout.flush()
+    except Exception:
+        pass
+
+    if not have("notify-send"):
+        return
+
+    env = os.environ.copy()
+    sudo_uid = env.get("SUDO_UID")
+    if sudo_uid and "DBUS_SESSION_BUS_ADDRESS" not in env:
+        user_bus = Path(f"/run/user/{sudo_uid}/bus")
+        if user_bus.exists():
+            env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={user_bus}"
+
+    cmd = [
+        "notify-send",
+        "-a", "Dusky Kernel Compiler",
+        "-u", urgency,
+        "-t", str(expire_time_ms),
+        "-i", icon,
+        title,
+        message,
+    ]
+    try:
+        subprocess.run(
+            cmd,
+            env=env,
+            check=False,
+            timeout=5,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass
+
+
 def rule(title: str = "") -> None:
     w = term_width()
     if not title:
@@ -2851,6 +2896,11 @@ def compile_kernel(tree: Path, p: KernelProfile, env: Mapping[str, str], steps: 
 
     dt = time.monotonic() - t0
     ok("Compiled in " + hms(dt))
+    send_notification(
+        "Kernel Compilation Complete",
+        f"linux-{tree_version(tree)} ({p.name}) compiled in {hms(dt)}.",
+        urgency="normal",
+    )
 
     pkgs = sorted(dest.glob("*.pkg.tar.*"))
     if not pkgs:
@@ -3209,6 +3259,11 @@ def do_build(args: argparse.Namespace) -> int:
 
     rule("Done")
     ok("%s %s built with profile '%s'" % (release.moniker, release.version, profile.name))
+    send_notification(
+        "Kernel Installed & Ready",
+        f"linux-{release.version} ({profile.name}) is installed. Reboot to test.",
+        urgency="normal",
+    )
     if JOURNAL.path:
         say("  log: " + C.FAINT + str(JOURNAL.path) + C.RESET)
     say("  " + C.FAINT + "reboot and select the new entry to try it" + C.RESET)
@@ -3700,6 +3755,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except DuskyError as exc:
         say("")
         err(str(exc))
+        send_notification("Kernel Build Failed", str(exc), urgency="critical", icon="dialog-error")
         return exc.exit_code
     except KeyboardInterrupt:
         say("")
@@ -4106,9 +4162,11 @@ def interactive_menu() -> int:
             warn("Action cancelled by user")
         except DuskyError as e:
             err(str(e))
+            send_notification("Kernel Build Failed", str(e), urgency="critical", icon="dialog-error")
             ask("Press Enter to return", "")
         except Exception as e:
             err(f"Action failed: [{type(e).__name__}] {e}")
+            send_notification("Kernel Build Failed", f"[{type(e).__name__}] {e}", urgency="critical", icon="dialog-error")
             ask("Press Enter to return", "")
 
 
