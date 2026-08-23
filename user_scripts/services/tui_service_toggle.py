@@ -22,6 +22,8 @@ TARGET_FILE = "/etc/systemd/system"
 APP_TITLE = "Dusky Service Manager"
 DEFAULT_MODE = "auto"
 THEME_FILE = "~/.config/matugen/generated/dusky_tui.json"
+ENABLE_USER_PRESETS = True
+USER_PRESETS_TAB = "Presets"
 
 
 TABS = [
@@ -32,6 +34,7 @@ TABS = [
     "Timers",
     "All User",
     "All System",
+    "Presets",
 ]
 
 SCHEMA = {i: [] for i in range(len(TABS))}
@@ -102,6 +105,14 @@ CORE_USER_DEFS = {
     "modprobed-db.timer": (
         "Profiler Timer",
         "Triggers profiler every 6h to refresh hardware DB. Enabled via service.",
+    ),
+    "dusky_llm.service": (
+        "LLM Service (dusky_llm)",
+        "Local LLM inference daemon (Ollama / llama.cpp wrapper). Handles prompt completion and embeddings for Dusky AI features.",
+    ),
+    "dusky_stt.service": (
+        "STT Service (dusky_stt)",
+        "Speech-to-text daemon (Whisper / STT pipeline). Captures microphone input and transcribes to text for voice control.",
     ),
 }
 
@@ -239,6 +250,11 @@ for unit, (label, help_text) in CORE_SYSTEM_DEFS.items():
                 extended_help=f"**Unit:** `{unit}`\n**Scope:** System\n\n{help_text}",
             )
         )
+
+# --- TAB 7: PRESETS ---
+# Empty – populated at runtime by User Presets via ENABLE_USER_PRESETS /
+# USER_PRESETS_TAB="Presets" -> Reset to Defaults / Save as Preset / Import.
+# No static presets needed; AI services (dusky_llm/stt) now live in Core User.
 
 
 # =============================================================================
