@@ -2636,7 +2636,7 @@ class Live:
         self.rendered = 0
         self.enabled = sys.stdout.isatty() and bool(C.RESET)
         self._last = 0.0
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self.errors: list[str] = []
         self._stop_event = threading.Event()
         self._ticker_thread: threading.Thread | None = None
@@ -2645,6 +2645,8 @@ class Live:
         if self.enabled:
             sys.stdout.write(C.HIDE)
             sys.stdout.flush()
+            with self._lock:
+                self._paint()
             self._stop_event.clear()
             self._ticker_thread = threading.Thread(target=self._ticker_loop, daemon=True)
             self._ticker_thread.start()
