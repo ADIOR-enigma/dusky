@@ -1989,7 +1989,9 @@ def build_config_matrix(p: KernelProfile, *, rust_ok: bool) -> list[Op]:
         E("MEMBARRIER"), E("RSEQ"), E("KCMP"), E("DEVTMPFS"), E("DEVTMPFS_MOUNT"),
         E("TMPFS"), E("TMPFS_POSIX_ACL"), E("TMPFS_XATTR"), E("PROC_FS"),
         E("SYSFS"), E("CONFIGFS_FS"), E("EFIVAR_FS"), E("EFI_STUB"), E("EFI_MIXED"),
-        E("BLK_DEV_INITRD"), E("DM_CRYPT"), E("DM_SNAPSHOT"), E("MODULES"),
+        E("BLK_DEV_INITRD"), E("BLK_DEV_DM"), E("DM_CRYPT"), E("DM_SNAPSHOT"),
+        E("DM_INTEGRITY", optional=True), E("DM_VERITY", optional=True),
+        E("DRM_PRIVACY_SCREEN", optional=True), E("MODULES"),
         E("MODULE_UNLOAD"), E("IKCONFIG"), E("IKCONFIG_PROC"), E("IKHEADERS", optional=True),
         E("NAMESPACES"), E("RELOCATABLE"), E("RANDOMIZE_BASE"), E("X86_X2APIC"),
     ))
