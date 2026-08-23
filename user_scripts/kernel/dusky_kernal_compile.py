@@ -3582,10 +3582,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     no_mode = not any([args.spec, args.write_default_profiles, args.doctor, args.clean,
                        args.list_profiles, args.show, args.print_matrix, args.profile])
-    if args.menu or (no_mode and sys.stdin.isatty() and sys.stdout.isatty() and not args.yes):
-        return interactive_menu()
 
     try:
+        if args.menu or (no_mode and sys.stdin.isatty() and sys.stdout.isatty() and not args.yes):
+            return interactive_menu()
         if args.spec:
             return do_spec(args)
         if args.write_default_profiles:
@@ -3607,8 +3607,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return exc.exit_code
     except KeyboardInterrupt:
         say("")
-        warn("interrupted")
-        return 130
+        ok("Exiting Dusky Kernel Compiler. May your uptime be long!")
+        return 0
     finally:
         _reap_all()
         SUDO.stop()
@@ -3719,7 +3719,9 @@ def interactive_menu() -> int:
         say("")
         try:
             choice = ask_index("Select", 6, default=6)
-        except DuskyError:
+        except (DuskyError, KeyboardInterrupt):
+            say("")
+            ok("Exiting Dusky Kernel Compiler. May your uptime be long!")
             return 0
         if choice == 6:
             ok("Exiting Dusky Kernel Compiler. May your uptime be long!")
