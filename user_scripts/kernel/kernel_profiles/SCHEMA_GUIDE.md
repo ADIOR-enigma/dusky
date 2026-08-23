@@ -120,10 +120,12 @@ extra_config = {}
 
 [cpu]
 # Target CPU instruction set architecture:
-#   - "native"         : Host processor uarch (fastest, unlocks all ISA instructions)
+#   - "native"         : Host processor uarch (fastest, unlocks all ISA instructions on this PC)
+#   - "generic_v2"     : x86-64-v2 baseline (SSE4.2 / POPCNT)
 #   - "generic_v3"     : x86-64-v3 baseline (AVX2, BMI2, FMA)
 #   - "generic_v4"     : x86-64-v4 baseline (AVX-512)
-#   - Specific family  : "znver2", "znver3", "znver4", "znver5", "skylake", "alderlake", "raptorlake"
+#   - Intel families   : "sandybridge", "ivybridge", "haswell", "broadwell", "skylake", "icelake", "tigerlake", "rocketlake", "alderlake", "raptorlake", "meteorlake", "sapphirerapids"
+#   - AMD families     : "znver1" (Zen 1), "znver2" (Zen 2), "znver3" (Zen 3), "znver4" (Zen 4), "znver5" (Zen 5)
 arch = "native"
 
 # Optional explicit -march string passed via KCFLAGS/KAFLAGS
@@ -403,6 +405,9 @@ mode = "strict"
 # Capture and use hardware database from modprobed-db
 modprobed_db = true
 
+# Custom path to imported modprobed.db (used when cross-compiling for another PC)
+modprobed_db_path = ""
+
 # Additional directories to preserve during localmodconfig
 lmc_keep_extra = []
 
@@ -442,6 +447,30 @@ require_sched_ext = true
 
 
 # ==============================================================================
+# Cross-Machine Kernel Compilation (Hardware Bundle Workflow)
+# ==============================================================================
+#
+# Compile highly optimized native kernels on a fast workstation for a slower PC:
+#
+# 1. On the Slow/Target Machine:
+#    Export its hardware telemetry, CPU uarch, and modprobed.db:
+#      python3 dusky_kernal_compile.py --export-bundle
+#    (Generates ~/dusky_bundle_<hostname>.tar.gz)
+#
+# 2. Copy the bundle to your Fast Build PC:
+#      scp user@target:~/dusky_bundle_<hostname>.tar.gz .
+#
+# 3. On your Fast Build PC:
+#    Import the bundle (installs target modprobed.db & generated profile):
+#      python3 dusky_kernal_compile.py --import-bundle dusky_bundle_<hostname>.tar.gz
+#
+# 4. Compile on the Fast PC:
+#      python3 dusky_kernal_compile.py --profile remote_<hostname> -y
+#
+# 5. Copy the produced .pkg.tar.zst back to the target machine and install:
+#      sudo pacman -U linux-dusky-<hostname>-*.pkg.tar.zst
+#
+# ==============================================================================
 # CLI Flags & Quick Reference
 # ==============================================================================
 #
@@ -453,6 +482,10 @@ require_sched_ext = true
 #
 # Override module mode ephemerally:
 #   python3 dusky_kernal_compile.py --profile battery --modules-mode expanded
+#
+# Export / Import Hardware Bundle:
+#   python3 dusky_kernal_compile.py --export-bundle [output.tar.gz]
+#   python3 dusky_kernal_compile.py --import-bundle input.tar.gz
 #
 # Force fresh source extraction:
 #   python3 dusky_kernal_compile.py --profile battery --fresh -y

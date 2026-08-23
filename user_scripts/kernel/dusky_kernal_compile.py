@@ -152,14 +152,14 @@ class C:
     DIM = "\x1b[2m"
     ITALIC = "\x1b[3m"
     RED = "\x1b[38;5;203m"
-    GREEN = "\x1b[38;5;114m"
-    YELLOW = "\x1b[38;5;221m"
-    BLUE = "\x1b[38;5;75m"
+    GREEN = "\x1b[38;5;120m"
+    YELLOW = "\x1b[38;5;222m"
+    BLUE = "\x1b[38;5;111m"
     MAGENTA = "\x1b[38;5;177m"
-    CYAN = "\x1b[38;5;80m"
-    GREY = "\x1b[38;5;245m"
-    FAINT = "\x1b[38;5;240m"
-    ACCENT = "\x1b[38;5;141m"
+    CYAN = "\x1b[38;5;86m"
+    GREY = "\x1b[38;5;252m"
+    FAINT = "\x1b[38;5;248m"
+    ACCENT = "\x1b[38;5;147m"
     HIDE = "\x1b[?25l"
     SHOW = "\x1b[?25h"
 
@@ -444,25 +444,34 @@ CPU_ARCHES: Final[tuple[str, ...]] = (
     "generic_v2",    # x86-64-v2 (SSE4.2 / POPCNT)
     "generic_v3",    # x86-64-v3 (AVX2 / BMI2 / FMA)
     "generic_v4",    # x86-64-v4 (AVX-512)
-    "znver2", "znver3", "znver4", "znver5",
-    "skylake", "icelake", "alderlake", "raptorlake", "sapphirerapids",
+    "sandybridge", "ivybridge", "haswell", "broadwell",
+    "skylake", "icelake", "tigerlake", "rocketlake", "alderlake", "raptorlake", "meteorlake", "sapphirerapids",
+    "znver1", "znver2", "znver3", "znver4", "znver5",
 )
 
 ARCH_KCONFIG: Final[dict[str, tuple[tuple[str, str, str], ...]]] = {
-    "native":      (("-e", "MNATIVE_AMD", ""), ("-e", "MNATIVE_INTEL", "")),
-    "generic":     (("--set-val", "X86_64_VERSION", "1"), ("-e", "GENERIC_CPU", "")),
-    "generic_v2":  (("--set-val", "X86_64_VERSION", "2"), ("-e", "GENERIC_CPU2", "")),
-    "generic_v3":  (("--set-val", "X86_64_VERSION", "3"), ("-e", "GENERIC_CPU3", "")),
-    "generic_v4":  (("--set-val", "X86_64_VERSION", "4"), ("-e", "GENERIC_CPU4", "")),
-    "znver2":      (("-e", "MZEN2", ""), ("-e", "GENERIC_CPU3", "")),
-    "znver3":      (("-e", "MZEN3", ""), ("-e", "GENERIC_CPU3", "")),
-    "znver4":      (("-e", "MZEN4", ""), ("-e", "GENERIC_CPU4", "")),
-    "znver5":      (("-e", "MZEN5", ""), ("-e", "GENERIC_CPU4", "")),
-    "skylake":     (("-e", "MSKYLAKE", ""), ("-e", "GENERIC_CPU3", "")),
-    "icelake":     (("-e", "MICELAKE", ""), ("-e", "GENERIC_CPU3", "")),
-    "alderlake":   (("-e", "MALDERLAKE", ""), ("-e", "GENERIC_CPU3", "")),
-    "raptorlake":  (("-e", "MRAPTORLAKE", ""), ("-e", "GENERIC_CPU3", "")),
+    "native":         (("-e", "MNATIVE_AMD", ""), ("-e", "MNATIVE_INTEL", "")),
+    "generic":        (("--set-val", "X86_64_VERSION", "1"), ("-e", "GENERIC_CPU", "")),
+    "generic_v2":     (("--set-val", "X86_64_VERSION", "2"), ("-e", "GENERIC_CPU2", "")),
+    "generic_v3":     (("--set-val", "X86_64_VERSION", "3"), ("-e", "GENERIC_CPU3", "")),
+    "generic_v4":     (("--set-val", "X86_64_VERSION", "4"), ("-e", "GENERIC_CPU4", "")),
+    "sandybridge":    (("-e", "MSANDYBRIDGE", ""), ("-e", "GENERIC_CPU2", "")),
+    "ivybridge":      (("-e", "MIVYBRIDGE", ""), ("-e", "GENERIC_CPU2", "")),
+    "haswell":        (("-e", "MHASWELL", ""), ("-e", "GENERIC_CPU3", "")),
+    "broadwell":      (("-e", "MBROADWELL", ""), ("-e", "GENERIC_CPU3", "")),
+    "skylake":        (("-e", "MSKYLAKE", ""), ("-e", "GENERIC_CPU3", "")),
+    "icelake":        (("-e", "MICELAKE", ""), ("-e", "GENERIC_CPU3", "")),
+    "tigerlake":      (("-e", "MTIGERLAKE", ""), ("-e", "GENERIC_CPU3", "")),
+    "rocketlake":     (("-e", "MROCKETLAKE", ""), ("-e", "GENERIC_CPU3", "")),
+    "alderlake":      (("-e", "MALDERLAKE", ""), ("-e", "GENERIC_CPU3", "")),
+    "raptorlake":     (("-e", "MRAPTORLAKE", ""), ("-e", "GENERIC_CPU3", "")),
+    "meteorlake":     (("-e", "MMETEORLAKE", ""), ("-e", "GENERIC_CPU3", "")),
     "sapphirerapids": (("-e", "MSAPPHIRERAPIDS", ""), ("-e", "GENERIC_CPU4", "")),
+    "znver1":         (("-e", "MZEN", ""), ("-e", "GENERIC_CPU3", "")),
+    "znver2":         (("-e", "MZEN2", ""), ("-e", "GENERIC_CPU3", "")),
+    "znver3":         (("-e", "MZEN3", ""), ("-e", "GENERIC_CPU3", "")),
+    "znver4":         (("-e", "MZEN4", ""), ("-e", "GENERIC_CPU4", "")),
+    "znver5":         (("-e", "MZEN5", ""), ("-e", "GENERIC_CPU4", "")),
 }
 
 ARCH_ALL_SYMBOLS: Final[tuple[str, ...]] = (
@@ -677,6 +686,7 @@ _PROFILE_SPEC: Final[dict[str, tuple[FieldSpec, ...]]] = {
     "modules": (
         F("mode", "str", "strict", "strict (modprobed.db only) / expanded (curated safety net).", MODULES_MODE_CHOICES, ephemeral=True),
         F("modprobed_db", "bool", True, "Use modprobed.db for localmodconfig."),
+        F("modprobed_db_path", "str", "", "Custom path to imported modprobed.db file."),
         F("lmc_keep_extra", "list", [], "Additional driver directories to keep in expanded mode."),
         F("manage_service", "bool", True, "Install and enable modprobed-db timer."),
         F("sig_force", "bool", False, "CONFIG_MODULE_SIG_FORCE: refuse unsigned modules."),
@@ -1901,6 +1911,17 @@ def ensure_modprobed_db(profile: KernelProfile) -> Path | None:
         return None
     rule("Hardware module profile")
 
+    custom_path = profile.g("modules", "modprobed_db_path")
+    if custom_path:
+        cp = Path(custom_path).expanduser().resolve()
+        if cp.is_file():
+            lines = [ln for ln in cp.read_text(encoding="utf-8", errors="replace").splitlines()
+                     if ln.strip() and not ln.startswith("#")]
+            ok("Using imported module database: %s (%d modules recorded)" % (cp, len(lines)))
+            return cp
+        else:
+            warn("Specified modprobed_db_path not found: %s; falling back to local DB" % cp)
+
     if not have("modprobed-db"):
         warn("modprobed-db is not installed")
         return None
@@ -2462,7 +2483,7 @@ def verify_config(tree: Path, p: KernelProfile, ops: Sequence[Op]) -> None:
     rows = []
     for name, good, detail in critical_checks:
         rows.append([(C.GREEN + "MATCH" + C.RESET) if good else (C.RED + "MISS" + C.RESET),
-                     name, C.FAINT + detail + C.RESET])
+                     name, C.GREY + detail + C.RESET])
     table(["status", "critical subsystem", "target"], rows)
     say("")
 
@@ -2532,6 +2553,9 @@ def build_env(p: KernelProfile, tree: Path, tarball_mtime: float) -> dict[str, s
     elif s["cpu"]["march"]:
         kcflags.append(f"-march={s['cpu']['march']}")
         env["KAFLAGS"] = (env["KAFLAGS"] + f" -march={s['cpu']['march']}").strip()
+    elif s["cpu"]["arch"] not in ("generic", "generic_v2", "generic_v3", "generic_v4", "default"):
+        kcflags.append(f"-march={s['cpu']['arch']}")
+        env["KAFLAGS"] = (env["KAFLAGS"] + f" -march={s['cpu']['arch']}").strip()
 
     if s["compiler"]["allow_unsupported_o3"] and s["compiler"]["optimize"] == "o2":
         kcflags.append("-O3")
@@ -2614,26 +2638,41 @@ class Live:
         self._last = 0.0
         self._lock = threading.Lock()
         self.errors: list[str] = []
+        self._stop_event = threading.Event()
+        self._ticker_thread: threading.Thread | None = None
 
     def __enter__(self) -> Self:
         if self.enabled:
             sys.stdout.write(C.HIDE)
             sys.stdout.flush()
+            self._stop_event.clear()
+            self._ticker_thread = threading.Thread(target=self._ticker_loop, daemon=True)
+            self._ticker_thread.start()
         return self
 
     def __exit__(self, *exc: object) -> None:
         if self.enabled:
-            if self.rendered:
-                sys.stdout.write("\x1b[%dA\r\x1b[J" % self.rendered)
-            pct = (100.0 * self.done / self.total) if self.total > 0 else 0.0
-            elapsed = time.monotonic() - self.start
-            sys.stdout.write(C.SHOW)
-            say("  %s%s%s  %s%6.2f%%%s  %s%s/%s%s  \u00b7  %s elapsed" % (
-                C.BOLD, self.title, C.RESET, C.CYAN, pct, C.RESET,
-                C.FAINT, "{:,}".format(self.done),
-                "{:,}".format(self.total) if self.total else "?", C.RESET,
-                hms(elapsed)))
-            sys.stdout.flush()
+            self._stop_event.set()
+            if self._ticker_thread and self._ticker_thread.is_alive():
+                self._ticker_thread.join(timeout=1.0)
+            with self._lock:
+                if self.rendered:
+                    sys.stdout.write("\x1b[%dA\r\x1b[J" % self.rendered)
+                pct = (100.0 * self.done / self.total) if self.total > 0 else 0.0
+                elapsed = time.monotonic() - self.start
+                sys.stdout.write(C.SHOW)
+                say("  %s%s%s  %s%6.2f%%%s  %s%s/%s%s  \u00b7  %s elapsed" % (
+                    C.BOLD, self.title, C.RESET, C.CYAN, pct, C.RESET,
+                    C.FAINT, "{:,}".format(self.done),
+                    "{:,}".format(self.total) if self.total else "?", C.RESET,
+                    hms(elapsed)))
+                sys.stdout.flush()
+
+    def _ticker_loop(self) -> None:
+        while not self._stop_event.wait(0.25):
+            with self._lock:
+                if self.enabled:
+                    self._paint()
 
     def feed(self, line: str) -> None:
         with self._lock:
@@ -2646,14 +2685,14 @@ class Live:
                 self.tail.append(clean)
                 if len(self.tail) > 20:
                     del self.tail[:-20]
-        if not self.enabled:
-            if _ERROR_RE.search(line):
-                print(line)
-            return
-        now = time.monotonic()
-        if now - self._last >= 0.08:
-            self._last = now
-            self._paint()
+            if not self.enabled:
+                if _ERROR_RE.search(line):
+                    print(line)
+                return
+            now = time.monotonic()
+            if now - self._last >= 0.08:
+                self._last = now
+                self._paint()
 
     def _bar(self, width: int) -> str:
         width = max(10, width)
@@ -2704,7 +2743,7 @@ class Live:
             tail = list(self.tail)
         tail_slice = tail[-max_tail:] if max_tail > 0 else []
         for ln in tail_slice:
-            colour = C.RED if _ERROR_RE.search(ln) else C.FAINT
+            colour = C.RED if _ERROR_RE.search(ln) else C.GREY
             lines.append(truncate("    " + colour + ln + C.RESET, term_w - 2))
         for _ in range(max_tail - len(tail_slice)):
             lines.append("")
@@ -3552,6 +3591,10 @@ def build_parser() -> argparse.ArgumentParser:
                       choices=["all", "src", "tarballs", "patches", "packages", "thinlto", "logs"],
                       help="remove cached artifacts")
     mode.add_argument("--write-default-profiles", action="store_true", help="write bundled profiles to PROFILES_DIR")
+    mode.add_argument("--export-bundle", nargs="?", const="", default=None, metavar="FILE",
+                      help="export target hardware profile & modules into a portable bundle for cross-compiling")
+    mode.add_argument("--import-bundle", type=Path, metavar="FILE",
+                      help="import remote hardware profile bundle to compile for another PC")
 
     ov = ap.add_argument_group("ephemeral overrides (TOML is never modified)")
     ov.add_argument("--cpu-arch", choices=list(CPU_ARCHES))
@@ -3610,9 +3653,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     install_signal_handlers()
 
     no_mode = not any([args.spec, args.write_default_profiles, args.doctor, args.clean,
-                       args.list_profiles, args.show, args.print_matrix, args.profile])
+                       args.list_profiles, args.show, args.print_matrix, args.profile,
+                       args.export_bundle is not None, bool(args.import_bundle)])
 
     try:
+        if args.export_bundle is not None:
+            dest = Path(args.export_bundle).expanduser().resolve() if args.export_bundle else None
+            do_export_bundle(dest)
+            return 0
+        if args.import_bundle:
+            do_import_bundle(args.import_bundle.expanduser().resolve())
+            return 0
         if args.menu or (no_mode and sys.stdin.isatty() and sys.stdout.isatty() and not args.yes):
             return interactive_menu()
         if args.spec:
@@ -3731,6 +3782,252 @@ def config_manager_menu() -> None:
     say(f"  Rust Kernel Tooling:  {'[green]Available (rustc + bindgen)[/green]' if (have('rustc') and have('bindgen')) else '[yellow]Missing[/yellow]'}")
 
 
+_UARCH_ALIASES: Final[dict[str, str]] = {
+    "cometlake": "skylake", "coffeelake": "skylake", "kabylake": "skylake",
+    "skylake-avx512": "skylake", "cascadelake": "skylake", "cooperlake": "skylake",
+    "cannonlake": "skylake", "icelake-client": "icelake", "icelake-server": "icelake",
+    "goldmont": "sandybridge", "goldmont-plus": "sandybridge", "tremont": "skylake",
+    "gracemont": "alderlake", "alderlake": "alderlake", "raptorlake": "raptorlake",
+    "meteorlake": "meteorlake", "arrowlake": "arrowlake", "lunarlake": "arrowlake",
+    "tigerlake": "tigerlake", "haswell": "haswell", "broadwell": "broadwell",
+    "ivybridge": "ivybridge", "sandybridge": "sandybridge",
+    "znver1": "znver1", "znver2": "znver2", "znver3": "znver3",
+    "znver4": "znver4", "znver5": "znver5",
+}
+
+_INTEL_FAMILY6_MODELS: Final[dict[int, str]] = {
+    42: "sandybridge", 45: "sandybridge",
+    58: "ivybridge", 62: "ivybridge",
+    60: "haswell", 63: "haswell", 69: "haswell", 70: "haswell",
+    61: "broadwell", 71: "broadwell", 79: "broadwell", 86: "broadwell",
+    78: "skylake", 85: "skylake", 94: "skylake", 142: "skylake", 158: "skylake", 166: "skylake",
+    106: "icelake", 108: "icelake", 125: "icelake", 126: "icelake",
+    167: "rocketlake",
+    140: "tigerlake", 141: "tigerlake",
+    151: "alderlake", 154: "alderlake", 156: "alderlake", 190: "alderlake",
+    183: "raptorlake", 186: "raptorlake", 191: "raptorlake",
+    170: "meteorlake", 172: "meteorlake",
+    197: "arrowlake", 198: "arrowlake", 199: "arrowlake", 201: "arrowlake",
+    143: "sapphirerapids", 207: "sapphirerapids",
+}
+
+def detect_target_cpu_uarch() -> str:
+    # Tier 1: Compiler query (most accurate dynamic ISA probe)
+    for cmd in (["clang", "-march=native", "-###", "-E", "-"],
+                ["gcc", "-march=native", "-Q", "--help=target"]):
+        if have(cmd[0]):
+            try:
+                cp = run(cmd, check=False, capture=True, stdin_text="")
+                combined = (cp.stdout or "") + "\n" + (cp.stderr or "")
+                m = re.search(r'-target-cpu\s+["\']?([a-zA-Z0-9_-]+)["\']?|-march=\s*([a-zA-Z0-9_-]+)', combined)
+                if m:
+                    target = (m.group(1) or m.group(2)).lower().strip()
+                    if target in CPU_ARCHES:
+                        return target
+                    if target in _UARCH_ALIASES:
+                        return _UARCH_ALIASES[target]
+            except Exception:
+                pass
+
+    # Tier 2: Kernel/CPUID family and model decoding (/proc/cpuinfo)
+    try:
+        cpuinfo = Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="replace")
+        family, model = None, None
+        vendor = "intel" if "AuthenticAMD" not in cpuinfo else "amd"
+        for line in cpuinfo.splitlines():
+            if "cpu family" in line and family is None:
+                family = int(line.split(":")[1].strip())
+            elif "model" in line and not line.startswith("model name") and model is None:
+                model = int(line.split(":")[1].strip())
+
+        if vendor == "intel" and family == 6 and model in _INTEL_FAMILY6_MODELS:
+            return _INTEL_FAMILY6_MODELS[model]
+
+        if vendor == "amd":
+            if family == 26:
+                return "znver5"
+            if family == 25:
+                # Family 25h: Models 00h-0Fh / 20h-2Fh / 50h-5Fh are Zen 3, Models 10h-1Fh / 60h-7Fh are Zen 4
+                return "znver4" if (model is not None and ((0x10 <= model <= 0x1F) or (0x60 <= model <= 0x7F))) else "znver3"
+            if family == 23:
+                return "znver2" if (model is not None and (0x30 <= model <= 0x7F)) else "znver1"
+    except Exception:
+        pass
+
+    # Tier 3: Dynamic hardware vector ISA capability levels
+    v = detect_cpu_x86_version()
+    if v == 4:
+        return "generic_v4"
+    if v == 3:
+        return "generic_v3"
+    if v == 2:
+        return "generic_v2"
+    return "generic"
+
+
+def do_export_bundle(dest_file: Path | None = None) -> Path:
+    banner()
+    rule("Export Target Hardware Bundle")
+    import socket, json, tarfile, tempfile
+
+    hostname = socket.gethostname().replace("-", "_").lower()
+    if dest_file is None:
+        dest_file = Path.home() / f"dusky_bundle_{hostname}.tar.gz"
+
+    arch = detect_target_cpu_uarch()
+    v_level = detect_cpu_x86_version()
+    cores = cpu_count()
+    vendor = detect_cpu_vendor()
+
+    info(f"Target Hostname: {hostname}")
+    info(f"Detected CPU Architecture: {arch} (x86_64-v{v_level}, {cores} cores, vendor: {vendor})")
+
+    # Capture modprobed.db
+    if have("modprobed-db"):
+        run(["modprobed-db", "store"], check=False, timeout=60)
+    
+    modules_txt = ""
+    if MODPROBED_DB.is_file():
+        modules_txt = MODPROBED_DB.read_text(encoding="utf-8", errors="replace")
+    elif Path("/proc/modules").is_file():
+        mods = [line.split()[0] for line in Path("/proc/modules").read_text().splitlines() if line.strip()]
+        modules_txt = "\n".join(sorted(mods)) + "\n"
+
+    # Capture config.gz if present
+    config_bytes = b""
+    if Path("/proc/config.gz").is_file():
+        config_bytes = Path("/proc/config.gz").read_bytes()
+
+    manifest = {
+        "format": "dusky_bundle_v1",
+        "hostname": hostname,
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "cpu_arch": arch,
+        "cpu_vendor": vendor,
+        "x86_version": v_level,
+        "cores": cores,
+        "kernel_compiler_version": APP_VERSION,
+    }
+
+    # Generate custom target profile TOML
+    profile_name = f"remote_{hostname}"
+    profile_desc = f"Remote Target Profile for {hostname} ({arch}, {cores} cores)"
+    profile_suffix = f"dusky-{hostname}"
+    tweaks = {
+        "release": {"channel": "mainline", "min_version": "7.2"},
+        "scheduler": {"type": "eevdf", "scx": "none", "scx_enable_class": True},
+        "cpu": {"arch": arch, "nr_cpus": cores, "governor": "schedutil"},
+        "timing": {"hz": 1000, "tickless": "idle", "preempt": "lazy", "preempt_dynamic": True},
+        "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "thin", "thinlto_cache": True, "kcfi": False, "headers": "auto"},
+        "modules": {"mode": "strict", "modprobed_db": True},
+    }
+    profile_toml_text = render_profile_toml(profile_name, profile_desc, profile_suffix, 50, tweaks)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        (tmp / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        (tmp / "modprobed.db").write_text(modules_txt, encoding="utf-8")
+        (tmp / "profile.toml").write_text(profile_toml_text, encoding="utf-8")
+        if config_bytes:
+            (tmp / "config.gz").write_bytes(config_bytes)
+
+        with tarfile.open(dest_file, "w:gz") as tar:
+            for f in tmp.iterdir():
+                tar.add(f, arcname=f.name)
+
+    say("")
+    ok(f"Hardware bundle exported: {dest_file} ({dest_file.stat().st_size / 1024:.1f} KiB)")
+    say("")
+    info("Instructions for cross-compiling on your fast PC:")
+    say(f"  1. Copy {C.CYAN}{dest_file.name}{C.RESET} to your fast build machine.")
+    say(f"  2. On the fast machine, run: {C.GREEN}python3 dusky_kernal_compile.py --import-bundle {dest_file.name}{C.RESET}")
+    say(f"  3. Compile with: {C.GREEN}python3 dusky_kernal_compile.py --profile remote_{hostname} -y{C.RESET}")
+    say(f"  4. Transfer the resulting {C.CYAN}.pkg.tar.zst{C.RESET} to this PC and install with {C.GREEN}sudo pacman -U <pkg>{C.RESET}")
+    return dest_file
+
+
+def do_import_bundle(bundle_path: Path) -> str:
+    banner()
+    rule("Import Remote Hardware Bundle")
+    import tarfile, json, tempfile
+
+    if not bundle_path.is_file():
+        raise DuskyError(f"Bundle file not found: {bundle_path}")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        with tarfile.open(bundle_path, "r:*") as tar:
+            tar.extractall(tmp)
+
+        manifest_file = tmp / "manifest.json"
+        if not manifest_file.is_file():
+            raise DuskyError("Invalid bundle: manifest.json is missing")
+        
+        manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+        hostname = manifest.get("hostname", "remote_pc")
+        arch = manifest.get("cpu_arch", "generic_v3")
+        cores = manifest.get("cores", 4)
+
+        info(f"Importing bundle for target PC: {hostname}")
+        info(f"Target CPU Architecture:       {arch} ({cores} cores)")
+
+        # Target storage paths
+        import_dir = CONFIG_SEED_DIR / "imports" / hostname
+        import_dir.mkdir(parents=True, exist_ok=True)
+
+        imported_db = import_dir / "modprobed.db"
+        if (tmp / "modprobed.db").is_file():
+            shutil.copy2(tmp / "modprobed.db", imported_db)
+            ok(f"Installed target hardware module DB -> {imported_db}")
+
+        if (tmp / "config.gz").is_file():
+            seed_dest = CONFIG_SEED_DIR / f"kernel.config.remote_{hostname}"
+            shutil.copy2(tmp / "config.gz", seed_dest)
+            ok(f"Installed baseline kernel config -> {seed_dest}")
+
+        # Update profile to point to imported modprobed_db_path
+        PROFILES_DIR.mkdir(parents=True, exist_ok=True)
+        profile_file = PROFILES_DIR / f"50_remote_{hostname}.toml"
+        if (tmp / "profile.toml").is_file():
+            profile_txt = (tmp / "profile.toml").read_text(encoding="utf-8")
+            if 'modprobed_db_path = ""' in profile_txt:
+                profile_txt = profile_txt.replace('modprobed_db_path = ""', f'modprobed_db_path = "{imported_db}"')
+            elif "modprobed_db_path" not in profile_txt:
+                profile_txt = profile_txt.replace('[modules]\nmode = "strict"',
+                                                  f'[modules]\nmode = "strict"\nmodprobed_db_path = "{imported_db}"')
+            profile_file.write_text(profile_txt, encoding="utf-8")
+            ok(f"Installed custom profile -> {profile_file.name}")
+
+    say("")
+    ok(f"Remote hardware bundle for '{hostname}' imported successfully!")
+    say("")
+    say(f"  Compile now with:  {C.GREEN}python3 dusky_kernal_compile.py --profile remote_{hostname} -y{C.RESET}")
+    say(f"  Or select {C.CYAN}remote_{hostname}{C.RESET} in the interactive menu.")
+    return f"remote_{hostname}"
+
+
+def bundle_manager_menu() -> None:
+    banner()
+    rule("Cross-Machine Hardware Bundle Manager")
+    say("  Export/Import hardware profiles & modules to compile for another PC.")
+    say("")
+    say(" 1) Export hardware bundle from this PC  (to compile on another fast machine)")
+    say(" 2) Import hardware bundle from another PC (to compile on this machine)")
+    say(" 3) Return to Main Menu")
+    say("")
+    c = ask_index("Select", 3, default=3)
+    if c == 1:
+        dest_str = ask("Export bundle path (blank for default ~/dusky_bundle_<host>.tar.gz)", "")
+        dest_path = Path(dest_str).expanduser().resolve() if dest_str else None
+        do_export_bundle(dest_path)
+    elif c == 2:
+        src_str = ask("Path to bundle file to import (.tar.gz / .tar.zst)", "")
+        if src_str:
+            do_import_bundle(Path(src_str).expanduser().resolve())
+        else:
+            warn("No bundle path provided")
+
+
 def empirical_diagnostics_menu() -> None:
     args = argparse.Namespace(json=False)
     do_doctor(args)
@@ -3744,16 +4041,17 @@ def interactive_menu() -> int:
         say(" 2) View Live Hardware Telemetry")
         say(" 3) Run System Empirical Diagnostics")
         say(" 4) Config Manager & Profile Overview")
-        say(" 5) Compile & Install Kernel (Profile Picker)")
-        say(" 6) Exit")
+        say(" 5) Export / Import Remote PC Hardware Bundle")
+        say(" 6) Compile & Install Kernel (Profile Picker)")
+        say(" 7) Exit")
         say("")
         try:
-            choice = ask_index("Select", 6, default=6)
+            choice = ask_index("Select", 7, default=7)
         except (DuskyError, KeyboardInterrupt):
             say("")
             ok("Exiting Dusky Kernel Compiler. May your uptime be long!")
             return 0
-        if choice == 6:
+        if choice == 7:
             ok("Exiting Dusky Kernel Compiler. May your uptime be long!")
             return 0
         try:
@@ -3769,6 +4067,9 @@ def interactive_menu() -> int:
                 config_manager_menu()
                 ask("Press Enter to return", "")
             elif choice == 5:
+                bundle_manager_menu()
+                ask("Press Enter to return", "")
+            elif choice == 6:
                 args = argparse.Namespace(
                     profile=None, cpu_arch=None, modules_mode=None, toolchain=None,
                     lto=None, channel=None, pin=None, jobs=None, fresh=False,
