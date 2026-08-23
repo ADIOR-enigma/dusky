@@ -169,7 +169,8 @@ prefcore = true
 # Core timer tick frequency:
 #   - 1000 : 1ms period, lowest interactive input latency (Gaming / Desktop)
 #   - 500  : 2ms period, workstation compute sweet spot
-#   - 250  : 4ms period, power-saving mobile
+#   - 250  : 4ms period, mobile balance
+#   - 100  : 10ms period, lowest CPU wakeups & maximum battery endurance (Battery profile)
 hz = 1000
 
 # Tickless mode:

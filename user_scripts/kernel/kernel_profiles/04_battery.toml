@@ -55,7 +55,7 @@ mce = true
 prefcore = true
 
 [timing]
-hz = 250
+hz = 100
 tickless = "idle"
 preempt = "lazy"
 preempt_dynamic = true
