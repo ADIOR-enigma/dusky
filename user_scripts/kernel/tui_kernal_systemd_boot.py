@@ -20,7 +20,7 @@ from python.frontend.core_types import ConfigItem
 # =============================================================================
 ENGINE_TYPE = "systemd_boot"                       
 TARGET_FILE = "/boot/loader/entries/arch-linux.conf"           
-APP_TITLE = "Kernel Parameter Editor"         
+APP_TITLE = "Systemd-Boot Kernel Manager"         
 REQUIRE_ROOT = True
 
 # =============================================================================
@@ -34,7 +34,8 @@ USER_PRESETS_TAB = "Presets"
 
 TAB_NOTICES = {
     0: {"level": "warning", "message": "Changes to the root partition or LUKS parameters can render the system unbootable. Proceed with caution."},
-    4: {"level": "info", "message": "Execute these actions after modifying kernel parameters to ensure your system boots with the latest configuration."},
+    4: {"level": "info", "message": "Configures global /boot/loader/loader.conf (default kernel, timeout, resolution, security)."},
+    5: {"level": "info", "message": "Configure entry metadata (title, sort-key) and execute EFI bootloader maintenance."},
 }
 
 # =============================================================================
@@ -45,7 +46,8 @@ TABS = [
     "Performance",
     "Hardware & Graphics",
     "Security & Debug",
-    "Bootloader & Init",
+    "systemd-boot Loader",
+    "Boot Entry Metadata",
     "Presets"
 ]
 
@@ -186,6 +188,16 @@ SCHEMA = {
             default="unset",
             group="CPU",
             extended_help="**AMD Frequency Scaling**\n\nConfigures the precision boost state scaling driver for modern AMD Ryzen processors.\n\n- `active`: Fully hardware-controlled autonomous scaling (Recommended for Zen 2+).\n- `guided`: OS hints mixed with hardware control."
+        ),
+        ConfigItem(
+            label="Preemption Model",
+            key="preempt",
+            scope="DEFAULT",
+            type_="cycle",
+            options=["unset", "lazy", "full", "voluntary", "none"],
+            default="unset",
+            group="CPU",
+            extended_help="**Dynamic Kernel Preemption (PREEMPT_DYNAMIC)**\n\nControls the runtime preemption model in Linux 7.0+ on x86_64.\n\n- `lazy`: (Recommended / Default in Linux 7.0+) Hybrid lazy preemption (`CONFIG_PREEMPT_LAZY`). Real-time and latency-sensitive tasks (audio, compositor, input events) preempt immediately (`SCHED_FIFO`/`SCHED_RR`), while normal background tasks (`SCHED_OTHER`) finish their time-slice without unnecessary context switching.\n- `full`: Classic full preemption where all tasks preempt immediately.\n- `voluntary`: Balances throughput and responsiveness via explicit preemption points.\n- `none`: Server batch throughput without preemption.\n\n*Note*: The asterisk (`lazy*`) in Dusky compiler tables indicates `CONFIG_PREEMPT_DYNAMIC=y` is compiled into the kernel, allowing dynamic boot-time switching simply by appending `preempt=lazy` or `preempt=full` to the command line."
         ),
         ConfigItem(
             label="ZSwap Enabled",
@@ -476,9 +488,132 @@ SCHEMA = {
     ],
 
     # -------------------------------------------------------------------------
-    # TAB 4: BOOTLOADER & INITRAMFS (Systemd-Boot / mkinitcpio)
+    # TAB 4: SYSTEMD-BOOT LOADER (/boot/loader/loader.conf)
     # -------------------------------------------------------------------------
     4: [
+        ConfigItem(
+            label="Default Entry",
+            key="default",
+            scope="LOADER",
+            type_="picker",
+            options=["@saved", "@default", "22d434e8ca4f425482251d8a6ba8ddea-7.2.0-dusky-battery.conf", "arch-linux.conf", "arch-linux-fallback.conf"],
+            default="@saved",
+            group="Default Kernel",
+            extended_help="**Default Boot Entry (`default` in loader.conf)**\n\n- `@saved`: (Recommended in systemd 261) Automatically boots the last chosen kernel on every reboot.\n- `@default`: Boots firmware standard default entry.\n- `<entry>.conf`: Explicitly locks the bootloader to always boot a specific entry."
+        ),
+        ConfigItem(
+            label="Menu Timeout",
+            key="timeout",
+            scope="LOADER",
+            type_="picker",
+            options=["0", "1", "2", "3", "4", "5", "10", "menu-force", "menu-hidden"],
+            default="4",
+            group="Menu Display & Timing",
+            extended_help="**Boot Menu Timeout (`timeout` in loader.conf)**\n\n- `0`: Instant boot / hidden menu (Hold Space/F12 during boot to unhide).\n- `2`-`5`: Fast countdown in seconds.\n- `menu-force`: Always displays boot menu without timeout countdown.\n- `menu-hidden`: Hidden by default unless hotkey is held."
+        ),
+        ConfigItem(
+            label="Console Mode",
+            key="console-mode",
+            scope="LOADER",
+            type_="cycle",
+            options=["max", "keep", "0", "1", "2", "auto"],
+            default="max",
+            group="Display Resolution",
+            extended_help="**Console Mode (`console-mode` in loader.conf)**\n\nSets the UEFI GOP screen resolution for systemd-boot.\n\n- `max`: Native maximum display resolution.\n- `keep`: Keeps firmware default mode."
+        ),
+        ConfigItem(
+            label="Cmdline Editor",
+            key="editor",
+            scope="LOADER",
+            type_="cycle",
+            options=["no", "yes"],
+            default="no",
+            group="Security",
+            extended_help="**Interactive Kernel Parameter Editor (`editor` in loader.conf)**\n\n- `no`: (Recommended for security) Disables editing kernel parameters from the boot menu prompt.\n- `yes`: Allows editing cmdline at boot time with 'e'."
+        ),
+        ConfigItem(
+            label="Auto Entries",
+            key="auto-entries",
+            scope="LOADER",
+            type_="cycle",
+            options=["1", "0"],
+            default="1",
+            group="Automatic Discovery",
+            extended_help="**Automatic OS Entries (`auto-entries` in loader.conf)**\n\nAutomatically discovers Windows Boot Manager, macOS, and EFI shells."
+        ),
+        ConfigItem(
+            label="Auto Firmware",
+            key="auto-firmware",
+            scope="LOADER",
+            type_="cycle",
+            options=["1", "0"],
+            default="1",
+            group="Automatic Discovery",
+            extended_help="**Reboot Into Firmware Entry (`auto-firmware` in loader.conf)**\n\nAutomatically adds the 'Reboot Into Firmware Interface' menu item."
+        ),
+        ConfigItem(
+            label="Beep on Menu",
+            key="beep",
+            scope="LOADER",
+            type_="cycle",
+            options=["0", "1"],
+            default="0",
+            group="Accessibility",
+            extended_help="**PC Speaker Beep (`beep` in loader.conf)**\n\nEmits a beep when the boot menu is displayed."
+        ),
+    ],
+
+    # -------------------------------------------------------------------------
+    # TAB 5: BOOT ENTRY METADATA & EFI ACTIONS
+    # -------------------------------------------------------------------------
+    5: [
+        ConfigItem(
+            label="Entry Title",
+            key="title",
+            scope="ENTRY",
+            type_="string",
+            default="unset",
+            group="Entry Identification",
+            extended_help="**Boot Menu Entry Title (`title`)**\n\nThe human-readable title shown on the systemd-boot screen (e.g. `dusky_battery`, `dusky_gaming`, `Arch Linux`)."
+        ),
+        ConfigItem(
+            label="Sort Key",
+            key="sort-key",
+            scope="ENTRY",
+            type_="string",
+            default="unset",
+            group="Entry Identification",
+            extended_help="**Entry Sort Key (`sort-key`)**\n\nDefines menu ordering and grouping (e.g. `dusky-battery`, `arch`)."
+        ),
+        ConfigItem(
+            label="Kernel Version",
+            key="version",
+            scope="ENTRY",
+            type_="string",
+            default="unset",
+            group="Entry Identification",
+            extended_help="**Kernel Version (`version`)**\n\nVersion string associated with this boot entry."
+        ),
+        ConfigItem(
+            label="Clean Orphaned ESP Files",
+            key="action_bootctl_cleanup",
+            scope="DEFAULT",
+            type_="action",
+            default="bootctl cleanup",
+            group="Maintenance & Firmware",
+            confirm_message="Run bootctl cleanup to remove unreferenced files from the ESP?",
+            extended_help="**bootctl cleanup**\n\nScans the EFI System Partition ($BOOT and ESP) and safely removes old kernel binaries, orphaned initrds, and stale files not referenced by any active .conf boot entry."
+        ),
+        ConfigItem(
+            label="Reboot to UEFI Firmware",
+            key="action_bootctl_reboot_fw",
+            scope="DEFAULT",
+            type_="action",
+            default="bootctl reboot-to-firmware true && systemctl reboot",
+            group="Maintenance & Firmware",
+            confirm_message="Reboot immediately into the UEFI BIOS firmware setup?",
+            extended_help="**bootctl reboot-to-firmware true**\n\nSets the EFI variable to enter BIOS/UEFI setup on next reboot, then reboots immediately."
+        ),
         ConfigItem(
             label="Regenerate Initramfs",
             key="action_mkinitcpio",
@@ -490,14 +625,14 @@ SCHEMA = {
             extended_help="**mkinitcpio -P**\n\nRebuilds the initial ramdisk environment for all installed preset kernels. This is absolutely essential after changing root filesystem types, LUKS encryption parameters, or early-boot drivers."
         ),
         ConfigItem(
-            label="Update Systemd-Boot",
+            label="Update Systemd-Boot in ESP",
             key="action_bootctl_update",
             scope="DEFAULT",
             type_="action",
             default="bootctl update -q",
             group="Bootloader Configuration",
             confirm_message="Are you sure you want to update systemd-boot in the ESP? (bootctl update)",
-            extended_help="**bootctl update**\n\nUpdates all installed versions of systemd-boot in the EFI system partition (ESP) if the available version is newer. It also ensures the boot loader is appended to the firmware's boot list."
+            extended_help="**bootctl update**\n\nUpdates all installed versions of systemd-boot in the EFI system partition (ESP) if the available version is newer."
         ),
         ConfigItem(
             label="Install Systemd-Boot",
@@ -506,8 +641,8 @@ SCHEMA = {
             type_="action",
             default="bootctl install -q",
             group="Bootloader Configuration",
-            confirm_message="Are you sure you want to INSTALL systemd-boot? This will overwrite the primary EFI bootloader. (bootctl install)",
-            extended_help="**bootctl install**\n\nInstalls systemd-boot into the EFI system partition and adds it to the top of the firmware's boot loader list. Only run this if systemd-boot is not yet installed."
+            confirm_message="Are you sure you want to INSTALL systemd-boot? (bootctl install)",
+            extended_help="**bootctl install**\n\nInstalls systemd-boot into the EFI system partition."
         ),
         ConfigItem(
             label="Refresh Random Seed",
@@ -516,14 +651,14 @@ SCHEMA = {
             type_="action",
             default="bootctl random-seed -q",
             group="Bootloader Configuration",
-            extended_help="**bootctl random-seed**\n\nRefreshes the random seed in the ESP and EFI variables, ensuring proper early-boot entropy."
+            extended_help="**bootctl random-seed**\n\nRefreshes the random seed in the ESP and EFI variables."
         ),
     ],
 
     # -------------------------------------------------------------------------
-    # TAB 5: PRESETS
+    # TAB 6: PRESETS
     # -------------------------------------------------------------------------
-    5: []
+    6: []
 }
 
 # =============================================================================

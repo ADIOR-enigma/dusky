@@ -546,6 +546,39 @@ style = "suggested"
 type = "exec"
 command = "kitty --class dusky_monitor --title \"System Performance Monitor\" --hold python3 $HOME/user_scripts/performance/dusky_monitor/dusky_monitor.py"
 
+[[pages.layout]]
+type = "section"
+[pages.layout.properties]
+title = "Kernel & Bootloader"
+icon = "drive-harddisk-system-symbolic"
+description = "Kernel parameters, systemd-boot settings, and profile-driven compiler"
+
+[[pages.layout.items]]
+type = "button"
+[pages.layout.items.properties]
+title = "systemd-boot Kernel Manager"
+description = "Edit kernel parameters, loader.conf timeouts, defaults, and boot entries"
+icon = "preferences-system-symbolic"
+
+[[pages.layout.items.properties.buttons]]
+icon = "preferences-system-symbolic"
+style = "suggested"
+[pages.layout.items.properties.buttons.on_press]
+type = "exec"
+command = "kitty --class dusky_tui --title \"Systemd-Boot Kernel Manager\" --hold python3 $HOME/user_scripts/kernel/tui_kernal_systemd_boot.py"
+
+[[pages.layout.items]]
+type = "button"
+[pages.layout.items.properties]
+title = "Dusky Kernel Compiler"
+button_text = "Compiler"
+description = "Profile-driven Linux kernel compiler and installer"
+icon = "system-software-install-symbolic"
+style = "suggested"
+[pages.layout.items.on_press]
+type = "exec"
+command = "kitty --class dusky_kernel_compile --title \"Dusky Kernel Compiler\" --hold python3 $HOME/user_scripts/kernel/dusky_kernal_compile.py"
+
 
 [[pages]]
 id = "disk_and_files"
