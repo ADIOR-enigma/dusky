@@ -673,7 +673,7 @@ _PROFILE_SPEC: Final[dict[str, tuple[FieldSpec, ...]]] = {
     ),
     # ---------------------------------------------------------------- modules
     "modules": (
-        F("mode", "str", "expanded", "strict (modprobed.db only) / expanded (curated safety net).", MODULES_MODE_CHOICES, ephemeral=True),
+        F("mode", "str", "strict", "strict (modprobed.db only) / expanded (curated safety net).", MODULES_MODE_CHOICES, ephemeral=True),
         F("modprobed_db", "bool", True, "Use modprobed.db for localmodconfig."),
         F("lmc_keep_extra", "list", [], "Additional driver directories to keep in expanded mode."),
         F("manage_service", "bool", True, "Install and enable modprobed-db timer."),
@@ -3287,7 +3287,7 @@ _DEFAULT_PROFILES: Final[tuple[tuple[str, dict[str, dict[str, Any]], str, str], 
         "gaming": {"ntsync": True, "uclamp": True, "max_map_count": 2147483642, "split_lock_mitigate": False},
         "storage": {"nvme_poll_queues": 0, "io_scheduler": "none", "blk_wbt": True},
         "network": {"congestion": "bbr", "qdisc": "fq", "mptcp": True},
-        "modules": {"mode": "expanded", "modprobed_db": True},
+        "modules": {"mode": "strict", "modprobed_db": True},
         "meta": {"bare_metal_only": True, "portable_package": False},
     }, "Dusky Personal: 64GB RAM, Full LTO, Native Arch, EEVDF+CAS+scx_lavd, NTSync, Lazy Preempt", "dusky-personal"),
 
@@ -3303,7 +3303,7 @@ _DEFAULT_PROFILES: Final[tuple[tuple[str, dict[str, dict[str, Any]], str, str], 
         "security": {"profile": "extreme", "init_on_alloc": False, "hardened_usercopy": False, "stackprotector": "regular", "mitigations": "off", "acknowledge_risk": True},
         "gaming": {"ntsync": True, "uclamp": True, "max_map_count": 2147483642, "split_lock_mitigate": False},
         "network": {"congestion": "bbr", "qdisc": "fq"},
-        "modules": {"mode": "expanded", "modprobed_db": True},
+        "modules": {"mode": "strict", "modprobed_db": True},
         "meta": {"bare_metal_only": True, "portable_package": False},
     }, "Gaming: Native Arch, ThinLTO, Lazy Preempt, CAS, scx_lavd, NTSync", "dusky-gaming"),
 
@@ -3319,7 +3319,7 @@ _DEFAULT_PROFILES: Final[tuple[tuple[str, dict[str, dict[str, Any]], str, str], 
         "security": {"profile": "balanced", "init_on_alloc": True, "hardened_usercopy": True, "stackprotector": "strong", "mitigations": "auto"},
         "gaming": {"ntsync": True, "uclamp": True, "max_map_count": 2147483642},
         "network": {"congestion": "bbr", "qdisc": "cake"},
-        "modules": {"mode": "expanded", "modprobed_db": True},
+        "modules": {"mode": "strict", "modprobed_db": True},
     }, "Snappiness: Balanced daily driver, smooth UI under load, CAS, scx_bpfland", "dusky-snap"),
 
     ("workstation", {
@@ -3347,7 +3347,7 @@ _DEFAULT_PROFILES: Final[tuple[tuple[str, dict[str, dict[str, Any]], str, str], 
         "memory": {"thp": "madvise", "thp_defrag": "defer+madvise", "mglru": True, "mglru_mask": 7, "mglru_min_ttl_ms": 500, "swap_backend": "zswap", "damon": True},
         "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "thin", "thinlto_cache": True, "kcfi": True, "debug_info": "reduced"},
         "network": {"congestion": "bbr", "qdisc": "fq_codel"},
-        "modules": {"mode": "expanded", "modprobed_db": True},
+        "modules": {"mode": "strict", "modprobed_db": True},
     }, "Battery: Battery-first, guided P-states, RCU lazy, TEO idle, power-efficient WQ", "dusky-battery"),
 
     ("low_ram", {

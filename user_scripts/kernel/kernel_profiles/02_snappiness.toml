@@ -136,7 +136,7 @@ nf_conntrack_procfs = false
 xdp = false
 
 [modules]
-mode = "expanded"
+mode = "strict"
 modprobed_db = true
 lmc_keep_extra = []
 manage_service = true
