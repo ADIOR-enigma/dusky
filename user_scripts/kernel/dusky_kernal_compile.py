@@ -1013,7 +1013,12 @@ def select_profile(profiles: Sequence[KernelProfile], wanted: str | None) -> Ker
     rule("Select build profile")
     print_profile_table(profiles)
     say("")
-    idx = ask_index("Profile", len(profiles), 1)
+    default_idx = 1
+    for i, p in enumerate(profiles, 1):
+        if p.name.lower() == "gaming":
+            default_idx = i
+            break
+    idx = ask_index("Profile", len(profiles), default_idx)
     return profiles[idx - 1]
 
 
@@ -4065,7 +4070,7 @@ def interactive_menu() -> int:
         say(" 7) Exit")
         say("")
         try:
-            choice = ask_index("Select", 7, default=7)
+            choice = ask_index("Select", 7, default=6)
         except (DuskyError, KeyboardInterrupt):
             say("")
             ok("Exiting Dusky Kernel Compiler. May your uptime be long!")
