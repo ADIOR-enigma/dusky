@@ -79,8 +79,11 @@ __reload_clip_env() {
 }
 autoload -Uz add-zsh-hook 2>/dev/null && add-zsh-hook precmd __reload_clip_env
 
-# Configure PATH (Uncomment to enable local binaries)
-# export PATH="$HOME/.local/bin:$PATH"
+# Configure PATH - enabled for npm global bins (fixes gemini-cli)
+# Deduped PATH - ensures npm global bins without duplication (Hyprland also sets PATH via systemd)
+if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
+  export PATH="$HOME/.local/bin:$PATH"
+fi
 
 # -----------------------------------------------------------------------------
 # [2] HISTORY CONFIGURATION
@@ -172,7 +175,7 @@ _ask_func() {
     else
         prompt="$*"
     fi
-    python3 /home/dusk/.config/firefox_extentions/ai_bridge/bridge.py "$prompt"
+    python3 "$HOME/.config/firefox_extentions/ai_bridge/bridge.py" "$prompt"
 }
 alias ask='noglob _ask_func'
 
