@@ -378,7 +378,7 @@ suspend = true
 
 
 [network]
-# TCP Congestion Control algorithm ("bbr", "cubic", "reno", "westwood")
+# TCP Congestion Control algorithm ("bbr", "cubic", "reno", "westwood", "vegas")
 congestion = "bbr"
 
 # Root queuing discipline ("fq" [Required for BBR pacing], "cake", "fq_codel")
