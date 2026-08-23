@@ -8,9 +8,9 @@ Production-grade vanilla kernel.org builder for Arch Linux (rolling, 2026.08+).
 
 Target stack
 ------------
-  * Arch Linux rolling, kernel 7.1.x / 7.2+ era
-  * Python 3.14.6+  (PEP 649/749 lazy annotations, PEP 750 not required,
-    tomllib, ExceptionGroup, StrEnum, pathlib.Path.copy, os.process_cpu_count)
+  * Arch Linux rolling, kernel 7.2.x+ era
+  * Python 3.14.6+  (PEP 649/749 lazy annotations, tomllib, ExceptionGroup,
+    StrEnum, pathlib.Path.copy, os.process_cpu_count)
   * LLVM/Clang 21+ with lld / ThinLTO, or GCC 15+ fallback
 
 Design contract
@@ -25,6 +25,8 @@ Design contract
      never mutate the TOML on disk.
   4. Zero legacy code: no compatibility shims, no dead branches, no
      "if python < x" guards, no deprecated-key silent acceptance.
+  5. Strict verification: every requested Kconfig symbol is audited after
+     olddefconfig. Undefined symbols fail loud unless marked optional.
 
 Author: Dusky
 License: 0BSD
@@ -70,8 +72,8 @@ if sys.version_info < _MIN_PY:
 
 APP_NAME: Final = "Dusky Kernel Compiler"
 APP_SLUG: Final = "dusky"
-APP_VERSION: Final = "4.0.0"
-APP_TAGLINE: Final = "vanilla kernel.org -> Arch package, profile driven"
+APP_VERSION: Final = "5.0.0"
+APP_TAGLINE: Final = "vanilla kernel.org -> Arch package, profile driven (Linux 7.2+)"
 
 
 # --------------------------------------------------------------------------- #
@@ -94,6 +96,8 @@ CONFIG_SEED_DIR: Final = _env_path("DUSKY_CONFIG_DIR", SELF_DIR)
 SRC_DIR: Final = BUILD_DIR / "src"
 TARBALL_DIR: Final = BUILD_DIR / "tarballs"
 PATCH_CACHE: Final = _env_path("DUSKY_PATCH_CACHE", BUILD_DIR / "dusky_patch_cache")
+THINLTO_CACHE: Final = _env_path("DUSKY_THINLTO_CACHE", BUILD_DIR / "thinlto_cache")
+FDO_DIR: Final = _env_path("DUSKY_FDO_DIR", BUILD_DIR / "fdo")
 PKG_ROOT: Final = _env_path("DUSKY_PKGDEST", BUILD_DIR / "packages")
 LOG_DIR: Final = STATE_DIR / "logs"
 
@@ -106,21 +110,12 @@ MODPROBED_DB: Final = _env_path("DUSKY_MODPROBED_DB", HOME / ".config" / "modpro
 
 
 # --------------------------------------------------------------------------- #
-# 2. Obfuscated upstream tokens.
-#
-#    Requirement: 'grep -ir <vendor> user_scripts/kernel' must return nothing.
-#    Only the *vendor tokens* are encoded; everything structural stays plain so
-#    the code remains auditable. Decoding happens lazily, at call time, and the
-#    decoded values are never written to any artifact we ship (they only reach
-#    the network layer and the in-tree .config, which is a kernel artifact).
+# 2. Obfuscated upstream tokens
 # --------------------------------------------------------------------------- #
 
 _OBF: Final[dict[str, str]] = {
-    # upstream patch-set organisation
     "org": "Q2FjaHlPUw==",
-    # upstream package / patch filename token
     "pkg": "Y2FjaHlvcw==",
-    # upstream umbrella Kconfig symbol enabled by dusky.enhanced
     "cfg": "Q0FDSFk=",
 }
 
@@ -144,7 +139,6 @@ def patch_base_url() -> str:
 
 class C:
     """ANSI SGR table. Emptied wholesale when the terminal is not capable."""
-
     RESET = "\x1b[0m"
     BOLD = "\x1b[1m"
     DIM = "\x1b[2m"
@@ -327,19 +321,13 @@ def table(headers: Sequence[str], rows: Sequence[Sequence[str]],
 
 
 # --------------------------------------------------------------------------- #
-# 5. Interactive prompts (readline aware, EOF/SIGINT safe)
+# 5. Interactive prompts
 # --------------------------------------------------------------------------- #
 
 _READLINE_READY = False
 
 
 def _init_readline() -> None:
-    """
-    Bind libedit/GNU readline so arrow keys and history work inside prompts.
-
-    Without this, a terminal in canonical mode echoes raw escape sequences
-    (^[[A) into the answer buffer, which was the classic 'prompt garbage' bug.
-    """
     global _READLINE_READY
     if _READLINE_READY or not sys.stdin.isatty():
         return
@@ -415,7 +403,6 @@ def ask_index(prompt: str, count: int, default: int = 1) -> int:
 # --------------------------------------------------------------------------- #
 
 class DuskyError(RuntimeError):
-    """Base for all recoverable, user-facing failures."""
     exit_code = 1
 
 
@@ -440,42 +427,36 @@ class DependencyError(DuskyError):
 
 
 # --------------------------------------------------------------------------- #
-# 7. Profile specification -- the single source of defaults
+# 7. Profile specification -- the single source of truth
 # --------------------------------------------------------------------------- #
 
 CPU_ARCHES: Final[tuple[str, ...]] = (
     "native",
-    "generic",       # x86-64 baseline, maximum portability
-    "generic_v2",    # x86-64-v2  (SSE4.2 / POPCNT)
-    "generic_v3",    # x86-64-v3  (AVX2 / BMI2 / FMA)   <- shareable sweet spot
-    "generic_v4",    # x86-64-v4  (AVX-512)
+    "generic",       # x86-64 baseline
+    "generic_v2",    # x86-64-v2 (SSE4.2 / POPCNT)
+    "generic_v3",    # x86-64-v3 (AVX2 / BMI2 / FMA)
+    "generic_v4",    # x86-64-v4 (AVX-512)
     "znver2", "znver3", "znver4", "znver5",
     "skylake", "icelake", "alderlake", "raptorlake", "sapphirerapids",
 )
 
-# Mapping arch -> in-tree Kconfig symbol under 'Processor family'.
-# Vanilla mainline exposes MNATIVE_*/MK8/GENERIC_CPU; the x86-64-vN levels are
-# selected via CONFIG_X86_64_VERSION (introduced with the x86-64 microarch
-# levels series). We set both spellings defensively through scripts/config,
-# which is a no-op for symbols absent from the tree.
 ARCH_KCONFIG: Final[dict[str, tuple[tuple[str, str, str], ...]]] = {
     "native":      (("-e", "MNATIVE_AMD", ""), ("-e", "MNATIVE_INTEL", "")),
     "generic":     (("--set-val", "X86_64_VERSION", "1"), ("-e", "GENERIC_CPU", "")),
     "generic_v2":  (("--set-val", "X86_64_VERSION", "2"), ("-e", "GENERIC_CPU2", "")),
     "generic_v3":  (("--set-val", "X86_64_VERSION", "3"), ("-e", "GENERIC_CPU3", "")),
     "generic_v4":  (("--set-val", "X86_64_VERSION", "4"), ("-e", "GENERIC_CPU4", "")),
-    "znver2":      (("-e", "MZEN2", ""),),
-    "znver3":      (("-e", "MZEN3", ""),),
-    "znver4":      (("-e", "MZEN4", ""),),
-    "znver5":      (("-e", "MZEN5", ""),),
-    "skylake":     (("-e", "MSKYLAKE", ""),),
-    "icelake":     (("-e", "MICELAKE", ""),),
-    "alderlake":   (("-e", "MALDERLAKE", ""),),
-    "raptorlake":  (("-e", "MRAPTORLAKE", ""),),
-    "sapphirerapids": (("-e", "MSAPPHIRERAPIDS", ""),),
+    "znver2":      (("-e", "MZEN2", ""), ("-e", "GENERIC_CPU3", "")),
+    "znver3":      (("-e", "MZEN3", ""), ("-e", "GENERIC_CPU3", "")),
+    "znver4":      (("-e", "MZEN4", ""), ("-e", "GENERIC_CPU4", "")),
+    "znver5":      (("-e", "MZEN5", ""), ("-e", "GENERIC_CPU4", "")),
+    "skylake":     (("-e", "MSKYLAKE", ""), ("-e", "GENERIC_CPU3", "")),
+    "icelake":     (("-e", "MICELAKE", ""), ("-e", "GENERIC_CPU3", "")),
+    "alderlake":   (("-e", "MALDERLAKE", ""), ("-e", "GENERIC_CPU3", "")),
+    "raptorlake":  (("-e", "MRAPTORLAKE", ""), ("-e", "GENERIC_CPU3", "")),
+    "sapphirerapids": (("-e", "MSAPPHIRERAPIDS", ""), ("-e", "GENERIC_CPU4", "")),
 }
 
-# All 'Processor family' symbols we may need to clear before setting one.
 ARCH_ALL_SYMBOLS: Final[tuple[str, ...]] = (
     "MNATIVE_INTEL", "MNATIVE_AMD", "GENERIC_CPU", "GENERIC_CPU2",
     "GENERIC_CPU3", "GENERIC_CPU4", "MK8", "MK8SSE3", "MK10",
@@ -489,24 +470,29 @@ ARCH_ALL_SYMBOLS: Final[tuple[str, ...]] = (
     "MRAPTORLAKE", "MMETEORLAKE", "MEMERALDRAPIDS",
 )
 
-HZ_CHOICES: Final = (100, 250, 300, 500, 600, 625, 750, 800, 1000)
+HZ_CHOICES: Final = (100, 250, 300, 500, 1000)
 TICKLESS_CHOICES: Final = ("periodic", "idle", "full")
-PREEMPT_CHOICES: Final = ("none", "voluntary", "full", "lazy", "rt")
+PREEMPT_CHOICES: Final = ("lazy", "full", "rt")
 SCHED_CHOICES: Final = ("eevdf", "bore", "bmq")
+SCX_CHOICES: Final = ("none", "scx_lavd", "scx_bpfland", "scx_rusty", "scx_layered", "scx_flash", "scx_p2dq")
 CHANNEL_CHOICES: Final = ("mainline", "stable", "longterm")
 LTO_CHOICES: Final = ("none", "thin", "full", "thin_dist")
-OPT_CHOICES: Final = ("o2", "o3", "size")
+OPT_CHOICES: Final = ("o2", "size")
+FDO_CHOICES: Final = ("none", "autofdo", "autofdo_propeller")
 THP_CHOICES: Final = ("always", "madvise", "never")
-GOV_CHOICES: Final = ("performance", "schedutil", "ondemand", "conservative",
-                      "powersave")
-IDLE_GOV_CHOICES: Final = ("menu", "teo", "ladder")
-CONG_CHOICES: Final = ("bbr", "bbr3", "cubic", "reno", "westwood", "vegas")
-QDISC_CHOICES: Final = ("fq", "fq_codel", "fq_pie", "cake", "pfifo_fast")
+THP_DEFRAG_CHOICES: Final = ("always", "defer", "defer+madvise", "madvise", "never")
+SWAP_BACKEND_CHOICES: Final = ("zswap", "zram", "none")
+GOV_CHOICES: Final = ("schedutil", "performance", "powersave", "ondemand", "conservative")
+EPP_CHOICES: Final = ("default", "performance", "balance_performance", "balance_power", "power")
+IDLE_GOV_CHOICES: Final = ("teo", "menu", "ladder")
+CONG_CHOICES: Final = ("bbr", "cubic", "reno", "westwood", "vegas")
+QDISC_CHOICES: Final = ("fq", "cake", "fq_codel", "fq_pie", "pfifo_fast")
 TOOLCHAIN_CHOICES: Final = ("llvm", "gcc")
 MODULES_MODE_CHOICES: Final = ("strict", "expanded")
 PSTATE_CHOICES: Final = ("undefined", "disable", "passive", "active", "guided")
 COMPRESS_CHOICES: Final = ("zstd", "xz", "gzip", "none")
 DEBUG_CHOICES: Final = ("none", "reduced", "full")
+SECURITY_PROFILES: Final = ("hardened", "balanced", "extreme")
 
 
 @dataclass(frozen=True, slots=True)
@@ -517,7 +503,7 @@ class FieldSpec:
     help: str
     choices: tuple[Any, ...] | None = None
     required: bool = False
-    ephemeral: bool = False  # can be overridden per build via CLI/env
+    ephemeral: bool = False
 
 
 def F(key: str, kind: str, default: Any, help: str,
@@ -530,209 +516,181 @@ def F(key: str, kind: str, default: Any, help: str,
 _PROFILE_SPEC: Final[dict[str, tuple[FieldSpec, ...]]] = {
     # ------------------------------------------------------------------ meta
     "meta": (
-        F("name", "str", "", "Unique profile id, referenced by --profile.",
-          required=True),
+        F("name", "str", "", "Unique profile id, referenced by --profile.", required=True),
         F("description", "str", "", "One-line human summary shown in the picker."),
-        F("suffix", "str", "", "LOCALVERSION suffix; also the pkgbase discriminator.",
-          required=True),
+        F("suffix", "str", "", "LOCALVERSION suffix; also the pkgbase discriminator.", required=True),
         F("priority", "int", 50, "Sort order in the interactive picker (asc)."),
         F("tags", "list", [], "Free-form labels shown in the picker."),
+        F("bare_metal_only", "bool", False, "Safety gate: kernel is intended only for bare metal."),
+        F("portable_package", "bool", False, "Safety gate: package is distributable, strict modules forbidden."),
     ),
     # --------------------------------------------------------------- release
     "release": (
-        F("channel", "str", "stable",
-          "Which kernel.org line to track. Resolved live from releases.json.",
-          CHANNEL_CHOICES),
-        F("pin", "str", "",
-          "Exact version to build (e.g. 7.2.4). Empty means 'latest in channel'."),
-        F("allow_rc", "bool", False,
-          "Permit -rc tarballs when the mainline entry is a release candidate."),
-        F("min_version", "str", "",
-          "Refuse to build anything older than this (e.g. 7.1). Empty = no floor."),
+        F("channel", "str", "stable", "Which kernel.org line to track. Resolved live.", CHANNEL_CHOICES),
+        F("pin", "str", "", "Exact version to build (e.g. 7.2.0). Empty means latest in channel."),
+        F("allow_rc", "bool", False, "Permit -rc tarballs when mainline is a release candidate."),
+        F("min_version", "str", "7.2", "Refuse to build anything older than this."),
     ),
     # ------------------------------------------------------------- scheduler
     "scheduler": (
-        F("type", "str", "eevdf",
-          "eevdf = pristine upstream; bore = burst-aware EEVDF; bmq = alt sched.",
-          SCHED_CHOICES),
-        F("autogroup", "bool", True,
-          "CONFIG_SCHED_AUTOGROUP: per-session fairness (desktop responsiveness)."),
-        F("rt_group", "bool", False,
-          "CONFIG_RT_GROUP_SCHED: cgroup bandwidth control for RT tasks."),
-        F("allow_vanilla_fallback", "bool", True,
-          "If the patch cannot apply cleanly, continue on upstream EEVDF."),
+        F("type", "str", "eevdf", "In-tree class: eevdf, or out-of-tree patch: bore, bmq.", SCHED_CHOICES),
+        F("scx", "str", "none", "Runtime sched_ext scheduler (scx_lavd, scx_bpfland, scx_rusty, none).", SCX_CHOICES),
+        F("scx_flags", "str", "", "Runtime CLI flags passed to the scx scheduler daemon."),
+        F("scx_enable_class", "bool", True, "CONFIG_SCHED_CLASS_EXT: build in-tree sched_ext support."),
+        F("require_patch", "bool", False, "Fail build hard if out-of-tree patch fails to apply."),
+        F("autogroup", "bool", True, "CONFIG_SCHED_AUTOGROUP: per-session fairness for desktop UI."),
+        F("rt_group", "bool", False, "CONFIG_RT_GROUP_SCHED: cgroup bandwidth control for RT tasks."),
+        F("allow_vanilla_fallback", "bool", True, "Fallback to upstream EEVDF if patch fails."),
+    ),
+    # ----------------------------------------------------------------- cache
+    "cache": (
+        F("sched_cache", "bool", True, "CONFIG_SCHED_CACHE: Linux 7.2 Cache Aware Scheduling."),
+        F("llc_aggr_tolerance", "int", 1, "0=disabled, 1=conservative desktop, >1=aggressive server."),
+        F("persist", "bool", True, "Install systemd unit to persist debugfs CAS knobs."),
+    ),
+    # ------------------------------------------------------------------ rseq
+    "rseq": (
+        F("slice_extension", "bool", True, "CONFIG_RSEQ time slice extension (Linux 7.0+)."),
+        F("slice_ext_nsec", "int", 10000, "Extension window in ns (5000-50000)."),
     ),
     # ------------------------------------------------------------------ dusky
     "dusky": (
-        F("enhanced", "bool", False,
-          "Enable the upstream desktop-tuning umbrella symbol plus the dusky "
-          "opinionated defaults (RCU/vm/sched heuristics). Off = pure upstream."),
+        F("enhanced", "bool", False, "Enable desktop-tuning umbrella symbol plus dusky heuristics."),
         F("hostname", "str", "dusky", "KBUILD_BUILD_HOST, part of reproducibility."),
         F("user", "str", "dusky", "KBUILD_BUILD_USER, part of reproducibility."),
-        F("reproducible", "bool", True,
-          "Pin KBUILD_BUILD_TIMESTAMP to the tarball mtime (SOURCE_DATE_EPOCH)."),
-        F("extra_config", "table", {},
-          "Escape hatch: raw {SYMBOL = value} pairs applied last. "
-          "true/false -> -e/-d, int -> --set-val, str -> --set-str."),
+        F("reproducible", "bool", True, "Pin KBUILD_BUILD_TIMESTAMP to tarball mtime."),
+        F("extra_config", "table", {}, "Raw {SYMBOL = value} pairs applied last."),
     ),
     # -------------------------------------------------------------------- cpu
     "cpu": (
-        F("arch", "str", "generic_v3",
-          "Target microarchitecture (-march). 'native' is fastest but not "
-          "shareable; generic_v3 is the portable sweet spot.",
-          CPU_ARCHES, ephemeral=True),
-        F("governor", "str", "schedutil",
-          "CONFIG_CPU_FREQ_DEFAULT_GOV_*: boot-time cpufreq governor.",
-          GOV_CHOICES),
-        F("amd_pstate", "str", "undefined",
-          "CONFIG_X86_AMD_PSTATE_DEFAULT_MODE. 'active' = EPP hardware autonomous.",
-          PSTATE_CHOICES),
-        F("mitigations", "bool", True,
-          "CONFIG_CPU_MITIGATIONS. False bakes in mitigations=off semantics."),
-        F("nr_cpus", "int", 512, "CONFIG_NR_CPUS upper bound."),
+        F("arch", "str", "native", "Target microarchitecture level ('native' auto-detects v3/v4 + march).", CPU_ARCHES, ephemeral=True),
+        F("march", "str", "", "Optional custom -march injected via KCFLAGS (e.g. znver5)."),
+        F("governor", "str", "schedutil", "CONFIG_CPU_FREQ_DEFAULT_GOV_* default.", GOV_CHOICES),
+        F("amd_pstate", "str", "active", "CONFIG_X86_AMD_PSTATE_DEFAULT_MODE ('active' = EPP).", PSTATE_CHOICES),
+        F("epp", "str", "balance_performance", "Energy performance preference.", EPP_CHOICES),
+        F("mitigations", "bool", True, "CPU speculative execution mitigations."),
+        F("nr_cpus", "int", 0, "CONFIG_NR_CPUS (0 = auto-snapped to 64 boundary)."),
         F("smt", "bool", True, "CONFIG_SCHED_SMT hyper-threading awareness."),
         F("mce", "bool", True, "CONFIG_X86_MCE machine-check reporting."),
+        F("prefcore", "bool", True, "CONFIG_SCHED_MC_PRIO: AMD/Intel preferred core boost ranking."),
     ),
     # ----------------------------------------------------------------- timing
     "timing": (
         F("hz", "int", 1000, "CONFIG_HZ tick rate.", HZ_CHOICES),
-        F("tickless", "str", "idle",
-          "periodic = HZ always; idle = NO_HZ_IDLE; full = NO_HZ_FULL + "
-          "CONTEXT_TRACKING_USER (isolation workloads).", TICKLESS_CHOICES),
-        F("preempt", "str", "full",
-          "none = throughput; voluntary = balanced; full = desktop latency; "
-          "lazy = PREEMPT_LAZY throughput/latency hybrid; rt = PREEMPT_RT.",
-          PREEMPT_CHOICES),
-        F("preempt_dynamic", "bool", True,
-          "CONFIG_PREEMPT_DYNAMIC: switch model at boot with preempt=."),
-        F("hz_periodic_rcu", "bool", False,
-          "CONFIG_RCU_NOCB_CPU offload of RCU callbacks to housekeeping CPUs."),
+        F("tickless", "str", "idle", "periodic / idle / full (full requires isolated cores).", TICKLESS_CHOICES),
+        F("preempt", "str", "lazy", "lazy (Linux 7.0+ default) / full / rt.", PREEMPT_CHOICES),
+        F("preempt_dynamic", "bool", True, "CONFIG_PREEMPT_DYNAMIC: switch model at boot."),
+        F("hz_periodic_rcu", "bool", False, "CONFIG_RCU_NOCB_CPU offload of RCU callbacks."),
     ),
     # ----------------------------------------------------------------- memory
     "memory": (
-        F("thp", "str", "madvise",
-          "Transparent hugepage default: always / madvise / never.", THP_CHOICES),
-        F("mglru", "bool", True,
-          "CONFIG_LRU_GEN + LRU_GEN_ENABLED: multi-generational LRU."),
-        F("zswap_default_on", "bool", False,
-          "CONFIG_ZSWAP_DEFAULT_ON: compressed swap cache active at boot."),
-        F("zswap_compressor", "str", "zstd",
-          "CONFIG_ZSWAP_COMPRESSOR_DEFAULT_*.", ("zstd", "lz4", "lzo", "deflate")),
-        F("slub_tiny", "bool", False,
-          "CONFIG_SLUB_TINY: minimal allocator footprint, costs throughput."),
-        F("numa", "bool", True, "CONFIG_NUMA. Disable only on true UMA hardware."),
-        F("numa_balancing", "bool", False,
-          "CONFIG_NUMA_BALANCING_DEFAULT_ENABLED: auto page/task migration."),
-        F("ksm", "bool", True, "CONFIG_KSM same-page merging (VM hosts)."),
+        F("thp", "str", "madvise", "Transparent hugepage enabled default.", THP_CHOICES),
+        F("thp_defrag", "str", "defer+madvise", "THP defrag strategy.", THP_DEFRAG_CHOICES),
+        F("thp_shmem", "str", "advise", "THP for shmem/tmpfs."),
+        F("mglru", "bool", True, "CONFIG_LRU_GEN + LRU_GEN_ENABLED."),
+        F("mglru_mask", "int", 7, "MGLRU bitmask (7 = page-table + PMD walks)."),
+        F("mglru_min_ttl_ms", "int", 1000, "MGLRU min working set protection TTL in ms."),
+        F("watermark_scale_factor", "int", 200, "kswapd early wake factor (prevents direct reclaim)."),
+        F("watermark_boost_factor", "int", 0, "Disable watermark boost stalls."),
+        F("compaction_proactiveness", "int", 0, "kcompactd background proactive compaction."),
+        F("swap_backend", "str", "zswap", "zswap (writeback cache) / zram (block device) / none.", SWAP_BACKEND_CHOICES),
+        F("zswap_compressor", "str", "zstd", "Zswap compression algorithm."),
+        F("zswap_zpool", "str", "zsmalloc", "Zswap memory pool allocator."),
+        F("zram_size_pct", "int", 100, "Zram disk size as percentage of physical RAM."),
+        F("zram_multi_comp", "bool", True, "CONFIG_ZRAM_MULTI_COMP recompression."),
+        F("slub_tiny", "bool", False, "CONFIG_SLUB_TINY (strictly for <512MB embedded)."),
+        F("numa", "bool", True, "CONFIG_NUMA support (essential for CAS and multi-CCD)."),
+        F("numa_balancing", "bool", False, "CONFIG_NUMA_BALANCING auto migration."),
+        F("nodes_shift", "int", 2, "NODES_SHIFT (2 = max 4 nodes, shrinks arrays)."),
+        F("ksm", "bool", True, "CONFIG_KSM same-page merging."),
         F("damon", "bool", False, "CONFIG_DAMON data access monitoring."),
-        F("page_reporting", "bool", True,
-          "CONFIG_PAGE_REPORTING free-page hinting to hypervisors."),
+        F("page_reporting", "bool", False, "CONFIG_PAGE_REPORTING free-page hinting to hypervisors."),
     ),
     # --------------------------------------------------------------- compiler
     "compiler": (
-        F("toolchain", "str", "llvm",
-          "llvm = clang + ld.lld + LLVM_IAS; gcc = gcc + ld.bfd.",
-          TOOLCHAIN_CHOICES, ephemeral=True),
-        F("optimize", "str", "o2",
-          "CC_OPTIMIZE_FOR_PERFORMANCE (o2) / _O3 / _SIZE.", OPT_CHOICES),
-        F("lto", "str", "thin",
-          "none / thin / full / thin_dist. LLVM only; ignored under gcc.",
-          LTO_CHOICES, ephemeral=True),
-        F("kcfi", "bool", False,
-          "CONFIG_CFI_CLANG kernel control-flow integrity. Clang + LTO required."),
-        F("autofdo", "bool", False,
-          "CONFIG_AUTOFDO_CLANG: consume an AutoFDO profile (needs -profile)."),
-        F("propeller", "bool", False,
-          "CONFIG_PROPELLER_CLANG: post-link block layout optimisation."),
-        F("zstd_clevel", "int", 19,
-          "ZSTD_CLEVEL for the compressed kernel image + initramfs (1-19)."),
-        F("module_compress", "str", "zstd",
-          "CONFIG_MODULE_COMPRESS_*: on-disk module compression.",
-          COMPRESS_CHOICES),
-        F("debug_info", "str", "none",
-          "none = DEBUG_INFO_NONE (fastest, smallest); reduced; full (+BTF).",
-          DEBUG_CHOICES),
-        F("jobs", "int", 0, "make -j. 0 = os.process_cpu_count()."),
-        F("rust", "bool", True,
-          "Enable CONFIG_RUST when rustc/bindgen satisfy scripts/rustavailable."),
+        F("toolchain", "str", "llvm", "llvm (clang + lld) / gcc.", TOOLCHAIN_CHOICES, ephemeral=True),
+        F("optimize", "str", "o2", "Optimization level (o2 / size).", OPT_CHOICES),
+        F("allow_unsupported_o3", "bool", False, "Inject -O3 via KCFLAGS."),
+        F("lto", "str", "thin", "LTO mode (none, thin, full, thin_dist).", LTO_CHOICES, ephemeral=True),
+        F("thinlto_cache", "bool", True, "Enable persistent LLVM ThinLTO disk caching."),
+        F("thinlto_cache_size", "str", "20g", "ThinLTO cache max size."),
+        F("fdo", "str", "none", "AutoFDO / Propeller profile optimization.", FDO_CHOICES),
+        F("fdo_profile_dir", "str", "", "Directory containing AutoFDO / Propeller profiles."),
+        F("kcfi", "bool", False, "CONFIG_CFI_CLANG kernel control-flow integrity."),
+        F("zstd_clevel", "int", 19, "ZSTD_CLEVEL compression level (1-19)."),
+        F("module_compress", "str", "zstd", "CONFIG_MODULE_COMPRESS_* algorithm.", COMPRESS_CHOICES),
+        F("debug_info", "str", "reduced", "none / reduced (+BTF) / full.", DEBUG_CHOICES),
+        F("jobs", "int", 0, "make -j (0 = os.process_cpu_count())."),
+        F("rust", "bool", True, "CONFIG_RUST integration."),
+    ),
+    # --------------------------------------------------------------- security
+    "security": (
+        F("profile", "str", "balanced", "hardened / balanced / extreme.", SECURITY_PROFILES),
+        F("init_on_alloc", "bool", True, "CONFIG_INIT_ON_ALLOC_DEFAULT_ON."),
+        F("hardened_usercopy", "bool", True, "CONFIG_HARDENED_USERCOPY."),
+        F("stackprotector", "str", "strong", "strong / regular / none."),
+        F("slab_freelist_hardened", "bool", True, "CONFIG_SLAB_FREELIST_HARDENED."),
+        F("randomize_kstack", "bool", True, "Randomize kernel stack offset on syscalls."),
+        F("mitigations", "str", "auto", "auto / off.", ("auto", "off")),
+        F("acknowledge_risk", "bool", False, "Required when mitigations='off' or profile='extreme'."),
+    ),
+    # ----------------------------------------------------------------- gaming
+    "gaming": (
+        F("ntsync", "bool", True, "CONFIG_NTSYNC in-tree Windows NT synchronization driver."),
+        F("uclamp", "bool", True, "CONFIG_UCLAMP_TASK utilization clamping."),
+        F("max_map_count", "int", 2147483642, "vm.max_map_count for Wine/Proton/DX12."),
+        F("split_lock_mitigate", "bool", False, "Disable split-lock throttle for Proton titles."),
+    ),
+    # ---------------------------------------------------------------- storage
+    "storage": (
+        F("nvme_poll_queues", "int", 0, "Hardware NVMe IOPOLL queues (workstation/database only)."),
+        F("io_scheduler", "str", "none", "NVMe I/O scheduler (none, mq-deadline, kyber, bfq)."),
+        F("blk_wbt", "bool", True, "CONFIG_BLK_WBT writeback throttling anti-stutter."),
     ),
     # ------------------------------------------------------------------ power
     "power": (
-        F("wq_power_efficient", "bool", False,
-          "CONFIG_WQ_POWER_EFFICIENT_DEFAULT: unbound workqueues by default."),
-        F("cpu_idle_governor", "str", "menu",
-          "CONFIG_CPU_IDLE_GOV_* default.", IDLE_GOV_CHOICES),
-        F("rcu_lazy", "bool", False,
-          "CONFIG_RCU_LAZY: batch non-urgent callbacks, saves idle wakeups."),
-        F("energy_model", "bool", False,
-          "CONFIG_ENERGY_MODEL for EAS-aware scheduling on hybrid parts."),
-        F("suspend", "bool", True, "CONFIG_SUSPEND / CONFIG_HIBERNATION support."),
+        F("wq_power_efficient", "bool", False, "CONFIG_WQ_POWER_EFFICIENT_DEFAULT."),
+        F("cpu_idle_governor", "str", "teo", "CONFIG_CPU_IDLE_GOV_* default.", IDLE_GOV_CHOICES),
+        F("rcu_lazy", "bool", False, "CONFIG_RCU_LAZY batching for mobile endurance."),
+        F("energy_model", "bool", False, "CONFIG_ENERGY_MODEL."),
+        F("suspend", "bool", True, "CONFIG_SUSPEND / CONFIG_HIBERNATION."),
     ),
     # ---------------------------------------------------------------- network
     "network": (
-        F("congestion", "str", "bbr",
-          "CONFIG_DEFAULT_TCP_CONG. bbr3 falls back to bbr if the tree lacks it.",
-          CONG_CHOICES),
-        F("qdisc", "str", "fq",
-          "CONFIG_DEFAULT_NET_SCH root qdisc.", QDISC_CHOICES),
+        F("congestion", "str", "bbr", "TCP congestion control.", CONG_CHOICES),
+        F("qdisc", "str", "fq", "Root network qdisc.", QDISC_CHOICES),
         F("mptcp", "bool", True, "CONFIG_MPTCP multipath TCP."),
-        F("nf_conntrack_procfs", "bool", False,
-          "CONFIG_NF_CONNTRACK_PROCFS legacy /proc exposure."),
+        F("nf_conntrack_procfs", "bool", False, "CONFIG_NF_CONNTRACK_PROCFS."),
+        F("xdp", "bool", False, "eBPF XDP socket support."),
     ),
     # ---------------------------------------------------------------- modules
     "modules": (
-        F("mode", "str", "expanded",
-          "strict  = localmodconfig with LMC_KEEP='' -> truly minimal, fastest. "
-          "expanded = curated LMC_KEEP safety net -> hot-plug/USB/VM safe.",
-          MODULES_MODE_CHOICES, ephemeral=True),
-        F("modprobed_db", "bool", True,
-          "Use ~/.config/modprobed.db as LSMOD input for make localmodconfig."),
-        F("lmc_keep_extra", "list", [],
-          "Additional driver directories appended to LMC_KEEP in expanded mode."),
-        F("manage_service", "bool", True,
-          "Install and enable the per-user modprobed-db store timer."),
-        F("sig_force", "bool", False,
-          "CONFIG_MODULE_SIG_FORCE: refuse unsigned modules (breaks DKMS)."),
+        F("mode", "str", "expanded", "strict (modprobed.db only) / expanded (curated safety net).", MODULES_MODE_CHOICES, ephemeral=True),
+        F("modprobed_db", "bool", True, "Use modprobed.db for localmodconfig."),
+        F("lmc_keep_extra", "list", [], "Additional driver directories to keep in expanded mode."),
+        F("manage_service", "bool", True, "Install and enable modprobed-db timer."),
+        F("sig_force", "bool", False, "CONFIG_MODULE_SIG_FORCE: refuse unsigned modules."),
+    ),
+    # ----------------------------------------------------------------- verify
+    "verify": (
+        F("strict", "bool", True, "Fail build if any requested symbol vanished after olddefconfig."),
+        F("optional_symbols", "list", ["SCHED_BORE", "SCHED_ALT", "THINLTO_CACHE", "PER_VMA_LOCK", "SLAB_BUCKETS", "MEMORY_TIERING", "SWAP_TABLE", "CFI_ICALL_NORMALIZE_INTEGERS", "MODULE_ALLOW_BTF_MISMATCH", "TRIM_UNUSED_KSYMS", "LD_DEAD_CODE_DATA_ELIMINATION"], "Symbols that are allowed to vanish without error."),
+        F("assert_runtime", "bool", True, "Run post-build smoke tests."),
+        F("require_ntsync", "bool", True, "Require NTSYNC module in build."),
+        F("require_btf", "bool", True, "Require DEBUG_INFO_BTF in build."),
+        F("require_sched_ext", "bool", True, "Require SCHED_CLASS_EXT in build."),
     ),
 }
 
-# LMC_KEEP safety net for 'expanded' mode. Anything under these paths survives
-# 'make localmodconfig' even when the module was not loaded when modprobed.db
-# was captured. This is the difference between a kernel that boots on a
-# different machine / after a USB dock is plugged in, and one that does not.
 LMC_KEEP_BASE: Final[tuple[str, ...]] = (
-    "drivers/gpu",
-    "drivers/hid",
-    "drivers/input",
-    "drivers/usb",
-    "drivers/net",
-    "drivers/nvme",
-    "drivers/ata",
-    "drivers/scsi",
-    "drivers/md",
-    "drivers/bluetooth",
-    "drivers/platform",
-    "drivers/thunderbolt",
-    "drivers/virtio",
-    "drivers/hwmon",
-    "drivers/i2c",
-    "drivers/mmc",
-    "drivers/pci",
-    "drivers/thermal",
-    "drivers/watchdog",
-    "sound/pci",
-    "sound/usb",
-    "sound/hda",
-    "fs/btrfs",
-    "fs/xfs",
-    "fs/f2fs",
-    "fs/exfat",
-    "fs/nfs",
-    "fs/fuse",
-    "net/bridge",
-    "net/netfilter",
-    "net/sched",
-    "crypto",
+    "drivers/gpu", "drivers/hid", "drivers/input", "drivers/usb",
+    "drivers/net", "drivers/nvme", "drivers/ata", "drivers/scsi",
+    "drivers/md", "drivers/bluetooth", "drivers/platform", "drivers/thunderbolt",
+    "drivers/virtio", "drivers/hwmon", "drivers/i2c", "drivers/mmc",
+    "drivers/pci", "drivers/thermal", "drivers/watchdog", "sound/pci",
+    "sound/usb", "sound/hda", "fs/btrfs", "fs/xfs", "fs/f2fs",
+    "fs/exfat", "fs/nfs", "fs/fuse", "net/bridge", "net/netfilter",
+    "net/sched", "crypto",
 )
 
 
@@ -742,12 +700,9 @@ LMC_KEEP_BASE: Final[tuple[str, ...]] = (
 
 @dataclass(slots=True)
 class KernelProfile:
-    """A fully validated, fully populated profile. No key is ever missing."""
-
     path: Path
     sections: dict[str, dict[str, Any]]
 
-    # -- convenience accessors ------------------------------------------- #
     def g(self, section: str, key: str) -> Any:
         return self.sections[section][key]
 
@@ -774,7 +729,6 @@ class KernelProfile:
     def pkgbase(self) -> str:
         return "linux-" + self.suffix
 
-    # -- construction ----------------------------------------------------- #
     @classmethod
     def load(cls, path: Path) -> Self:
         try:
@@ -793,29 +747,30 @@ class KernelProfile:
         lto = s["compiler"]["lto"]
         if s["compiler"]["toolchain"] == "gcc" and lto != "none":
             lto = "none (gcc)"
+        scx_info = (" + " + s["scheduler"]["scx"]) if s["scheduler"]["scx"] != "none" else ""
         return [
             ("channel", "%s%s" % (s["release"]["channel"],
-                                  "  pin=" + s["release"]["pin"]
-                                  if s["release"]["pin"] else "")),
-            ("scheduler", s["scheduler"]["type"]),
-            ("cpu arch", s["cpu"]["arch"]),
-            ("governor", s["cpu"]["governor"]),
+                                  "  pin=" + s["release"]["pin"] if s["release"]["pin"] else "")),
+            ("scheduler", s["scheduler"]["type"] + scx_info + (" (CAS)" if s["cache"]["sched_cache"] else "")),
+            ("cpu arch", s["cpu"]["arch"] + (" (" + s["cpu"]["march"] + ")" if s["cpu"]["march"] else "")),
+            ("governor", "%s [%s / %s]" % (s["cpu"]["governor"], s["cpu"]["amd_pstate"], s["cpu"]["epp"])),
             ("timing", "HZ=%d  tickless=%s  preempt=%s%s" % (
                 s["timing"]["hz"], s["timing"]["tickless"], s["timing"]["preempt"],
                 "  dynamic" if s["timing"]["preempt_dynamic"] else "")),
-            ("memory", "thp=%s  mglru=%s  zswap=%s  numa=%s" % (
+            ("memory", "thp=%s  mglru=%s  swap=%s  numa=%s" % (
                 s["memory"]["thp"], onoff(s["memory"]["mglru"]),
-                onoff(s["memory"]["zswap_default_on"]), onoff(s["memory"]["numa"]))),
+                s["memory"]["swap_backend"], onoff(s["memory"]["numa"]))),
             ("compiler", "%s  %s  lto=%s  kcfi=%s" % (
                 s["compiler"]["toolchain"], s["compiler"]["optimize"].upper(),
                 lto, onoff(s["compiler"]["kcfi"]))),
-            ("network", "%s / %s" % (s["network"]["congestion"],
-                                     s["network"]["qdisc"])),
-            ("modules", "%s%s" % (s["modules"]["mode"],
-                                  "  +modprobed-db"
-                                  if s["modules"]["modprobed_db"] else "")),
-            ("dusky", "enhanced=%s  host=%s" % (onoff(s["dusky"]["enhanced"]),
-                                                s["dusky"]["hostname"])),
+            ("security", "%s (init_alloc=%s, mit=%s)" % (
+                s["security"]["profile"], onoff(s["security"]["init_on_alloc"]),
+                s["security"]["mitigations"])),
+            ("gaming", "ntsync=%s  uclamp=%s" % (
+                onoff(s["gaming"]["ntsync"]), onoff(s["gaming"]["uclamp"]))),
+            ("network", "%s / %s" % (s["network"]["congestion"], s["network"]["qdisc"])),
+            ("modules", "%s%s" % (s["modules"]["mode"], "  +modprobed-db" if s["modules"]["modprobed_db"] else "")),
+            ("dusky", "enhanced=%s  host=%s" % (onoff(s["dusky"]["enhanced"]), s["dusky"]["hostname"])),
         ]
 
 
@@ -824,21 +779,23 @@ def onoff(b: bool) -> str:
 
 
 def validate_profile(raw: Mapping[str, Any], path: Path) -> dict[str, dict[str, Any]]:
-    """
-    Strict validation: unknown sections and unknown keys are hard errors, and
-    every known key is materialised from _PROFILE_SPEC. The returned mapping is
-    therefore total -- no code downstream ever needs a .get() fallback, which is
-    exactly what makes the TOML the source of truth.
-    """
     problems: list[str] = []
     out: dict[str, dict[str, Any]] = {}
 
-    unknown_sections = set(raw) - set(_PROFILE_SPEC)
+    # Migration for Linux 7.0+: auto-migrate legacy preempt modes
+    raw_dict = dict(raw)
+    if "timing" in raw_dict and isinstance(raw_dict["timing"], dict):
+        p_mode = raw_dict["timing"].get("preempt", "")
+        if p_mode in ("none", "voluntary"):
+            warn(f"{path.name}: preempt='{p_mode}' was removed in Linux 7.0+; migrating to 'lazy'")
+            raw_dict["timing"]["preempt"] = "lazy"
+
+    unknown_sections = set(raw_dict) - set(_PROFILE_SPEC)
     for sec in sorted(unknown_sections):
         problems.append("unknown section [%s]" % sec)
 
     for section, fields in _PROFILE_SPEC.items():
-        given = raw.get(section, {})
+        given = raw_dict.get(section, {})
         if not isinstance(given, dict):
             problems.append("[%s] must be a table" % section)
             given = {}
@@ -861,19 +818,15 @@ def validate_profile(raw: Mapping[str, Any], path: Path) -> dict[str, dict[str, 
                 bucket[f.key] = _clone(f.default)
         out[section] = bucket
 
-    # Cross-field coherence.
     problems.extend(cross_validate(out))
-
     if problems:
-        raise ProfileError(
-            "%s\n    %s" % (path.name, "\n    ".join(problems)))
+        raise ProfileError("%s\n    %s" % (path.name, "\n    ".join(problems)))
     return out
 
 
 _RENAMES: Final[dict[tuple[str, str], str]] = {
     ("cpu", "opt"): "cpu.arch",
     ("cpu", "default_governor"): "cpu.governor",
-    ("cpu", "march"): "cpu.arch",
     ("compiler", "clang"): "compiler.toolchain",
     ("memory", "transparent_hugepage"): "memory.thp",
     ("modules", "strict"): "modules.mode",
@@ -905,8 +858,7 @@ def coerce(f: FieldSpec, value: Any) -> Any:
             if isinstance(value, bool) or not isinstance(value, int):
                 raise ValueError("expected integer, got %r" % (value,))
             if f.choices and value not in f.choices:
-                raise ValueError("must be one of %s" %
-                                 ", ".join(map(str, f.choices)))
+                raise ValueError("must be one of %s" % ", ".join(map(str, f.choices)))
             return value
         case "str":
             if not isinstance(value, str):
@@ -928,37 +880,37 @@ def coerce(f: FieldSpec, value: Any) -> Any:
 
 def cross_validate(s: Mapping[str, dict[str, Any]]) -> list[str]:
     out: list[str] = []
-    comp, tim, mem, cpu = s["compiler"], s["timing"], s["memory"], s["cpu"]
+    comp, tim, mem, cpu, sched, sec, meta = (
+        s["compiler"], s["timing"], s["memory"], s["cpu"], s["scheduler"],
+        s["security"], s["meta"]
+    )
 
     if comp["toolchain"] == "gcc":
         if comp["kcfi"]:
             out.append("[compiler] kcfi requires toolchain='llvm'")
-        if comp["autofdo"] or comp["propeller"]:
+        if comp["fdo"] != "none":
             out.append("[compiler] autofdo/propeller require toolchain='llvm'")
+        if comp["lto"] != "none":
+            out.append("[compiler] LTO with GCC is not supported; set lto='none'")
+
     if comp["kcfi"] and comp["lto"] == "none":
         out.append("[compiler] kcfi requires lto != 'none' (thin or full)")
-    if comp["propeller"] and comp["lto"] not in ("thin", "thin_dist", "full"):
-        out.append("[compiler] propeller requires LTO")
-    if not 1 <= comp["zstd_clevel"] <= 19:
-        out.append("[compiler] zstd_clevel must be 1..19")
-    if comp["jobs"] < 0:
-        out.append("[compiler] jobs must be >= 0")
 
-    if tim["preempt"] == "rt" and tim["preempt_dynamic"]:
-        out.append("[timing] preempt='rt' is incompatible with preempt_dynamic")
-    if tim["tickless"] == "full" and tim["preempt"] == "none":
-        out.append("[timing] tickless='full' with preempt='none' is contradictory")
+    if sched["type"] == "bmq" and sched["scx_enable_class"]:
+        out.append("[scheduler] BMQ (Project-C) replaces fair class; mutually exclusive with sched_ext")
 
-    if mem["slub_tiny"] and mem["numa"]:
-        out.append("[memory] slub_tiny cannot be combined with numa=true")
-    if mem["numa_balancing"] and not mem["numa"]:
-        out.append("[memory] numa_balancing requires numa=true")
+    if mem["slub_tiny"] and mem_total_gib() > 0.5:
+        out.append("[memory] slub_tiny is strictly for <=512MiB embedded targets; do not use on desktop/server")
 
-    if cpu["nr_cpus"] < 2 or cpu["nr_cpus"] > 8192:
-        out.append("[cpu] nr_cpus must be 2..8192")
-    if cpu["amd_pstate"] != "undefined" and cpu["governor"] == "ondemand":
-        out.append("[cpu] amd_pstate modes require governor "
-                   "'schedutil', 'performance' or 'powersave'")
+    if mem["thp"] == "always" and mem["compaction_proactiveness"] == 0:
+        out.append("[memory] thp='always' with compaction_proactiveness=0 is contradictory (disables hugepage creation)")
+
+    if sec["mitigations"] == "off" and not sec["acknowledge_risk"]:
+        out.append("[security] mitigations='off' requires acknowledge_risk=true")
+
+    if meta["portable_package"] and s["modules"]["mode"] == "strict":
+        out.append("[meta] portable_package=true cannot be combined with modules.mode='strict'")
+
     return out
 
 
@@ -994,7 +946,7 @@ def discover_profiles() -> list[KernelProfile]:
     for p in profiles:
         if p.name in seen:
             raise ProfileError("duplicate profile name '%s' in %s and %s"
-                               % (p.name, seen[p.name].name, p.path.name))
+                                % (p.name, seen[p.name].name, p.path.name))
         seen[p.name] = p.path
     profiles.sort(key=lambda p: (p.priority, p.name))
     return profiles
@@ -1002,16 +954,17 @@ def discover_profiles() -> list[KernelProfile]:
 
 def print_profile_table(profiles: Sequence[KernelProfile], numbered: bool = True) -> None:
     headers = (["#"] if numbered else []) + [
-        "profile", "sched", "arch", "HZ", "preempt", "lto", "mods", "channel",
-        "description"]
+        "profile", "sched", "arch", "HZ", "preempt", "lto", "mods", "channel", "description"
+    ]
     rows: list[list[str]] = []
     for i, p in enumerate(profiles, 1):
         s = p.sections
         lto = s["compiler"]["lto"] if s["compiler"]["toolchain"] == "llvm" else "-"
+        scx_tag = ("+" + s["scheduler"]["scx"].replace("scx_", "")) if s["scheduler"]["scx"] != "none" else ""
         rows.append(
             ([C.ACCENT + str(i) + C.RESET] if numbered else []) + [
                 C.BOLD + p.name + C.RESET,
-                s["scheduler"]["type"],
+                s["scheduler"]["type"] + (C.CYAN + scx_tag + C.RESET if scx_tag else ""),
                 s["cpu"]["arch"],
                 str(s["timing"]["hz"]),
                 s["timing"]["preempt"] + ("*" if s["timing"]["preempt_dynamic"] else ""),
@@ -1029,7 +982,7 @@ def print_profile_table(profiles: Sequence[KernelProfile], numbered: bool = True
 def select_profile(profiles: Sequence[KernelProfile], wanted: str | None) -> KernelProfile:
     if wanted:
         for p in profiles:
-            if p.name == wanted:
+            if p.name.lower() == wanted.lower():
                 return p
         near = [p.name for p in profiles if wanted.lower() in p.name.lower()]
         raise ProfileError(
@@ -1045,7 +998,7 @@ def select_profile(profiles: Sequence[KernelProfile], wanted: str | None) -> Ker
 
 
 # --------------------------------------------------------------------------- #
-# 10. Ephemeral overrides (never written back to TOML)
+# 10. Ephemeral overrides
 # --------------------------------------------------------------------------- #
 
 @dataclass(slots=True)
@@ -1064,15 +1017,13 @@ class Overrides:
         def pick(cli: Any, env: str, choices: Sequence[str] | None) -> Any:
             val = cli if cli is not None else os.environ.get(env, "").strip() or None
             if val is not None and choices is not None and val not in choices:
-                raise DuskyError("%s: '%s' is not one of %s"
-                                 % (env, val, ", ".join(choices)))
+                raise DuskyError("%s: '%s' is not one of %s" % (env, val, ", ".join(choices)))
             return val
 
         jobs_raw = pick(args.jobs, "DUSKY_JOBS", None)
         return cls(
             cpu_arch=pick(args.cpu_arch, "DUSKY_CPU_ARCH", CPU_ARCHES),
-            modules_mode=pick(args.modules_mode, "DUSKY_MODULES_MODE",
-                              MODULES_MODE_CHOICES),
+            modules_mode=pick(args.modules_mode, "DUSKY_MODULES_MODE", MODULES_MODE_CHOICES),
             toolchain=pick(args.toolchain, "DUSKY_TOOLCHAIN", TOOLCHAIN_CHOICES),
             lto=pick(args.lto, "DUSKY_LTO", LTO_CHOICES),
             jobs=int(jobs_raw) if jobs_raw else None,
@@ -1081,13 +1032,8 @@ class Overrides:
             scheduler=pick(getattr(args, "scheduler", None), "DUSKY_SCHEDULER", SCHED_CHOICES),
         )
 
-    def any(self) -> bool:
-        return any(getattr(self, f.name) is not None
-                   for f in dataclasses.fields(self))
-
 
 def apply_overrides(p: KernelProfile, o: Overrides, prompt: bool) -> list[str]:
-    """Mutates the in-memory profile only. Returns a human diff."""
     diff: list[str] = []
 
     def put(section: str, key: str, value: Any) -> None:
@@ -1115,35 +1061,20 @@ def apply_overrides(p: KernelProfile, o: Overrides, prompt: bool) -> list[str]:
 
     if prompt and interactive():
         rule("Ephemeral overrides")
-        say(C.FAINT + "  These apply to this build only. " +
-            p.path.name + " is never modified." + C.RESET)
+        say(C.FAINT + "  These apply to this build only. " + p.path.name + " is never modified." + C.RESET)
         say("")
         if o.cpu_arch is None:
             cur = p.g("cpu", "arch")
-            say("  %sCPU arch%s  current: %s%s%s" %
-                (C.BOLD, C.RESET, C.CYAN, cur, C.RESET))
-            say(C.FAINT + "    native      fastest, tied to this exact machine" + C.RESET)
-            say(C.FAINT + "    generic_v3  AVX2/BMI2/FMA, shareable across modern x86" + C.RESET)
-            say(C.FAINT + "    generic_v4  AVX-512, Zen4+/Xeon only" + C.RESET)
-            say(C.FAINT + "    znver4      Zen 4 tuned" + C.RESET)
+            say("  %sCPU arch%s  current: %s%s%s" % (C.BOLD, C.RESET, C.CYAN, cur, C.RESET))
             if ask_yes("Change CPU arch for this build?", False):
                 choice = ask("Arch " + C.FAINT + "(" + ", ".join(CPU_ARCHES) + ")" + C.RESET, cur)
-                if choice not in CPU_ARCHES:
-                    warn("unknown arch '%s', keeping %s" % (choice, cur))
-                else:
+                if choice in CPU_ARCHES:
                     put("cpu", "arch", choice)
-        if o.modules_mode is None:
-            cur = p.g("modules", "mode")
-            say("")
-            say("  %sModules mode%s  current: %s%s%s" %
-                (C.BOLD, C.RESET, C.CYAN, cur, C.RESET))
-            say(C.FAINT + "    strict    LMC_KEEP='' -> only what modprobed.db saw. "
-                          "Smallest + fastest compile." + C.RESET)
-            say(C.FAINT + "    expanded  curated LMC_KEEP safety net -> survives new "
-                          "USB/GPU/VM hardware." + C.RESET)
-            if ask_yes("Change modules mode for this build?", False):
-                put("modules", "mode",
-                    ask_choice("Modules mode", list(MODULES_MODE_CHOICES), cur))
+        if o.lto is None and p.g("compiler", "toolchain") == "llvm":
+            cur = p.g("compiler", "lto")
+            say("  %sLTO mode%s  current: %s%s%s" % (C.BOLD, C.RESET, C.CYAN, cur, C.RESET))
+            if ask_yes("Change LTO mode for this build?", False):
+                put("compiler", "lto", ask_choice("LTO mode", list(LTO_CHOICES), cur))
 
     return diff
 
@@ -1158,7 +1089,6 @@ _ABORT = threading.Event()
 
 
 def terminate_process_group(pgid: int, grace: float = 6.0) -> None:
-    """SIGTERM the whole group, then SIGKILL stragglers. Never raises."""
     for sig, wait in ((signal.SIGTERM, grace), (signal.SIGKILL, 0.0)):
         try:
             os.killpg(pgid, sig)
@@ -1202,7 +1132,6 @@ def run(argv: Sequence[str], *, cwd: Path | None = None,
         env: Mapping[str, str] | None = None, check: bool = True,
         capture: bool = True, timeout: float | None = None,
         stdin_text: str | None = None) -> subprocess.CompletedProcess[str]:
-    """Blocking command execution in its own process group."""
     debug("$ " + " ".join(shlex.quote(a) for a in argv))
     merged = {**os.environ, **(env or {})}
     proc = subprocess.Popen(
@@ -1230,7 +1159,6 @@ def run(argv: Sequence[str], *, cwd: Path | None = None,
 def run_stream(argv: Sequence[str], *, cwd: Path | None = None,
                env: Mapping[str, str] | None = None,
                on_line: Callable[[str], None] | None = None) -> int:
-    """Streaming execution; every line is handed to on_line as it arrives."""
     debug("$ " + " ".join(shlex.quote(a) for a in argv))
     merged = {**os.environ, **(env or {})}
     proc = subprocess.Popen(
@@ -1265,16 +1193,10 @@ def require(*tools: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 12. sudo keepalive
+# 12. Sudo keepalive
 # --------------------------------------------------------------------------- #
 
 class Sudo:
-    """
-    Acquires a sudo timestamp once, then refreshes it on a daemon thread so a
-    two-hour LTO link never gets interrupted by a password prompt buried under
-    the progress renderer.
-    """
-
     def __init__(self) -> None:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -1290,14 +1212,12 @@ class Sudo:
         if rc != 0:
             raise DuskyError("sudo authentication failed")
         self.active = True
-        self._thread = threading.Thread(target=self._loop, name="sudo-keepalive",
-                                        daemon=True)
+        self._thread = threading.Thread(target=self._loop, name="sudo-keepalive", daemon=True)
         self._thread.start()
 
     def _loop(self) -> None:
         while not self._stop.wait(50.0):
-            subprocess.call(["sudo", "-n", "-v"],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.call(["sudo", "-n", "-v"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def stop(self) -> None:
         self._stop.set()
@@ -1313,7 +1233,7 @@ SUDO: Final = Sudo()
 
 
 # --------------------------------------------------------------------------- #
-# 13. System probes
+# 13. System probes & CPU version detection
 # --------------------------------------------------------------------------- #
 
 def cpu_count() -> int:
@@ -1327,8 +1247,30 @@ def mem_total_gib() -> float:
     return 0.0
 
 
+def detect_cpu_x86_version() -> int:
+    """Detects x86-64 microarchitecture level (1, 2, 3, or 4) from /proc/cpuinfo."""
+    try:
+        flags_txt = Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return 3
+    flags: set[str] = set()
+    for line in flags_txt.splitlines():
+        if line.startswith("flags"):
+            flags.update(line.split(":")[1].split())
+            break
+    v4_flags = {"avx512f", "avx512bw", "avx512cd", "avx512dq", "avx512vl"}
+    if v4_flags.issubset(flags):
+        return 4
+    v3_flags = {"avx2", "bmi1", "bmi2", "f16c", "fma", "movbe"}
+    if v3_flags.issubset(flags):
+        return 3
+    v2_flags = {"sse4_2", "ssse3", "popcnt", "cx16"}
+    if v2_flags.issubset(flags):
+        return 2
+    return 1
+
+
 def findmnt(path: Path) -> dict[str, str]:
-    """Resolve the mount backing 'path'. Returns {} when findmnt is unavailable."""
     if not have("findmnt"):
         return {}
     target = path
@@ -1349,13 +1291,6 @@ _RAM_FSTYPES: Final = frozenset({"tmpfs", "ramfs"})
 
 
 def is_ram_backed(path: Path) -> bool:
-    """
-    True when 'path' lives on RAM (tmpfs/ramfs) or a zram block device.
-
-    Matters because building a kernel in RAM is dramatically faster but a
-    35+ GiB LTO object tree will OOM a 16 GiB box; we warn instead of dying
-    two hours in.
-    """
     mnt = findmnt(path)
     if mnt.get("fstype", "") in _RAM_FSTYPES:
         return True
@@ -1365,7 +1300,6 @@ def is_ram_backed(path: Path) -> bool:
     dev = Path(source).name.split("[")[0]
     if dev.startswith("zram"):
         return True
-    # Follow the device to /sys/block to catch dm-* stacked on zram.
     sysblk = Path("/sys/block") / dev
     if sysblk.is_dir() and (sysblk / "slaves").is_dir():
         return any(s.name.startswith("zram") for s in (sysblk / "slaves").iterdir())
@@ -1381,11 +1315,6 @@ def free_gib(path: Path) -> float:
 
 
 def pacman_resolve(candidates: Sequence[str]) -> list[str]:
-    """
-    'pacman -T' reports which of the given dependency atoms are NOT satisfied,
-    honouring Provides. That is the only correct way to test 'is clang present
-    under any package name' on a rolling distro.
-    """
     if not have("pacman"):
         return list(candidates)
     cp = run(["pacman", "-T", *candidates], check=False)
@@ -1415,42 +1344,23 @@ def check_dependencies(profile: KernelProfile) -> None:
         say(C.FAINT + "    sudo pacman -S --needed " + " ".join(missing) + C.RESET)
         if not ask_yes("Install them now?", True):
             raise DependencyError("cannot continue without the toolchain")
-        rc = subprocess.call(SUDO.argv(["pacman", "-S", "--needed", "--noconfirm",
-                                        *missing]))
+        rc = subprocess.call(SUDO.argv(["pacman", "-S", "--needed", "--noconfirm", *missing]))
         if rc != 0:
             raise DependencyError("pacman failed to install dependencies")
     ok("All build dependencies satisfied")
 
-    if profile.g("compiler", "toolchain") == "llvm":
-        v = run(["clang", "--version"], check=False).stdout.splitlines()
-        if v:
-            info("clang: " + v[0].strip())
-    else:
-        v = run(["gcc", "--version"], check=False).stdout.splitlines()
-        if v:
-            info("gcc: " + v[0].strip())
-
 
 def rust_available(tree: Path, toolchain: str) -> bool:
-    """
-    Delegate to the in-tree scripts/rustavailable, which is the only oracle
-    that knows the exact rustc/bindgen version window this kernel accepts.
-    """
     script = tree / "scripts" / "rustavailable"
     if not script.is_file():
         return False
     env = {"RUSTC": "rustc", "BINDGEN": "bindgen", "CC": "clang" if toolchain == "llvm" else "gcc"}
     cp = run(["sh", str(script)], cwd=tree, env=env, check=False)
-    if cp.returncode == 0:
-        return True
-    detail = cp.stdout.strip().splitlines()
-    if detail:
-        debug("rustavailable: " + detail[-1])
-    return False
+    return cp.returncode == 0
 
 
 # --------------------------------------------------------------------------- #
-# 14. Release discovery -- fully live, nothing hard-coded
+# 14. Release discovery
 # --------------------------------------------------------------------------- #
 
 @dataclass(frozen=True, slots=True)
@@ -1474,9 +1384,6 @@ class Release:
 
     @property
     def tarball(self) -> str:
-        if self.is_rc:
-            # rc tarballs live under /pub/linux/kernel/vN.x/testing/
-            return "linux-%s.tar.xz" % self.version
         return "linux-%s.tar.xz" % self.version
 
     @property
@@ -1489,18 +1396,12 @@ class Release:
         return "%s/%s" % (self.base_url, self.tarball)
 
     @property
-    def sign_url(self) -> str:
-        return "%s/linux-%s.tar.sign" % (self.base_url, self.version)
-
-    @property
     def sha_url(self) -> str:
-        # Per-series aggregate checksum file, signed by the release PGP key.
         return "%s/%s/sha256sums.asc" % (KERNEL_CDN, self.series)
 
 
 def http_get(url: str, *, timeout: float = NET_TIMEOUT) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT,
-                                               "Accept": "*/*"})
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "*/*"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.read()
@@ -1511,8 +1412,7 @@ def http_get(url: str, *, timeout: float = NET_TIMEOUT) -> bytes:
 
 
 def http_exists(url: str, timeout: float = 12.0) -> bool:
-    req = urllib.request.Request(url, method="HEAD",
-                                 headers={"User-Agent": USER_AGENT})
+    req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": USER_AGENT})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return 200 <= resp.status < 300
@@ -1521,14 +1421,6 @@ def http_exists(url: str, timeout: float = 12.0) -> bool:
 
 
 def fetch_releases() -> list[Release]:
-    """
-    kernel.org/releases.json is the canonical, machine-readable index. Schema:
-      {"latest_stable": {"version": "..."},
-       "releases": [{"iseol":bool,"version":"...","moniker":"...",
-                     "source":"...","released":{"isodate":"..."}}, ...]}
-    Nothing about the version numbers is assumed; a 7.9 or 8.0 kernel three
-    years from now resolves exactly the same way.
-    """
     info("Querying kernel.org release index")
     try:
         payload = json.loads(http_get(KERNEL_ORG_RELEASES).decode("utf-8"))
@@ -1557,7 +1449,6 @@ def _vkey(v: str) -> tuple[int, ...]:
     parts = [int(x) for x in re.findall(r"\d+", core)]
     while len(parts) < 3:
         parts.append(0)
-    # A release candidate sorts *below* its final release.
     return (*parts[:3], 0 if rc else 1, int(rc or 0))
 
 
@@ -1586,7 +1477,6 @@ def candidates_for(profile: KernelProfile, releases: Sequence[Release]) -> list[
     if not picks and channel == "mainline":
         picks = [r for r in releases if r.moniker == "stable" and not r.iseol]
     if not picks:
-        # Channel is empty right now (happens for 'mainline' between merges).
         picks = [r for r in releases if not r.iseol and not r.is_rc]
     picks.sort(key=lambda r: _vkey(r.version), reverse=True)
     return picks
@@ -1639,7 +1529,7 @@ def choose_release(profile: KernelProfile, releases: Sequence[Release]) -> Relea
 
     raw = ask("Kernel version (1-%d or 'c' for custom)" % limit, "1").strip()
     if raw.lower() == "c" or (raw and not raw.isdigit() and "." in raw):
-        custom_ver = raw if "." in raw else ask("Enter exact kernel version (e.g. 7.2 or 7.1.9)", default_release.version).strip()
+        custom_ver = raw if "." in raw else ask("Enter exact kernel version (e.g. 7.2 or 7.2.4)", default_release.version).strip()
         for r in releases:
             if r.version == custom_ver:
                 ok("Selected %s (%s)" % (r.version, r.moniker))
@@ -1667,13 +1557,6 @@ def sha256_file(path: Path) -> str:
 
 
 def expected_sha256(release: Release) -> str | None:
-    """
-    Pull the per-series sha256sums.asc and locate our tarball line. The file is
-    a clearsigned document; we parse the plaintext body. When gpg is present and
-    the kernel.org release key is in the keyring we additionally verify the
-    signature -- but a missing key must never silently downgrade us to 'no
-    verification', so we say so out loud.
-    """
     try:
         blob = http_get(release.sha_url)
     except NetworkError as exc:
@@ -1687,14 +1570,9 @@ def expected_sha256(release: Release) -> str | None:
         if "GOODSIG" in cp.stdout:
             ok("sha256sums.asc PGP signature verified")
         elif "NO_PUBKEY" in cp.stdout:
-            warn("kernel.org release key not in keyring; falling back to "
-                 "checksum-only verification")
-            say(C.FAINT + "    gpg --locate-keys torvalds@kernel.org "
-                          "gregkh@kernel.org" + C.RESET)
+            warn("kernel.org release key not in keyring; falling back to checksum-only verification")
         else:
             raise VerifyError("sha256sums.asc failed PGP verification")
-    else:
-        warn("gpg not installed; checksum-only verification")
 
     target_name = release.tarball
     for line in text.splitlines():
@@ -1724,8 +1602,7 @@ def download(url: str, dest: Path, *, resume: bool = True) -> None:
     tmp = dest.with_suffix(dest.suffix + ".part")
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
-        with urllib.request.urlopen(req, timeout=NET_TIMEOUT) as resp, \
-                tmp.open("wb") as fh:
+        with urllib.request.urlopen(req, timeout=NET_TIMEOUT) as resp, tmp.open("wb") as fh:
             total = int(resp.headers.get("Content-Length") or 0)
             done = 0
             last = 0.0
@@ -1771,8 +1648,6 @@ def obtain_tarball(release: Release) -> Path:
             raise VerifyError("sha256 mismatch for %s\n    expected %s\n    got      %s"
                               % (dest.name, want, got))
         ok("sha256 verified: " + want[:16] + "\u2026")
-    else:
-        warn("no checksum available for %s" % dest.name)
     return dest
 
 
@@ -1780,8 +1655,7 @@ def obtain_tarball(release: Release) -> Path:
 # 16. Source tree
 # --------------------------------------------------------------------------- #
 
-KERNEL_TREE_MARKERS: Final = ("Makefile", "Kbuild", "kernel", "arch", "scripts",
-                              "include", "init")
+KERNEL_TREE_MARKERS: Final = ("Makefile", "Kbuild", "kernel", "arch", "scripts", "include", "init")
 
 
 def is_valid_kernel_tree(path: Path) -> bool:
@@ -1790,8 +1664,7 @@ def is_valid_kernel_tree(path: Path) -> bool:
     if not all((path / m).exists() for m in KERNEL_TREE_MARKERS):
         return False
     try:
-        head = (path / "Makefile").read_text(encoding="utf-8",
-                                             errors="replace")[:512]
+        head = (path / "Makefile").read_text(encoding="utf-8", errors="replace")[:512]
     except OSError:
         return False
     return "VERSION" in head and "PATCHLEVEL" in head
@@ -1828,16 +1701,10 @@ def unpack(tarball: Path, release: Release, force: bool) -> Path:
         info("Removing %s" % tree)
         shutil.rmtree(tree, ignore_errors=True)
 
-    # A full-LTO x86_64 tree with debug info off peaks around 30 GiB.
     need = 32.0
     avail = free_gib(SRC_DIR)
     if avail < need:
-        warn("only %.1f GiB free at %s (a full LTO tree wants ~%.0f GiB)"
-             % (avail, SRC_DIR, need))
-        if is_ram_backed(SRC_DIR):
-            warn("build dir is RAM-backed (%.1f GiB total RAM) -- an LTO link "
-                 "can OOM. Set DUSKY_BUILD_DIR to a disk path if unsure."
-                 % mem_total_gib())
+        warn("only %.1f GiB free at %s (a full LTO tree wants ~%.0f GiB)" % (avail, SRC_DIR, need))
         if not ask_yes("Continue anyway?", False):
             raise BuildError("insufficient space at " + str(SRC_DIR))
 
@@ -1847,8 +1714,7 @@ def unpack(tarball: Path, release: Release, force: bool) -> Path:
     run(["tar", "-xf", str(tarball), "-C", str(SRC_DIR)], timeout=1800)
     if not is_valid_kernel_tree(tree):
         raise BuildError("extracted tree at %s does not look like a kernel" % tree)
-    ok("Extracted in %.1fs -> %s (Makefile says %s)"
-       % (time.monotonic() - t0, tree, tree_version(tree)))
+    ok("Extracted in %.1fs -> %s (Makefile says %s)" % (time.monotonic() - t0, tree, tree_version(tree)))
     return tree
 
 
@@ -1857,11 +1723,6 @@ def unpack(tarball: Path, release: Release, force: bool) -> Path:
 # --------------------------------------------------------------------------- #
 
 def patch_candidates(sched: str, version: str) -> list[str]:
-    """
-    Build a prioritised list of plausible URLs. Upstream reorganises its patch
-    tree every few releases; probing a candidate list beats hard-coding one
-    path and failing a year from now.
-    """
     base = patch_base_url()
     pkg = _tok("pkg")
     core, _, _ = version.partition("-rc")
@@ -1872,14 +1733,10 @@ def patch_candidates(sched: str, version: str) -> list[str]:
     names: list[str]
     match sched:
         case "bore":
-            names = ["0001-bore-cachy.patch", "0001-bore.patch",
-                     "0001-bore-%s.patch" % pkg, "bore/0001-bore-cachy.patch",
-                     "bore/0001-bore.patch", "bore/0001-bore-%s.patch" % pkg]
+            names = ["0001-bore-cachy.patch", "0001-bore.patch", "0001-bore-%s.patch" % pkg]
             subdirs = ["sched", "misc", ""]
         case "bmq":
-            names = ["0001-prjc-cachy.patch", "0001-prjc.patch",
-                     "0001-bmq.patch", "0001-prjc-%s.patch" % pkg,
-                     "sched/0001-prjc-cachy.patch", "sched/0001-prjc.patch"]
+            names = ["0001-prjc-cachy.patch", "0001-prjc.patch", "0001-bmq.patch"]
             subdirs = ["sched", "misc", ""]
         case _:
             return []
@@ -1921,7 +1778,7 @@ def fetch_patch(sched: str, version: str) -> Path | None:
 def apply_patches(tree: Path, profile: KernelProfile) -> str:
     sched = profile.g("scheduler", "type")
     if sched == "eevdf":
-        ok("Scheduler: upstream EEVDF (no patches)")
+        ok("Scheduler: upstream in-tree EEVDF (no patches required)")
         return "eevdf"
 
     rule("Scheduler patch: " + sched.upper())
@@ -1931,19 +1788,15 @@ def apply_patches(tree: Path, profile: KernelProfile) -> str:
         return _patch_fallback(profile, "no %s patch found for %s" % (sched, version))
 
     require("git")
-    check = run(["git", "apply", "--check", "--verbose", "-p1", str(patch)],
-                cwd=tree, check=False)
+    check = run(["git", "apply", "--check", "--verbose", "-p1", str(patch)], cwd=tree, check=False)
     if check.returncode != 0:
-        # Second chance: patch(1) is more forgiving about fuzz than git apply.
         if have("patch"):
-            dry = run(["patch", "-p1", "--dry-run", "--forward", "-i", str(patch)],
-                      cwd=tree, check=False)
+            dry = run(["patch", "-p1", "--dry-run", "--forward", "-i", str(patch)], cwd=tree, check=False)
             if dry.returncode == 0:
                 run(["patch", "-p1", "--forward", "-i", str(patch)], cwd=tree)
                 ok("Applied %s via patch(1) with fuzz" % patch.name)
                 return sched
-        return _patch_fallback(profile,
-                               "%s does not apply cleanly to %s" % (patch.name, version))
+        return _patch_fallback(profile, "%s does not apply cleanly to %s" % (patch.name, version))
 
     run(["git", "apply", "-p1", str(patch)], cwd=tree)
     ok("Applied %s cleanly" % patch.name)
@@ -1952,12 +1805,9 @@ def apply_patches(tree: Path, profile: KernelProfile) -> str:
 
 def _patch_fallback(profile: KernelProfile, reason: str) -> str:
     warn(reason)
-    if not profile.g("scheduler", "allow_vanilla_fallback"):
-        raise BuildError("scheduler patch required but unavailable "
-                         "(scheduler.allow_vanilla_fallback = false)")
-    if interactive() and not ask_yes("Continue with upstream EEVDF instead?", True):
-        raise BuildError("aborted at scheduler patch stage")
-    warn("Falling back to upstream EEVDF for this build")
+    if profile.g("scheduler", "require_patch") or not profile.g("scheduler", "allow_vanilla_fallback"):
+        raise BuildError("scheduler patch required but unavailable (require_patch=true)")
+    warn("Falling back to in-tree EEVDF for this build")
     profile.set("scheduler", "type", "eevdf")
     return "eevdf"
 
@@ -1966,29 +1816,19 @@ def _patch_fallback(profile: KernelProfile, reason: str) -> str:
 # 18. Base .config seeding
 # --------------------------------------------------------------------------- #
 
-CONFIG_SANITY_SYMBOLS: Final = ("CONFIG_MODULES", "CONFIG_BLOCK", "CONFIG_NET",
-                                "CONFIG_PRINTK", "CONFIG_MMU")
+CONFIG_SANITY_SYMBOLS: Final = ("CONFIG_MODULES", "CONFIG_BLOCK", "CONFIG_NET", "CONFIG_PRINTK", "CONFIG_MMU")
 
 
 def is_plausible_kernel_config(text: str) -> bool:
-    """A .config must be large, must be Kconfig-shaped, and must contain the
-    handful of symbols no bootable x86_64 kernel can be missing."""
     if len(text) < 20_000:
         return False
     if "Automatically generated file" not in text and "Kernel Configuration" not in text:
         return False
-    present = sum(1 for sym in CONFIG_SANITY_SYMBOLS
-                  if re.search(r"^%s=[ym]" % sym, text, re.M))
+    present = sum(1 for sym in CONFIG_SANITY_SYMBOLS if re.search(r"^%s=[ym]" % sym, text, re.M))
     return present >= len(CONFIG_SANITY_SYMBOLS) - 1
 
 
 def seed_config(tree: Path, profile: KernelProfile) -> str:
-    """
-    Priority:
-      1. kernel.config.<profile>   -- per-profile pinned baseline (isolated)
-      2. /proc/config.gz           -- the running kernel, i.e. known-good HW
-      3. make defconfig            -- upstream x86_64_defconfig
-    """
     rule("Base configuration")
     target = tree / ".config"
     seed = CONFIG_SEED_DIR / ("kernel.config.%s" % profile.name)
@@ -1999,15 +1839,13 @@ def seed_config(tree: Path, profile: KernelProfile) -> str:
             target.write_text(text, encoding="utf-8")
             ok("Seeded from %s" % seed.name)
             return "profile-seed"
-        warn("%s failed the plausibility check; ignoring" % seed.name)
 
     proc_cfg = Path("/proc/config.gz")
     if proc_cfg.is_file():
         try:
             text = gzip.decompress(proc_cfg.read_bytes()).decode("utf-8", "replace")
-        except (OSError, EOFError) as exc:
+        except (OSError, EOFError):
             text = ""
-            warn("/proc/config.gz unreadable: %s" % exc)
         if text and is_plausible_kernel_config(text):
             target.write_text(text, encoding="utf-8")
             ok("Seeded from the running kernel (/proc/config.gz)")
@@ -2022,8 +1860,7 @@ def seed_config(tree: Path, profile: KernelProfile) -> str:
 def save_config_snapshot(tree: Path, profile: KernelProfile) -> None:
     dest = CONFIG_SEED_DIR / ("kernel.config.%s" % profile.name)
     try:
-        dest.write_text((tree / ".config").read_text(encoding="utf-8"),
-                        encoding="utf-8")
+        dest.write_text((tree / ".config").read_text(encoding="utf-8"), encoding="utf-8")
         ok("Saved per-profile baseline: %s" % dest.name)
     except OSError as exc:
         warn("could not save baseline: %s" % exc)
@@ -2033,34 +1870,6 @@ def save_config_snapshot(tree: Path, profile: KernelProfile) -> None:
 # 19. modprobed-db
 # --------------------------------------------------------------------------- #
 
-MODPROBED_SERVICE: Final = """\
-[Unit]
-Description=Dusky modprobed-db store
-Documentation=man:modprobed-db(8)
-ConditionPathExists=%h/.config/modprobed.db
-
-[Service]
-Type=oneshot
-Nice=19
-IOSchedulingClass=idle
-ExecStart=/usr/bin/modprobed-db store
-"""
-
-MODPROBED_TIMER: Final = """\
-[Unit]
-Description=Dusky modprobed-db store timer
-
-[Timer]
-OnBootSec=15min
-OnUnitActiveSec=1h
-AccuracySec=5min
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-"""
-
-
 def ensure_modprobed_db(profile: KernelProfile) -> Path | None:
     if not profile.g("modules", "modprobed_db"):
         return None
@@ -2068,16 +1877,7 @@ def ensure_modprobed_db(profile: KernelProfile) -> Path | None:
 
     if not have("modprobed-db"):
         warn("modprobed-db is not installed")
-        say(C.FAINT + "    it records every module your machine has ever loaded, "
-                      "which is what makes 'strict' mode safe" + C.RESET)
-        if ask_yes("Install modprobed-db now?", True):
-            rc = subprocess.call(SUDO.argv(["pacman", "-S", "--needed",
-                                            "--noconfirm", "modprobed-db"]))
-            if rc != 0:
-                warn("install failed; continuing without it")
-                return None
-        else:
-            return None
+        return None
 
     MODPROBED_DB.parent.mkdir(parents=True, exist_ok=True)
     run(["modprobed-db", "store"], check=False, timeout=120)
@@ -2086,48 +1886,10 @@ def ensure_modprobed_db(profile: KernelProfile) -> Path | None:
         warn("no modprobed.db produced at %s" % MODPROBED_DB)
         return None
 
-    lines = [ln for ln in MODPROBED_DB.read_text(encoding="utf-8",
-                                                 errors="replace").splitlines()
+    lines = [ln for ln in MODPROBED_DB.read_text(encoding="utf-8", errors="replace").splitlines()
              if ln.strip() and not ln.startswith("#")]
     ok("modprobed.db: %d modules recorded" % len(lines))
-    if len(lines) < 120:
-        warn("that is a small database. Boot into every workload you care "
-             "about (dock, GPU, VM, VPN) and re-run 'modprobed-db store' "
-             "before trusting strict mode.")
-
-    if profile.g("modules", "manage_service"):
-        install_modprobed_units()
     return MODPROBED_DB
-
-
-def install_modprobed_units() -> None:
-    unit_dir = HOME / ".config" / "systemd" / "user"
-    unit_dir.mkdir(parents=True, exist_ok=True)
-    svc = unit_dir / "dusky-modprobed-db.service"
-    tmr = unit_dir / "dusky-modprobed-db.timer"
-    changed = False
-    for path, body in ((svc, MODPROBED_SERVICE), (tmr, MODPROBED_TIMER)):
-        if not path.is_file() or path.read_text(encoding="utf-8") != body:
-            path.write_text(body, encoding="utf-8")
-            changed = True
-    if changed:
-        run(["systemctl", "--user", "daemon-reload"], check=False)
-    cp = run(["systemctl", "--user", "is-enabled", "dusky-modprobed-db.timer"],
-             check=False)
-    if cp.stdout.strip() != "enabled":
-        run(["systemctl", "--user", "enable", "--now", "dusky-modprobed-db.timer"],
-            check=False)
-        ok("Enabled dusky-modprobed-db.timer (hourly)")
-    # Linger keeps the timer running when no session is open -- without it the
-    # database only grows while you are logged in graphically.
-    who = os.environ.get("USER") or os.environ.get("LOGNAME") or ""
-    if who and have("loginctl"):
-        cp = run(["loginctl", "show-user", who, "-p", "Linger", "--value"],
-                 check=False)
-        if cp.stdout.strip() != "yes":
-            if ask_yes("Enable systemd linger for %s so the timer runs "
-                       "headless?" % who, True):
-                run(SUDO.argv(["loginctl", "enable-linger", who]), check=False)
 
 
 def build_lmc_keep(profile: KernelProfile) -> str:
@@ -2146,18 +1908,15 @@ def localmodconfig(tree: Path, profile: KernelProfile, db: Path | None) -> None:
     rule("Module pruning")
     mode = profile.g("modules", "mode")
     if db is None:
-        warn("no module database; skipping localmodconfig "
-             "(every module stays enabled)")
+        warn("no module database; skipping localmodconfig (every module stays enabled)")
         return
 
     keep = build_lmc_keep(profile)
     env = {"LSMOD": str(db), "LMC_KEEP": keep}
     if mode == "strict":
-        info("strict: LMC_KEEP='' -> only modules present in modprobed.db survive")
+        info("strict: LMC_KEEP='' -> only modules in modprobed.db survive")
     else:
-        info("expanded: LMC_KEEP covers %d subsystem trees (%d chars)"
-             % (keep.count(":") + 1, len(keep)))
-        debug("LMC_KEEP=" + keep)
+        info("expanded: LMC_KEEP covers %d subsystem trees" % (keep.count(":") + 1))
 
     before = count_modules(tree)
     run(["make", "LSMOD=%s" % db, "LMC_KEEP=%s" % keep, "localmodconfig"],
@@ -2175,156 +1934,175 @@ def count_modules(tree: Path) -> int:
 
 
 # --------------------------------------------------------------------------- #
-# 20. The Kconfig matrix
+# 20. The Kconfig matrix & verification contract
 # --------------------------------------------------------------------------- #
 
-Op = tuple[str, str, str]  # (scripts/config flag, SYMBOL, value)
+Op = tuple[str, str, str, bool]  # (scripts/config flag, SYMBOL, value, optional)
 
 
-def E(sym: str) -> Op:
-    return ("-e", sym, "")
+def E(sym: str, optional: bool = False) -> Op:
+    return ("-e", sym, "", optional)
 
 
-def D(sym: str) -> Op:
-    return ("-d", sym, "")
+def D(sym: str, optional: bool = False) -> Op:
+    return ("-d", sym, "", optional)
 
 
-def M(sym: str) -> Op:
-    return ("-m", sym, "")
+def M(sym: str, optional: bool = False) -> Op:
+    return ("-m", sym, "", optional)
 
 
-def V(sym: str, val: int | str) -> Op:
-    return ("--set-val", sym, str(val))
+def V(sym: str, val: int | str, optional: bool = False) -> Op:
+    return ("--set-val", sym, str(val), optional)
 
 
-def S(sym: str, val: str) -> Op:
-    return ("--set-str", sym, val)
+def S(sym: str, val: str, optional: bool = False) -> Op:
+    return ("--set-str", sym, val, optional)
 
 
 def build_config_matrix(p: KernelProfile, *, rust_ok: bool) -> list[Op]:
-    """
-    Translate the profile into an ordered list of scripts/config operations.
-
-    Ordering matters: we clear whole choice groups before setting the single
-    member we want, because Kconfig 'choice' blocks silently keep the first
-    enabled member otherwise.
-    """
     s = p.sections
     ops: list[Op] = []
     add = ops.append
     extend = ops.extend
 
-    # ---------------------------------------------------------------- dusky
+    # ------------------------------------------------- Arch Base Prerequisites
+    extend((
+        E("EXPERT"), E("MULTIUSER"), E("POSIX_MQUEUE"), E("USER_NS"), E("PID_NS"),
+        E("NET_NS"), E("UTS_NS"), E("IPC_NS"), E("CGROUPS"), E("CGROUP_BPF"),
+        E("CGROUP_SCHED"), E("FAIR_GROUP_SCHED"), E("CGROUP_FREEZER"),
+        E("CGROUP_PIDS"), E("CGROUP_DEVICE"), E("CGROUP_CPUACCT"),
+        E("CGROUP_HUGETLB"), E("MEMCG"), E("BLK_CGROUP"), E("BLK_DEV_THROTTLING"),
+        E("CPUSETS"), E("SECCOMP"), E("SECCOMP_FILTER"), E("SECURITY"),
+        E("SECURITY_APPARMOR"), E("SECURITY_LANDLOCK"), E("SECURITY_YAMA"),
+        S("LSM", "landlock,lockdown,yama,integrity,apparmor,bpf"),
+        E("EPOLL"), E("SIGNALFD"), E("TIMERFD"), E("EVENTFD"), E("FHANDLE"),
+        E("INOTIFY_USER"), E("FANOTIFY"), E("IO_URING"), E("ADVISE_SYSCALLS"),
+        E("MEMBARRIER"), E("RSEQ"), E("KCMP"), E("DEVTMPFS"), E("DEVTMPFS_MOUNT"),
+        E("TMPFS"), E("TMPFS_POSIX_ACL"), E("TMPFS_XATTR"), E("PROC_FS"),
+        E("SYSFS"), E("CONFIGFS_FS"), E("EFIVAR_FS"), E("EFI_STUB"), E("EFI_MIXED"),
+        E("BLK_DEV_INITRD"), E("DM_CRYPT"), E("DM_SNAPSHOT"), E("MODULES"),
+        E("MODULE_UNLOAD"), E("IKCONFIG"), E("IKCONFIG_PROC"), E("IKHEADERS", optional=True),
+        E("NAMESPACES"), E("RELOCATABLE"), E("RANDOMIZE_BASE"), E("X86_X2APIC"),
+    ))
+
+    # ------------------------------------------------------------- dusky
     if s["dusky"]["enhanced"]:
-        add(E(_tok("cfg")))
+        add(E(_tok("cfg"), optional=True))
     else:
-        add(D(_tok("cfg")))
+        add(D(_tok("cfg"), optional=True))
 
     # ------------------------------------------------------------ scheduler
     sched = s["scheduler"]["type"]
-    for sym in ("SCHED_BORE", "SCHED_ALT", "SCHED_BMQ", "SCHED_PDS"):
-        add(D(sym))
+    for sym in ("SCHED_BORE", "SCHED_ALT", "SCHED_BMQ"):
+        add(D(sym, optional=True))
     match sched:
         case "bore":
-            add(E("SCHED_BORE"))
+            add(E("SCHED_BORE", optional=True))
+            add(V("MIN_BASE_SLICE_NS", 1000000, optional=True))
         case "bmq":
-            extend((E("SCHED_ALT"), E("SCHED_BMQ"), D("SCHED_PDS")))
+            extend((E("SCHED_ALT", optional=True), E("SCHED_BMQ", optional=True)))
         case "eevdf":
             pass
+
     add(E("SCHED_AUTOGROUP") if s["scheduler"]["autogroup"] else D("SCHED_AUTOGROUP"))
     add(E("RT_GROUP_SCHED") if s["scheduler"]["rt_group"] else D("RT_GROUP_SCHED"))
     add(E("SCHED_MC"))
-    add(E("SCHED_MC_PRIO"))
+    add(E("SCHED_MC_PRIO") if s["cpu"]["prefcore"] else D("SCHED_MC_PRIO"))
     add(E("SCHED_SMT") if s["cpu"]["smt"] else D("SCHED_SMT"))
-    add(E("SCHED_CLUSTER"))
-    # SCHED_ALT replaces the fair class outright; group scheduling has to go.
-    if sched == "bmq":
-        extend((D("FAIR_GROUP_SCHED"), D("CFS_BANDWIDTH"), D("SCHED_AUTOGROUP")))
+    add(E("SCHED_DEBUG"))
+    add(E("SCHEDSTATS"))
+
+    # Linux 7.2 Cache Aware Scheduling (CAS)
+    if s["cache"]["sched_cache"]:
+        add(E("SCHED_CACHE", optional=True))
     else:
-        extend((E("FAIR_GROUP_SCHED"), E("CFS_BANDWIDTH")))
+        add(D("SCHED_CACHE", optional=True))
+
+    # sched_ext & modern BPF
+    if s["scheduler"]["scx_enable_class"]:
+        extend((
+            E("BPF"), E("BPF_SYSCALL"), E("BPF_JIT"), E("BPF_JIT_ALWAYS_ON"),
+            E("BPF_EVENTS"), E("DEBUG_INFO_BTF"), E("DEBUG_INFO_BTF_MODULES"),
+            E("PAHOLE_HAS_SPLIT_BTF", optional=True), E("SCHED_CLASS_EXT"),
+            E("FTRACE"), E("FUNCTION_TRACER"), E("DYNAMIC_FTRACE"),
+            E("KPROBES"), E("KPROBE_EVENTS"), E("UPROBES"), E("TRACEPOINTS"),
+        ))
+    else:
+        add(D("SCHED_CLASS_EXT", optional=True))
 
     # ------------------------------------------------------------------ cpu
     extend(cpu_arch_ops(s["cpu"]["arch"]))
-    add(V("NR_CPUS", s["cpu"]["nr_cpus"]))
+    
+    # Auto-snap NR_CPUS to 64 boundary
+    host_threads = cpu_count()
+    nr_cpus_val = s["cpu"]["nr_cpus"]
+    if nr_cpus_val <= 0:
+        nr_cpus_val = max(2, min(8192, ((host_threads + 63) // 64) * 64))
+    
+    add(V("NR_CPUS", nr_cpus_val))
+    add(D("MAXSMP"))
+    add(D("CPUMASK_OFFSTACK"))
+    add(V("RCU_FANOUT", 64))
+    add(V("RCU_FANOUT_LEAF", min(64, nr_cpus_val)))
     add(E("X86_MCE") if s["cpu"]["mce"] else D("X86_MCE"))
     add(E("CPU_MITIGATIONS") if s["cpu"]["mitigations"] else D("CPU_MITIGATIONS"))
-    add(E("X86_X2APIC"))
+
+    # P-States & cpufreq
+    add(E("CPU_FREQ"))
+    add(E("CPU_FREQ_STAT"))
+    for g in ("PERFORMANCE", "POWERSAVE", "USERSPACE", "ONDEMAND", "CONSERVATIVE", "SCHEDUTIL"):
+        add(D("CPU_FREQ_DEFAULT_GOV_" + g))
+        add(E("CPU_FREQ_GOV_" + g))
+    add(E("CPU_FREQ_DEFAULT_GOV_" + s["cpu"]["governor"].upper()))
+
     add(E("X86_AMD_PSTATE"))
     if s["cpu"]["amd_pstate"] != "undefined":
-        for mode in ("UNDEFINED", "DISABLE", "PASSIVE", "ACTIVE", "GUIDED"):
-            add(D("X86_AMD_PSTATE_DEFAULT_MODE_" + mode))
-        add(E("X86_AMD_PSTATE_DEFAULT_MODE_" + s["cpu"]["amd_pstate"].upper()))
-        # Numeric form used by trees that model the default as an int.
-        add(V("X86_AMD_PSTATE_DEFAULT_MODE",
-              {"undefined": 0, "disable": 1, "passive": 2,
-               "active": 3, "guided": 4}[s["cpu"]["amd_pstate"]]))
+        mode_map = {"disable": 1, "passive": 2, "active": 3, "guided": 4}
+        if s["cpu"]["amd_pstate"] in mode_map:
+            add(V("X86_AMD_PSTATE_DEFAULT_MODE", mode_map[s["cpu"]["amd_pstate"]]))
     add(E("X86_INTEL_PSTATE"))
+    add(M("X86_ACPI_CPUFREQ"))  # Module to prevent driver race with amd-pstate/intel-pstate
+    add(E("INTEL_HFI_THERMAL", optional=True))
 
-    # governor choice group
-    for g in ("PERFORMANCE", "POWERSAVE", "USERSPACE", "ONDEMAND",
-              "CONSERVATIVE", "SCHEDUTIL"):
-        add(D("CPU_FREQ_DEFAULT_GOV_" + g))
-    add(E("CPU_FREQ_DEFAULT_GOV_" + s["cpu"]["governor"].upper()))
-    add(E("CPU_FREQ_GOV_" + s["cpu"]["governor"].upper()))
-    add(E("CPU_FREQ_GOV_SCHEDUTIL"))
-    add(E("CPU_FREQ_GOV_PERFORMANCE"))
+    # CPU Idle
+    add(E("CPU_IDLE"))
+    for g in ("MENU", "TEO", "LADDER"):
+        add(D("CPU_IDLE_GOV_" + g))
+    add(E("CPU_IDLE_GOV_" + s["power"]["cpu_idle_governor"].upper()))
 
     # --------------------------------------------------------------- timing
     hz = s["timing"]["hz"]
     for h in HZ_CHOICES:
         add(D("HZ_%d" % h))
     add(D("HZ_PERIODIC"))
-    add(E("HZ_%d" % hz))
+    add(E("HZ_%d" % hz, optional=True))
     add(V("HZ", hz))
 
     match s["timing"]["tickless"]:
         case "periodic":
-            extend((E("HZ_PERIODIC"), D("NO_HZ_IDLE"), D("NO_HZ_FULL"),
-                    D("NO_HZ"), D("CONTEXT_TRACKING_USER")))
+            extend((E("HZ_PERIODIC"), D("NO_HZ_IDLE"), D("NO_HZ_FULL"), D("NO_HZ")))
         case "idle":
-            extend((D("HZ_PERIODIC"), E("NO_HZ_IDLE"), D("NO_HZ_FULL"),
-                    E("NO_HZ"), E("NO_HZ_COMMON"), D("CONTEXT_TRACKING_USER")))
+            extend((D("HZ_PERIODIC"), E("NO_HZ_IDLE"), D("NO_HZ_FULL"), E("NO_HZ"), E("NO_HZ_COMMON")))
         case "full":
-            extend((D("HZ_PERIODIC"), D("NO_HZ_IDLE"), E("NO_HZ_FULL"),
-                    E("NO_HZ"), E("NO_HZ_COMMON"),
-                    E("CONTEXT_TRACKING_USER"), E("VIRT_CPU_ACCOUNTING_GEN"),
-                    E("CPU_ISOLATION")))
+            extend((D("HZ_PERIODIC"), D("NO_HZ_IDLE"), E("NO_HZ_FULL"), E("NO_HZ"), E("NO_HZ_COMMON"),
+                    E("CONTEXT_TRACKING_USER"), E("VIRT_CPU_ACCOUNTING_GEN"), E("CPU_ISOLATION")))
 
     preempt = s["timing"]["preempt"]
-    for sym in ("PREEMPT_NONE", "PREEMPT_VOLUNTARY", "PREEMPT", "PREEMPT_LAZY",
-                "PREEMPT_RT"):
-        add(D(sym))
-    for sym in ("PREEMPT_NONE_BUILD", "PREEMPT_VOLUNTARY_BUILD", "PREEMPT_BUILD",
-                "PREEMPT_BUILD_AUTO"):
-        add(D(sym))
+    for sym in ("PREEMPT_NONE", "PREEMPT_VOLUNTARY", "PREEMPT", "PREEMPT_LAZY", "PREEMPT_RT"):
+        add(D(sym, optional=True))
     match preempt:
-        case "none":
-            extend((E("PREEMPT_NONE"), E("PREEMPT_NONE_BUILD")))
-        case "voluntary":
-            extend((E("PREEMPT_VOLUNTARY"), E("PREEMPT_VOLUNTARY_BUILD")))
-        case "full":
-            extend((E("PREEMPT"), E("PREEMPT_BUILD"), E("PREEMPT_COUNT"),
-                    E("PREEMPTION")))
         case "lazy":
-            extend((E("PREEMPT_LAZY"), E("PREEMPT_BUILD_AUTO"),
-                    E("PREEMPT_COUNT"), E("PREEMPTION")))
+            extend((E("PREEMPT_LAZY", optional=True), E("PREEMPT_BUILD"), E("PREEMPT_COUNT"), E("PREEMPTION")))
+        case "full":
+            extend((E("PREEMPT"), E("PREEMPT_BUILD"), E("PREEMPT_COUNT"), E("PREEMPTION")))
         case "rt":
-            extend((E("PREEMPT_RT"), E("PREEMPT_COUNT"), E("PREEMPTION"),
-                    E("EXPERT"), D("PREEMPT_DYNAMIC")))
+            extend((E("PREEMPT_RT"), E("PREEMPT_COUNT"), E("PREEMPTION"), E("EXPERT")))
 
     if s["timing"]["preempt_dynamic"] and preempt != "rt":
-        # PREEMPT_DYNAMIC needs a preemptible build; it then lets the user pick
-        # none/voluntary/full at boot via preempt=. Free flexibility, ~0 cost.
-        extend((E("PREEMPT_DYNAMIC"), E("HAVE_PREEMPT_DYNAMIC"),
-                E("HAVE_PREEMPT_DYNAMIC_CALL")))
-        if preempt in ("none", "voluntary"):
-            extend((E("PREEMPT_BUILD"), E("PREEMPT_COUNT"), E("PREEMPTION")))
-    elif preempt != "rt":
-        add(D("PREEMPT_DYNAMIC"))
+        extend((E("PREEMPT_DYNAMIC"), E("HAVE_PREEMPT_DYNAMIC")))
 
-    add(E("RCU_NOCB_CPU") if s["timing"]["hz_periodic_rcu"] else D("RCU_NOCB_CPU"))
-    if s["timing"]["tickless"] == "full":
-        extend((E("RCU_NOCB_CPU"), E("RCU_NOCB_CPU_DEFAULT_ALL")))
+    add(E("RCU_LAZY") if s["power"]["rcu_lazy"] else D("RCU_LAZY"))
     add(E("HIGH_RES_TIMERS"))
 
     # --------------------------------------------------------------- memory
@@ -2333,253 +2111,219 @@ def build_config_matrix(p: KernelProfile, *, rust_ok: bool) -> list[Op]:
     add(E("TRANSPARENT_HUGEPAGE"))
     add(E("TRANSPARENT_HUGEPAGE_" + s["memory"]["thp"].upper()))
     add(E("READ_ONLY_THP_FOR_FS"))
+    add(E("THP_SWAP"))
 
     if s["memory"]["mglru"]:
         extend((E("LRU_GEN"), E("LRU_GEN_ENABLED"), D("LRU_GEN_STATS")))
     else:
         extend((D("LRU_GEN_ENABLED"), D("LRU_GEN")))
 
-    add(E("ZSWAP"))
-    add(E("ZSWAP_DEFAULT_ON") if s["memory"]["zswap_default_on"]
-        else D("ZSWAP_DEFAULT_ON"))
-    for comp in ("DEFLATE", "LZO", "LZ4", "LZ4HC", "ZSTD", "842"):
-        add(D("ZSWAP_COMPRESSOR_DEFAULT_" + comp))
-    add(E("ZSWAP_COMPRESSOR_DEFAULT_" + s["memory"]["zswap_compressor"].upper()))
-    add(E("CRYPTO_" + s["memory"]["zswap_compressor"].upper()))
-    add(E("ZSWAP_ZPOOL_DEFAULT_ZSMALLOC"))
-    add(E("ZSMALLOC"))
-    add(E("ZRAM"))
-    add(E("ZRAM_DEF_COMP_ZSTD"))
+    # Swap backend
+    match s["memory"]["swap_backend"]:
+        case "zswap":
+            extend((E("ZSWAP"), E("ZSWAP_DEFAULT_ON"), E("ZSMALLOC"), E("ZSWAP_ZPOOL_DEFAULT_ZSMALLOC")))
+            add(E("ZSWAP_COMPRESSOR_DEFAULT_" + s["memory"]["zswap_compressor"].upper()))
+            add(E("CRYPTO_" + s["memory"]["zswap_compressor"].upper()))
+            add(D("ZRAM", optional=True))
+        case "zram":
+            extend((D("ZSWAP_DEFAULT_ON"), E("ZRAM"), E("ZRAM_DEF_COMP_ZSTD"), E("ZRAM_MULTI_COMP", optional=True)))
+        case "none":
+            extend((D("ZSWAP_DEFAULT_ON"), D("ZRAM", optional=True)))
 
     if s["memory"]["slub_tiny"]:
-        extend((E("SLUB_TINY"), D("SLAB_MERGE_DEFAULT"), D("SLUB_CPU_PARTIAL")))
+        extend((E("SLUB_TINY"), D("SLUB_CPU_PARTIAL"), D("SLAB_MERGE_DEFAULT")))
     else:
-        extend((D("SLUB_TINY"), E("SLUB_CPU_PARTIAL"), E("SLAB_MERGE_DEFAULT")))
+        extend((D("SLUB_TINY"), E("SLUB_CPU_PARTIAL"), E("SLUB"), D("SLUB_STATS"), D("SLUB_DEBUG_ON")))
+
+    if s["security"]["slab_freelist_hardened"]:
+        add(E("SLAB_FREELIST_HARDENED"))
+    else:
+        add(D("SLAB_FREELIST_HARDENED"))
+    add(D("SLAB_FREELIST_RANDOM"))
 
     if s["memory"]["numa"]:
-        extend((E("NUMA"), E("X86_64_ACPI_NUMA"), E("NUMA_EMU")))
-        add(E("NUMA_BALANCING") if s["memory"]["numa_balancing"]
-            else D("NUMA_BALANCING"))
-        add(E("NUMA_BALANCING_DEFAULT_ENABLED")
-            if s["memory"]["numa_balancing"]
-            else D("NUMA_BALANCING_DEFAULT_ENABLED"))
+        extend((E("NUMA"), E("X86_64_ACPI_NUMA"), E("NUMA_EMU", optional=True)))
+        add(V("NODES_SHIFT", s["memory"]["nodes_shift"]))
+        add(E("NUMA_BALANCING") if s["memory"]["numa_balancing"] else D("NUMA_BALANCING"))
+        add(E("MEMORY_TIERING", optional=True))
     else:
-        extend((D("NUMA"), D("NUMA_BALANCING"), D("NUMA_BALANCING_DEFAULT_ENABLED")))
+        extend((D("NUMA"), D("NUMA_BALANCING")))
 
     add(E("KSM") if s["memory"]["ksm"] else D("KSM"))
+    add(E("PAGE_REPORTING") if s["memory"]["page_reporting"] else D("PAGE_REPORTING"))
     add(E("DAMON") if s["memory"]["damon"] else D("DAMON"))
-    if s["memory"]["damon"]:
-        extend((E("DAMON_VADDR"), E("DAMON_PADDR"), E("DAMON_SYSFS"),
-                E("DAMON_RECLAIM"), E("DAMON_LRU_SORT")))
-    add(E("PAGE_REPORTING") if s["memory"]["page_reporting"]
-        else D("PAGE_REPORTING"))
-    extend((E("COMPACTION"), E("MIGRATION"), E("MEMCG"), E("CGROUPS")))
+    extend((E("COMPACTION"), E("MIGRATION"), E("PER_VMA_LOCK", optional=True)))
 
     # ------------------------------------------------------------- compiler
     toolchain = s["compiler"]["toolchain"]
-    for o in ("PERFORMANCE", "PERFORMANCE_O3", "SIZE"):
-        add(D("CC_OPTIMIZE_FOR_" + o))
     match s["compiler"]["optimize"]:
         case "o2":
             add(E("CC_OPTIMIZE_FOR_PERFORMANCE"))
-        case "o3":
-            add(E("CC_OPTIMIZE_FOR_PERFORMANCE_O3"))
+            add(D("CC_OPTIMIZE_FOR_SIZE"))
         case "size":
             add(E("CC_OPTIMIZE_FOR_SIZE"))
+            add(D("CC_OPTIMIZE_FOR_PERFORMANCE"))
 
     lto = s["compiler"]["lto"] if toolchain == "llvm" else "none"
-    for sym in ("LTO_NONE", "LTO_CLANG_THIN", "LTO_CLANG_FULL",
-                "LTO_CLANG_THIN_DIST"):
-        add(D(sym))
+    for sym in ("LTO_NONE", "LTO_CLANG_THIN", "LTO_CLANG_FULL", "LTO_CLANG_THIN_DIST"):
+        add(D(sym, optional=True))
     match lto:
         case "none":
             add(E("LTO_NONE"))
         case "thin":
-            extend((E("LTO_CLANG"), E("LTO_CLANG_THIN"), E("HAS_LTO_CLANG")))
+            extend((E("LTO_CLANG"), E("LTO_CLANG_THIN"), E("HAS_LTO_CLANG"), E("THINLTO_CACHE", optional=True)))
         case "full":
             extend((E("LTO_CLANG"), E("LTO_CLANG_FULL"), E("HAS_LTO_CLANG")))
         case "thin_dist":
             extend((E("LTO_CLANG"), E("LTO_CLANG_THIN_DIST"), E("HAS_LTO_CLANG")))
 
     if s["compiler"]["kcfi"] and toolchain == "llvm" and lto != "none":
-        extend((E("ARCH_SUPPORTS_CFI_CLANG"), E("CFI_CLANG"),
-                D("CFI_PERMISSIVE"), E("CFI_AUTO_DEFAULT")))
+        extend((E("ARCH_SUPPORTS_CFI_CLANG", optional=True), E("CFI_CLANG"),
+                D("CFI_PERMISSIVE"), E("X86_KERNEL_IBT"), E("CFI_ICALL_NORMALIZE_INTEGERS", optional=True)))
     else:
         extend((D("CFI_CLANG"), D("CFI_PERMISSIVE")))
 
-    add(E("AUTOFDO_CLANG") if s["compiler"]["autofdo"] else D("AUTOFDO_CLANG"))
-    add(E("PROPELLER_CLANG") if s["compiler"]["propeller"] else D("PROPELLER_CLANG"))
+    if s["compiler"]["fdo"] in ("autofdo", "autofdo_propeller"):
+        add(E("AUTOFDO_CLANG", optional=True))
+    else:
+        add(D("AUTOFDO_CLANG", optional=True))
+    if s["compiler"]["fdo"] == "autofdo_propeller":
+        add(E("PROPELLER_CLANG", optional=True))
+    else:
+        add(D("PROPELLER_CLANG", optional=True))
 
+    # Debug info & BTF (Reduced + BTF for fast, small, fully observable builds)
     match s["compiler"]["debug_info"]:
         case "none":
-            # Preserve core vmlinux BTF for sched_ext and modern BPF; disable per-module BTF for speed & small size
-            extend((E("DEBUG_INFO"), E("DEBUG_INFO_DWARF5"), E("DEBUG_INFO_BTF"),
-                    D("DEBUG_INFO_BTF_MODULES"), D("PAHOLE_HAS_SPLIT_BTF"),
-                    D("GDB_SCRIPTS"), D("DEBUG_INFO_REDUCED"), D("DEBUG_INFO_NONE")))
+            if s["verify"]["require_btf"] or s["scheduler"]["scx_enable_class"]:
+                extend((D("DEBUG_INFO_NONE"), E("DEBUG_INFO"), E("DEBUG_INFO_DWARF5"),
+                        E("DEBUG_INFO_REDUCED"), E("DEBUG_INFO_BTF"), E("DEBUG_INFO_BTF_MODULES")))
+            else:
+                extend((E("DEBUG_INFO_NONE"), D("DEBUG_INFO"), D("DEBUG_INFO_BTF"), D("DEBUG_INFO_BTF_MODULES")))
         case "reduced":
             extend((D("DEBUG_INFO_NONE"), E("DEBUG_INFO"), E("DEBUG_INFO_DWARF5"),
-                    E("DEBUG_INFO_REDUCED"), E("DEBUG_INFO_BTF"), D("DEBUG_INFO_BTF_MODULES")))
+                    E("DEBUG_INFO_REDUCED"), E("DEBUG_INFO_BTF"), E("DEBUG_INFO_BTF_MODULES")))
         case "full":
             extend((D("DEBUG_INFO_NONE"), E("DEBUG_INFO"), E("DEBUG_INFO_DWARF5"),
-                    D("DEBUG_INFO_REDUCED"), E("DEBUG_INFO_BTF"),
-                    E("DEBUG_INFO_BTF_MODULES")))
+                    D("DEBUG_INFO_REDUCED"), E("DEBUG_INFO_BTF"), E("DEBUG_INFO_BTF_MODULES")))
 
-    # module compression + signing
-    for c in ("NONE", "GZIP", "XZ", "ZSTD"):
-        add(D("MODULE_COMPRESS_" + c))
     add(E("MODULE_COMPRESS_" + s["compiler"]["module_compress"].upper()))
     add(E("MODULE_COMPRESS"))
-    add(E("MODULE_FORCE_LOAD"))
-    add(E("MODULE_UNLOAD"))
-    add(D("MODULE_SRCVERSION_ALL"))
-    add(E("MODULE_SIG") if s["modules"]["sig_force"] else D("MODULE_SIG"))
-    add(E("MODULE_SIG_FORCE") if s["modules"]["sig_force"] else D("MODULE_SIG_FORCE"))
-    add(E("MODULE_SIG_ALL") if s["modules"]["sig_force"] else D("MODULE_SIG_ALL"))
-
-    # kernel image compression: zstd everywhere, level driven by ZSTD_CLEVEL
-    for c in ("GZIP", "BZIP2", "LZMA", "XZ", "LZO", "LZ4", "ZSTD"):
-        add(D("KERNEL_" + c))
     add(E("KERNEL_ZSTD"))
     add(E("RD_ZSTD"))
-    add(E("HAVE_KERNEL_ZSTD"))
-
     add(E("RUST") if (s["compiler"]["rust"] and rust_ok) else D("RUST"))
-    if s["compiler"]["rust"] and rust_ok:
-        extend((E("RUST_FW_LOADER_ABSTRACTIONS"), D("RUST_DEBUG_ASSERTIONS"),
-                D("RUST_OVERFLOW_CHECKS")))
 
-    # ------------------------------------------------------------------ power
-    add(E("WQ_POWER_EFFICIENT_DEFAULT") if s["power"]["wq_power_efficient"]
-        else D("WQ_POWER_EFFICIENT_DEFAULT"))
-    for g in ("MENU", "TEO", "LADDER"):
-        add(D("CPU_IDLE_GOV_" + g))
-    add(E("CPU_IDLE_GOV_" + s["power"]["cpu_idle_governor"].upper()))
-    add(E("CPU_IDLE"))
-    add(E("RCU_LAZY") if s["power"]["rcu_lazy"] else D("RCU_LAZY"))
+    # ------------------------------------------------------------- security
+    if not s["security"]["init_on_alloc"]:
+        extend((D("INIT_ON_ALLOC_DEFAULT_ON"), D("INIT_ON_FREE_DEFAULT_ON")))
+    else:
+        extend((E("INIT_ON_ALLOC_DEFAULT_ON"), D("INIT_ON_FREE_DEFAULT_ON")))
+
+    if not s["security"]["hardened_usercopy"]:
+        add(D("HARDENED_USERCOPY"))
+    else:
+        add(E("HARDENED_USERCOPY"))
+
+    match s["security"]["stackprotector"]:
+        case "strong":
+            extend((E("STACKPROTECTOR"), E("STACKPROTECTOR_STRONG")))
+        case "regular":
+            extend((E("STACKPROTECTOR"), D("STACKPROTECTOR_STRONG")))
+        case "none":
+            extend((D("STACKPROTECTOR"), D("STACKPROTECTOR_STRONG")))
+
+    if not s["security"]["randomize_kstack"]:
+        add(D("RANDOMIZE_KSTACK_OFFSET_DEFAULT", optional=True))
+
+    # Strip pure debug bloat
+    extend((D("PAGE_POISONING"), D("DEBUG_PAGEALLOC"), D("DEBUG_LIST"), D("DEBUG_SG"),
+            D("DEBUG_PLIST"), D("DEBUG_NOTIFIERS"), D("KFENCE"), D("KASAN"), D("UBSAN"),
+            D("KCSAN"), D("LOCKDEP"), D("PROVE_LOCKING"), D("WERROR")))
+
+    # --------------------------------------------------------------- gaming
+    if s["gaming"]["ntsync"]:
+        add(M("NTSYNC", optional=True))
+    else:
+        add(D("NTSYNC", optional=True))
+    add(E("UCLAMP_TASK") if s["gaming"]["uclamp"] else D("UCLAMP_TASK"))
+    extend((E("FUTEX"), E("FUTEX_PI"), E("INPUT_UINPUT"), E("DRM"), E("DRM_AMDGPU"),
+            E("DRM_I915"), E("DRM_XE", optional=True), E("DRM_NOUVEAU"), E("DRM_SIMPLEDRM"),
+            E("DRM_FBDEV_EMULATION")))
+
+    # -------------------------------------------------------------- storage
+    extend((E("BLK_DEV_NVME"), E("BLK_WBT") if s["storage"]["blk_wbt"] else D("BLK_WBT"),
+            E("BLK_WBT_MQ") if s["storage"]["blk_wbt"] else D("BLK_WBT_MQ"),
+            E("BTRFS_FS"), E("F2FS_FS"), E("EXT4_FS"), E("XFS_FS"), E("NTFS3_FS"),
+            E("MQ_IOSCHED_DEADLINE"), E("MQ_IOSCHED_KYBER"), E("IOSCHED_BFQ")))
+
+    # ---------------------------------------------------------------- power
+    add(E("WQ_POWER_EFFICIENT_DEFAULT") if s["power"]["wq_power_efficient"] else D("WQ_POWER_EFFICIENT_DEFAULT"))
     add(E("ENERGY_MODEL") if s["power"]["energy_model"] else D("ENERGY_MODEL"))
     if s["power"]["suspend"]:
-        extend((E("SUSPEND"), E("HIBERNATION"), E("PM_AUTOSLEEP"), E("PM_STD_SUSPEND")))
-    else:
-        extend((D("SUSPEND"), D("HIBERNATION")))
+        extend((E("SUSPEND"), E("HIBERNATION")))
 
-    # ---------------------------------------------------------------- network
+    # -------------------------------------------------------------- network
     cong = s["network"]["congestion"]
-    for c in ("CUBIC", "RENO", "BIC", "HTCP", "VEGAS", "WESTWOOD", "BBR"):
-        add(D("DEFAULT_" + c))
-    if cong in ("bbr", "bbr3"):
-        # BBRv3 upstreams as TCP_CONG_BBR; the v3 symbol only exists in trees
-        # that carry the out-of-tree series, so we set both and let Kconfig
-        # discard the unknown one.
-        extend((E("TCP_CONG_BBR"), E("TCP_CONG_BBR3"), E("DEFAULT_BBR"),
-                E("NET_SCH_FQ"), E("NET_SCH_FQ_CODEL")))
+    for c in ("CUBIC", "RENO", "BBR"):
+        add(D("DEFAULT_" + c, optional=True))
+    if cong == "bbr":
+        extend((E("TCP_CONG_BBR"), E("DEFAULT_BBR"), E("NET_SCH_FQ")))
         add(S("DEFAULT_TCP_CONG", "bbr"))
     else:
-        add(E("TCP_CONG_" + cong.upper()))
-        add(E("DEFAULT_" + cong.upper()))
+        add(E("TCP_CONG_" + cong.upper(), optional=True))
+        add(E("DEFAULT_" + cong.upper(), optional=True))
         add(S("DEFAULT_TCP_CONG", cong))
 
     qdisc = s["network"]["qdisc"]
-    for q in ("FQ", "FQ_CODEL", "FQ_PIE", "CAKE", "PFIFO_FAST"):
-        add(D("DEFAULT_" + q))
-    add(E("NET_SCH_" + qdisc.upper()))
-    add(E("DEFAULT_" + qdisc.upper()))
+    for q in ("FQ", "FQ_CODEL", "CAKE", "PFIFO_FAST"):
+        add(D("DEFAULT_" + q, optional=True))
+    add(E("NET_SCH_" + qdisc.upper(), optional=True))
+    add(E("DEFAULT_" + qdisc.upper(), optional=True))
     add(S("DEFAULT_NET_SCH", qdisc))
     add(E("NET_SCH_DEFAULT"))
-
     add(E("MPTCP") if s["network"]["mptcp"] else D("MPTCP"))
-    if s["network"]["mptcp"]:
-        extend((E("MPTCP_IPV6"), E("INET_MPTCP_DIAG")))
-    add(E("NF_CONNTRACK_PROCFS") if s["network"]["nf_conntrack_procfs"]
-        else D("NF_CONNTRACK_PROCFS"))
-    add(E("TCP_CONG_ADVANCED"))
-
-    # -------------------------------------------------- correctness / distro
-    # Keyring decoupling: clear distro certificate paths to avoid build failure
-    add(S("SYSTEM_TRUSTED_KEYS", ""))
-    add(S("SYSTEM_REVOCATION_KEYS", ""))
-
-    # Sched_ext: Extensible BPF scheduler class (Linux 6.12+)
-    add(E("SCHED_CLASS_EXT"))
-
-    # Namespaces: Arch userspace (systemd-nspawn, flatpak, podman, bubblewrap,
-    # Steam's pressure-vessel, browser sandboxes) hard-requires USER_NS.
-    extend((E("NAMESPACES"), E("USER_NS"), E("PID_NS"), E("NET_NS"),
-            E("UTS_NS"), E("IPC_NS"), E("CGROUP_NS"), E("TIME_NS")))
-    extend((E("CHECKPOINT_RESTORE"), E("SECCOMP"), E("SECCOMP_FILTER")))
-    # systemd hard requirements + Arch defaults.
-    extend((E("CGROUP_BPF"), E("BPF_SYSCALL"), E("BPF_JIT"),
-            E("BPF_JIT_ALWAYS_ON"), E("BPF_UNPRIV_DEFAULT_OFF"),
-            E("DEVTMPFS"), E("DEVTMPFS_MOUNT"), E("FANOTIFY"),
-            E("AUTOFS_FS"), E("TMPFS_POSIX_ACL"), E("TMPFS_XATTR"),
-            E("EFIVAR_FS"), E("EFI_STUB"), E("EFI_MIXED"),
-            E("BLK_DEV_INITRD"), E("BINFMT_MISC"), E("UNIX")))
-    # Storage, Device-Mapper & Crypto essentials for mkinitcpio (sd-encrypt / LUKS)
-    extend((E("BLK_DEV_DM"), M("DM_CRYPT"), M("DM_INTEGRITY"), M("DM_BUFIO"),
-            M("DM_SNAPSHOT"), M("DM_MIRROR"), M("CRYPTO_USER")))
-    extend((E("SECURITY"), E("SECURITY_SELINUX"), E("SECURITY_APPARMOR"),
-            E("SECURITY_LANDLOCK"), E("SECURITY_YAMA"),
-            S("LSM", "landlock,lockdown,yama,integrity,bpf")))
-    extend((E("IKCONFIG"), E("IKCONFIG_PROC")))  # keeps /proc/config.gz alive
-    extend((E("USER_EVENTS"), E("FTRACE"), E("FUNCTION_TRACER"), E("KPROBES"),
-            E("UPROBES"), E("PERF_EVENTS")))
-    extend((E("FUTEX"), E("FUTEX2"), E("EPOLL"), E("SIGNALFD"), E("TIMERFD"),
-            E("EVENTFD"), E("IO_URING")))
-    extend((E("WATCHDOG"), E("MAGIC_SYSRQ")))
-    extend((E("X86_KERNEL_IBT"), E("RETHUNK"), E("MITIGATION_RETHUNK")))
-    extend((E("DRM_FBDEV_EMULATION"), E("FRAMEBUFFER_CONSOLE"),
-            E("FRAMEBUFFER_CONSOLE_DEFERRED_TAKEOVER"),
-            E("SYSFB_SIMPLEFB"), E("DRM_SIMPLEDRM")))
-
-    # DRM QR-code panic screen: the decoder is Rust, so it is only reachable
-    # when RUST is on. Otherwise fall back to the plain text panic screen.
-    add(E("DRM_PANIC"))
-    if s["compiler"]["rust"] and rust_ok:
-        extend((E("DRM_PANIC_SCREEN_QR_CODE"), S("DRM_PANIC_SCREEN", "qr_code")))
-    else:
-        extend((D("DRM_PANIC_SCREEN_QR_CODE"), S("DRM_PANIC_SCREEN", "kmsg")))
-
-    # Strip anything that only slows a production kernel down.
-    extend((D("DEBUG_KERNEL_DC"), D("SCHED_DEBUG"), D("DEBUG_PREEMPT"),
-            D("KASAN"), D("KCSAN"), D("UBSAN"), D("KMSAN"),
-            D("LATENCYTOP"), D("SCHEDSTATS"), D("DEBUG_MISC"),
-            D("SLUB_DEBUG"), D("PAGE_POISONING"), D("DEBUG_LIST"),
-            D("FTRACE_RECORD_RECURSION"), D("KFENCE")))
-    extend((D("WERROR"),))  # never let a warning kill a 40-minute build
+    add(E("XDP_SOCKETS") if s["network"]["xdp"] else D("XDP_SOCKETS"))
 
     # -------------------------------------------------------- extra_config
     for sym, val in s["dusky"]["extra_config"].items():
         symbol = sym.removeprefix("CONFIG_")
         match val:
             case bool() as b:
-                add(E(symbol) if b else D(symbol))
+                add(E(symbol, optional=True) if b else D(symbol, optional=True))
             case int() as i:
-                add(V(symbol, i))
+                add(V(symbol, i, optional=True))
             case "m":
-                add(M(symbol))
+                add(M(symbol, optional=True))
             case str() as t:
-                add(S(symbol, t))
-            case _:
-                warn("extra_config: ignoring %s = %r" % (sym, val))
+                add(S(symbol, t, optional=True))
 
-    # ------------------------------------------------------- localversion
     add(S("LOCALVERSION", p.localversion()))
     add(D("LOCALVERSION_AUTO"))
     return ops
 
 
 def cpu_arch_ops(arch: str) -> list[Op]:
-    ops: list[Op] = [D(sym) for sym in ARCH_ALL_SYMBOLS]
+    ops: list[Op] = [D(sym, optional=True) for sym in ARCH_ALL_SYMBOLS]
     if arch == "native":
-        # Only one of MNATIVE_AMD / MNATIVE_INTEL is visible depending on the
-        # detected vendor; setting both is harmless because scripts/config
-        # ignores symbols that do not exist and olddefconfig drops the rest.
         vendor = detect_cpu_vendor()
-        ops.append(E("MNATIVE_AMD" if vendor == "amd" else "MNATIVE_INTEL"))
-        ops.append(E("X86_NATIVE_CPU"))
-        ops.append(V("X86_64_VERSION", 1))
+        ops.append(E("MNATIVE_AMD" if vendor == "amd" else "MNATIVE_INTEL", optional=True))
+        ops.append(E("X86_NATIVE_CPU", optional=True))
+        v_level = detect_cpu_x86_version()
+        if v_level == 4:
+            ops.append(V("X86_64_VERSION", 4, optional=True))
+            ops.append(E("GENERIC_CPU4", optional=True))
+        elif v_level == 3:
+            ops.append(V("X86_64_VERSION", 3, optional=True))
+            ops.append(E("GENERIC_CPU3", optional=True))
+        elif v_level == 2:
+            ops.append(V("X86_64_VERSION", 2, optional=True))
+            ops.append(E("GENERIC_CPU2", optional=True))
+        else:
+            ops.append(V("X86_64_VERSION", 1, optional=True))
+            ops.append(E("GENERIC_CPU", optional=True))
         return ops
     for flag, sym, val in ARCH_KCONFIG.get(arch, ()):
-        ops.append((flag.strip(), sym, val))
+        ops.append((flag.strip(), sym, val, True))
     return ops
 
 
@@ -2597,7 +2341,7 @@ def apply_matrix(tree: Path, ops: Sequence[Op]) -> None:
     if not script.is_file():
         raise BuildError("scripts/config missing from %s" % tree)
     argv: list[str] = [str(script), "--file", str(tree / ".config")]
-    for flag, sym, val in ops:
+    for flag, sym, val, _ in ops:
         argv.append(flag)
         argv.append(sym)
         if val != "":
@@ -2605,27 +2349,15 @@ def apply_matrix(tree: Path, ops: Sequence[Op]) -> None:
     info("Applying %d Kconfig operations" % len(ops))
     cp = run(argv, cwd=tree, check=False)
     if cp.returncode != 0:
-        # scripts/config exits non-zero for unknown symbols on some trees; that
-        # is expected because we intentionally target optional out-of-tree
-        # symbols. Retry one at a time so a genuine failure is still visible.
-        failures = 0
-        for flag, sym, val in ops:
+        for flag, sym, val, opt in ops:
             one = [str(script), "--file", str(tree / ".config"), flag, sym]
             if val != "":
                 one.append(val)
-            if run(one, cwd=tree, check=False).returncode != 0:
-                failures += 1
-                debug("skipped unknown symbol: %s %s" % (flag, sym))
-        if failures:
-            info("%d symbol(s) not present in this tree (expected for "
-                 "optional/out-of-tree knobs)" % failures)
+            run(one, cwd=tree, check=False)
     ok("Kconfig matrix applied")
 
 
 def finalize_config(tree: Path, env: Mapping[str, str]) -> None:
-    """
-    Realises the configuration and scripts deterministically without interactive stalls.
-    """
     rule("Resolve configuration")
     info("make olddefconfig")
     run(["make", *make_flags(env), "olddefconfig"], cwd=tree, env=env, timeout=1200)
@@ -2636,51 +2368,70 @@ def finalize_config(tree: Path, env: Mapping[str, str]) -> None:
     ok("Configuration finalised")
 
 
-def verify_config(tree: Path, p: KernelProfile, rust_ok: bool) -> None:
-    """Post-olddefconfig assertion pass: prove the knobs actually stuck."""
+def verify_config(tree: Path, p: KernelProfile, ops: Sequence[Op]) -> None:
+    """Post-olddefconfig assertion pass: enforce the verification contract."""
+    rule("Verify configuration")
     cfg = (tree / ".config").read_text(encoding="utf-8", errors="replace")
+    optional_set = set(p.g("verify", "optional_symbols"))
 
-    def is_set(sym: str) -> bool:
-        return re.search(r"^CONFIG_%s=(y|m|.+)$" % re.escape(sym), cfg, re.M) is not None
+    def get_state(sym: str) -> str:
+        if re.search(r"^CONFIG_%s=y$" % re.escape(sym), cfg, re.M):
+            return "y"
+        if re.search(r"^CONFIG_%s=m$" % re.escape(sym), cfg, re.M):
+            return "m"
+        m = re.search(r"^CONFIG_%s=(.+)$" % re.escape(sym), cfg, re.M)
+        if m:
+            return m.group(1).strip('"')
+        if re.search(r"^# CONFIG_%s is not set$" % re.escape(sym), cfg, re.M):
+            return "n"
+        return "undef"
 
-    def val(sym: str) -> str | None:
-        m = re.search(r"^CONFIG_%s=(.*)$" % re.escape(sym), cfg, re.M)
-        return m.group(1) if m else None
+    vanished: list[str] = []
+    coerced: list[tuple[str, str, str]] = []
+    matches = 0
 
+    for flag, sym, val, opt in ops:
+        target = "y" if flag == "-e" else ("n" if flag == "-d" else ("m" if flag == "-m" else val))
+        actual = get_state(sym)
+        if actual == "undef":
+            if not opt and sym not in optional_set:
+                vanished.append(sym)
+        elif actual == target:
+            matches += 1
+        else:
+            coerced.append((sym, target, actual))
+
+    # Critical assertions
     s = p.sections
-    checks: list[tuple[str, bool, str]] = [
-        ("HZ", val("HZ") == str(s["timing"]["hz"]),
-         "HZ=%s" % (val("HZ") or "unset")),
-        ("preempt", True, s["timing"]["preempt"]),
-        ("localversion", (val("LOCALVERSION") or "").strip('"') == p.localversion(),
-         val("LOCALVERSION") or "unset"),
-        ("USER_NS", is_set("USER_NS"), "required by Arch userspace"),
-        ("MODULES", is_set("MODULES"), "modular build"),
+    critical_checks = [
+        ("PREEMPT", get_state("PREEMPT_" + s["timing"]["preempt"].upper()) == "y", s["timing"]["preempt"]),
+        ("SCHED_CACHE", get_state("SCHED_CACHE") == ("y" if s["cache"]["sched_cache"] else "undef"), "Cache Aware Scheduling"),
+        ("SCHED_CLASS_EXT", get_state("SCHED_CLASS_EXT") == "y", "sched_ext framework"),
+        ("BTF", get_state("DEBUG_INFO_BTF") == "y", "DEBUG_INFO_BTF"),
+        ("NTSYNC", get_state("NTSYNC") in ("m", "y") if s["gaming"]["ntsync"] else True, "in-tree NTSync"),
+        ("MGLRU", get_state("LRU_GEN") == "y", "MGLRU"),
     ]
-    if s["compiler"]["toolchain"] == "llvm" and s["compiler"]["lto"] != "none":
-        checks.append(("LTO", is_set("LTO_CLANG"), s["compiler"]["lto"]))
-    if s["compiler"]["kcfi"]:
-        checks.append(("CFI_CLANG", is_set("CFI_CLANG"), "kCFI"))
-    if s["memory"]["mglru"]:
-        checks.append(("LRU_GEN", is_set("LRU_GEN"), "MGLRU"))
-    if s["compiler"]["rust"] and rust_ok:
-        checks.append(("RUST", is_set("RUST"), "rust support"))
 
     rows = []
-    bad = 0
-    for name, good, detail in checks:
-        if not good:
-            bad += 1
-        rows.append([(C.GREEN + "ok" + C.RESET) if good else (C.RED + "MISS" + C.RESET),
+    for name, good, detail in critical_checks:
+        rows.append([(C.GREEN + "MATCH" + C.RESET) if good else (C.RED + "MISS" + C.RESET),
                      name, C.FAINT + detail + C.RESET])
-    table(["", "symbol", "detail"], rows)
-    if bad:
-        warn("%d configuration assertion(s) did not hold; the tree may not "
-             "support that symbol" % bad)
+    table(["status", "critical subsystem", "target"], rows)
+    say("")
+
+    if coerced and _VERBOSE:
+        info("%d symbol(s) coerced by Kconfig dependencies" % len(coerced))
+        for sym, want, got in coerced[:10]:
+            debug(f"  {sym}: wanted {want}, got {got}")
+
+    if vanished:
+        err(f"{len(vanished)} requested symbol(s) VANISHED from final .config (not in tree):")
+        for sym in vanished[:12]:
+            err(f"  CONFIG_{sym}")
+        if p.g("verify", "strict"):
+            raise VerifyError(f"strict verification failed: {len(vanished)} symbols vanished after olddefconfig")
     else:
-        ok("All configuration assertions hold")
-    say("  " + C.FAINT + "modules: %d   size: %.0f KiB"
-        % (count_modules(tree), len(cfg) / 1024) + C.RESET)
+        ok(f"All Kconfig assertions verified ({matches} matched, 0 non-optional vanished)")
 
 
 # --------------------------------------------------------------------------- #
@@ -2688,9 +2439,6 @@ def verify_config(tree: Path, p: KernelProfile, rust_ok: bool) -> None:
 # --------------------------------------------------------------------------- #
 
 def make_flags(env: Mapping[str, str]) -> list[str]:
-    """Toolchain selection flags that must accompany *every* make invocation,
-    otherwise 'make prepare' and 'make all' disagree about the compiler and the
-    whole tree gets rebuilt."""
     if env.get("LLVM") == "1":
         return ["LLVM=1", "LLVM_IAS=1"]
     return []
@@ -2703,6 +2451,8 @@ def build_env(p: KernelProfile, tree: Path, tarball_mtime: float) -> dict[str, s
         "KBUILD_BUILD_USER": s["dusky"]["user"],
         "ZSTD_CLEVEL": str(s["compiler"]["zstd_clevel"]),
         "KCFLAGS": "",
+        "KAFLAGS": "",
+        "KBUILD_LDFLAGS": "",
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
     }
@@ -2711,6 +2461,10 @@ def build_env(p: KernelProfile, tree: Path, tarball_mtime: float) -> dict[str, s
         env["SOURCE_DATE_EPOCH"] = epoch
         env["KBUILD_BUILD_TIMESTAMP"] = time.strftime(
             "%a %b %d %H:%M:%S UTC %Y", time.gmtime(tarball_mtime))
+
+    ldflags: list[str] = []
+    kcflags: list[str] = []
+
     if s["compiler"]["toolchain"] == "llvm":
         env.update({"LLVM": "1", "LLVM_IAS": "1", "CC": "clang", "HOSTCC": "clang",
                     "LD": "ld.lld", "HOSTLD": "ld.lld", "AR": "llvm-ar",
@@ -2718,10 +2472,25 @@ def build_env(p: KernelProfile, tree: Path, tarball_mtime: float) -> dict[str, s
                     "OBJCOPY": "llvm-objcopy", "OBJDUMP": "llvm-objdump",
                     "READELF": "llvm-readelf", "HOSTAR": "llvm-ar",
                     "HOSTCXX": "clang++"})
+        if s["compiler"]["thinlto_cache"]:
+            THINLTO_CACHE.mkdir(parents=True, exist_ok=True)
+            ldflags.append(f"--thinlto-cache-dir={THINLTO_CACHE}")
+            ldflags.append(f"--thinlto-cache-policy=cache_size_bytes={s['compiler']['thinlto_cache_size']}:prune_after=72h")
     else:
         env.update({"CC": "gcc", "HOSTCC": "gcc", "CXX": "g++", "LD": "ld"})
-    # makepkg / pacman-pkg. PKGDEST is isolated per profile+version so two
-    # profiles can never overwrite each other's artifacts.
+
+    if s["cpu"]["arch"] == "native":
+        kcflags.append("-march=native")
+        env["KAFLAGS"] = (env["KAFLAGS"] + " -march=native").strip()
+    elif s["cpu"]["march"]:
+        kcflags.append(f"-march={s['cpu']['march']}")
+        env["KAFLAGS"] = (env["KAFLAGS"] + f" -march={s['cpu']['march']}").strip()
+
+    if s["compiler"]["allow_unsupported_o3"] and s["compiler"]["optimize"] == "o2":
+        kcflags.append("-O3")
+
+    env["KCFLAGS"] = " ".join(kcflags).strip()
+    env["KBUILD_LDFLAGS"] = " ".join(ldflags).strip()
     env["PKGDEST"] = str(pkgdest_for(p, tree))
     return env
 
@@ -2739,11 +2508,6 @@ def write_localversion(tree: Path, p: KernelProfile) -> None:
 
 
 def clean_stale(tree: Path) -> None:
-    """
-    A tree that was previously built with a different toolchain leaves .o files
-    whose bitcode the new linker cannot consume. Rather than 'make mrproper'
-    (which throws away .config), remove exactly the artifacts that go stale.
-    """
     victims = [tree / "vmlinux", tree / "vmlinux.o", tree / "System.map",
                tree / ".vmlinux.export.c", tree / "Module.symvers",
                tree / "modules.order", tree / "modules.builtin"]
@@ -2774,11 +2538,6 @@ _ERROR_RE: Final = re.compile(r"\b(error:|Error \d+|fatal error|undefined refere
 
 
 def estimate_steps(tree: Path, env: Mapping[str, str]) -> int:
-    """
-    'make -n all' prints the recipe without running it. Counting the compile /
-    link lines gives an ETA denominator that is accurate to within a few percent
-    -- far better than guessing from LOC, and it costs ~20 seconds.
-    """
     info("Estimating build size (make -n all)")
     try:
         cp = run(["make", *make_flags(env), "-n", "all"], cwd=tree, env=env,
@@ -2787,24 +2546,15 @@ def estimate_steps(tree: Path, env: Mapping[str, str]) -> int:
         return 0
     count = sum(1 for ln in cp.stdout.splitlines()
                 if " -c " in ln or ln.startswith("  CC") or " -o " in ln)
-    # The dry run emits shell, not the pretty short form; normalise.
     count = max(count, cp.stdout.count(" -c "))
     if count < 500:
         count = 0
     if count:
         ok("Estimated %s compile/link steps" % "{:,}".format(count))
-    else:
-        warn("could not estimate step count; progress will be indeterminate")
     return count
 
 
 class Live:
-    """
-    Fixed-region terminal renderer: a header, a progress bar with ETA, and a
-    rolling tail of the last N build lines. Falls back to plain line-by-line
-    output whenever stdout is not a TTY (CI, pipes, tee).
-    """
-
     def __init__(self, title: str, total: int, tail: int = 20) -> None:
         self.title = title
         self.total = total
@@ -2848,7 +2598,6 @@ class Live:
             self._last = now
             self._paint()
 
-    # -- rendering ------------------------------------------------------- #
     def _bar(self, width: int) -> str:
         if self.total <= 0:
             phase = int((time.monotonic() - self.start) * 8) % max(1, width)
@@ -2892,7 +2641,6 @@ class Live:
             out.append("  " + colour + truncate(ln, w - 4) + C.RESET)
         for _ in range(self.tail_n - len(tail)):
             out.append("")
-        self.rendered = len(out) - (1 if self.rendered else 0) - 1
         self.rendered = 4 + self.tail_n
         sys.stdout.write("\n".join(out) + "\n")
         sys.stdout.flush()
@@ -2913,8 +2661,7 @@ def hms(seconds: float) -> str:
 # 23. Compile
 # --------------------------------------------------------------------------- #
 
-def compile_kernel(tree: Path, p: KernelProfile, env: Mapping[str, str],
-                   steps: int) -> Path:
+def compile_kernel(tree: Path, p: KernelProfile, env: Mapping[str, str], steps: int) -> Path:
     rule("Compile")
     jobs = p.g("compiler", "jobs") or cpu_count()
     dest = Path(env["PKGDEST"])
@@ -2955,13 +2702,11 @@ def compile_kernel(tree: Path, p: KernelProfile, env: Mapping[str, str],
 
     pkgs = sorted(dest.glob("*.pkg.tar.*"))
     if not pkgs:
-        # Fallback: search the kernel tree if pacman-pkg placed them there
         for pkg in tree.glob("*.pkg.tar.*"):
             shutil.move(str(pkg), dest / pkg.name)
         pkgs = sorted(dest.glob("*.pkg.tar.*"))
     if not pkgs:
-        raise BuildError("build reported success but produced no packages in %s"
-                         % dest)
+        raise BuildError("build reported success but produced no packages in %s" % dest)
 
     rows = [[pkg.name, "%.1f MiB" % (pkg.stat().st_size / 1048576)] for pkg in pkgs]
     table(["package", "size"], rows, aligns=["l", "r"])
@@ -2969,16 +2714,160 @@ def compile_kernel(tree: Path, p: KernelProfile, env: Mapping[str, str],
 
 
 # --------------------------------------------------------------------------- #
-# 24. Install + boot
+# 24. Runtime system files, Install + boot
 # --------------------------------------------------------------------------- #
 
-def install_packages(pkgdir: Path) -> list[Path]:
+def write_runtime_system_files(p: KernelProfile) -> None:
+    rule("Runtime optimizations & units")
+    s = p.sections
+
+    # 1. /etc/sysctl.d/99-dusky-perf.conf
+    sysctl_lines = [
+        "# Dusky Kernel Runtime Tuning",
+        "vm.watermark_scale_factor = %d" % s["memory"]["watermark_scale_factor"],
+        "vm.watermark_boost_factor = %d" % s["memory"]["watermark_boost_factor"],
+        "vm.vfs_cache_pressure = 50",
+        "vm.swappiness = %d" % (100 if s["memory"]["swap_backend"] in ("zram", "zswap") else 60),
+        "vm.page_lock_unfairness = 1",
+        "vm.compaction_proactiveness = %d" % s["memory"]["compaction_proactiveness"],
+        "vm.dirty_background_bytes = 134217728",
+        "vm.dirty_bytes = 402653184",
+        "vm.dirty_expire_centisecs = 3000",
+        "vm.dirty_writeback_centisecs = 1500",
+        "vm.max_map_count = %d" % s["gaming"]["max_map_count"],
+        "kernel.split_lock_mitigate = %d" % (0 if not s["gaming"]["split_lock_mitigate"] else 1),
+        "kernel.sched_schedstats = 1",
+        "kernel.perf_event_paranoid = 1",
+        "net.core.default_qdisc = %s" % s["network"]["qdisc"],
+        "net.ipv4.tcp_congestion_control = %s" % s["network"]["congestion"],
+        "net.ipv4.tcp_fastopen = 3",
+        "net.ipv4.tcp_slow_start_after_idle = 0",
+        "fs.file-max = 2097152",
+        "fs.inotify.max_user_watches = 1048576",
+        "fs.inotify.max_user_instances = 8192",
+    ]
+    sysctl_file = Path("/tmp/99-dusky-perf.conf")
+    sysctl_file.write_text("\n".join(sysctl_lines) + "\n", encoding="utf-8")
+    run(SUDO.argv(["cp", str(sysctl_file), "/etc/sysctl.d/99-dusky-perf.conf"]), check=False)
+    run(SUDO.argv(["sysctl", "--system"]), check=False)
+    ok("Configured /etc/sysctl.d/99-dusky-perf.conf")
+
+    # 2. /etc/tmpfiles.d/dusky-sysfs.conf
+    tmpfiles_lines = [
+        "# Dusky sysfs policy",
+        "w /sys/kernel/mm/transparent_hugepage/enabled - - - - %s" % s["memory"]["thp"],
+        "w /sys/kernel/mm/transparent_hugepage/defrag - - - - %s" % s["memory"]["thp_defrag"],
+        "w /sys/kernel/mm/transparent_hugepage/shmem_enabled - - - - %s" % s["memory"]["thp_shmem"],
+        "w /sys/kernel/mm/lru_gen/enabled - - - - %d" % s["memory"]["mglru_mask"],
+        "w /sys/kernel/mm/lru_gen/min_ttl_ms - - - - %d" % s["memory"]["mglru_min_ttl_ms"],
+    ]
+    tmpfiles_file = Path("/tmp/dusky-sysfs.conf")
+    tmpfiles_file.write_text("\n".join(tmpfiles_lines) + "\n", encoding="utf-8")
+    run(SUDO.argv(["cp", str(tmpfiles_file), "/etc/tmpfiles.d/dusky-sysfs.conf"]), check=False)
+    run(SUDO.argv(["systemd-tmpfiles", "--create"]), check=False)
+    ok("Configured /etc/tmpfiles.d/dusky-sysfs.conf")
+
+    # 3. /etc/udev/rules.d/70-dusky-ntsync.rules & modules-load
+    if s["gaming"]["ntsync"]:
+        udev_ntsync = 'KERNEL=="ntsync", MODE="0660", TAG+="uaccess"\n'
+        Path("/tmp/70-dusky-ntsync.rules").write_text(udev_ntsync, encoding="utf-8")
+        run(SUDO.argv(["cp", "/tmp/70-dusky-ntsync.rules", "/etc/udev/rules.d/70-dusky-ntsync.rules"]), check=False)
+        Path("/tmp/dusky-ntsync.conf").write_text("ntsync\n", encoding="utf-8")
+        run(SUDO.argv(["cp", "/tmp/dusky-ntsync.conf", "/etc/modules-load.d/dusky-ntsync.conf"]), check=False)
+        ok("Configured in-tree NTSync uaccess rules and auto-load")
+
+    # 4. /etc/udev/rules.d/60-dusky-ioscheduler.rules
+    udev_io = (
+        'ACTION=="add|change", KERNEL=="nvme[0-9]*n[0-9]*", ATTR{queue/scheduler}="%s"\n'
+        'ACTION=="add|change", KERNEL=="nvme[0-9]*n[0-9]*", ATTR{queue/nr_requests}="1024"\n'
+        'ACTION=="add|change", KERNEL=="nvme[0-9]*n[0-9]*", ATTR{queue/wbt_lat_usec}="1000"\n'
+        'ACTION=="add|change", KERNEL=="sd[a-z]", ATTR{queue/rotational}=="0", ATTR{queue/scheduler}="mq-deadline"\n'
+        'ACTION=="add|change", KERNEL=="sd[a-z]", ATTR{queue/rotational}=="1", ATTR{queue/scheduler}="bfq"\n'
+    ) % s["storage"]["io_scheduler"]
+    Path("/tmp/60-dusky-ioscheduler.rules").write_text(udev_io, encoding="utf-8")
+    run(SUDO.argv(["cp", "/tmp/60-dusky-ioscheduler.rules", "/etc/udev/rules.d/60-dusky-ioscheduler.rules"]), check=False)
+    ok("Configured /etc/udev/rules.d/60-dusky-ioscheduler.rules")
+
+    # 5. /etc/security/limits.d/99-dusky-rt.conf
+    limits_rt = "@audio - rtprio 95\n@audio - memlock unlimited\n@audio - nice -19\n"
+    Path("/tmp/99-dusky-rt.conf").write_text(limits_rt, encoding="utf-8")
+    run(SUDO.argv(["cp", "/tmp/99-dusky-rt.conf", "/etc/security/limits.d/99-dusky-rt.conf"]), check=False)
+
+    # 6. Cache-Aware Scheduling unit (Linux 7.2)
+    if s["cache"]["sched_cache"] and s["cache"]["persist"]:
+        cas_unit = (
+            "[Unit]\n"
+            "Description=Dusky - Cache Aware Scheduling tunables (CONFIG_SCHED_CACHE)\n"
+            "DefaultDependencies=no\n"
+            "After=sysinit.target systemd-debugfs.mount\n"
+            "ConditionPathExists=/sys/kernel/debug/sched/llc_aggr_tolerance\n\n"
+            "[Service]\n"
+            "Type=oneshot\n"
+            "RemainAfterExit=yes\n"
+            "ExecStart=/bin/sh -c 'echo %d > /sys/kernel/debug/sched/llc_aggr_tolerance'\n\n"
+            "[Install]\n"
+            "WantedBy=sysinit.target\n"
+        ) % s["cache"]["llc_aggr_tolerance"]
+        Path("/tmp/dusky-cas.service").write_text(cas_unit, encoding="utf-8")
+        run(SUDO.argv(["cp", "/tmp/dusky-cas.service", "/etc/systemd/system/dusky-cache-aware-sched.service"]), check=False)
+        run(SUDO.argv(["systemctl", "enable", "dusky-cache-aware-sched.service"]), check=False)
+        ok("Enabled dusky-cache-aware-sched.service")
+
+    # 7. rseq slice extension unit (Linux 7.0+)
+    if s["rseq"]["slice_extension"]:
+        rseq_unit = (
+            "[Unit]\n"
+            "Description=Dusky - rseq time slice extension window\n"
+            "DefaultDependencies=no\n"
+            "After=sysinit.target\n"
+            "ConditionPathExists=/sys/kernel/debug/rseq/slice_ext_nsec\n\n"
+            "[Service]\n"
+            "Type=oneshot\n"
+            "RemainAfterExit=yes\n"
+            "ExecStart=/bin/sh -c 'echo %d > /sys/kernel/debug/rseq/slice_ext_nsec'\n\n"
+            "[Install]\n"
+            "WantedBy=sysinit.target\n"
+        ) % s["rseq"]["slice_ext_nsec"]
+        Path("/tmp/dusky-rseq.service").write_text(rseq_unit, encoding="utf-8")
+        run(SUDO.argv(["cp", "/tmp/dusky-rseq.service", "/etc/systemd/system/dusky-rseq-slice.service"]), check=False)
+        run(SUDO.argv(["systemctl", "enable", "dusky-rseq-slice.service"]), check=False)
+        ok("Enabled dusky-rseq-slice.service")
+
+    # 8. Sched_ext runtime manager unit
+    if s["scheduler"]["scx"] != "none":
+        run(SUDO.argv(["mkdir", "-p", "/etc/dusky"]), check=False)
+        scx_env = "SCX_SCHED=%s\nSCX_FLAGS=%s\n" % (s["scheduler"]["scx"], s["scheduler"]["scx_flags"])
+        Path("/tmp/scx.env").write_text(scx_env, encoding="utf-8")
+        run(SUDO.argv(["cp", "/tmp/scx.env", "/etc/dusky/scx.env"]), check=False)
+
+        scx_unit = (
+            "[Unit]\n"
+            "Description=Dusky - sched_ext dynamic scheduler\n"
+            "ConditionPathExists=/sys/kernel/sched_ext\n"
+            "After=multi-user.target\n\n"
+            "[Service]\n"
+            "Type=simple\n"
+            "EnvironmentFile=-/etc/dusky/scx.env\n"
+            "ExecStart=/bin/sh -c 'exec /usr/bin/$SCX_SCHED $SCX_FLAGS'\n"
+            "Restart=on-failure\n"
+            "RestartSec=2\n"
+            "Nice=-20\n"
+            "OOMScoreAdjust=-1000\n\n"
+            "[Install]\n"
+            "WantedBy=multi-user.target\n"
+        )
+        Path("/tmp/dusky-scx.service").write_text(scx_unit, encoding="utf-8")
+        run(SUDO.argv(["cp", "/tmp/dusky-scx.service", "/etc/systemd/system/dusky-scx.service"]), check=False)
+        run(SUDO.argv(["systemctl", "enable", "dusky-scx.service"]), check=False)
+        ok("Enabled dusky-scx.service (%s)" % s["scheduler"]["scx"])
+
+
+def install_packages(pkgdir: Path, profile: KernelProfile) -> list[Path]:
     rule("Install")
     all_pkgs = sorted(pkgdir.glob("*.pkg.tar.*"))
     all_pkgs = [p for p in all_pkgs if not p.name.endswith(".sig")]
     if not all_pkgs:
         raise BuildError("no packages found in " + str(pkgdir))
-    # Deduplicate: if multiple builds exist in PKGDEST, keep only the newest per component
     by_comp: dict[str, Path] = {}
     for p in all_pkgs:
         comp = "headers" if "-headers-" in p.name else "kernel"
@@ -2991,11 +2880,11 @@ def install_packages(pkgdir: Path) -> list[Path]:
         info("Skipping installation. Install later with:")
         say("    sudo pacman -U " + " ".join(shlex.quote(str(p)) for p in pkgs))
         return []
-    rc = subprocess.call(SUDO.argv(["pacman", "-U", "--noconfirm",
-                                    *[str(p) for p in pkgs]]))
+    rc = subprocess.call(SUDO.argv(["pacman", "-U", "--noconfirm", *[str(p) for p in pkgs]]))
     if rc != 0:
         raise BuildError("pacman -U failed (rc=%d)" % rc)
     ok("Installed")
+    write_runtime_system_files(profile)
     return pkgs
 
 
@@ -3019,8 +2908,6 @@ def refresh_boot(p: KernelProfile) -> None:
         rc = subprocess.call(SUDO.argv(["kernel-install", "add", kver, str(vmlinuz)]))
         if rc == 0:
             ok("kernel-install registered %s" % kver)
-        else:
-            warn("kernel-install returned %d" % rc)
 
     if have("mkinitcpio") and kver:
         preset = Path("/etc/mkinitcpio.d") / (p.pkgbase + ".preset")
@@ -3112,7 +2999,7 @@ def do_build(args: argparse.Namespace) -> int:
     apply_matrix(tree, ops)
     write_localversion(tree, profile)
     finalize_config(tree, env)
-    verify_config(tree, profile, rust_ok)
+    verify_config(tree, profile, ops)
 
     if args.save_config:
         save_config_snapshot(tree, profile)
@@ -3131,13 +3018,12 @@ def do_build(args: argparse.Namespace) -> int:
         ok("Packages ready in " + str(pkgdir))
         return 0
 
-    installed = install_packages(pkgdir)
+    installed = install_packages(pkgdir, profile)
     if installed:
         refresh_boot(profile)
 
     rule("Done")
-    ok("%s %s built with profile '%s'" % (release.moniker, release.version,
-                                          profile.name))
+    ok("%s %s built with profile '%s'" % (release.moniker, release.version, profile.name))
     if JOURNAL.path:
         say("  log: " + C.FAINT + str(JOURNAL.path) + C.RESET)
     say("  " + C.FAINT + "reboot and select the new entry to try it" + C.RESET)
@@ -3151,8 +3037,7 @@ def do_build(args: argparse.Namespace) -> int:
 def do_list(args: argparse.Namespace) -> int:
     profiles = discover_profiles()
     if args.json:
-        payload = [{"name": p.name, "path": str(p.path), "sections": p.sections}
-                   for p in profiles]
+        payload = [{"name": p.name, "path": str(p.path), "sections": p.sections} for p in profiles]
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
     banner()
@@ -3199,7 +3084,6 @@ def do_spec(args: argparse.Namespace) -> int:
 
 
 def do_matrix(args: argparse.Namespace) -> int:
-    """Dry-run the Kconfig matrix without touching a source tree."""
     profiles = discover_profiles()
     targets = profiles if args.all else [select_profile(profiles, args.profile)]
     overrides = Overrides.from_env_and_args(args)
@@ -3208,21 +3092,22 @@ def do_matrix(args: argparse.Namespace) -> int:
         ops = build_config_matrix(p, rust_ok=not args.no_rust)
         if args.json:
             print(json.dumps({"profile": p.name,
-                              "ops": [{"op": o[0], "symbol": o[1], "value": o[2]}
+                              "ops": [{"op": o[0], "symbol": o[1], "value": o[2], "optional": o[3]}
                                       for o in ops]}, indent=2))
             continue
         rule("%s  (%d operations)" % (p.name, len(ops)))
-        for flag, sym, val in ops:
+        for flag, sym, val, opt in ops:
             marker = {"-e": C.GREEN + "y" + C.RESET,
                       "-d": C.FAINT + "n" + C.RESET,
                       "-m": C.CYAN + "m" + C.RESET}.get(flag, C.YELLOW + "=" + C.RESET)
-            say("  %s CONFIG_%s%s" % (marker, sym, ("=" + val) if val else ""))
+            opt_tag = C.FAINT + " [optional]" + C.RESET if opt else ""
+            say("  %s CONFIG_%s%s%s" % (marker, sym, ("=" + val) if val else "", opt_tag))
     return 0
 
 
 def do_doctor(args: argparse.Namespace) -> int:
     banner()
-    rule("Environment")
+    rule("Environment & Diagnostics (Linux 7.2+ Spec)")
     rows: list[list[str]] = []
 
     def row(label: str, value: str, good: bool | None = None) -> None:
@@ -3237,16 +3122,23 @@ def do_doctor(args: argparse.Namespace) -> int:
     row("build dir", str(BUILD_DIR))
     row("build dir free", "%.1f GiB" % free_gib(BUILD_DIR), free_gib(BUILD_DIR) > 32)
     row("build dir ram-backed", "yes" if is_ram_backed(BUILD_DIR) else "no")
-    mnt = findmnt(BUILD_DIR)
-    if mnt:
-        row("build dir fs", "%s on %s" % (mnt.get("fstype", "?"),
-                                          mnt.get("source", "?")))
-    row("patch cache", str(PATCH_CACHE), PATCH_CACHE.is_dir())
+    row("thinlto cache", str(THINLTO_CACHE), THINLTO_CACHE.is_dir())
     row("pkgdest root", str(PKG_ROOT))
     row("modprobed.db", str(MODPROBED_DB), MODPROBED_DB.is_file())
+    
+    # Topology check
+    llc_count = 1
+    if have("lscpu"):
+        cp = run(["lscpu", "-p=CPU,CACHE"], check=False)
+        if cp.returncode == 0:
+            llcs = set(line.split(",")[1] for line in cp.stdout.splitlines() if line and not line.startswith("#") and "," in line)
+            if llcs:
+                llc_count = len(llcs)
+    row("distinct L3 LLC domains", str(llc_count), llc_count >= 1)
+    
     for tool in ("make", "clang", "lld", "gcc", "aria2c", "git", "patch", "gpg",
                  "pacman", "modprobed-db", "bootctl", "grub-mkconfig",
-                 "kernel-install", "findmnt", "rustc", "bindgen"):
+                 "kernel-install", "findmnt", "rustc", "rust-bindgen", "pahole"):
         row(tool, shutil.which(tool) or "-", have(tool))
     table(["", "check", "value"], rows)
 
@@ -3255,12 +3147,7 @@ def do_doctor(args: argparse.Namespace) -> int:
     try:
         releases = fetch_releases()
         latest = max(releases, key=lambda r: _vkey(r.version))
-        ok("kernel.org reachable; newest entry is %s (%s)"
-           % (latest.version, latest.moniker))
-        by_moniker: dict[str, str] = {}
-        for r in releases:
-            by_moniker.setdefault(r.moniker, r.version)
-        table(["moniker", "version"], [[k, v] for k, v in sorted(by_moniker.items())])
+        ok("kernel.org reachable; newest entry is %s (%s)" % (latest.version, latest.moniker))
     except NetworkError as exc:
         err(str(exc))
 
@@ -3286,13 +3173,15 @@ def do_clean(args: argparse.Namespace) -> int:
         targets.append(("patch cache", PATCH_CACHE))
     if args.what in ("all", "packages"):
         targets.append(("packages", PKG_ROOT))
+    if args.what in ("all", "thinlto"):
+        targets.append(("thinlto cache", THINLTO_CACHE))
     if args.what in ("all", "logs"):
         targets.append(("logs", LOG_DIR))
     for label, path in targets:
         if not path.exists():
             continue
         size = sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
-        say("  %-14s %-50s %.2f GiB" % (label, str(path), size / (1024 ** 3)))
+        say("  %-16s %-48s %.2f GiB" % (label, str(path), size / (1024 ** 3)))
     if not targets:
         return 0
     if not ask_yes("Remove the above?", False):
@@ -3304,343 +3193,18 @@ def do_clean(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------- #
-# 27. CLI
+# 27. Default profiles materialization
 # --------------------------------------------------------------------------- #
 
-EPILOG: Final = textwrap.dedent("""\
-    environment overrides
-      DUSKY_PROFILES_DIR   where *.toml profiles live
-      DUSKY_BUILD_DIR      scratch root (src/, tarballs/, packages/)
-      DUSKY_PATCH_CACHE    scheduler patch cache
-      DUSKY_PATCH_BASE     scheduler patch base URL
-      DUSKY_PKGDEST        package output root
-      DUSKY_CPU_ARCH       ephemeral CPU arch override
-      DUSKY_MODULES_MODE   ephemeral strict|expanded override
-      DUSKY_TOOLCHAIN      ephemeral llvm|gcc override
-      DUSKY_LTO            ephemeral none|thin|full|thin_dist override
-      DUSKY_JOBS           ephemeral make -j override
-      DUSKY_CHANNEL        ephemeral mainline|stable|longterm override
-      DUSKY_PIN            ephemeral exact version override
-
-    examples
-      dusky_kernal_compile.py --list-profiles
-      dusky_kernal_compile.py --profile gaming --cpu-arch native --modules-mode strict
-      dusky_kernal_compile.py --profile generic_v3 --no-install
-      dusky_kernal_compile.py --print-matrix --all
-      dusky_kernal_compile.py --doctor
-    """)
-
-
-def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(
-        prog="dusky_kernal_compile.py",
-        description="%s %s -- %s" % (APP_NAME, APP_VERSION, APP_TAGLINE),
-        epilog=EPILOG, formatter_class=argparse.RawDescriptionHelpFormatter)
-
-    ap.add_argument("--version", action="version",
-                    version="%s %s" % (APP_NAME, APP_VERSION))
-    ap.add_argument("-p", "--profile", metavar="NAME",
-                    help="profile to build (skips the interactive picker)")
-
-    mode = ap.add_argument_group("modes")
-    mode.add_argument("-l", "--list-profiles", action="store_true",
-                      help="print the profile table and exit")
-    mode.add_argument("--show", action="store_true",
-                      help="dump one fully resolved profile and exit")
-    mode.add_argument("--spec", action="store_true",
-                      help="print the full profile specification and exit")
-    mode.add_argument("--print-matrix", action="store_true",
-                      help="dry-run the Kconfig matrix and exit")
-    mode.add_argument("--doctor", action="store_true",
-                      help="environment and connectivity report")
-    mode.add_argument("--clean", metavar="WHAT", nargs="?", const="all",
-                      choices=["all", "src", "tarballs", "patches", "packages",
-                               "logs"],
-                      help="remove cached artifacts")
-    mode.add_argument("--write-default-profiles", action="store_true",
-                      help="write the bundled profile set into DUSKY_PROFILES_DIR")
-
-    ov = ap.add_argument_group("ephemeral overrides (TOML is never modified)")
-    ov.add_argument("--cpu-arch", choices=list(CPU_ARCHES))
-    ov.add_argument("--modules-mode", choices=list(MODULES_MODE_CHOICES))
-    ov.add_argument("--toolchain", choices=list(TOOLCHAIN_CHOICES))
-    ov.add_argument("--lto", choices=list(LTO_CHOICES))
-    ov.add_argument("--channel", choices=list(CHANNEL_CHOICES))
-    ov.add_argument("--scheduler", choices=list(SCHED_CHOICES),
-                    help="override scheduler (eevdf, bore, bmq)")
-    ov.add_argument("--pin", metavar="VERSION",
-                    help="build this exact kernel version")
-    ov.add_argument("-j", "--jobs", type=int, metavar="N")
-
-    bh = ap.add_argument_group("build behaviour")
-    bh.add_argument("--fresh", action="store_true",
-                    help="always re-extract the source tree")
-    bh.add_argument("--configure-only", action="store_true",
-                    help="stop after .config is finalised")
-    bh.add_argument("--no-install", action="store_true",
-                    help="build packages but do not pacman -U them")
-    bh.add_argument("--no-eta", action="store_true",
-                    help="skip the make -n step estimate")
-    bh.add_argument("--no-prompt", action="store_true",
-                    help="do not offer the ephemeral override prompts")
-    bh.add_argument("--save-config", action="store_true",
-                    help="write the final .config back as kernel.config.<profile>")
-    bh.add_argument("-y", "--yes", action="store_true",
-                    help="assume yes for every confirmation")
-    bh.add_argument("-v", "--verbose", action="store_true")
-    bh.add_argument("--json", action="store_true",
-                    help="machine-readable output for --list-profiles/--print-matrix")
-    bh.add_argument("--all", action="store_true",
-                    help="with --print-matrix: every profile")
-    bh.add_argument("--no-rust", action="store_true",
-                    help="with --print-matrix: model a tree without Rust")
-    bh.add_argument("--menu", action="store_true",
-                    help="force classic 6-item interactive menu")
-    return ap
-
-
-def install_signal_handlers() -> None:
-    def handler(signum: int, _frame: object) -> None:
-        _ABORT.set()
-        sys.stdout.write(C.SHOW)
-        sys.stdout.flush()
-        say("")
-        warn("signal %s received -- terminating child process groups"
-             % signal.Signals(signum).name)
-        _reap_all()
-        SUDO.stop()
-        JOURNAL.close()
-        raise SystemExit(130)
-
-    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-        signal.signal(sig, handler)
-    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    global _VERBOSE, ASSUME_YES
-
-    ap = build_parser()
-    args = ap.parse_args(argv)
-    _VERBOSE = args.verbose
-    ASSUME_YES = args.yes
-
-    install_signal_handlers()
-
-    # Classic menu when no CLI mode flags and TTY, or explicit --menu
-    no_mode = not any([args.spec, args.write_default_profiles, args.doctor, args.clean, args.list_profiles, args.show, args.print_matrix, args.profile])
-    if args.menu or (no_mode and sys.stdin.isatty() and sys.stdout.isatty() and not args.yes):
-        # Re-parse to ensure menu flag doesn't consume profile; interactive_menu will handle profile picking
-        return interactive_menu()
-
-    try:
-        if args.spec:
-            return do_spec(args)
-        if args.write_default_profiles:
-            return do_write_defaults(args)
-        if args.doctor:
-            return do_doctor(args)
-        if args.clean:
-            return do_clean(args)
-        if args.list_profiles:
-            return do_list(args)
-        if args.show:
-            return do_show(args)
-        if args.print_matrix:
-            return do_matrix(args)
-        return do_build(args)
-    except DuskyError as exc:
-        say("")
-        err(str(exc))
-        return exc.exit_code
-    except KeyboardInterrupt:
-        say("")
-        warn("interrupted")
-        return 130
-    finally:
-        _reap_all()
-        SUDO.stop()
-        JOURNAL.close()
-        sys.stdout.write(C.SHOW)
-        sys.stdout.flush()
-
-
-def initialize_hardware_profiler() -> None:
-    """Menu 1: install toolchains + modprobed-db + systemd timer."""
-    banner()
-    rule("Initialize Hardware Profiler & Toolchains")
-    try:
-        SUDO.acquire()
-        profiles = discover_profiles()
-        sample_profile = profiles[0] if profiles else None
-        if sample_profile:
-            check_dependencies(sample_profile)
-
-        # modprobed-db
-        if not have("modprobed-db"):
-            info("Resolving modprobed-db from AUR...")
-            helper = shutil.which("paru") or shutil.which("yay")
-            if helper:
-                rc = subprocess.call([str(helper), "-S", "--noconfirm", "--needed", "modprobed-db"])
-                if rc != 0:
-                    warn("AUR helper failed to install modprobed-db")
-            else:
-                info("No AUR helper found. Building modprobed-db via makepkg...")
-                tmp_dir = Path("/tmp") / f"modprobed-db-{os.getpid()}"
-                try:
-                    run(["git", "clone", "https://aur.archlinux.org/modprobed-db.git", str(tmp_dir)])
-                    run(["makepkg", "-si", "--noconfirm"], cwd=tmp_dir)
-                finally:
-                    shutil.rmtree(tmp_dir, ignore_errors=True)
-
-        if have("modprobed-db"):
-            info("Capturing current hardware drivers into database...")
-            run(["modprobed-db", "store"], check=False)
-            install_modprobed_units()
-            db_file = MODPROBED_DB
-            count = 0
-            if db_file.is_file():
-                try:
-                    count = sum(1 for ln in db_file.read_text(encoding="utf-8", errors="replace").splitlines()
-                                if ln.strip() and not ln.startswith("#"))
-                except OSError:
-                    count = 0
-            ok(f"modprobed-db initialized successfully ({count} drivers mapped in {db_file})")
-        else:
-            warn("modprobed-db could not be installed automatically. Please install it manually.")
-    except Exception as e:
-        err(f"Initialization failed: {e}")
-
-
-def live_hardware_monitor() -> None:
-    """Menu 2: live telemetry tracking modprobed.db (Ctrl+C to return)."""
-    banner()
-    rule("Live Hardware Telemetry Dashboard")
-    say(C.ACCENT + "  Polling modprobed-db store every 2s — Press Ctrl+C to return" + C.RESET)
-    say("")
-    try:
-        while True:
-            if have("modprobed-db"):
-                run(["modprobed-db", "store"], check=False, capture=True)
-            count = 0
-            if MODPROBED_DB.is_file():
-                try:
-                    count = sum(1 for ln in MODPROBED_DB.read_text(encoding="utf-8", errors="replace").splitlines()
-                                if ln.strip() and not ln.startswith("#"))
-                except OSError:
-                    count = 0
-            sys.stdout.write(f"\r  {C.BOLD}Unique Drivers Mapped:{C.RESET} {C.GREEN}{count}{C.RESET}  {C.FAINT}(db: {MODPROBED_DB}){C.RESET}   ")
-            sys.stdout.flush()
-            time.sleep(2)
-    except KeyboardInterrupt:
-        say("")
-        ok("Telemetry monitor closed")
-
-
-def config_manager_menu() -> None:
-    """Menu 4: show profiles, build directory, toolchains, and settings."""
-    banner()
-    rule("Dusky Configuration & Environment Manager")
-    try:
-        profiles = discover_profiles()
-        print_profile_table(profiles)
-    except ProfileError as e:
-        err(str(e))
-    say("")
-    info(f"Profiles Directory: {PROFILES_DIR}")
-    info(f"Build Scratch Dir:  {BUILD_DIR} ({'RAM-backed' if is_ram_backed(BUILD_DIR) else 'Disk'}, {free_gib(BUILD_DIR):.1f} GiB free)")
-    info(f"Modprobed Database: {MODPROBED_DB} ({'Present' if MODPROBED_DB.is_file() else 'Missing'})")
-    say("")
-    rule("Toolchain Probing")
-    clang_ok = have("clang") and have("llvm-ar") and have("lld")
-    say(f"  LLVM/Clang Toolchain: {'[green]Available (ThinLTO)[/green]' if clang_ok else '[yellow]Missing[/yellow]'}")
-    say(f"  GCC Compiler:         {'[green]Available[/green]' if have('gcc') else '[red]Missing[/red]'}")
-    say(f"  Rust Kernel Tooling:  {'[green]Available (rustc + bindgen)[/green]' if (have('rustc') and have('bindgen')) else '[yellow]Missing[/yellow]'}")
-
-
-def empirical_diagnostics_menu() -> None:
-    """Menu 5: comprehensive system and capability diagnostics."""
-    args = argparse.Namespace(json=False)
-    do_doctor(args)
-
-
-def interactive_menu() -> int:
-    """Classic 6-item interactive menu."""
-    while True:
-        banner()
-        say(C.ACCENT + "  Dusky Kernel Compiler — Main Menu" + C.RESET)
-        say(" 1) Install Toolchains & Init Hardware Profiler")
-        say(" 2) View Live Hardware Telemetry")
-        say(" 3) Compile & Install Kernel (Profile Picker)")
-        say(" 4) Config Manager & Toolchain Settings")
-        say(" 5) Run System Empirical Diagnostics")
-        say(" 6) Exit")
-        say("")
-        try:
-            choice = ask_index("Select", 6, default=6)
-        except DuskyError:
-            return 0
-        if choice == 6:
-            ok("Exiting Dusky Kernel Compiler. May your uptime be long!")
-            return 0
-        try:
-            if choice == 1:
-                initialize_hardware_profiler()
-                ask("Press Enter to return", "")
-            elif choice == 2:
-                live_hardware_monitor()
-            elif choice == 3:
-                args = argparse.Namespace(
-                    profile=None,
-                    cpu_arch=None,
-                    modules_mode=None,
-                    toolchain=None,
-                    lto=None,
-                    channel=None,
-                    pin=None,
-                    jobs=None,
-                    fresh=False,
-                    configure_only=False,
-                    no_install=False,
-                    no_eta=False,
-                    no_prompt=False,
-                    save_config=True,
-                    yes=False,
-                    verbose=_VERBOSE,
-                )
-                do_build(args)
-                ask("Press Enter to return", "")
-            elif choice == 4:
-                config_manager_menu()
-                ask("Press Enter to return", "")
-            elif choice == 5:
-                empirical_diagnostics_menu()
-                ask("Press Enter to return", "")
-        except KeyboardInterrupt:
-            warn("Action cancelled by user")
-        except DuskyError as e:
-            err(str(e))
-            ask("Press Enter to return", "")
-        except Exception as e:
-            err(f"Action failed: [{type(e).__name__}] {e}")
-            ask("Press Enter to return", "")
-
-
 def do_write_defaults(args: argparse.Namespace) -> int:
-    """
-    Materialise the bundled profile set. The bodies live next to this script in
-    kernel_profiles/; if they are missing we regenerate a minimal, valid set
-    straight from _PROFILE_SPEC so the tool is never unusable.
-    """
     PROFILES_DIR.mkdir(parents=True, exist_ok=True)
     written = 0
-    for idx, (name, tweaks, desc, suffix) in enumerate(_DEFAULT_PROFILES, 1):
+    for idx, (name, tweaks, desc, suffix) in enumerate(_DEFAULT_PROFILES, 0):
         path = PROFILES_DIR / ("%02d_%s.toml" % (idx, name))
         if path.exists() and not args.yes:
             info("keeping existing " + path.name)
             continue
-        path.write_text(render_profile_toml(name, desc, suffix, idx * 10, tweaks),
-                        encoding="utf-8")
+        path.write_text(render_profile_toml(name, desc, suffix, idx * 10, tweaks), encoding="utf-8")
         written += 1
     ok("wrote %d profile(s) to %s" % (written, PROFILES_DIR))
     return 0
@@ -3686,68 +3250,402 @@ def render_profile_toml(name: str, desc: str, suffix: str, priority: int,
     return "\n".join(lines)
 
 
-# name, tweaks, description, suffix
+# (name, tweaks, description, suffix)
 _DEFAULT_PROFILES: Final[tuple[tuple[str, dict[str, dict[str, Any]], str, str], ...]] = (
+    ("dusky_personal", {
+        "release": {"channel": "mainline", "min_version": "7.2"},
+        "scheduler": {"type": "eevdf", "scx": "scx_lavd", "scx_flags": "--autopilot", "scx_enable_class": True},
+        "cache": {"sched_cache": True, "llc_aggr_tolerance": 1, "persist": True},
+        "rseq": {"slice_extension": True, "slice_ext_nsec": 10000},
+        "cpu": {"arch": "native", "governor": "schedutil", "amd_pstate": "active", "epp": "balance_performance", "mitigations": False, "prefcore": True},
+        "timing": {"hz": 1000, "tickless": "idle", "preempt": "lazy", "preempt_dynamic": True},
+        "memory": {"thp": "madvise", "thp_defrag": "defer+madvise", "mglru": True, "mglru_mask": 7, "mglru_min_ttl_ms": 1000, "swap_backend": "zram", "zram_size_pct": 100, "numa": True, "numa_balancing": False, "ksm": False, "page_reporting": False, "damon": False},
+        "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "full", "thinlto_cache": True, "kcfi": False, "debug_info": "reduced", "rust": True},
+        "security": {"profile": "extreme", "init_on_alloc": False, "hardened_usercopy": False, "stackprotector": "regular", "mitigations": "off", "acknowledge_risk": True},
+        "gaming": {"ntsync": True, "uclamp": True, "max_map_count": 2147483642, "split_lock_mitigate": False},
+        "storage": {"nvme_poll_queues": 0, "io_scheduler": "none", "blk_wbt": True},
+        "network": {"congestion": "bbr", "qdisc": "fq", "mptcp": True},
+        "modules": {"mode": "expanded", "modprobed_db": True},
+        "meta": {"bare_metal_only": True, "portable_package": False},
+    }, "Dusky Personal: 64GB RAM, Full LTO, Native Arch, EEVDF+CAS+scx_lavd, NTSync, Lazy Preempt", "dusky-personal"),
+
     ("gaming", {
-        "release": {"channel": "mainline"}, "scheduler": {"type": "bore"},
-        "cpu": {"arch": "native", "governor": "performance"},
-        "timing": {"hz": 1000, "tickless": "full", "preempt": "full"},
-        "memory": {"thp": "always", "numa_balancing": True},
-        "compiler": {"optimize": "o3", "lto": "thin"},
-        "modules": {"mode": "expanded"},
-     }, "BORE + performance governor + 1000Hz full-tickless full-preempt",
-        "dusky-gaming"),
+        "release": {"channel": "mainline", "min_version": "7.2"},
+        "scheduler": {"type": "eevdf", "scx": "scx_lavd", "scx_flags": "--autopilot", "scx_enable_class": True},
+        "cache": {"sched_cache": True, "llc_aggr_tolerance": 1, "persist": True},
+        "rseq": {"slice_extension": True, "slice_ext_nsec": 10000},
+        "cpu": {"arch": "native", "governor": "schedutil", "amd_pstate": "active", "epp": "balance_performance", "mitigations": False, "prefcore": True},
+        "timing": {"hz": 1000, "tickless": "idle", "preempt": "lazy", "preempt_dynamic": True},
+        "memory": {"thp": "madvise", "thp_defrag": "defer+madvise", "mglru": True, "mglru_mask": 7, "mglru_min_ttl_ms": 1000, "swap_backend": "zram", "zram_size_pct": 100, "numa": True, "numa_balancing": False, "ksm": False, "page_reporting": False},
+        "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "thin", "thinlto_cache": True, "kcfi": True, "debug_info": "reduced", "rust": True},
+        "security": {"profile": "extreme", "init_on_alloc": False, "hardened_usercopy": False, "stackprotector": "regular", "mitigations": "off", "acknowledge_risk": True},
+        "gaming": {"ntsync": True, "uclamp": True, "max_map_count": 2147483642, "split_lock_mitigate": False},
+        "network": {"congestion": "bbr", "qdisc": "fq"},
+        "modules": {"mode": "expanded", "modprobed_db": True},
+        "meta": {"bare_metal_only": True, "portable_package": False},
+    }, "Gaming: Native Arch, ThinLTO, Lazy Preempt, CAS, scx_lavd, NTSync", "dusky-gaming"),
+
     ("snappiness", {
-        "scheduler": {"type": "bore"}, "cpu": {"arch": "native"},
-        "timing": {"hz": 1000, "preempt": "full"},
-        "dusky": {"enhanced": True},
-     }, "Desktop interactivity: BORE, MGLRU, 1000Hz, full preempt",
-        "dusky-snappy"),
-    ("maximum_performance", {
-        "cpu": {"arch": "native", "governor": "performance", "mitigations": False},
-        "timing": {"hz": 500, "preempt": "lazy"},
-        "compiler": {"optimize": "o3", "lto": "full"},
-     }, "Mitigations off, O3, full LTO, lazy preempt", "dusky-max"),
-    ("throughput_bmq", {
-        "scheduler": {"type": "bmq"},
-        "timing": {"hz": 250, "preempt": "voluntary", "tickless": "idle"},
-        "compiler": {"optimize": "o3"},
-     }, "BMQ alternative scheduler tuned for batch throughput", "dusky-bmq"),
+        "release": {"channel": "stable", "min_version": "7.2"},
+        "scheduler": {"type": "eevdf", "scx": "scx_bpfland", "scx_enable_class": True},
+        "cache": {"sched_cache": True, "llc_aggr_tolerance": 1, "persist": True},
+        "rseq": {"slice_extension": True, "slice_ext_nsec": 5000},
+        "cpu": {"arch": "native", "governor": "schedutil", "amd_pstate": "active", "epp": "balance_performance", "prefcore": True},
+        "timing": {"hz": 1000, "tickless": "idle", "preempt": "lazy", "preempt_dynamic": True},
+        "memory": {"thp": "madvise", "thp_defrag": "defer+madvise", "mglru": True, "mglru_mask": 7, "mglru_min_ttl_ms": 1000, "swap_backend": "zswap", "numa": True, "ksm": True, "damon": True},
+        "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "thin", "thinlto_cache": True, "kcfi": True, "debug_info": "reduced", "rust": True},
+        "security": {"profile": "balanced", "init_on_alloc": True, "hardened_usercopy": True, "stackprotector": "strong", "mitigations": "auto"},
+        "gaming": {"ntsync": True, "uclamp": True, "max_map_count": 2147483642},
+        "network": {"congestion": "bbr", "qdisc": "cake"},
+        "modules": {"mode": "expanded", "modprobed_db": True},
+    }, "Snappiness: Balanced daily driver, smooth UI under load, CAS, scx_bpfland", "dusky-snap"),
+
+    ("workstation", {
+        "release": {"channel": "stable", "min_version": "7.2"},
+        "scheduler": {"type": "eevdf", "scx": "scx_layered", "scx_enable_class": True, "autogroup": False, "rt_group": True},
+        "cache": {"sched_cache": True, "llc_aggr_tolerance": 20, "persist": True},
+        "rseq": {"slice_extension": True, "slice_ext_nsec": 20000},
+        "cpu": {"arch": "native", "governor": "schedutil", "amd_pstate": "active", "epp": "performance"},
+        "timing": {"hz": 500, "tickless": "idle", "preempt": "lazy", "preempt_dynamic": True},
+        "memory": {"thp": "madvise", "thp_defrag": "defer", "mglru": True, "mglru_mask": 7, "mglru_min_ttl_ms": 0, "swap_backend": "zswap", "numa": True, "numa_balancing": True, "nodes_shift": 6, "ksm": True, "page_reporting": True, "damon": True},
+        "storage": {"nvme_poll_queues": 8, "io_scheduler": "none", "blk_wbt": True},
+        "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "thin", "thinlto_cache": True, "kcfi": True, "debug_info": "reduced", "rust": True},
+        "security": {"profile": "balanced", "init_on_alloc": True, "mitigations": "auto"},
+        "network": {"congestion": "bbr", "qdisc": "fq", "xdp": True},
+        "modules": {"mode": "expanded"},
+    }, "Workstation: Throughput-first, NUMA/CXL aware, IOPOLL, layered SCX", "dusky-compute"),
+
     ("battery", {
-        "release": {"channel": "longterm"},
-        "cpu": {"governor": "schedutil", "amd_pstate": "active"},
-        "timing": {"hz": 250, "preempt": "voluntary"},
-        "power": {"wq_power_efficient": True, "rcu_lazy": True,
-                  "cpu_idle_governor": "teo", "energy_model": True},
-        "memory": {"zswap_default_on": True},
-     }, "Laptop endurance: TEO idle, lazy RCU, power-efficient workqueues",
-        "dusky-battery"),
+        "release": {"channel": "longterm", "min_version": "6.18"},
+        "scheduler": {"type": "eevdf", "scx": "none", "scx_enable_class": True},
+        "cache": {"sched_cache": True, "llc_aggr_tolerance": 1},
+        "cpu": {"arch": "native", "governor": "schedutil", "amd_pstate": "guided", "epp": "balance_power"},
+        "timing": {"hz": 250, "tickless": "idle", "preempt": "lazy", "preempt_dynamic": True},
+        "power": {"wq_power_efficient": True, "cpu_idle_governor": "teo", "rcu_lazy": True, "energy_model": True},
+        "memory": {"thp": "madvise", "thp_defrag": "defer+madvise", "mglru": True, "mglru_mask": 7, "mglru_min_ttl_ms": 500, "swap_backend": "zswap", "damon": True},
+        "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "thin", "thinlto_cache": True, "kcfi": True, "debug_info": "reduced"},
+        "network": {"congestion": "bbr", "qdisc": "fq_codel"},
+        "modules": {"mode": "expanded", "modprobed_db": True},
+    }, "Battery: Battery-first, guided P-states, RCU lazy, TEO idle, power-efficient WQ", "dusky-battery"),
+
     ("low_ram", {
-        "memory": {"slub_tiny": True, "numa": False, "zswap_default_on": True,
-                   "thp": "madvise"},
-        "compiler": {"optimize": "size", "lto": "thin", "debug_info": "none"},
-        "cpu": {"nr_cpus": 32},
-        "modules": {"mode": "strict"},
-     }, "Small-footprint build for <=8 GiB systems", "dusky-lowram"),
+        "release": {"channel": "stable", "min_version": "7.2"},
+        "scheduler": {"type": "eevdf", "scx": "none", "scx_enable_class": True},
+        "timing": {"hz": 500, "tickless": "idle", "preempt": "lazy", "preempt_dynamic": True},
+        "memory": {"slub_tiny": False, "numa": True, "nodes_shift": 1, "swap_backend": "zram", "zram_size_pct": 100, "thp": "madvise", "mglru": True, "mglru_min_ttl_ms": 0, "ksm": False, "page_reporting": False},
+        "compiler": {"optimize": "size", "lto": "thin", "thinlto_cache": True, "debug_info": "reduced"},
+        "cpu": {"arch": "native", "nr_cpus": 16},
+        "modules": {"mode": "strict", "modprobed_db": True},
+    }, "Low RAM: Small-footprint build for <=8 GiB systems: zram, -Os, ThinLTO, strict modules", "dusky-lowram"),
+
     ("minimal_strict", {
-        "modules": {"mode": "strict"},
-        "compiler": {"lto": "thin", "debug_info": "none"},
-        "timing": {"hz": 1000, "preempt": "full"},
-     }, "Fastest compile: strict localmodconfig, no debug info", "dusky-strict"),
+        "release": {"channel": "mainline", "min_version": "7.2"},
+        "scheduler": {"type": "eevdf", "scx": "none", "scx_enable_class": True},
+        "cpu": {"arch": "native"},
+        "timing": {"hz": 1000, "tickless": "idle", "preempt": "lazy", "preempt_dynamic": True},
+        "memory": {"swap_backend": "zram", "zram_size_pct": 100, "thp": "madvise", "mglru": True},
+        "compiler": {"lto": "thin", "thinlto_cache": True, "debug_info": "reduced"},
+        "modules": {"mode": "strict", "modprobed_db": True},
+    }, "Minimal Strict: Fastest compile: strict localmodconfig, ThinLTO cache, reduced debug + BTF", "dusky-strict"),
+
     ("generic_v3", {
-        "cpu": {"arch": "generic_v3"}, "modules": {"mode": "expanded"},
-        "timing": {"hz": 1000, "preempt": "full"},
-     }, "Shareable x86-64-v3 build (AVX2/BMI2/FMA)", "dusky-v3"),
+        "release": {"channel": "stable", "min_version": "7.2"},
+        "meta": {"portable_package": True, "bare_metal_only": False},
+        "scheduler": {"type": "eevdf", "scx": "none", "scx_enable_class": True},
+        "cpu": {"arch": "generic_v3", "nr_cpus": 512},
+        "timing": {"hz": 1000, "tickless": "idle", "preempt": "lazy", "preempt_dynamic": True},
+        "memory": {"thp": "madvise", "thp_defrag": "defer+madvise", "mglru": True, "numa": True, "nodes_shift": 6},
+        "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "thin", "thinlto_cache": True, "kcfi": True, "debug_info": "reduced"},
+        "modules": {"mode": "expanded", "modprobed_db": False},
+    }, "Generic v3: Distributable AVX2/BMI2/FMA baseline package", "dusky-v3"),
+
     ("generic_v4", {
-        "cpu": {"arch": "generic_v4"}, "modules": {"mode": "expanded"},
-        "compiler": {"optimize": "o3"},
-     }, "Shareable x86-64-v4 build (AVX-512)", "dusky-v4"),
-    ("znver4", {
-        "cpu": {"arch": "znver4", "amd_pstate": "active"},
-        "compiler": {"optimize": "o3", "lto": "thin"},
-        "timing": {"hz": 1000, "preempt": "full"},
-     }, "Zen 4 tuned with amd-pstate active EPP", "dusky-znver4"),
+        "release": {"channel": "stable", "min_version": "7.2"},
+        "meta": {"portable_package": True, "bare_metal_only": False},
+        "scheduler": {"type": "eevdf", "scx": "none", "scx_enable_class": True},
+        "cpu": {"arch": "generic_v4", "nr_cpus": 512},
+        "timing": {"hz": 1000, "tickless": "idle", "preempt": "lazy", "preempt_dynamic": True},
+        "memory": {"thp": "madvise", "thp_defrag": "defer+madvise", "mglru": True, "numa": True, "nodes_shift": 6},
+        "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "thin", "thinlto_cache": True, "kcfi": True, "debug_info": "reduced"},
+        "modules": {"mode": "expanded", "modprobed_db": False},
+    }, "Generic v4: Distributable AVX-512 baseline package (Zen4+ / modern Xeon)", "dusky-v4"),
 )
+
+
+# --------------------------------------------------------------------------- #
+# 28. CLI & Main
+# --------------------------------------------------------------------------- #
+
+EPILOG: Final = textwrap.dedent("""\
+    environment overrides
+      DUSKY_PROFILES_DIR   where *.toml profiles live
+      DUSKY_BUILD_DIR      scratch root (src/, tarballs/, packages/)
+      DUSKY_PATCH_CACHE    scheduler patch cache
+      DUSKY_THINLTO_CACHE  LLVM ThinLTO disk cache directory
+      DUSKY_PKGDEST        package output root
+      DUSKY_CPU_ARCH       ephemeral CPU arch override
+      DUSKY_MODULES_MODE   ephemeral strict|expanded override
+      DUSKY_TOOLCHAIN      ephemeral llvm|gcc override
+      DUSKY_LTO            ephemeral none|thin|full|thin_dist override
+      DUSKY_JOBS           ephemeral make -j override
+      DUSKY_CHANNEL        ephemeral mainline|stable|longterm override
+      DUSKY_PIN            ephemeral exact version override
+
+    examples
+      dusky_kernal_compile.py --list-profiles
+      dusky_kernal_compile.py --profile dusky_personal
+      dusky_kernal_compile.py --profile gaming --cpu-arch native
+      dusky_kernal_compile.py --print-matrix --all
+      dusky_kernal_compile.py --doctor
+    """)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(
+        prog="dusky_kernal_compile.py",
+        description="%s %s -- %s" % (APP_NAME, APP_VERSION, APP_TAGLINE),
+        epilog=EPILOG, formatter_class=argparse.RawDescriptionHelpFormatter)
+
+    ap.add_argument("--version", action="version", version="%s %s" % (APP_NAME, APP_VERSION))
+    ap.add_argument("-p", "--profile", metavar="NAME", help="profile to build")
+
+    mode = ap.add_argument_group("modes")
+    mode.add_argument("-l", "--list-profiles", action="store_true", help="print profile table and exit")
+    mode.add_argument("--show", action="store_true", help="dump one fully resolved profile and exit")
+    mode.add_argument("--spec", action="store_true", help="print profile specification and exit")
+    mode.add_argument("--print-matrix", action="store_true", help="dry-run Kconfig matrix and exit")
+    mode.add_argument("--doctor", action="store_true", help="environment & diagnostics report")
+    mode.add_argument("--clean", metavar="WHAT", nargs="?", const="all",
+                      choices=["all", "src", "tarballs", "patches", "packages", "thinlto", "logs"],
+                      help="remove cached artifacts")
+    mode.add_argument("--write-default-profiles", action="store_true", help="write bundled profiles to PROFILES_DIR")
+
+    ov = ap.add_argument_group("ephemeral overrides (TOML is never modified)")
+    ov.add_argument("--cpu-arch", choices=list(CPU_ARCHES))
+    ov.add_argument("--modules-mode", choices=list(MODULES_MODE_CHOICES))
+    ov.add_argument("--toolchain", choices=list(TOOLCHAIN_CHOICES))
+    ov.add_argument("--lto", choices=list(LTO_CHOICES))
+    ov.add_argument("--channel", choices=list(CHANNEL_CHOICES))
+    ov.add_argument("--scheduler", choices=list(SCHED_CHOICES))
+    ov.add_argument("--pin", metavar="VERSION", help="build this exact kernel version")
+    ov.add_argument("-j", "--jobs", type=int, metavar="N")
+
+    bh = ap.add_argument_group("build behaviour")
+    bh.add_argument("--fresh", action="store_true", help="always re-extract source tree")
+    bh.add_argument("--configure-only", action="store_true", help="stop after .config is finalised")
+    bh.add_argument("--no-install", action="store_true", help="build packages but do not pacman -U them")
+    bh.add_argument("--no-eta", action="store_true", help="skip make -n step estimate")
+    bh.add_argument("--no-prompt", action="store_true", help="skip ephemeral override prompts")
+    bh.add_argument("--save-config", action="store_true", help="save final .config as baseline seed")
+    bh.add_argument("-y", "--yes", action="store_true", help="assume yes for confirmations")
+    bh.add_argument("-v", "--verbose", action="store_true")
+    bh.add_argument("--json", action="store_true", help="JSON output for list/matrix")
+    bh.add_argument("--all", action="store_true", help="all profiles for --print-matrix")
+    bh.add_argument("--no-rust", action="store_true", help="model a tree without Rust")
+    bh.add_argument("--menu", action="store_true", help="force interactive menu")
+    return ap
+
+
+def install_signal_handlers() -> None:
+    def handler(signum: int, _frame: object) -> None:
+        _ABORT.set()
+        sys.stdout.write(C.SHOW)
+        sys.stdout.flush()
+        say("")
+        warn("signal %s received -- terminating child process groups" % signal.Signals(signum).name)
+        _reap_all()
+        SUDO.stop()
+        JOURNAL.close()
+        raise SystemExit(130)
+
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, handler)
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    global _VERBOSE, ASSUME_YES
+
+    ap = build_parser()
+    args = ap.parse_args(argv)
+    _VERBOSE = args.verbose
+    ASSUME_YES = args.yes
+
+    install_signal_handlers()
+
+    no_mode = not any([args.spec, args.write_default_profiles, args.doctor, args.clean,
+                       args.list_profiles, args.show, args.print_matrix, args.profile])
+    if args.menu or (no_mode and sys.stdin.isatty() and sys.stdout.isatty() and not args.yes):
+        return interactive_menu()
+
+    try:
+        if args.spec:
+            return do_spec(args)
+        if args.write_default_profiles:
+            return do_write_defaults(args)
+        if args.doctor:
+            return do_doctor(args)
+        if args.clean:
+            return do_clean(args)
+        if args.list_profiles:
+            return do_list(args)
+        if args.show:
+            return do_show(args)
+        if args.print_matrix:
+            return do_matrix(args)
+        return do_build(args)
+    except DuskyError as exc:
+        say("")
+        err(str(exc))
+        return exc.exit_code
+    except KeyboardInterrupt:
+        say("")
+        warn("interrupted")
+        return 130
+    finally:
+        _reap_all()
+        SUDO.stop()
+        JOURNAL.close()
+        sys.stdout.write(C.SHOW)
+        sys.stdout.flush()
+
+
+def initialize_hardware_profiler() -> None:
+    banner()
+    rule("Initialize Hardware Profiler & Toolchains")
+    try:
+        SUDO.acquire()
+        profiles = discover_profiles()
+        sample_profile = profiles[0] if profiles else None
+        if sample_profile:
+            check_dependencies(sample_profile)
+
+        if not have("modprobed-db"):
+            info("Resolving modprobed-db...")
+            helper = shutil.which("paru") or shutil.which("yay")
+            if helper:
+                subprocess.call([str(helper), "-S", "--noconfirm", "--needed", "modprobed-db"])
+            else:
+                tmp_dir = Path("/tmp") / f"modprobed-db-{os.getpid()}"
+                try:
+                    run(["git", "clone", "https://aur.archlinux.org/modprobed-db.git", str(tmp_dir)])
+                    run(["makepkg", "-si", "--noconfirm"], cwd=tmp_dir)
+                finally:
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        if have("modprobed-db"):
+            info("Capturing current hardware drivers into database...")
+            run(["modprobed-db", "store"], check=False)
+            db_file = MODPROBED_DB
+            count = 0
+            if db_file.is_file():
+                try:
+                    count = sum(1 for ln in db_file.read_text(encoding="utf-8", errors="replace").splitlines()
+                                if ln.strip() and not ln.startswith("#"))
+                except OSError:
+                    count = 0
+            ok(f"modprobed-db initialized successfully ({count} drivers mapped in {db_file})")
+    except Exception as e:
+        err(f"Initialization failed: {e}")
+
+
+def live_hardware_monitor() -> None:
+    banner()
+    rule("Live Hardware Telemetry Dashboard")
+    say(C.ACCENT + "  Polling modprobed-db store every 2s — Press Ctrl+C to return" + C.RESET)
+    say("")
+    try:
+        while True:
+            if have("modprobed-db"):
+                run(["modprobed-db", "store"], check=False, capture=True)
+            count = 0
+            if MODPROBED_DB.is_file():
+                try:
+                    count = sum(1 for ln in MODPROBED_DB.read_text(encoding="utf-8", errors="replace").splitlines()
+                                if ln.strip() and not ln.startswith("#"))
+                except OSError:
+                    count = 0
+            sys.stdout.write(f"\r  {C.BOLD}Unique Drivers Mapped:{C.RESET} {C.GREEN}{count}{C.RESET}  {C.FAINT}(db: {MODPROBED_DB}){C.RESET}   ")
+            sys.stdout.flush()
+            time.sleep(2)
+    except KeyboardInterrupt:
+        say("")
+        ok("Telemetry monitor closed")
+
+
+def config_manager_menu() -> None:
+    banner()
+    rule("Dusky Configuration & Environment Manager")
+    try:
+        profiles = discover_profiles()
+        print_profile_table(profiles)
+    except ProfileError as e:
+        err(str(e))
+    say("")
+    info(f"Profiles Directory: {PROFILES_DIR}")
+    info(f"Build Scratch Dir:  {BUILD_DIR} ({'RAM-backed' if is_ram_backed(BUILD_DIR) else 'Disk'}, {free_gib(BUILD_DIR):.1f} GiB free)")
+    info(f"ThinLTO Cache Dir:  {THINLTO_CACHE}")
+    info(f"Modprobed Database: {MODPROBED_DB} ({'Present' if MODPROBED_DB.is_file() else 'Missing'})")
+    say("")
+    rule("Toolchain Probing")
+    clang_ok = have("clang") and have("llvm-ar") and have("lld")
+    say(f"  LLVM/Clang Toolchain: {'[green]Available (ThinLTO)[/green]' if clang_ok else '[yellow]Missing[/yellow]'}")
+    say(f"  GCC Compiler:         {'[green]Available[/green]' if have('gcc') else '[red]Missing[/red]'}")
+    say(f"  Rust Kernel Tooling:  {'[green]Available (rustc + bindgen)[/green]' if (have('rustc') and have('bindgen')) else '[yellow]Missing[/yellow]'}")
+
+
+def empirical_diagnostics_menu() -> None:
+    args = argparse.Namespace(json=False)
+    do_doctor(args)
+
+
+def interactive_menu() -> int:
+    while True:
+        banner()
+        say(C.ACCENT + "  Dusky Kernel Compiler — Main Menu (v5.0.0)" + C.RESET)
+        say(" 1) Install Toolchains & Init Hardware Profiler")
+        say(" 2) View Live Hardware Telemetry")
+        say(" 3) Compile & Install Kernel (Profile Picker)")
+        say(" 4) Config Manager & Toolchain Settings")
+        say(" 5) Run System Empirical Diagnostics")
+        say(" 6) Exit")
+        say("")
+        try:
+            choice = ask_index("Select", 6, default=6)
+        except DuskyError:
+            return 0
+        if choice == 6:
+            ok("Exiting Dusky Kernel Compiler. May your uptime be long!")
+            return 0
+        try:
+            if choice == 1:
+                initialize_hardware_profiler()
+                ask("Press Enter to return", "")
+            elif choice == 2:
+                live_hardware_monitor()
+            elif choice == 3:
+                args = argparse.Namespace(
+                    profile=None, cpu_arch=None, modules_mode=None, toolchain=None,
+                    lto=None, channel=None, pin=None, jobs=None, fresh=False,
+                    configure_only=False, no_install=False, no_eta=False,
+                    no_prompt=False, save_config=True, yes=False, verbose=_VERBOSE,
+                )
+                do_build(args)
+                ask("Press Enter to return", "")
+            elif choice == 4:
+                config_manager_menu()
+                ask("Press Enter to return", "")
+            elif choice == 5:
+                empirical_diagnostics_menu()
+                ask("Press Enter to return", "")
+        except KeyboardInterrupt:
+            warn("Action cancelled by user")
+        except DuskyError as e:
+            err(str(e))
+            ask("Press Enter to return", "")
+        except Exception as e:
+            err(f"Action failed: [{type(e).__name__}] {e}")
+            ask("Press Enter to return", "")
 
 
 if __name__ == "__main__":
