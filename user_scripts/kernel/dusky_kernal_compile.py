@@ -3871,8 +3871,13 @@ def do_export_bundle(dest_file: Path | None = None) -> Path:
     import socket, json, tarfile, tempfile
 
     hostname = socket.gethostname().replace("-", "_").lower()
+    export_dir = CONFIG_SEED_DIR / "exports"
+    export_dir.mkdir(parents=True, exist_ok=True)
+
     if dest_file is None:
-        dest_file = Path.home() / f"dusky_bundle_{hostname}.tar.gz"
+        dest_file = export_dir / f"dusky_bundle_{hostname}.tar.gz"
+    else:
+        dest_file.parent.mkdir(parents=True, exist_ok=True)
 
     arch = detect_target_cpu_uarch()
     v_level = detect_cpu_x86_version()
@@ -4017,8 +4022,11 @@ def bundle_manager_menu() -> None:
     say("")
     c = ask_index("Select", 3, default=3)
     if c == 1:
-        dest_str = ask("Export bundle path (blank for default ~/dusky_bundle_<host>.tar.gz)", "")
-        dest_path = Path(dest_str).expanduser().resolve() if dest_str else None
+        import socket
+        host = socket.gethostname().replace("-", "_").lower()
+        default_export = CONFIG_SEED_DIR / "exports" / f"dusky_bundle_{host}.tar.gz"
+        dest_str = ask(f"Export bundle path (blank for default: {default_export})", "")
+        dest_path = Path(dest_str).expanduser().resolve() if dest_str else default_export
         do_export_bundle(dest_path)
     elif c == 2:
         src_str = ask("Path to bundle file to import (.tar.gz / .tar.zst)", "")

@@ -455,10 +455,10 @@ require_sched_ext = true
 # 1. On the Slow/Target Machine:
 #    Export its hardware telemetry, CPU uarch, and modprobed.db:
 #      python3 dusky_kernal_compile.py --export-bundle
-#    (Generates ~/dusky_bundle_<hostname>.tar.gz)
+#    (Saved to ~/.config/dusky/settings/dusky_kernel_compile/exports/dusky_bundle_<hostname>.tar.gz)
 #
 # 2. Copy the bundle to your Fast Build PC:
-#      scp user@target:~/dusky_bundle_<hostname>.tar.gz .
+#      scp user@target:~/.config/dusky/settings/dusky_kernel_compile/exports/dusky_bundle_<hostname>.tar.gz .
 #
 # 3. On your Fast Build PC:
 #    Import the bundle (installs target modprobed.db & generated profile):
