@@ -3055,30 +3055,35 @@ def refresh_boot(p: KernelProfile) -> None:
         if rc == 0:
             ok("kernel-install registered %s" % kver)
 
-    if have("bootctl") and Path("/boot/loader/entries").is_dir() and kver:
-        # Customize title and sort-key in systemd-boot entry so menu shows dusky_<profile>
-        entry_title = "dusky_%s" % p.name
-        sort_key = "dusky-%s" % p.name
-        for entry_file in Path("/boot/loader/entries").glob(f"*{kver}*.conf"):
-            try:
-                cp = run(SUDO.argv(["cat", str(entry_file)]), check=False)
-                if cp.returncode == 0 and cp.stdout:
-                    lines = cp.stdout.splitlines()
-                    new_lines = []
-                    for line in lines:
-                        if line.startswith("title "):
-                            new_lines.append("title      " + entry_title)
-                        elif line.startswith("sort-key "):
-                            new_lines.append("sort-key   " + sort_key)
-                        else:
-                            new_lines.append(line)
-                    tmp_entry = Path("/tmp") / entry_file.name
-                    tmp_entry.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-                    run(SUDO.argv(["cp", str(tmp_entry), str(entry_file)]), check=False)
-                    tmp_entry.unlink(missing_ok=True)
-                    ok("Configured systemd-boot entry: %s" % entry_title)
-            except Exception as exc:
-                warn("Could not customize boot entry: %s" % exc)
+    if have("bootctl") and kver:
+        # Customize title and sort-key in systemd-boot entry so menu shows Arch Linux (dusky-<profile>)
+        entry_title = f"Arch Linux (dusky-{p.name})"
+        sort_key = f"dusky-{p.name}"
+        try:
+            cp_find = run(SUDO.argv(["find", "/boot/loader/entries", "-name", f"*{kver}*.conf"]), check=False)
+            if cp_find.returncode == 0 and cp_find.stdout:
+                for entry_str in cp_find.stdout.splitlines():
+                    entry_file = Path(entry_str.strip())
+                    if not entry_file.name:
+                        continue
+                    cp = run(SUDO.argv(["cat", str(entry_file)]), check=False)
+                    if cp.returncode == 0 and cp.stdout:
+                        lines = cp.stdout.splitlines()
+                        new_lines = []
+                        for line in lines:
+                            if line.startswith("title"):
+                                new_lines.append("title      " + entry_title)
+                            elif line.startswith("sort-key"):
+                                new_lines.append("sort-key   " + sort_key)
+                            else:
+                                new_lines.append(line)
+                        tmp_entry = Path("/tmp") / entry_file.name
+                        tmp_entry.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+                        run(SUDO.argv(["cp", str(tmp_entry), str(entry_file)]), check=False)
+                        tmp_entry.unlink(missing_ok=True)
+                        ok(f"Configured systemd-boot entry: {entry_title}")
+        except Exception as exc:
+            warn("Could not customize boot entry: %s" % exc)
 
     if have("mkinitcpio") and kver:
         preset = Path("/etc/mkinitcpio.d") / (p.pkgbase + ".preset")
