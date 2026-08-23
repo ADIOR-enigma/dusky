@@ -39,7 +39,7 @@ USER_PRESETS_TAB = "Presets"
 # =============================================================================
 # 3. TABS DEFINITION
 # =============================================================================
-TABS = ["GTK & Qt", "System", "Apps", "Media & Misc", "Presets"]
+TABS = ["GTK & Qt", "System", "Apps", "Media & Misc", "Discovered", "Presets"]
 
 # Binary checking map for --smart scanning
 CHECK_CMDS: dict[str, str] = {
@@ -68,6 +68,9 @@ CHECK_CMDS: dict[str, str] = {
     "pywalfox": "pywalfox",
     "dolphin": "dolphin",
     "papirus-folders": "papirus-folders",
+    "kate_syntax": "kate",
+    "konsole": "konsole",
+    "konsole_profile": "konsole",
 }
 
 # Track all explicitly registered keys for auto-discovery
@@ -143,6 +146,15 @@ SCHEMA: dict[int, list[ConfigItem]] = {
             default=True,
             group="KDE Theming",
             extended_help="**KDE Frameworks 6 / Dolphin Theming**\n\nGenerates `kdeglobals` and `~/.local/share/color-schemes/Matugen.colors` for Dolphin, Kate, Gwenview, and KF6 apps."
+        ),
+        ConfigItem(
+            label="Kate Syntax Highlighting",
+            key="kate_syntax",
+            scope="DEFAULT",
+            type_="bool",
+            default=True,
+            group="KDE Theming",
+            extended_help="**Kate / KWrite Syntax Theme**\n\nGenerates Matugen color scheme for Kate syntax highlighting (`kate_syntax`)."
         ),
         ConfigItem(
             label="Kvantum Config",
@@ -299,6 +311,24 @@ SCHEMA: dict[int, list[ConfigItem]] = {
             default=True,
             group="Terminals",
             extended_help="**Foot Terminal**\n\nGenerates `foot-colors.ini` for Foot Wayland terminal emulator."
+        ),
+        ConfigItem(
+            label="Konsole",
+            key="konsole",
+            scope="DEFAULT",
+            type_="bool",
+            default=True,
+            group="Terminals",
+            extended_help="**Konsole Terminal**\n\nGenerates Matugen palette for KDE Konsole."
+        ),
+        ConfigItem(
+            label="Konsole Profile",
+            key="konsole_profile",
+            scope="DEFAULT",
+            type_="bool",
+            default=True,
+            group="Terminals",
+            extended_help="**Konsole Profile Colors**\n\nGenerates Konsole profile color scheme."
         ),
         ConfigItem(
             label="Alacritty",
@@ -534,43 +564,110 @@ SCHEMA: dict[int, list[ConfigItem]] = {
     ],
 
     # -------------------------------------------------------------------------
-    # TAB 4: PRESETS
+    # TAB 4: DISCOVERED
     # -------------------------------------------------------------------------
-    4: [
+    4: [],
+
+    # -------------------------------------------------------------------------
+    # TAB 5: PRESETS
+    # -------------------------------------------------------------------------
+    5: [
         ConfigItem(
-            label="Enable Core Standard Templates",
+            label="Factory Reset — Defaults",
+            key="preset_factory_reset",
+            scope="DEFAULT",
+            type_="preset",
+            default=None,
+            group="Built-in Presets",
+            confirm_message="Reset **all** 51 templates to their factory defaults?",
+            preset_payload={"__ALL_DEFAULTS__": True},
+            extended_help="**Factory Reset**\n\nReverts every template toggle to its `default` (true → enabled, false → disabled). Uses `{\"__ALL_DEFAULTS__\": True}` so omitted keys are correctly handled and the match ratio tracks defaults."
+        ),
+        ConfigItem(
+            label="Standard Workstation",
             key="preset_standard",
             scope="DEFAULT",
             type_="preset",
             default=None,
-            group="Presets",
+            group="Built-in Presets",
+            confirm_message="Apply Standard Workstation profile? This will enable the curated Dusky desktop suite and disable optional extras.",
             preset_payload={
-                "gtk3": True, "gtk4": True, "icon_theme": True, "papirus-folders": True, "qt5ct": True, "qt6ct": True,
-                "kdeglobals": True, "hyprland": True, "hyprlock": True, "waybar": True,
-                "wlogout": True, "rofi": True, "mako": True, "theme_notify": True,
-                "hyprpolkitagent": True, "dusky_tui": True, "dusky_visualizer_colors": True,
-                "kitty": True, "foot": True, "neovim": True, "yazi": True,
-                "cava": True, "btop": True, "fastfetch": True, "pywalfox": True, "dusky_sites": True,
-                "standalone_commands": True
+                "alacritty": False, "beeper": False, "btop": True, "cava": True,
+                "dusky_control_center": False, "dusky_quickpanal": False,
+                "dusky_sites": True, "dusky_tui": True, "dusky_visualizer_colors": True,
+                "fastfetch": True, "foot": True, "gtk3": True, "gtk4": True,
+                "gtksourceview": True, "hyprland": True, "hyprlock": True,
+                "hyprpolkitagent": True, "icon_theme": True, "kate_syntax": True,
+                "kdeglobals": True, "khal": False, "kitty": True, "konsole": True,
+                "konsole_profile": True, "kvantum_kvconfig": False, "kvantum_svg": False,
+                "mako": True, "master_dump": False, "neovim": True, "obs": False,
+                "obsidian": False, "opencode": False, "papirus-folders": True,
+                "pywalfox": True, "qt5ct": True, "qt6ct": True, "rofi": True,
+                "spicetify": False, "standalone_commands": True, "starship": False,
+                "steam": False, "theme_notify": True, "tmux": False, "vesktop": False,
+                "vscode": False, "waybar": True, "wlogout": True, "yazi": True,
+                "zathura": False, "zed": False, "zellij": False
             },
-            extended_help="**Standard Workstation Preset**\n\nEnables standard desktop suite (GTK, Qt, KDE, Hyprland, Waybar, Terminals, Neovim, Yazi, Btop)."
+            extended_help="**Standard Workstation**\n\nCurated Dusky suite: GTK 3/4, Icons, Qt5/6, KDE (kdeglobals + kate_syntax + konsole), Hyprland stack (hyprland, hyprlock, waybar, wlogout, rofi, mako), theme_notify, hyprpolkitagent, dusky_tui/visualizer, kitty/foot, neovim/yazi, cava/btop/fastfetch, pywalfox/dusky_sites/papirus-folders, standalone_commands. All 51 keys listed explicitly so strict-snapshot semantics are predictable."
         ),
         ConfigItem(
-            label="Enable All Discovered & Known Templates",
+            label="Minimal — Core Only",
+            key="preset_minimal",
+            scope="DEFAULT",
+            type_="preset",
+            default=None,
+            group="Built-in Presets",
+            confirm_message="Apply Minimal profile? Only Hyprland, Waybar, Kitty/Foot, Rofi and Mako will remain enabled.",
+            preset_payload={
+                "alacritty": False, "beeper": False, "btop": False, "cava": False,
+                "dusky_control_center": False, "dusky_quickpanal": False,
+                "dusky_sites": False, "dusky_tui": True, "dusky_visualizer_colors": False,
+                "fastfetch": False, "foot": True, "gtk3": False, "gtk4": False,
+                "gtksourceview": False, "hyprland": True, "hyprlock": False,
+                "hyprpolkitagent": False, "icon_theme": False, "kate_syntax": False,
+                "kdeglobals": False, "khal": False, "kitty": True, "konsole": False,
+                "konsole_profile": False, "kvantum_kvconfig": False, "kvantum_svg": False,
+                "mako": True, "master_dump": False, "neovim": False, "obs": False,
+                "obsidian": False, "opencode": False, "papirus-folders": False,
+                "pywalfox": False, "qt5ct": False, "qt6ct": False, "rofi": True,
+                "spicetify": False, "standalone_commands": False, "starship": False,
+                "steam": False, "theme_notify": False, "tmux": False, "vesktop": False,
+                "vscode": False, "waybar": True, "wlogout": False, "yazi": False,
+                "zathura": False, "zed": False, "zellij": False
+            },
+            extended_help="**Minimal Core**\n\nUltra-light profile for performance or debugging: only `hyprland`, `waybar`, `kitty`/`foot`, `rofi`, `mako`, and `dusky_tui` stay enabled; everything else is disabled. Full 51-key strict snapshot."
+        ),
+        ConfigItem(
+            label="Enable All Templates",
             key="preset_all_on",
             scope="DEFAULT",
             type_="preset",
             default=None,
-            group="Presets",
+            group="Built-in Presets",
+            confirm_message="Enable **all** 51 templates? This will uncomment every `[templates.*]` block.",
             preset_payload={
-                "__ALL_DEFAULTS__": False
+                "alacritty": True, "beeper": True, "btop": True, "cava": True,
+                "dusky_control_center": True, "dusky_quickpanal": True,
+                "dusky_sites": True, "dusky_tui": True, "dusky_visualizer_colors": True,
+                "fastfetch": True, "foot": True, "gtk3": True, "gtk4": True,
+                "gtksourceview": True, "hyprland": True, "hyprlock": True,
+                "hyprpolkitagent": True, "icon_theme": True, "kate_syntax": True,
+                "kdeglobals": True, "khal": True, "kitty": True, "konsole": True,
+                "konsole_profile": True, "kvantum_kvconfig": True, "kvantum_svg": True,
+                "mako": True, "master_dump": True, "neovim": True, "obs": True,
+                "obsidian": True, "opencode": True, "papirus-folders": True,
+                "pywalfox": True, "qt5ct": True, "qt6ct": True, "rofi": True,
+                "spicetify": True, "standalone_commands": True, "starship": True,
+                "steam": True, "theme_notify": True, "tmux": True, "vesktop": True,
+                "vscode": True, "waybar": True, "wlogout": True, "yazi": True,
+                "zathura": True, "zed": True, "zellij": True
             },
-            extended_help="**Enable Everything**\n\nEnables all available template blocks inside config.toml."
+            extended_help="**Enable Everything**\n\nTurns **on** every known template block (all 51 keys → `true`)."
         ),
     ]
 }
 
-# Populate registered keys set
+# Populate registered keys set — used by DEFERRED_LOAD to find unmapped templates
 for items in SCHEMA.values():
     for item in items:
         if item.type_ != "preset":
@@ -579,36 +676,36 @@ for items in SCHEMA.values():
 # =============================================================================
 # 5. DYNAMIC AUTO-DISCOVERY (DEFERRED LOAD)
 # =============================================================================
-def DEFERRED_LOAD() -> list[int]:
+def DEFERRED_LOAD() -> tuple[list[int], dict[int, list[ConfigItem]]]:
     """
-    Scans `config.toml` for any [templates.<key>] block not registered in static tabs,
-    and dynamically injects them into a 'Discovered' tab.
+    Scans `config.toml` for any [templates.<key>] block not registered in static tabs
+    and injects them into the Discovered tab.
     """
     cfg_file = Path(TARGET_FILE).expanduser().resolve()
     if not cfg_file.exists():
-        return []
+        return [], {}
 
     engine = MatugenEngine(config_path=cfg_file)
     state = engine.load_state()
 
     unmapped = [k for k in state.keys() if k not in REGISTERED_KEYS and "/" not in k]
     if not unmapped:
-        return []
+        placeholder = [
+            ConfigItem(
+                label="No undiscovered templates",
+                key="discovered_placeholder",
+                scope="DEFAULT",
+                type_="action",
+                default=":",
+                group="Auto-Discovered",
+                extended_help="**Auto-Discovered Templates**\n\nNo undiscovered `[templates.*]` blocks were found. All templates in `config.toml` are already covered by the static tabs. New templates you add to `config.toml` will appear here after a TUI restart."
+            )
+        ]
+        for it in placeholder:
+            it.exists_in_target = True
+        return [4], {4: placeholder}
 
     unmapped.sort()
-
-    # Find or add Discovered tab
-    disc_tab_name = "Discovered"
-    disc_tab_idx = len(TABS) - 1 # Insert before Presets if possible, or append
-    if "Presets" in TABS:
-        preset_idx = TABS.index("Presets")
-        TABS.insert(preset_idx, disc_tab_name)
-        disc_tab_idx = preset_idx
-        # Shift preset schema index
-        SCHEMA[disc_tab_idx + 1] = SCHEMA.pop(disc_tab_idx)
-    else:
-        TABS.append(disc_tab_name)
-        disc_tab_idx = len(TABS) - 1
 
     disc_items: list[ConfigItem] = []
     for key in unmapped:
@@ -619,13 +716,13 @@ def DEFERRED_LOAD() -> list[int]:
             type_="bool",
             default=True,
             group="Auto-Discovered",
-            extended_help=f"**Auto-Discovered Template: {key}**\n\nFound `[templates.{key}]` block in `config.toml`."
+            extended_help=f"**Auto-Discovered Template: {key}**\n\nFound `[templates.{key}]` block in `config.toml` that is not covered by static tabs. Toggle to comment/uncomment the block."
         )
         disc_items.append(item)
         REGISTERED_KEYS.add(key)
 
-    SCHEMA[disc_tab_idx] = disc_items
-    return [disc_tab_idx]
+    # Return tuple form per MASTER_SCHEMA: indices + new_items dict
+    return [4], {4: disc_items}
 
 
 # =============================================================================
@@ -636,10 +733,25 @@ def run_smart_scan() -> int:
     Autonomously scans system binaries for templates with registered check_cmd.
     If binary is installed, enables template; otherwise disables it.
     Unchecked templates retain their default state.
+    Discovered templates (if any) are handled after DEFERRED_LOAD populates them.
     """
     cfg_file = Path(TARGET_FILE).expanduser().resolve()
     engine = MatugenEngine(config_path=cfg_file)
     engine.load_state()
+
+    # Ensure discovered keys are considered in headless mode
+    # (router calls DEFERRED_LOAD() for side-effects before engine load; we mimic)
+    try:
+        indices, new_items = DEFERRED_LOAD()
+        if new_items:
+            for idx, items in new_items.items():
+                if idx in SCHEMA:
+                    # Avoid duplicating placeholder action row when real items exist
+                    if len(items) == 1 and items[0].key == "discovered_placeholder":
+                        continue
+                    SCHEMA[idx] = items
+    except Exception:
+        pass
 
     changes: list[tuple[str, str, str, str]] = []
 
@@ -673,6 +785,16 @@ def run_default_reset() -> int:
     cfg_file = Path(TARGET_FILE).expanduser().resolve()
     engine = MatugenEngine(config_path=cfg_file)
     engine.load_state()
+
+    # Same headless DEFERRED_LOAD handling as run_smart_scan
+    try:
+        indices, new_items = DEFERRED_LOAD()
+        if new_items:
+            for idx, items in new_items.items():
+                if idx in SCHEMA and not (len(items) == 1 and items[0].key == "discovered_placeholder"):
+                    SCHEMA[idx] = items
+    except Exception:
+        pass
 
     changes: list[tuple[str, str, str, str]] = []
 
