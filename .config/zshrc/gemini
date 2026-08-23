@@ -1,49 +1,17 @@
 # =============================================================================
-# Antigravity Profile Manager + Google Gemini CLI Hybrid Wrapper
-# =============================================================================
-# ROOT CAUSE FIX for collision: package @google/gemini-cli installs binary `gemini`
-# but this file previously hijacked `gemini` for Antigravity only -> `gemini --version`
-# would fail with "unrecognized arguments". Now hybrid dispatches intelligently.
-#
-# Usage:
-#   gemini              -> Antigravity TUI (profile manager)
-#   gemini list         -> list Antigravity profiles
-#   gemini next         -> cycle Antigravity profile
-#   gemini <profile>    -> switch Antigravity profile (if <profile> exists in ~/.config/dusky/settings/apps/antigravity/profiles/)
-#   gemini --version    -> Google Gemini CLI version (delegated)
-#   gemini --help       -> Antigravity help + hint for Google
-#   gemini "prompt..."  -> Google Gemini CLI prompt
-#   gemini mcp ...      -> Google Gemini CLI subcommands
-#   gemini-cli          -> Direct Google Gemini CLI bypassing wrapper (always)
-#   command gemini ...  -> Direct Google Gemini CLI bypassing wrapper (zsh: bypass function)
-#   antigravity / agy   -> Alias for Antigravity manager
+# Antigravity Profile Manager Integration (gemini CLI)
 # =============================================================================
 
+# Main wrapper function
 gemini() {
   local script_path="$HOME/user_scripts/apps/antigravity/switch_accounts.py"
-  # Resolve real Google binary, bypassing this function (whence -p finds external only)
-  local real_bin
-  real_bin="$(whence -p gemini 2>/dev/null)"
-  if [[ -z "$real_bin" || ! -x "$real_bin" ]]; then
-    real_bin="$HOME/.local/bin/gemini"
-  fi
-
-  # If manager script missing, just delegate to real gemini
+  
   if [[ ! -f "$script_path" ]]; then
-    if [[ -x "$real_bin" ]]; then
-      command "$real_bin" "$@"
-      return $?
-    else
-      echo "Error: switch_accounts.py not found at $script_path and no Gemini binary at $real_bin" >&2
-      return 127
-    fi
+    echo "Error: switch_accounts.py not found at $script_path" >&2
+    return 1
   fi
-
-  # Handle Antigravity-specific invocations
+  
   case "$1" in
-    "")  # no args -> Antigravity TUI
-      python3 "$script_path"
-      ;;
     list|--list|-l)
       python3 "$script_path" --list
       ;;
@@ -51,80 +19,38 @@ gemini() {
       shift
       python3 "$script_path" --next "$@"
       ;;
-    --launch|--relaunch)
-      python3 "$script_path" --launch
-      ;;
-    -c|--check)
-      python3 "$script_path" "$@"
-      ;;
-    -f|--force|-r|--restart)
-      # These are Antigravity flags, often with a profile name: e.g., gemini -f myprofile
-      python3 "$script_path" "$@"
-      ;;
-    -h|--help)
-      # Ambiguous --help: show Antigravity help + hint for Google
-      python3 "$script_path" --help
-      echo ""
-      echo "Hint: For Google Gemini CLI help, use 'gemini-cli --help' or 'command gemini --help'"
-      ;;
     *)
-      # Check if $1 is a known Antigravity profile (directory exists)
-      # Profiles are at $AGM_STORAGE_DIR/profiles or ~/.config/dusky/settings/apps/antigravity/profiles
-      local profiles_dir="${AGM_STORAGE_DIR:-$HOME/.config/dusky/settings/apps/antigravity}/profiles"
-      # AGM_STORAGE_DIR already includes full path if set, need handling:
-      if [[ -n "$AGM_STORAGE_DIR" ]]; then
-        profiles_dir="$AGM_STORAGE_DIR/profiles"
-        # If AGM_STORAGE_DIR already ends with profiles, avoid double
-        [[ "$AGM_STORAGE_DIR" == */profiles ]] && profiles_dir="$AGM_STORAGE_DIR"
-      fi
-      if [[ -d "$profiles_dir/$1" ]]; then
-        # Looks like Antigravity profile switch (validated against filesystem)
-        python3 "$script_path" "$@"
-      else
-        # Delegate everything else to real Google Gemini CLI
-        if [[ -x "$real_bin" ]]; then
-          command "$real_bin" "$@"
-        else
-          echo "Error: Google Gemini CLI not found at $real_bin" >&2
-          echo "Install with: npm install -g --allow-scripts=@github/keytar,node-pty @google/gemini-cli" >&2
-          return 127
-        fi
-      fi
+      python3 "$script_path" "$@"
       ;;
   esac
 }
 
-# Aliases for clarity / bypass
-# agy = antigravity manager TUI, antigravity = same
-alias agy='python3 "$HOME/user_scripts/apps/antigravity/switch_accounts.py"'
-alias antigravity='python3 "$HOME/user_scripts/apps/antigravity/switch_accounts.py"'
-# gemini-cli = direct Google binary (bypasses wrapper)
-# We create a symlink as well, but alias ensures it works even before symlink
-# Note: alias expands only in interactive shells; symlink covers scripts
-
-# Dynamic tab-completion
+# Dynamic tab-completion for subcommands and profile names
 _gemini_completions() {
   local -a subcommands
   subcommands=(
-    'list:List available isolation profiles (Antigravity)'
-    'next:Cycle to the next sequential profile (Antigravity)'
+    'list:List available isolation profiles'
+    'next:Cycle to the next sequential profile'
   )
+  
   local -a profiles
   local script_path="$HOME/user_scripts/apps/antigravity/switch_accounts.py"
+  
   if [[ -f "$script_path" ]]; then
-    # Extract profile names from dashboard (column 3 via │)
-    profiles=($(python3 "$script_path" --list 2>/dev/null | grep -E '^│' | awk -F'│' '{print $4}' | sed 's/ //g' | grep -v "Profile"))
+    profiles=($(python3 "$script_path" --list 2>/dev/null | grep -E '^│' | awk -F'│' '{print $4}' | sed 's/ //g'))
   fi
+
   if (( CURRENT == 2 )); then
-    # Offer both Antigravity subcommands and profile names; Google subcommands will fallback to real gemini's own completion
-    _describe -t commands "antigravity subcommands" subcommands
-    _describe -t profiles "antigravity profiles" profiles
+    _describe -t commands "gemini subcommands" subcommands
+    _describe -t profiles "gemini profiles" profiles
   else
     local -a flags
-    flags=('-f' '--force' '-h' '--help' '-l' '--list' '-n' '--next' '-r' '--restart' '-c' '--check' '--launch')
-    _describe -t flags "antigravity flags" flags
+    flags=('-f' '--force' '-h' '--help')
+    _describe -t flags "gemini flags" flags
   fi
 }
+
+# Register completion if completion system is active
 if (( $+functions[compdef] )); then
   compdef _gemini_completions gemini
 fi
