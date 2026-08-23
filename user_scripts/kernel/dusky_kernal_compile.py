@@ -496,6 +496,7 @@ IDLE_GOV_CHOICES: Final = ("teo", "menu", "ladder")
 CONG_CHOICES: Final = ("bbr", "cubic", "reno", "westwood", "vegas")
 QDISC_CHOICES: Final = ("fq", "cake", "fq_codel", "fq_pie", "pfifo_fast")
 TOOLCHAIN_CHOICES: Final = ("llvm", "gcc")
+HEADERS_CHOICES: Final = ("auto", "always", "never")
 MODULES_MODE_CHOICES: Final = ("strict", "expanded")
 PSTATE_CHOICES: Final = ("undefined", "disable", "passive", "active", "guided")
 COMPRESS_CHOICES: Final = ("zstd", "xz", "gzip", "none")
@@ -630,6 +631,7 @@ _PROFILE_SPEC: Final[dict[str, tuple[FieldSpec, ...]]] = {
         F("debug_info", "str", "reduced", "none / reduced (+BTF) / full.", DEBUG_CHOICES),
         F("jobs", "int", 0, "make -j (0 = os.process_cpu_count())."),
         F("rust", "bool", True, "CONFIG_RUST integration."),
+        F("headers", "str", "auto", "Kernel headers package: auto (detects DKMS) / always / never.", HEADERS_CHOICES, ephemeral=True),
     ),
     # --------------------------------------------------------------- security
     "security": (
@@ -1019,6 +1021,7 @@ class Overrides:
     pin: str | None = None
     channel: str | None = None
     scheduler: str | None = None
+    headers: str | None = None
 
     @classmethod
     def from_env_and_args(cls, args: argparse.Namespace) -> Self:
@@ -1038,6 +1041,7 @@ class Overrides:
             pin=pick(args.pin, "DUSKY_PIN", None),
             channel=pick(args.channel, "DUSKY_CHANNEL", CHANNEL_CHOICES),
             scheduler=pick(getattr(args, "scheduler", None), "DUSKY_SCHEDULER", SCHED_CHOICES),
+            headers=pick(getattr(args, "headers", None), "DUSKY_HEADERS", HEADERS_CHOICES),
         )
 
 
@@ -1066,6 +1070,8 @@ def apply_overrides(p: KernelProfile, o: Overrides, prompt: bool) -> list[str]:
         put("release", "channel", o.channel)
     if o.scheduler:
         put("scheduler", "type", o.scheduler)
+    if o.headers:
+        put("compiler", "headers", o.headers)
 
     if prompt and interactive():
         rule("Ephemeral overrides")
@@ -1073,14 +1079,25 @@ def apply_overrides(p: KernelProfile, o: Overrides, prompt: bool) -> list[str]:
         say("")
         if o.cpu_arch is None:
             cur = p.g("cpu", "arch")
-            say("  %sCPU arch%s  current: %s%s%s" % (C.BOLD, C.RESET, C.CYAN, cur, C.RESET))
+            say("  %sCPU arch%s      current: %s%s%s" % (C.BOLD, C.RESET, C.CYAN, cur, C.RESET))
             if ask_yes("Change CPU arch for this build?", False):
                 choice = ask("Arch " + C.FAINT + "(" + ", ".join(CPU_ARCHES) + ")" + C.RESET, cur)
                 if choice in CPU_ARCHES:
                     put("cpu", "arch", choice)
+        if o.modules_mode is None:
+            cur = p.g("modules", "mode")
+            say("  %sModules mode%s  current: %s%s%s" % (C.BOLD, C.RESET, C.CYAN, cur, C.RESET))
+            if ask_yes("Change modules mode for this build?", False):
+                put("modules", "mode", ask_choice("Modules mode", list(MODULES_MODE_CHOICES), cur))
+        if o.headers is None:
+            cur = p.g("compiler", "headers")
+            det = "(DKMS active)" if needs_headers() else "(no DKMS drivers detected)"
+            say("  %sHeaders%s       current: %s%s%s %s" % (C.BOLD, C.RESET, C.CYAN, cur, C.RESET, C.FAINT + det + C.RESET))
+            if ask_yes("Change headers package setting for this build?", False):
+                put("compiler", "headers", ask_choice("Headers", list(HEADERS_CHOICES), cur))
         if o.lto is None and p.g("compiler", "toolchain") == "llvm":
             cur = p.g("compiler", "lto")
-            say("  %sLTO mode%s  current: %s%s%s" % (C.BOLD, C.RESET, C.CYAN, cur, C.RESET))
+            say("  %sLTO mode%s      current: %s%s%s" % (C.BOLD, C.RESET, C.CYAN, cur, C.RESET))
             if ask_yes("Change LTO mode for this build?", False):
                 put("compiler", "lto", ask_choice("LTO mode", list(LTO_CHOICES), cur))
 
@@ -2685,6 +2702,31 @@ def hms(seconds: float) -> str:
 # 23. Compile
 # --------------------------------------------------------------------------- #
 
+def needs_headers() -> bool:
+    if have("dkms"):
+        cp = run(["dkms", "status"], check=False)
+        if cp.returncode == 0 and cp.stdout.strip():
+            return True
+        dkms_dir = Path("/var/lib/dkms")
+        if dkms_dir.is_dir():
+            entries = [e for e in dkms_dir.iterdir() if e.is_dir() and not e.name.startswith(".")]
+            if entries:
+                return True
+    return False
+
+
+def resolve_build_headers(p: KernelProfile) -> bool:
+    mode = p.g("compiler", "headers")
+    match mode:
+        case "always":
+            return True
+        case "never":
+            return False
+        case "auto":
+            return needs_headers()
+    return False
+
+
 def compile_kernel(tree: Path, p: KernelProfile, env: Mapping[str, str], steps: int) -> Path:
     rule("Compile")
     jobs = p.g("compiler", "jobs") or cpu_count()
@@ -2692,13 +2734,15 @@ def compile_kernel(tree: Path, p: KernelProfile, env: Mapping[str, str], steps: 
     for stale_pkg in dest.glob("*.pkg.tar.*"):
         stale_pkg.unlink(missing_ok=True)
 
+    build_headers = resolve_build_headers(p)
     argv = [
         "make",
         "-j%d" % jobs,
         *make_flags(env),
         "PACMAN_PKGBASE=%s" % p.pkgbase,
-        "PACMAN_EXTRAPACKAGES=headers",
     ]
+    if build_headers:
+        argv.append("PACMAN_EXTRAPACKAGES=headers")
     if env.get("LLVM") != "1":
         argv += ["CC=gcc", "HOSTCC=gcc"]
     argv.append("pacman-pkg")
@@ -2892,8 +2936,11 @@ def install_packages(pkgdir: Path, profile: KernelProfile) -> list[Path]:
     all_pkgs = [p for p in all_pkgs if not p.name.endswith(".sig")]
     if not all_pkgs:
         raise BuildError("no packages found in " + str(pkgdir))
+    build_headers = resolve_build_headers(profile)
     by_comp: dict[str, Path] = {}
     for p in all_pkgs:
+        if not build_headers and "-headers-" in p.name:
+            continue
         comp = "headers" if "-headers-" in p.name else "kernel"
         if comp not in by_comp or p.stat().st_mtime > by_comp[comp].stat().st_mtime:
             by_comp[comp] = p
@@ -3161,9 +3208,12 @@ def do_doctor(args: argparse.Namespace) -> int:
     row("distinct L3 LLC domains", str(llc_count), llc_count >= 1)
     
     for tool in ("make", "clang", "lld", "gcc", "aria2c", "git", "patch", "gpg",
-                 "pacman", "modprobed-db", "bootctl", "grub-mkconfig",
+                 "pacman", "modprobed-db", "dkms", "bootctl", "grub-mkconfig",
                  "kernel-install", "findmnt", "rustc", "rust-bindgen", "pahole"):
         row(tool, shutil.which(tool) or "-", have(tool))
+    if have("dkms"):
+        dkms_active = needs_headers()
+        row("active dkms modules", "detected (headers needed)" if dkms_active else "none (headers optional)", True)
     table(["", "check", "value"], rows)
 
     say("")
@@ -3284,7 +3334,7 @@ _DEFAULT_PROFILES: Final[tuple[tuple[str, dict[str, dict[str, Any]], str, str], 
         "cpu": {"arch": "native", "governor": "schedutil", "amd_pstate": "active", "epp": "balance_performance", "mitigations": False, "prefcore": True},
         "timing": {"hz": 1000, "tickless": "idle", "preempt": "lazy", "preempt_dynamic": True},
         "memory": {"thp": "madvise", "thp_defrag": "defer+madvise", "mglru": True, "mglru_mask": 7, "mglru_min_ttl_ms": 1000, "swap_backend": "zram", "zram_size_pct": 100, "numa": True, "numa_balancing": False, "ksm": False, "page_reporting": False, "damon": False},
-        "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "full", "thinlto_cache": True, "kcfi": False, "debug_info": "reduced", "rust": True},
+        "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "full", "thinlto_cache": True, "kcfi": False, "debug_info": "reduced", "rust": True, "headers": "auto"},
         "security": {"profile": "extreme", "init_on_alloc": False, "hardened_usercopy": False, "stackprotector": "regular", "mitigations": "off", "acknowledge_risk": True},
         "gaming": {"ntsync": True, "uclamp": True, "max_map_count": 2147483642, "split_lock_mitigate": False},
         "storage": {"nvme_poll_queues": 0, "io_scheduler": "none", "blk_wbt": True},
@@ -3301,7 +3351,7 @@ _DEFAULT_PROFILES: Final[tuple[tuple[str, dict[str, dict[str, Any]], str, str], 
         "cpu": {"arch": "native", "governor": "schedutil", "amd_pstate": "active", "epp": "balance_performance", "mitigations": False, "prefcore": True},
         "timing": {"hz": 1000, "tickless": "idle", "preempt": "lazy", "preempt_dynamic": True},
         "memory": {"thp": "madvise", "thp_defrag": "defer+madvise", "mglru": True, "mglru_mask": 7, "mglru_min_ttl_ms": 1000, "swap_backend": "zram", "zram_size_pct": 100, "numa": True, "numa_balancing": False, "ksm": False, "page_reporting": False},
-        "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "thin", "thinlto_cache": True, "kcfi": True, "debug_info": "reduced", "rust": True},
+        "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "thin", "thinlto_cache": True, "kcfi": True, "debug_info": "reduced", "rust": True, "headers": "auto"},
         "security": {"profile": "extreme", "init_on_alloc": False, "hardened_usercopy": False, "stackprotector": "regular", "mitigations": "off", "acknowledge_risk": True},
         "gaming": {"ntsync": True, "uclamp": True, "max_map_count": 2147483642, "split_lock_mitigate": False},
         "network": {"congestion": "bbr", "qdisc": "fq"},
@@ -3317,7 +3367,7 @@ _DEFAULT_PROFILES: Final[tuple[tuple[str, dict[str, dict[str, Any]], str, str], 
         "cpu": {"arch": "native", "governor": "schedutil", "amd_pstate": "active", "epp": "balance_performance", "prefcore": True},
         "timing": {"hz": 1000, "tickless": "idle", "preempt": "lazy", "preempt_dynamic": True},
         "memory": {"thp": "madvise", "thp_defrag": "defer+madvise", "mglru": True, "mglru_mask": 7, "mglru_min_ttl_ms": 1000, "swap_backend": "zswap", "numa": True, "ksm": True, "damon": True},
-        "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "thin", "thinlto_cache": True, "kcfi": True, "debug_info": "reduced", "rust": True},
+        "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "thin", "thinlto_cache": True, "kcfi": True, "debug_info": "reduced", "rust": True, "headers": "auto"},
         "security": {"profile": "balanced", "init_on_alloc": True, "hardened_usercopy": True, "stackprotector": "strong", "mitigations": "auto"},
         "gaming": {"ntsync": True, "uclamp": True, "max_map_count": 2147483642},
         "network": {"congestion": "bbr", "qdisc": "cake"},
@@ -3333,7 +3383,7 @@ _DEFAULT_PROFILES: Final[tuple[tuple[str, dict[str, dict[str, Any]], str, str], 
         "timing": {"hz": 500, "tickless": "idle", "preempt": "lazy", "preempt_dynamic": True},
         "memory": {"thp": "madvise", "thp_defrag": "defer", "mglru": True, "mglru_mask": 7, "mglru_min_ttl_ms": 0, "swap_backend": "zswap", "numa": True, "numa_balancing": True, "nodes_shift": 6, "ksm": True, "page_reporting": True, "damon": True},
         "storage": {"nvme_poll_queues": 8, "io_scheduler": "none", "blk_wbt": True},
-        "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "thin", "thinlto_cache": True, "kcfi": True, "debug_info": "reduced", "rust": True},
+        "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "thin", "thinlto_cache": True, "kcfi": True, "debug_info": "reduced", "rust": True, "headers": "auto"},
         "security": {"profile": "balanced", "init_on_alloc": True, "mitigations": "auto"},
         "network": {"congestion": "bbr", "qdisc": "fq", "xdp": True},
         "modules": {"mode": "expanded"},
@@ -3347,7 +3397,7 @@ _DEFAULT_PROFILES: Final[tuple[tuple[str, dict[str, dict[str, Any]], str, str], 
         "timing": {"hz": 250, "tickless": "idle", "preempt": "lazy", "preempt_dynamic": True},
         "power": {"wq_power_efficient": True, "cpu_idle_governor": "teo", "rcu_lazy": True, "energy_model": True},
         "memory": {"thp": "madvise", "thp_defrag": "defer+madvise", "mglru": True, "mglru_mask": 7, "mglru_min_ttl_ms": 500, "swap_backend": "zswap", "damon": True},
-        "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "thin", "thinlto_cache": True, "kcfi": True, "debug_info": "reduced"},
+        "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "thin", "thinlto_cache": True, "kcfi": True, "debug_info": "reduced", "headers": "auto"},
         "network": {"congestion": "bbr", "qdisc": "fq_codel"},
         "modules": {"mode": "strict", "modprobed_db": True},
     }, "Battery: Battery-first, guided P-states, RCU lazy, TEO idle, power-efficient WQ", "dusky-battery"),
@@ -3357,7 +3407,7 @@ _DEFAULT_PROFILES: Final[tuple[tuple[str, dict[str, dict[str, Any]], str, str], 
         "scheduler": {"type": "eevdf", "scx": "none", "scx_enable_class": True},
         "timing": {"hz": 500, "tickless": "idle", "preempt": "lazy", "preempt_dynamic": True},
         "memory": {"slub_tiny": False, "numa": True, "nodes_shift": 1, "swap_backend": "zram", "zram_size_pct": 100, "thp": "madvise", "mglru": True, "mglru_min_ttl_ms": 0, "ksm": False, "page_reporting": False},
-        "compiler": {"optimize": "size", "lto": "thin", "thinlto_cache": True, "debug_info": "reduced"},
+        "compiler": {"optimize": "size", "lto": "thin", "thinlto_cache": True, "debug_info": "reduced", "headers": "auto"},
         "cpu": {"arch": "native", "nr_cpus": 16},
         "modules": {"mode": "strict", "modprobed_db": True},
     }, "Low RAM: Small-footprint build for <=8 GiB systems: zram, -Os, ThinLTO, strict modules", "dusky-lowram"),
@@ -3368,7 +3418,7 @@ _DEFAULT_PROFILES: Final[tuple[tuple[str, dict[str, dict[str, Any]], str, str], 
         "cpu": {"arch": "native"},
         "timing": {"hz": 1000, "tickless": "idle", "preempt": "lazy", "preempt_dynamic": True},
         "memory": {"swap_backend": "zram", "zram_size_pct": 100, "thp": "madvise", "mglru": True},
-        "compiler": {"lto": "thin", "thinlto_cache": True, "debug_info": "reduced"},
+        "compiler": {"lto": "thin", "thinlto_cache": True, "debug_info": "reduced", "headers": "auto"},
         "modules": {"mode": "strict", "modprobed_db": True},
     }, "Minimal Strict: Fastest compile: strict localmodconfig, ThinLTO cache, reduced debug + BTF", "dusky-strict"),
 
@@ -3379,7 +3429,7 @@ _DEFAULT_PROFILES: Final[tuple[tuple[str, dict[str, dict[str, Any]], str, str], 
         "cpu": {"arch": "generic_v3", "nr_cpus": 512},
         "timing": {"hz": 1000, "tickless": "idle", "preempt": "lazy", "preempt_dynamic": True},
         "memory": {"thp": "madvise", "thp_defrag": "defer+madvise", "mglru": True, "numa": True, "nodes_shift": 6},
-        "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "thin", "thinlto_cache": True, "kcfi": True, "debug_info": "reduced"},
+        "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "thin", "thinlto_cache": True, "kcfi": True, "debug_info": "reduced", "headers": "auto"},
         "modules": {"mode": "expanded", "modprobed_db": False},
     }, "Generic v3: Distributable AVX2/BMI2/FMA baseline package", "dusky-v3"),
 
@@ -3390,7 +3440,7 @@ _DEFAULT_PROFILES: Final[tuple[tuple[str, dict[str, dict[str, Any]], str, str], 
         "cpu": {"arch": "generic_v4", "nr_cpus": 512},
         "timing": {"hz": 1000, "tickless": "idle", "preempt": "lazy", "preempt_dynamic": True},
         "memory": {"thp": "madvise", "thp_defrag": "defer+madvise", "mglru": True, "numa": True, "nodes_shift": 6},
-        "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "thin", "thinlto_cache": True, "kcfi": True, "debug_info": "reduced"},
+        "compiler": {"toolchain": "llvm", "optimize": "o2", "lto": "thin", "thinlto_cache": True, "kcfi": True, "debug_info": "reduced", "headers": "auto"},
         "modules": {"mode": "expanded", "modprobed_db": False},
     }, "Generic v4: Distributable AVX-512 baseline package (Zen4+ / modern Xeon)", "dusky-v4"),
 )
@@ -3451,6 +3501,8 @@ def build_parser() -> argparse.ArgumentParser:
     ov.add_argument("--lto", choices=list(LTO_CHOICES))
     ov.add_argument("--channel", choices=list(CHANNEL_CHOICES))
     ov.add_argument("--scheduler", choices=list(SCHED_CHOICES))
+    ov.add_argument("--headers", choices=list(HEADERS_CHOICES), help="kernel headers: auto (DKMS-aware)|always|never")
+    ov.add_argument("--no-headers", action="store_const", dest="headers", const="never", help="do not build or install headers")
     ov.add_argument("--pin", metavar="VERSION", help="build this exact kernel version")
     ov.add_argument("-j", "--jobs", type=int, metavar="N")
 

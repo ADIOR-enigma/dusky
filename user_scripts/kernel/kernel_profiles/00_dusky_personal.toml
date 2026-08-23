@@ -99,6 +99,7 @@ module_compress = "zstd"
 debug_info = "reduced"
 jobs = 0
 rust = true
+headers = "auto"
 
 [security]
 profile = "extreme"
