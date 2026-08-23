@@ -11,10 +11,10 @@ bare_metal_only = false
 portable_package = false
 
 [release]
-channel = "longterm"
+channel = "mainline"
 pin = ""
 allow_rc = false
-min_version = "6.18"
+min_version = "7.2"
 
 [scheduler]
 type = "eevdf"

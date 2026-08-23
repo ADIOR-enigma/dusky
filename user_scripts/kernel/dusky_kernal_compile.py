@@ -88,8 +88,16 @@ def _env_path(name: str, default: Path) -> Path:
 HOME: Final = Path.home()
 SELF_DIR: Final = Path(__file__).resolve().parent
 
+
+def _default_build_dir() -> Path:
+    for cand in (Path("/mnt/zram1/dusky-build"), Path("/mnt/zram0/dusky-build"), Path("/mnt/zram/dusky-build")):
+        if cand.parent.is_dir() and os.access(cand.parent, os.W_OK):
+            return cand
+    return HOME / ".cache" / "dusky-kernel"
+
+
 PROFILES_DIR: Final = _env_path("DUSKY_PROFILES_DIR", SELF_DIR / "kernel_profiles")
-BUILD_DIR: Final = _env_path("DUSKY_BUILD_DIR", HOME / ".cache" / "dusky-kernel")
+BUILD_DIR: Final = _env_path("DUSKY_BUILD_DIR", _default_build_dir())
 STATE_DIR: Final = _env_path("DUSKY_STATE_DIR", HOME / ".local" / "state" / "dusky-kernel")
 CONFIG_SEED_DIR: Final = _env_path("DUSKY_CONFIG_DIR", SELF_DIR)
 
@@ -2010,7 +2018,7 @@ def build_config_matrix(p: KernelProfile, *, rust_ok: bool) -> list[Op]:
     add(E("SCHED_MC"))
     add(E("SCHED_MC_PRIO") if s["cpu"]["prefcore"] else D("SCHED_MC_PRIO"))
     add(E("SCHED_SMT") if s["cpu"]["smt"] else D("SCHED_SMT"))
-    add(E("SCHED_DEBUG"))
+    add(E("SCHED_DEBUG", optional=True))
     add(E("SCHEDSTATS"))
 
     # Linux 7.2 Cache Aware Scheduling (CAS)
@@ -2102,7 +2110,10 @@ def build_config_matrix(p: KernelProfile, *, rust_ok: bool) -> list[Op]:
     if s["timing"]["preempt_dynamic"] and preempt != "rt":
         extend((E("PREEMPT_DYNAMIC"), E("HAVE_PREEMPT_DYNAMIC")))
 
-    add(E("RCU_LAZY") if s["power"]["rcu_lazy"] else D("RCU_LAZY"))
+    if s["power"]["rcu_lazy"]:
+        extend((E("RCU_NOCB_CPU"), E("RCU_LAZY")))
+    else:
+        add(D("RCU_LAZY"))
     add(E("HIGH_RES_TIMERS"))
 
     # --------------------------------------------------------------- memory
@@ -2110,7 +2121,7 @@ def build_config_matrix(p: KernelProfile, *, rust_ok: bool) -> list[Op]:
         add(D("TRANSPARENT_HUGEPAGE_" + t))
     add(E("TRANSPARENT_HUGEPAGE"))
     add(E("TRANSPARENT_HUGEPAGE_" + s["memory"]["thp"].upper()))
-    add(E("READ_ONLY_THP_FOR_FS"))
+    add(E("READ_ONLY_THP_FOR_FS", optional=True))
     add(E("THP_SWAP"))
 
     if s["memory"]["mglru"]:
@@ -2121,7 +2132,7 @@ def build_config_matrix(p: KernelProfile, *, rust_ok: bool) -> list[Op]:
     # Swap backend
     match s["memory"]["swap_backend"]:
         case "zswap":
-            extend((E("ZSWAP"), E("ZSWAP_DEFAULT_ON"), E("ZSMALLOC"), E("ZSWAP_ZPOOL_DEFAULT_ZSMALLOC")))
+            extend((E("ZSWAP"), E("ZSWAP_DEFAULT_ON"), E("ZSMALLOC"), E("ZSWAP_ZPOOL_DEFAULT_ZSMALLOC", optional=True)))
             add(E("ZSWAP_COMPRESSOR_DEFAULT_" + s["memory"]["zswap_compressor"].upper()))
             add(E("CRYPTO_" + s["memory"]["zswap_compressor"].upper()))
             add(D("ZRAM", optional=True))
@@ -2131,9 +2142,9 @@ def build_config_matrix(p: KernelProfile, *, rust_ok: bool) -> list[Op]:
             extend((D("ZSWAP_DEFAULT_ON"), D("ZRAM", optional=True)))
 
     if s["memory"]["slub_tiny"]:
-        extend((E("SLUB_TINY"), D("SLUB_CPU_PARTIAL"), D("SLAB_MERGE_DEFAULT")))
+        extend((E("SLUB_TINY"), D("SLUB_CPU_PARTIAL", optional=True), D("SLAB_MERGE_DEFAULT")))
     else:
-        extend((D("SLUB_TINY"), E("SLUB_CPU_PARTIAL"), E("SLUB"), D("SLUB_STATS"), D("SLUB_DEBUG_ON")))
+        extend((D("SLUB_TINY"), E("SLUB_CPU_PARTIAL", optional=True), E("SLUB"), D("SLUB_STATS"), D("SLUB_DEBUG_ON")))
 
     if s["security"]["slab_freelist_hardened"]:
         add(E("SLAB_FREELIST_HARDENED"))
@@ -2178,10 +2189,10 @@ def build_config_matrix(p: KernelProfile, *, rust_ok: bool) -> list[Op]:
             extend((E("LTO_CLANG"), E("LTO_CLANG_THIN_DIST"), E("HAS_LTO_CLANG")))
 
     if s["compiler"]["kcfi"] and toolchain == "llvm" and lto != "none":
-        extend((E("ARCH_SUPPORTS_CFI_CLANG", optional=True), E("CFI_CLANG"),
+        extend((E("ARCH_SUPPORTS_CFI", optional=True), E("CFI"), E("CFI_CLANG", optional=True),
                 D("CFI_PERMISSIVE"), E("X86_KERNEL_IBT"), E("CFI_ICALL_NORMALIZE_INTEGERS", optional=True)))
     else:
-        extend((D("CFI_CLANG"), D("CFI_PERMISSIVE")))
+        extend((D("CFI"), D("CFI_CLANG", optional=True), D("CFI_PERMISSIVE")))
 
     if s["compiler"]["fdo"] in ("autofdo", "autofdo_propeller"):
         add(E("AUTOFDO_CLANG", optional=True))
@@ -2192,18 +2203,15 @@ def build_config_matrix(p: KernelProfile, *, rust_ok: bool) -> list[Op]:
     else:
         add(D("PROPELLER_CLANG", optional=True))
 
-    # Debug info & BTF (Reduced + BTF for fast, small, fully observable builds)
+    # Debug info & BTF (DWARF5 + DEBUG_INFO_BTF, DEBUG_INFO_REDUCED disabled for BTF compatibility)
     match s["compiler"]["debug_info"]:
         case "none":
             if s["verify"]["require_btf"] or s["scheduler"]["scx_enable_class"]:
                 extend((D("DEBUG_INFO_NONE"), E("DEBUG_INFO"), E("DEBUG_INFO_DWARF5"),
-                        E("DEBUG_INFO_REDUCED"), E("DEBUG_INFO_BTF"), E("DEBUG_INFO_BTF_MODULES")))
+                        D("DEBUG_INFO_REDUCED"), E("DEBUG_INFO_BTF"), E("DEBUG_INFO_BTF_MODULES")))
             else:
                 extend((E("DEBUG_INFO_NONE"), D("DEBUG_INFO"), D("DEBUG_INFO_BTF"), D("DEBUG_INFO_BTF_MODULES")))
-        case "reduced":
-            extend((D("DEBUG_INFO_NONE"), E("DEBUG_INFO"), E("DEBUG_INFO_DWARF5"),
-                    E("DEBUG_INFO_REDUCED"), E("DEBUG_INFO_BTF"), E("DEBUG_INFO_BTF_MODULES")))
-        case "full":
+        case "reduced" | "full":
             extend((D("DEBUG_INFO_NONE"), E("DEBUG_INFO"), E("DEBUG_INFO_DWARF5"),
                     D("DEBUG_INFO_REDUCED"), E("DEBUG_INFO_BTF"), E("DEBUG_INFO_BTF_MODULES")))
 
@@ -2393,13 +2401,27 @@ def verify_config(tree: Path, p: KernelProfile, ops: Sequence[Op]) -> None:
     for flag, sym, val, opt in ops:
         target = "y" if flag == "-e" else ("n" if flag == "-d" else ("m" if flag == "-m" else val))
         actual = get_state(sym)
-        if actual == "undef":
-            if not opt and sym not in optional_set:
-                vanished.append(sym)
-        elif actual == target:
-            matches += 1
+        if flag == "-d":
+            if actual in ("n", "undef"):
+                matches += 1
+            else:
+                coerced.append((sym, "n", actual))
+        elif flag == "-e" or flag == "-m":
+            if actual == "undef":
+                if not opt and sym not in optional_set:
+                    vanished.append(sym)
+            elif actual == target or (flag == "-e" and actual in ("y", "m")):
+                matches += 1
+            else:
+                coerced.append((sym, target, actual))
         else:
-            coerced.append((sym, target, actual))
+            if actual == "undef":
+                if not opt and sym not in optional_set:
+                    vanished.append(sym)
+            elif actual == str(val):
+                matches += 1
+            else:
+                coerced.append((sym, str(val), actual))
 
     # Critical assertions
     s = p.sections
@@ -3316,7 +3338,7 @@ _DEFAULT_PROFILES: Final[tuple[tuple[str, dict[str, dict[str, Any]], str, str], 
     }, "Workstation: Throughput-first, NUMA/CXL aware, IOPOLL, layered SCX", "dusky-compute"),
 
     ("battery", {
-        "release": {"channel": "longterm", "min_version": "6.18"},
+        "release": {"channel": "mainline", "min_version": "7.2"},
         "scheduler": {"type": "eevdf", "scx": "none", "scx_enable_class": True},
         "cache": {"sched_cache": True, "llc_aggr_tolerance": 1},
         "cpu": {"arch": "native", "governor": "schedutil", "amd_pstate": "guided", "epp": "balance_power"},
