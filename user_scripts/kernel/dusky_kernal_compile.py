@@ -3553,7 +3553,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def install_signal_handlers() -> None:
-    def handler(signum: int, _frame: object) -> None:
+    def term_handler(signum: int, _frame: object) -> None:
         _ABORT.set()
         sys.stdout.write(C.SHOW)
         sys.stdout.flush()
@@ -3562,10 +3562,11 @@ def install_signal_handlers() -> None:
         _reap_all()
         SUDO.stop()
         JOURNAL.close()
-        raise SystemExit(130)
+        raise SystemExit(128 + signum)
 
-    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-        signal.signal(sig, handler)
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, term_handler)
+    signal.signal(signal.SIGINT, signal.default_int_handler)
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
 
