@@ -286,6 +286,15 @@ jobs = 0
 # Rust in Linux kernel support
 rust = true
 
+# Kernel headers package generation & installation:
+#   - "auto"   : Dynamically checks for DKMS (nvidia-dkms, virtualbox-dkms, etc.).
+#                If DKMS is present, builds and installs linux-headers.
+#                If no DKMS drivers exist (e.g. Intel/AMD integrated graphics),
+#                skips headers automatically (saving ~90MB and compile time).
+#   - "always" : Always build and install linux-headers package.
+#   - "never"  : Never build or install linux-headers (keeps /usr/lib/modules down to ~12MB).
+headers = "auto"
+
 
 [security]
 # Defensive security profile:
@@ -380,9 +389,11 @@ xdp = false
 
 [modules]
 # Driver pruning mode:
-#   - "expanded" : Curated LMC_KEEP safety net (Survives hotplug USB/GPU/audio/VM hardware)
-#   - "strict"   : Only drivers loaded in ~/.config/modprobed.db survive (Fastest build)
-mode = "expanded"
+#   - "strict"   : Only drivers logged in ~/.config/modprobed.db survive (Fastest compile, ~12MB)
+#                  (Default for local machine profiles: personal, gaming, battery, low_ram)
+#   - "expanded" : Curated LMC_KEEP safety net (Preserves USB/GPU/audio/hotplug hardware)
+#                  (Used for portable packages like generic_v3, generic_v4, and workstation)
+mode = "strict"
 
 # Capture and use hardware database from modprobed-db
 modprobed_db = true
@@ -423,3 +434,30 @@ assert_runtime = true
 require_ntsync = true
 require_btf = true
 require_sched_ext = true
+
+
+# ==============================================================================
+# CLI Flags & Quick Reference
+# ==============================================================================
+#
+# Build with specific profile:
+#   python3 dusky_kernal_compile.py --profile battery -y
+#
+# Skip linux-headers package:
+#   python3 dusky_kernal_compile.py --profile battery --no-headers -y
+#
+# Override module mode ephemerally:
+#   python3 dusky_kernal_compile.py --profile battery --modules-mode expanded
+#
+# Force fresh source extraction:
+#   python3 dusky_kernal_compile.py --profile battery --fresh -y
+#
+# Diagnostics report (toolchain, DKMS, memory, zram):
+#   python3 dusky_kernal_compile.py --doctor
+#
+# Dry-run Kconfig matrix verification:
+#   python3 dusky_kernal_compile.py --print-matrix --all
+#
+# Clean build artifacts:
+#   python3 dusky_kernal_compile.py --clean
+# ==============================================================================
