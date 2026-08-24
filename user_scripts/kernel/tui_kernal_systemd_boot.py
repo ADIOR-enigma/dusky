@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-import sys
-from pathlib import Path
-
-_dusky_root = Path.home() / "user_scripts" / "dusky_tui"
-if str(_dusky_root) not in sys.path:
-    sys.path.insert(0, str(_dusky_root))
-
+"""
+Systemd-Boot Kernel Manager - Advanced Dusky TUI Schema.
+Provides dynamic multi-kernel switching, granular cmdline parameter tuning,
+UEFI loader configuration, and EFI bootloader maintenance actions.
+"""
 import sys
 from pathlib import Path
 
@@ -14,18 +12,69 @@ if str(_DUSKY_TUI_ROOT) not in sys.path:
     sys.path.insert(0, str(_DUSKY_TUI_ROOT))
 
 from python.frontend.core_types import ConfigItem
+from python.engines.systemd_boot import discover_all_kernels_and_entries, clean_kernel_name
 
 # =============================================================================
-# 1. CORE APPLICATION ROUTING
+# 1. DYNAMIC KERNEL & BOOT ENTRY DISCOVERY
+# =============================================================================
+def discover_kernel_options() -> tuple[list[str], list[str]]:
+    """
+    Dynamically scans all available kernel packages, boot entries, and mkinitcpio presets.
+    Returns:
+        (options, hints) aligned for the PickerModal dialog.
+    """
+    entries_map = discover_all_kernels_and_entries()
+    
+    stock_options: list[str] = []
+    stock_hints: list[str] = []
+    
+    custom_options: list[str] = []
+    custom_hints: list[str] = []
+    
+    # 1. Stock Arch Linux (always pinned first as default)
+    if "Arch Linux" in entries_map:
+        stock_options.append("Arch Linux")
+        stock_hints.append(entries_map["Arch Linux"].get("hint") or "Stock Arch Linux kernel (/boot/vmlinuz-linux)")
+    else:
+        stock_options.append("Arch Linux")
+        stock_hints.append("Stock Arch Linux kernel (/boot/vmlinuz-linux)")
+        
+    if "Arch Linux (Fallback)" in entries_map:
+        stock_options.append("Arch Linux (Fallback)")
+        stock_hints.append(entries_map["Arch Linux (Fallback)"].get("hint") or "Arch Linux fallback initramfs (recovery mode)")
+
+    # 2. Custom kernels (sorted alphabetically)
+    for name in sorted(entries_map.keys()):
+        if name in ("Arch Linux", "Arch Linux (Fallback)") or name.startswith("@"):
+            continue
+        meta = entries_map[name]
+        hint = meta.get("hint") or meta.get("title") or f"Custom kernel {name}"
+        custom_options.append(name)
+        custom_hints.append(hint)
+
+    # 3. Special systemd-boot targets
+    special_options = ["@saved", "@default", "@latest"]
+    special_hints = [
+        "Automatically boots the last chosen kernel from the previous boot",
+        "Boots the UEFI firmware standard default entry",
+        "Automatically boots the newest installed kernel by version"
+    ]
+
+    all_options = stock_options + custom_options + special_options
+    all_hints = stock_hints + custom_hints + special_hints
+    return all_options, all_hints
+
+
+_INITIAL_KERNEL_OPTIONS, _INITIAL_KERNEL_HINTS = discover_kernel_options()
+
+# =============================================================================
+# 2. CORE APPLICATION ROUTING & ENVIRONMENT
 # =============================================================================
 ENGINE_TYPE = "systemd_boot"                       
 TARGET_FILE = "/boot/loader/entries/arch-linux.conf"           
 APP_TITLE = "Systemd-Boot Kernel Manager"         
 REQUIRE_ROOT = True
 
-# =============================================================================
-# 2. UI & ENVIRONMENT BEHAVIOR
-# =============================================================================
 DEFAULT_MODE = "batch"                        
 THEME_FILE = "~/.config/matugen/generated/dusky_tui.json"
 
@@ -33,9 +82,9 @@ ENABLE_USER_PRESETS = True
 USER_PRESETS_TAB = "Presets"
 
 TAB_NOTICES = {
-    0: {"level": "warning", "message": "Changes to the root partition or LUKS parameters can render the system unbootable. Proceed with caution."},
-    4: {"level": "info", "message": "Configures global /boot/loader/loader.conf (default kernel, timeout, resolution, security)."},
-    5: {"level": "info", "message": "Configure entry metadata (title, sort-key) and execute EFI bootloader maintenance."},
+    0: {"level": "warning", "message": "Modifications to root or LUKS storage parameters can render the system unbootable. Proceed with caution."},
+    4: {"level": "info", "message": "Configures global /boot/loader/loader.conf (default kernel selection, timeout, resolution, security)."},
+    5: {"level": "info", "message": "Configures entry metadata (title, sort-key) and executes EFI bootloader maintenance."},
 }
 
 # =============================================================================
@@ -54,7 +103,6 @@ TABS = [
 # =============================================================================
 # 4. SCHEMA DEFINITION
 # =============================================================================
-
 SCHEMA = {
     # -------------------------------------------------------------------------
     # TAB 0: BOOT & ROOT
@@ -75,6 +123,7 @@ SCHEMA = {
             scope="DEFAULT",
             type_="picker",
             options=["unset", "btrfs", "ext4", "xfs", "f2fs", "vfat"],
+            hints=["Auto-detect", "Btrfs with subvolumes", "Ext4 filesystem", "XFS filesystem", "Flash-Friendly FS", "FAT/EFI"],
             default="unset",
             group="Root Filesystem",
             extended_help="**Root File System Type**\n\nExplicitly defines the file system type of the root partition, bypassing auto-detection to speed up boot."
@@ -95,7 +144,7 @@ SCHEMA = {
             type_="bool",
             default=False,
             group="Root Filesystem",
-            extended_help="**Read-Write Mount**\n\nMounts the root device initially as read-write. This is required by some init systems."
+            extended_help="**Read-Write Mount**\n\nMounts the root device initially as read-write. Required by systemd init systems."
         ),
         ConfigItem(
             label="Mount Read-Only",
@@ -104,7 +153,27 @@ SCHEMA = {
             type_="bool",
             default=False,
             group="Root Filesystem",
-            extended_help="**Read-Only Mount**\n\nMounts the root device initially as read-only. The init system will remount it read-write later."
+            extended_help="**Read-Only Mount**\n\nMounts the root device initially as read-only. The init system remounts it read-write later."
+        ),
+        ConfigItem(
+            label="Root Delay (s)",
+            key="rootdelay",
+            scope="DEFAULT",
+            type_="picker",
+            options=["unset", "1", "3", "5", "10"],
+            hints=["No extra delay", "1 second delay", "3 seconds delay", "5 seconds delay", "10 seconds delay"],
+            default="unset",
+            group="Root Filesystem",
+            extended_help="**Root Device Wait Delay**\n\nPauses boot for N seconds before attempting to mount root, allowing slow USB or NVMe controllers to initialize."
+        ),
+        ConfigItem(
+            label="Root Wait",
+            key="rootwait",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Root Filesystem",
+            extended_help="**Wait for Root Device Indefinitely**\n\nWaits indefinitely for the root device to appear. Essential for asynchronous NVMe and external storage."
         ),
         ConfigItem(
             label="LUKS Crypt Device",
@@ -113,7 +182,16 @@ SCHEMA = {
             type_="string",
             default="unset",
             group="Encryption",
-            extended_help="**Dracut LUKS Definition**\n\nMaps a LUKS UUID to a mapped device name (e.g., `be1ac50d-...=cryptroot`)."
+            extended_help="**Dracut / Mkinitcpio LUKS Name**\n\nMaps a LUKS UUID to a mapped device name (e.g., `be1ac50d-...=cryptroot`)."
+        ),
+        ConfigItem(
+            label="LUKS UUID",
+            key="rd.luks.uuid",
+            scope="DEFAULT",
+            type_="string",
+            default="unset",
+            group="Encryption",
+            extended_help="**Dracut / Systemd LUKS UUID**\n\nSpecifies the UUID of the encrypted LUKS root partition to unlock during early boot."
         ),
         ConfigItem(
             label="LUKS Options",
@@ -122,7 +200,25 @@ SCHEMA = {
             type_="string",
             default="unset",
             group="Encryption",
-            extended_help="**Dracut LUKS Options**\n\nComma-separated list of options for LUKS (e.g., `discard` to enable TRIM)."
+            extended_help="**Dracut LUKS Options**\n\nComma-separated list of options for LUKS (e.g., `discard` to enable TRIM support on SSDs)."
+        ),
+        ConfigItem(
+            label="Resume Device",
+            key="resume",
+            scope="DEFAULT",
+            type_="string",
+            default="unset",
+            group="Hibernation",
+            extended_help="**Hibernation Resume Partition**\n\nSpecifies the swap partition or UUID used to resume from hibernation (e.g., `UUID=...`)."
+        ),
+        ConfigItem(
+            label="Resume Offset",
+            key="resume_offset",
+            scope="DEFAULT",
+            type_="string",
+            default="unset",
+            group="Hibernation",
+            extended_help="**Hibernation Swapfile Offset**\n\nPhysical block offset of a swapfile within a Btrfs or Ext4 root partition for hibernation resume."
         ),
         ConfigItem(
             label="FSCK Mode",
@@ -132,7 +228,7 @@ SCHEMA = {
             options=["unset", "auto", "skip", "force"],
             default="unset",
             group="Boot Process",
-            extended_help="**File System Check**\n\nControls when `fsck` is executed on root file systems at boot time.\n\n- `skip`: Skips checking the root file system entirely (speeds up boot but risks mounting a dirty filesystem)."
+            extended_help="**File System Check Mode**\n\nControls when `fsck` is executed on root file systems at boot time.\n\n- `auto`: Standard automatic check.\n- `skip`: Skips checking root entirely (speeds up boot).\n- `force`: Always checks root."
         ),
         ConfigItem(
             label="Splash Screen",
@@ -141,8 +237,17 @@ SCHEMA = {
             type_="bool",
             default=False,
             group="Boot Process",
-            extended_help="**Boot Splash**\n\nEnables the boot splash screen (e.g., Plymouth or Plymouth-free bootsplash) to hide kernel initialization logs."
-        )
+            extended_help="**Boot Splash**\n\nEnables the graphical boot splash screen (e.g., Plymouth) to provide a smooth transition into your desktop."
+        ),
+        ConfigItem(
+            label="Disable OEM Logo",
+            key="bgrt_disable",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Boot Process",
+            extended_help="**Disable UEFI BGRT Logo**\n\nDisables the UEFI Boot Graphics Resource Table OEM firmware bitmap display."
+        ),
     ],
 
     # -------------------------------------------------------------------------
@@ -150,24 +255,14 @@ SCHEMA = {
     # -------------------------------------------------------------------------
     1: [
         ConfigItem(
-            label="Memory Limit",
-            key="mem",
-            scope="DEFAULT",
-            type_="string",
-            options=["unset", "6G", "8G", "12G", "16G", "24G", "32G", "48G", "64G"],
-            default="unset",
-            group="Memory",
-            extended_help="**RAM Allocation Limit**\n\nForces the kernel to use a specific maximum amount of memory (e.g., `16G`). This is useful for testing low-memory conditions or reserving hardware RAM. You can select a preset or type your own custom value."
-        ),
-        ConfigItem(
             label="Mitigations",
             key="mitigations",
             scope="DEFAULT",
             type_="cycle",
             options=["unset", "auto", "off"],
             default="unset",
-            group="CPU",
-            extended_help="**CPU Vulnerability Mitigations**\n\nControls optional mitigations for CPU side-channel vulnerabilities (like Spectre and Meltdown).\n\n- `auto`: System default (usually enabled).\n- `off`: Disables all optional CPU mitigations, which can significantly improve system performance at the expense of local security.\n- `unset`: Relies on the kernel's compile-time defaults."
+            group="CPU & Scheduler",
+            extended_help="**CPU Vulnerability Mitigations**\n\nControls optional mitigations for CPU side-channel vulnerabilities (Spectre, Meltdown, Retbleed).\n\n- `auto`: Standard kernel defaults.\n- `off`: Disables CPU mitigations for maximum gaming and compute performance."
         ),
         ConfigItem(
             label="Intel P-State",
@@ -176,8 +271,8 @@ SCHEMA = {
             type_="cycle",
             options=["unset", "disable", "passive", "active", "force"],
             default="unset",
-            group="CPU",
-            extended_help="**Intel Frequency Scaling**\n\nConfigures the hardware P-State scaling driver for Intel processors.\n\n- `disable`: Disables intel_pstate and falls back to acpi-cpufreq.\n- `passive`: Uses the passive governor to allow user-space tools more control over frequency."
+            group="CPU & Scheduler",
+            extended_help="**Intel Frequency Scaling**\n\nConfigures the hardware P-State scaling driver for Intel processors.\n\n- `active`: Fully hardware-controlled autonomous scaling (EPP).\n- `passive`: Allows user-space tools finer control."
         ),
         ConfigItem(
             label="AMD P-State",
@@ -186,8 +281,8 @@ SCHEMA = {
             type_="cycle",
             options=["unset", "active", "passive", "guided", "disable"],
             default="unset",
-            group="CPU",
-            extended_help="**AMD Frequency Scaling**\n\nConfigures the precision boost state scaling driver for modern AMD Ryzen processors.\n\n- `active`: Fully hardware-controlled autonomous scaling (Recommended for Zen 2+).\n- `guided`: OS hints mixed with hardware control."
+            group="CPU & Scheduler",
+            extended_help="**AMD Frequency Scaling**\n\nConfigures precision boost scaling driver for modern AMD Ryzen processors.\n\n- `active`: Fully hardware-controlled autonomous scaling (Recommended for Zen 2+)."
         ),
         ConfigItem(
             label="Preemption Model",
@@ -196,8 +291,48 @@ SCHEMA = {
             type_="cycle",
             options=["unset", "lazy", "full", "voluntary", "none"],
             default="unset",
-            group="CPU",
-            extended_help="**Dynamic Kernel Preemption (PREEMPT_DYNAMIC)**\n\nControls the runtime preemption model in Linux 7.0+ on x86_64.\n\n- `lazy`: (Recommended / Default in Linux 7.0+) Hybrid lazy preemption (`CONFIG_PREEMPT_LAZY`). Real-time and latency-sensitive tasks (audio, compositor, input events) preempt immediately (`SCHED_FIFO`/`SCHED_RR`), while normal background tasks (`SCHED_OTHER`) finish their time-slice without unnecessary context switching.\n- `full`: Classic full preemption where all tasks preempt immediately.\n- `voluntary`: Balances throughput and responsiveness via explicit preemption points.\n- `none`: Server batch throughput without preemption.\n\n*Note*: The asterisk (`lazy*`) in Dusky compiler tables indicates `CONFIG_PREEMPT_DYNAMIC=y` is compiled into the kernel, allowing dynamic boot-time switching simply by appending `preempt=lazy` or `preempt=full` to the command line."
+            group="CPU & Scheduler",
+            extended_help="**Dynamic Kernel Preemption (PREEMPT_DYNAMIC)**\n\nControls runtime preemption in Linux 6.x/7.x.\n\n- `lazy`: (Recommended in Linux 7.0+) Hybrid lazy preemption (`CONFIG_PREEMPT_LAZY`). Real-time tasks preempt immediately while throughput tasks finish time-slices.\n- `full`: Classic full preemption where all tasks preempt immediately.\n- `voluntary`: Balances desktop responsiveness and throughput."
+        ),
+        ConfigItem(
+            label="Split Lock Mitigate",
+            key="split_lock_mitigate",
+            scope="DEFAULT",
+            type_="cycle",
+            options=["unset", "0", "1"],
+            default="unset",
+            group="CPU & Scheduler",
+            extended_help="**Split Lock Penalty Mitigation**\n\n- `0`: Disables split lock bus penalties, preventing frame drops in gaming and Windows emulators.\n- `1`: Enables kernel split lock mitigation."
+        ),
+        ConfigItem(
+            label="Thread IRQs",
+            key="threadirqs",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="CPU & Scheduler",
+            extended_help="**Threaded Interrupts**\n\nForces hardware interrupt handlers to execute inside kernel threads, improving real-time audio and input latency."
+        ),
+        ConfigItem(
+            label="Max C-State",
+            key="processor.max_cstate",
+            scope="DEFAULT",
+            type_="picker",
+            options=["unset", "1", "2", "3", "4", "5", "6"],
+            hints=["Unset (Auto)", "C1 (Lowest latency)", "C2", "C3", "C4", "C5", "C6 (Deepest power save)"],
+            default="unset",
+            group="CPU & Scheduler",
+            extended_help="**Processor Max C-State**\n\nLimits the deepest sleep C-state the CPU can enter. Limiting to C1 minimizes wake-up latency for pro-audio and gaming."
+        ),
+        ConfigItem(
+            label="Memory Limit",
+            key="mem",
+            scope="DEFAULT",
+            type_="string",
+            options=["unset", "6G", "8G", "12G", "16G", "24G", "32G", "48G", "64G"],
+            default="unset",
+            group="Memory & Swapping",
+            extended_help="**RAM Allocation Limit**\n\nForces the kernel to use a specific maximum amount of memory (e.g., `16G`). Useful for testing low-memory conditions or reserving hardware RAM."
         ),
         ConfigItem(
             label="ZSwap Enabled",
@@ -206,8 +341,8 @@ SCHEMA = {
             type_="cycle",
             options=["unset", "0", "1"],
             default="unset",
-            group="Memory",
-            extended_help="**ZSwap Compression**\n\nZSwap intercepts memory pages that are being swapped out and attempts to compress them into a dynamically sized RAM-based pool.\n\n- `1`: Enables ZSwap, significantly improving responsiveness during heavy memory pressure.\n- `0`: Explicitly disables ZSwap."
+            group="Memory & Swapping",
+            extended_help="**ZSwap Compression**\n\nIntercepts swapped memory pages and compresses them into a dynamic RAM pool.\n\n- `1`: Enables ZSwap, greatly improving responsiveness under heavy memory pressure."
         ),
         ConfigItem(
             label="Trans. Hugepages",
@@ -216,8 +351,8 @@ SCHEMA = {
             type_="cycle",
             options=["unset", "always", "madvise", "never"],
             default="unset",
-            group="Memory",
-            extended_help="**Transparent Hugepages (THP)**\n\nAllows the kernel to dynamically allocate memory in larger block sizes (hugepages) to reduce Translation Lookaside Buffer (TLB) overhead.\n\n- `always`: Enabled globally for all processes.\n- `madvise`: Only enabled for applications that explicitly request it.\n- `never`: Completely disables THP."
+            group="Memory & Swapping",
+            extended_help="**Transparent Hugepages (THP)**\n\nAllocates memory in larger blocks to reduce TLB cache misses.\n\n- `always`: Enabled for all processes.\n- `madvise`: Enabled only for applications requesting hugepages (Recommended)."
         ),
         ConfigItem(
             label="NUMA Balancing",
@@ -226,17 +361,8 @@ SCHEMA = {
             type_="cycle",
             options=["unset", "enable", "disable"],
             default="unset",
-            group="Memory",
-            extended_help="**Automatic NUMA Balancing**\n\nOptimizes thread and memory placement on multi-node NUMA architectures (such as dual-socket boards or large Threadripper systems).\n\n- `enable`: Automatically moves memory to the local node of the CPU executing the thread."
-        ),
-        ConfigItem(
-            label="Thread IRQs",
-            key="threadirqs",
-            scope="DEFAULT",
-            type_="bool",
-            default=False,
-            group="Kernel",
-            extended_help="**Threaded Interrupts**\n\nForces hardware interrupt handlers to run inside kernel threads instead of hard IRQ context. This can significantly improve real-time responsiveness and audio latency at the cost of a slight increase in overall CPU overhead."
+            group="Memory & Swapping",
+            extended_help="**Automatic NUMA Balancing**\n\nOptimizes thread and memory placement on multi-node NUMA architectures."
         ),
         ConfigItem(
             label="Init on Alloc",
@@ -245,8 +371,8 @@ SCHEMA = {
             type_="cycle",
             options=["unset", "0", "1"],
             default="unset",
-            group="Memory",
-            extended_help="**Zero Memory on Allocation**\n\n- `0`: Disables zeroing of memory upon allocation, improving performance and reducing overhead.\n- `1`: Enables zeroing of memory for security."
+            group="Memory & Swapping",
+            extended_help="**Zero Memory on Allocation**\n\n- `0`: Disables memory zeroing on alloc for higher throughput.\n- `1`: Enables zeroing for security."
         ),
         ConfigItem(
             label="Init on Free",
@@ -255,8 +381,8 @@ SCHEMA = {
             type_="cycle",
             options=["unset", "0", "1"],
             default="unset",
-            group="Memory",
-            extended_help="**Zero Memory on Free**\n\n- `0`: Disables zeroing of memory upon free, improving performance.\n- `1`: Enables zeroing of memory for security."
+            group="Memory & Swapping",
+            extended_help="**Zero Memory on Free**\n\n- `0`: Disables memory zeroing on free for higher throughput.\n- `1`: Enables zeroing for security."
         ),
         ConfigItem(
             label="SLUB Debug",
@@ -265,8 +391,8 @@ SCHEMA = {
             type_="cycle",
             options=["unset", "0", "1"],
             default="unset",
-            group="Kernel",
-            extended_help="**SLUB Allocator Debugging**\n\n- `0`: Explicitly disables all SLUB debugging. This saves kernel memory footprint and CPU overhead.\n- `1`: Enables SLUB debugging."
+            group="Kernel Diagnostics",
+            extended_help="**SLUB Allocator Debugging**\n\n- `0`: Disables SLUB debugging, saving kernel memory and CPU cycles.\n- `1`: Enables SLUB allocator debugging."
         ),
         ConfigItem(
             label="Disable IPv6",
@@ -275,8 +401,8 @@ SCHEMA = {
             type_="cycle",
             options=["unset", "0", "1"],
             default="unset",
-            group="Network",
-            extended_help="**IPv6 Support**\n\n- `1`: Disables the entire IPv6 stack, which saves kernel heap memory and reduces the attack surface if IPv6 is not needed.\n- `0`: Leaves IPv6 enabled."
+            group="Kernel Diagnostics",
+            extended_help="**IPv6 Support**\n\n- `1`: Disables the IPv6 network stack.\n- `0`: Leaves IPv6 enabled."
         ),
     ],
 
@@ -292,7 +418,17 @@ SCHEMA = {
             options=["unset", "1", "0"],
             default="unset",
             group="Graphics",
-            extended_help="**NVIDIA Direct Rendering Manager**\n\nRequired for Wayland compositors (like Hyprland or Sway) to function correctly on proprietary NVIDIA drivers.\n\n- `1`: Enables kernel modesetting (Required for Wayland)."
+            extended_help="**NVIDIA Direct Rendering Manager**\n\nRequired for Wayland compositors (Hyprland, Sway) to function on proprietary NVIDIA drivers.\n\n- `1`: Enables kernel modesetting (Required for Wayland)."
+        ),
+        ConfigItem(
+            label="Nvidia Preserve VRAM",
+            key="nvidia.NVreg_PreserveVideoMemoryAllocations",
+            scope="DEFAULT",
+            type_="cycle",
+            options=["unset", "1", "0"],
+            default="unset",
+            group="Graphics",
+            extended_help="**NVIDIA Video Memory Allocation Preservation**\n\nPreserves video memory across system suspend and hibernate cycles on NVIDIA GPUs under Wayland."
         ),
         ConfigItem(
             label="AMDGPU PP Feature Mask",
@@ -301,7 +437,27 @@ SCHEMA = {
             type_="string",
             default="unset",
             group="Graphics",
-            extended_help="**AMD GPU Powerplay Mask**\n\nUsed to unlock overclocking and undervolting capabilities on AMD graphics cards (e.g., `0xffffffff`)."
+            extended_help="**AMD GPU Powerplay Mask**\n\nUnlocks overclocking and undervolting capabilities on AMD graphics cards (e.g., `0xffffffff`)."
+        ),
+        ConfigItem(
+            label="AMDGPU SG Display",
+            key="amdgpu.sg_display",
+            scope="DEFAULT",
+            type_="cycle",
+            options=["unset", "0", "1"],
+            default="unset",
+            group="Graphics",
+            extended_help="**AMD Scatter-Gather Display**\n\n- `0`: Disables scatter-gather display to resolve screen flickering on certain APU/GPU combinations."
+        ),
+        ConfigItem(
+            label="AMDGPU Display Core",
+            key="amdgpu.dc",
+            scope="DEFAULT",
+            type_="cycle",
+            options=["unset", "1", "0"],
+            default="unset",
+            group="Graphics",
+            extended_help="**AMD Display Core (DC)**\n\n- `1`: Enables Display Core driver for modern multi-monitor and FreeSync support."
         ),
         ConfigItem(
             label="Intel GuC/HuC",
@@ -311,7 +467,7 @@ SCHEMA = {
             options=["unset", "2", "3"],
             default="unset",
             group="Graphics",
-            extended_help="**Intel Graphics Microcontrollers**\n\nEnables advanced video encoding and power management on modern Intel GPUs.\n\n- `2`: Enable HuC only.\n- `3`: Enable both GuC and HuC."
+            extended_help="**Intel Graphics Microcontrollers**\n\nEnables advanced video hardware acceleration and power management on Intel GPUs.\n\n- `3`: Enables both GuC and HuC."
         ),
         ConfigItem(
             label="Intel IOMMU",
@@ -321,17 +477,17 @@ SCHEMA = {
             options=["unset", "on", "off", "igfx_off"],
             default="unset",
             group="IOMMU",
-            extended_help="**Intel IOMMU / VT-d**\n\nControls the Intel Input/Output Memory Management Unit.\n\n- `on`: Enables VT-d to allow advanced features like VFIO PCIe Passthrough for virtual machines."
+            extended_help="**Intel IOMMU / VT-d**\n\n- `on`: Enables VT-d for PCIe virtualization passthrough (VFIO)."
         ),
         ConfigItem(
             label="AMD IOMMU",
             key="amd_iommu",
             scope="DEFAULT",
             type_="cycle",
-            options=["unset", "off", "fullflush", "force_isolation"],
+            options=["unset", "on", "off", "fullflush", "force_isolation"],
             default="unset",
             group="IOMMU",
-            extended_help="**AMD IOMMU / AMD-Vi**\n\nControls the AMD IOMMU implementation.\n\n- `force_isolation`: Forces strict device isolation for VFIO."
+            extended_help="**AMD IOMMU / AMD-Vi**\n\n- `on`: Enables AMD-Vi for PCIe virtualization passthrough (VFIO)."
         ),
         ConfigItem(
             label="IOMMU Mode",
@@ -341,7 +497,7 @@ SCHEMA = {
             options=["unset", "pt", "off", "force"],
             default="unset",
             group="IOMMU",
-            extended_help="**Generic IOMMU Subsystem**\n\n- `pt`: Passthrough mode. Devices use an identity-mapped translation by default, which improves DMA performance for host devices while still allowing VM passthrough."
+            extended_help="**Generic IOMMU Passthrough**\n\n- `pt`: Identity-mapped passthrough mode. Optimizes host DMA performance while enabling VM device passthrough."
         ),
         ConfigItem(
             label="PCIE ASPM",
@@ -351,7 +507,7 @@ SCHEMA = {
             options=["unset", "default", "force", "off"],
             default="unset",
             group="Power Management",
-            extended_help="**Active State Power Management**\n\nPCIe power saving configuration.\n\n- `force`: Forces ASPM on even if the BIOS says it's unsupported.\n- `off`: Disables ASPM entirely to prevent latency spikes or hardware crashes."
+            extended_help="**Active State Power Management**\n\n- `force`: Forces PCIe power savings.\n- `off`: Disables ASPM to eliminate latency spikes."
         ),
         ConfigItem(
             label="USB Autosuspend",
@@ -361,7 +517,7 @@ SCHEMA = {
             options=["unset", "-1", "1"],
             default="unset",
             group="Power Management",
-            extended_help="**USB Core Autosuspend**\n\nControls the delay (in seconds) before an idle USB device is suspended.\n\n- `-1`: Completely disables USB autosuspend, which can fix issues with external audio DACs, mice, or keyboards disconnecting randomly."
+            extended_help="**USB Core Autosuspend**\n\n- `-1`: Disables USB autosuspend, preventing audio DACs and external mice from disconnecting."
         ),
         ConfigItem(
             label="Cursor Default",
@@ -371,7 +527,7 @@ SCHEMA = {
             options=["unset", "0", "1"],
             default="unset",
             group="Console",
-            extended_help="**TTY Global Cursor**\n\n- `0`: Hides the blinking cursor on the raw TTY console during boot.\n- `1`: Shows the blinking cursor."
+            extended_help="**TTY Global Cursor**\n\n- `0`: Hides the blinking cursor on raw TTY during boot.\n- `1`: Shows blinking cursor."
         ),
         ConfigItem(
             label="Console Blank (s)",
@@ -379,9 +535,10 @@ SCHEMA = {
             scope="DEFAULT",
             type_="picker",
             options=["unset", "0", "60", "300", "600", "900", "1800", "3600"],
+            hints=["Default (10m)", "Disabled (Never blank)", "1 minute", "5 minutes", "10 minutes", "15 minutes", "30 minutes", "1 hour"],
             default="unset",
             group="Console",
-            extended_help="**TTY Screen Blanking**\n\nTime in seconds before a virtual TTY console will blank its screen to prevent burn-in.\n\n- `0`: Disables screen blanking entirely.\n- `600`: Defaults to 10 minutes."
+            extended_help="**TTY Screen Blanking Timeout**\n\nSeconds of inactivity before virtual TTY blanks screen."
         ),
     ],
 
@@ -397,7 +554,7 @@ SCHEMA = {
             options=["unset", "0", "1"],
             default="unset",
             group="Security",
-            extended_help="**AppArmor MAC**\n\nMandatory Access Control module.\n\n- `1`: Enables the AppArmor security module.\n- `0`: Disables it."
+            extended_help="**AppArmor MAC**\n\nMandatory Access Control security module.\n\n- `1`: Enables AppArmor.\n- `0`: Disables AppArmor."
         ),
         ConfigItem(
             label="SELinux",
@@ -407,7 +564,7 @@ SCHEMA = {
             options=["unset", "0", "1"],
             default="unset",
             group="Security",
-            extended_help="**SELinux MAC**\n\nSecurity-Enhanced Linux module.\n\n- `1`: Enables SELinux.\n- `0`: Disables SELinux completely at boot."
+            extended_help="**SELinux MAC**\n\nSecurity-Enhanced Linux module.\n\n- `1`: Enables SELinux.\n- `0`: Disables SELinux."
         ),
         ConfigItem(
             label="Audit Subsystem",
@@ -417,7 +574,27 @@ SCHEMA = {
             options=["unset", "0", "1"],
             default="unset",
             group="Security",
-            extended_help="**Kernel Audit Subsystem**\n\n- `1`: Enables the kernel auditing subsystem used by tools like auditd.\n- `0`: Disables auditing to slightly reduce overhead and log spam if you don't use it."
+            extended_help="**Kernel Audit Subsystem**\n\n- `1`: Enables audit log generation.\n- `0`: Disables auditing to reduce log spam and overhead."
+        ),
+        ConfigItem(
+            label="Kernel Lockdown",
+            key="lockdown",
+            scope="DEFAULT",
+            type_="cycle",
+            options=["unset", "none", "integrity", "confidentiality"],
+            default="unset",
+            group="Security",
+            extended_help="**Kernel Lockdown Mode**\n\nRestricts direct root access to kernel memory and hardware ports."
+        ),
+        ConfigItem(
+            label="Systemd Boot Status",
+            key="systemd.show_status",
+            scope="DEFAULT",
+            type_="cycle",
+            options=["unset", "auto", "yes", "no", "error"],
+            default="unset",
+            group="Logging",
+            extended_help="**Systemd Early Boot Status**\n\nControls systemd service status printing during startup."
         ),
         ConfigItem(
             label="Quiet Boot",
@@ -426,7 +603,7 @@ SCHEMA = {
             type_="bool",
             default=False,
             group="Logging",
-            extended_help="**Quiet Mode**\n\nSuppresses the vast majority of normal kernel initialization messages during the boot process, resulting in a cleaner, faster-scrolling screen or a seamless splash screen."
+            extended_help="**Quiet Mode**\n\nSuppresses kernel initialization logs for a clean boot screen."
         ),
         ConfigItem(
             label="Kernel Log Level",
@@ -434,9 +611,10 @@ SCHEMA = {
             scope="DEFAULT",
             type_="picker",
             options=["unset", "0", "1", "2", "3", "4", "5", "6", "7"],
+            hints=["Unset (Default)", "0: Emergency only", "1: Alert", "2: Critical", "3: Errors only (Desktop)", "4: Warnings", "5: Notice", "6: Informational", "7: Debug (Verbose)"],
             default="unset",
             group="Logging",
-            extended_help="**Console Loglevel**\n\nDefines the severity threshold for printing messages to the console.\n\n- `0`: KERN_EMERG (Only emergencies)\n- `3`: KERN_ERR (Errors and worse, normal desktop standard)\n- `7`: KERN_DEBUG (Extremely verbose)"
+            extended_help="**Console Loglevel**\n\nControls console message verbosity threshold (3 = normal errors only, 7 = full debug)."
         ),
         ConfigItem(
             label="Udev Log Level",
@@ -444,9 +622,10 @@ SCHEMA = {
             scope="DEFAULT",
             type_="picker",
             options=["unset", "0", "3", "4", "7"],
+            hints=["Unset", "0: Silent", "3: Errors only", "4: Warnings", "7: Debug"],
             default="unset",
             group="Logging",
-            extended_help="**Dracut/Udev Loglevel**\n\nLimits the verbosity of udev events during the initial ramdisk boot phase (e.g., `3` for errors only)."
+            extended_help="**Dracut/Udev Early Boot Loglevel**\n\nLimits udev event verbosity in initial ramdisk phase."
         ),
         ConfigItem(
             label="Ignore Loglevel",
@@ -455,7 +634,7 @@ SCHEMA = {
             type_="bool",
             default=False,
             group="Logging",
-            extended_help="**Force Verbose Logs**\n\nForces the kernel to print all messages to the console regardless of the `loglevel` setting. Useful for deep debugging of driver initialization failures."
+            extended_help="**Force All Kernel Messages**\n\nForces all kernel printks to console regardless of loglevel. Essential for diagnosing boot hangs."
         ),
         ConfigItem(
             label="Always Enable SysRq",
@@ -464,7 +643,7 @@ SCHEMA = {
             type_="bool",
             default=False,
             group="Recovery",
-            extended_help="**Magic SysRq Key**\n\nEnables all functions of the Magic SysRq key combinations (Alt+SysRq+<Key>), allowing you to gracefully recover, reboot (REISUB), or dump state from a totally frozen system."
+            extended_help="**Magic SysRq Key**\n\nEnables all Magic SysRq emergency functions (Alt+SysRq+<Key>) to safely sync and reboot frozen systems (REISUB)."
         ),
         ConfigItem(
             label="Disable Watchdog",
@@ -473,17 +652,18 @@ SCHEMA = {
             type_="bool",
             default=False,
             group="Recovery",
-            extended_help="**NMI Watchdog**\n\nThe Non-Maskable Interrupt (NMI) watchdog detects hardware hang states.\n\nEnabling this flag (`nowatchdog`) disables the watchdog entirely, which can slightly reduce system interrupts and improve power efficiency on consumer systems."
+            extended_help="**NMI Watchdog**\n\nDisables hardware watchdog timer interrupts to improve battery life and reduce latency."
         ),
         ConfigItem(
             label="Panic Timeout (s)",
             key="panic",
             scope="DEFAULT",
             type_="picker",
-            options=["unset", "-1", "0", "10", "30", "60"],
+            options=["unset", "-1", "0", "5", "10", "30", "60"],
+            hints=["Unset (Halt)", "Reboot immediately", "Halt forever", "5 seconds", "10 seconds", "30 seconds", "60 seconds"],
             default="unset",
             group="Recovery",
-            extended_help="**Reboot on Panic**\n\nSets the timeout in seconds before automatically rebooting the system after a kernel panic.\n\n- `0`: Wait forever (halt).\n- `-1`: Reboot immediately."
+            extended_help="**Reboot on Kernel Panic**\n\nTimeout in seconds before rebooting automatically after a panic."
         ),
     ],
 
@@ -496,10 +676,11 @@ SCHEMA = {
             key="default",
             scope="LOADER",
             type_="picker",
-            options=["@saved", "@default", "22d434e8ca4f425482251d8a6ba8ddea-7.2.0-dusky-battery.conf", "arch-linux.conf", "arch-linux-fallback.conf"],
-            default="@saved",
+            options=_INITIAL_KERNEL_OPTIONS,
+            hints=_INITIAL_KERNEL_HINTS,
+            default="Arch Linux",
             group="Default Kernel",
-            extended_help="**Default Boot Entry (`default` in loader.conf)**\n\n- `@saved`: (Recommended in systemd 261) Automatically boots the last chosen kernel on every reboot.\n- `@default`: Boots firmware standard default entry.\n- `<entry>.conf`: Explicitly locks the bootloader to always boot a specific entry."
+            extended_help="**Default Boot Entry (`default` in loader.conf)**\n\nSelects the default kernel or entry to boot in systemd-boot.\n\n- `Arch Linux`: Boots the standard Arch Linux stock kernel.\n- `Dusky ...`: Boots your custom Dusky kernel profile.\n- `@saved`: Automatically boots the last chosen kernel from the previous boot.\n- `@latest`: Automatically boots the newest installed kernel by version.\n- `@default`: Boots the firmware standard default entry."
         ),
         ConfigItem(
             label="Menu Timeout",
@@ -507,9 +688,10 @@ SCHEMA = {
             scope="LOADER",
             type_="picker",
             options=["0", "1", "2", "3", "4", "5", "10", "menu-force", "menu-hidden"],
+            hints=["0s (Instant boot / hold Space to show)", "1 second", "2 seconds", "3 seconds", "4 seconds (Default)", "5 seconds", "10 seconds", "Always display menu without countdown", "Hidden until key press"],
             default="4",
             group="Menu Display & Timing",
-            extended_help="**Boot Menu Timeout (`timeout` in loader.conf)**\n\n- `0`: Instant boot / hidden menu (Hold Space/F12 during boot to unhide).\n- `2`-`5`: Fast countdown in seconds.\n- `menu-force`: Always displays boot menu without timeout countdown.\n- `menu-hidden`: Hidden by default unless hotkey is held."
+            extended_help="**Boot Menu Timeout (`timeout` in loader.conf)**\n\n- `0`: Instant boot / hidden menu (Hold Space during boot to show).\n- `2`-`5`: Fast countdown in seconds.\n- `menu-force`: Always displays boot menu without timeout countdown."
         ),
         ConfigItem(
             label="Console Mode",
@@ -519,7 +701,7 @@ SCHEMA = {
             options=["max", "keep", "0", "1", "2", "auto"],
             default="max",
             group="Display Resolution",
-            extended_help="**Console Mode (`console-mode` in loader.conf)**\n\nSets the UEFI GOP screen resolution for systemd-boot.\n\n- `max`: Native maximum display resolution.\n- `keep`: Keeps firmware default mode."
+            extended_help="**Console Mode (`console-mode` in loader.conf)**\n\nSets UEFI GOP display resolution for systemd-boot.\n\n- `max`: Native maximum display resolution.\n- `keep`: Keeps firmware default mode."
         ),
         ConfigItem(
             label="Cmdline Editor",
@@ -528,8 +710,28 @@ SCHEMA = {
             type_="cycle",
             options=["no", "yes"],
             default="no",
-            group="Security",
+            group="Security & TPM",
             extended_help="**Interactive Kernel Parameter Editor (`editor` in loader.conf)**\n\n- `no`: (Recommended for security) Disables editing kernel parameters from the boot menu prompt.\n- `yes`: Allows editing cmdline at boot time with 'e'."
+        ),
+        ConfigItem(
+            label="Secure Boot Auto Enroll",
+            key="secure-boot-enroll",
+            scope="LOADER",
+            type_="cycle",
+            options=["off", "manual", "if-safe", "force"],
+            default="if-safe",
+            group="Security & TPM",
+            extended_help="**Secure Boot Key Enrollment (`secure-boot-enroll` in loader.conf)**\n\nControls automatic enrollment of Secure Boot keys into firmware variables."
+        ),
+        ConfigItem(
+            label="Reboot BitLocker",
+            key="reboot-for-bitlocker",
+            scope="LOADER",
+            type_="cycle",
+            options=["no", "yes"],
+            default="no",
+            group="Security & TPM",
+            extended_help="**Reboot for BitLocker (`reboot-for-bitlocker` in loader.conf)**\n\nReboots instead of chainloading directly when launching Windows BitLocker to preserve TPM measurements."
         ),
         ConfigItem(
             label="Auto Entries",
@@ -559,7 +761,7 @@ SCHEMA = {
             options=["0", "1"],
             default="0",
             group="Accessibility",
-            extended_help="**PC Speaker Beep (`beep` in loader.conf)**\n\nEmits a beep when the boot menu is displayed."
+            extended_help="**PC Speaker Beep (`beep` in loader.conf)**\n\nEmits an audible beep when the boot menu is displayed."
         ),
     ],
 
@@ -574,7 +776,7 @@ SCHEMA = {
             type_="string",
             default="unset",
             group="Entry Identification",
-            extended_help="**Boot Menu Entry Title (`title`)**\n\nThe human-readable title shown on the systemd-boot screen (e.g. `dusky_battery`, `dusky_gaming`, `Arch Linux`)."
+            extended_help="**Boot Menu Entry Title (`title`)**\n\nThe clean title displayed on the systemd-boot screen (e.g. `Arch Linux`, `Dusky Battery`, `Dusky Gaming`)."
         ),
         ConfigItem(
             label="Sort Key",
@@ -595,6 +797,53 @@ SCHEMA = {
             extended_help="**Kernel Version (`version`)**\n\nVersion string associated with this boot entry."
         ),
         ConfigItem(
+            label="Architecture",
+            key="architecture",
+            scope="ENTRY",
+            type_="string",
+            default="unset",
+            group="Entry Identification",
+            extended_help="**Entry Architecture (`architecture`)**\n\nTarget CPU architecture for this bootloader entry (e.g. `x86-64`)."
+        ),
+        ConfigItem(
+            label="Kernel Image",
+            key="linux",
+            scope="ENTRY",
+            type_="string",
+            default="unset",
+            group="Entry Identification",
+            extended_help="**Kernel Image Path (`linux`)**\n\nRelative path to the kernel executable on the ESP (e.g. `/vmlinuz-linux`)."
+        ),
+        ConfigItem(
+            label="Initramfs Image",
+            key="initrd",
+            scope="ENTRY",
+            type_="string",
+            default="unset",
+            group="Entry Identification",
+            extended_help="**Initramfs Image Path (`initrd`)**\n\nRelative path to the initial ramdisk image on the ESP (e.g. `/initramfs-linux.img`)."
+        ),
+        ConfigItem(
+            label="View Bootloader Status",
+            key="action_bootctl_status",
+            scope="DEFAULT",
+            type_="action",
+            default="bootctl status",
+            group="Diagnostics & Status",
+            force_interactive=True,
+            extended_help="**bootctl status**\n\nDisplays current UEFI firmware, Secure Boot state, ESP mounts, and active default bootloader configuration."
+        ),
+        ConfigItem(
+            label="View Registered Boot Entries",
+            key="action_bootctl_list",
+            scope="DEFAULT",
+            type_="action",
+            default="bootctl list",
+            group="Diagnostics & Status",
+            force_interactive=True,
+            extended_help="**bootctl list**\n\nPrints all registered systemd-boot Type #1 and Type #2 boot entries, kernel command lines, and sort orders."
+        ),
+        ConfigItem(
             label="Clean Orphaned ESP Files",
             key="action_bootctl_cleanup",
             scope="DEFAULT",
@@ -602,7 +851,7 @@ SCHEMA = {
             default="bootctl cleanup",
             group="Maintenance & Firmware",
             confirm_message="Run bootctl cleanup to remove unreferenced files from the ESP?",
-            extended_help="**bootctl cleanup**\n\nScans the EFI System Partition ($BOOT and ESP) and safely removes old kernel binaries, orphaned initrds, and stale files not referenced by any active .conf boot entry."
+            extended_help="**bootctl cleanup**\n\nScans the EFI System Partition ($BOOT and ESP) and safely removes old kernel binaries and orphaned initrds not referenced by any active .conf boot entry."
         ),
         ConfigItem(
             label="Reboot to UEFI Firmware",
@@ -622,7 +871,7 @@ SCHEMA = {
             default="mkinitcpio -P > /dev/null",
             group="System Generation",
             confirm_message="Are you sure you want to regenerate the initramfs for all configured kernels? (mkinitcpio -P)",
-            extended_help="**mkinitcpio -P**\n\nRebuilds the initial ramdisk environment for all installed preset kernels. This is absolutely essential after changing root filesystem types, LUKS encryption parameters, or early-boot drivers."
+            extended_help="**mkinitcpio -P**\n\nRebuilds the initial ramdisk environment for all installed preset kernels."
         ),
         ConfigItem(
             label="Update Systemd-Boot in ESP",
@@ -632,7 +881,7 @@ SCHEMA = {
             default="bootctl update -q",
             group="Bootloader Configuration",
             confirm_message="Are you sure you want to update systemd-boot in the ESP? (bootctl update)",
-            extended_help="**bootctl update**\n\nUpdates all installed versions of systemd-boot in the EFI system partition (ESP) if the available version is newer."
+            extended_help="**bootctl update**\n\nUpdates installed systemd-boot binaries in the EFI system partition (ESP) if a newer version is available."
         ),
         ConfigItem(
             label="Install Systemd-Boot",
@@ -651,25 +900,130 @@ SCHEMA = {
             type_="action",
             default="bootctl random-seed -q",
             group="Bootloader Configuration",
-            extended_help="**bootctl random-seed**\n\nRefreshes the random seed in the ESP and EFI variables."
+            confirm_message="Are you sure you want to refresh the random seed? (bootctl random-seed)",
+            extended_help="**bootctl random-seed**\n\nRefreshes the cryptographic random seed in the ESP and EFI variables."
         ),
     ],
 
     # -------------------------------------------------------------------------
     # TAB 6: PRESETS
     # -------------------------------------------------------------------------
-    6: []
+    6: [
+        ConfigItem(
+            label="Factory Reset",
+            key="preset_factory_reset",
+            scope="DEFAULT",
+            type_="preset",
+            default=None,
+            group="Standard Presets",
+            confirm_message="Reset all kernel parameters and bootloader options to defaults?",
+            preset_payload={"__ALL_DEFAULTS__": True},
+            extended_help="**Factory Reset Preset**\n\nReverts all kernel command-line parameters and loader settings back to clean system defaults."
+        ),
+        ConfigItem(
+            label="Gaming & Low Latency Profile",
+            key="preset_performance",
+            scope="DEFAULT",
+            type_="preset",
+            default=None,
+            group="Performance Profiles",
+            confirm_message="Apply Maximum Performance & Low-Latency kernel parameters?",
+            preset_payload={
+                "mitigations": "off",
+                "preempt": "lazy",
+                "split_lock_mitigate": "0",
+                "zswap.enabled": "1",
+                "threadirqs": True,
+                "quiet": True,
+            },
+            extended_help="**Gaming & Low Latency Profile**\n\n- `mitigations=off`: Maximizes CPU compute and gaming framerates.\n- `preempt=lazy`: Uses modern lazy preemption for responsiveness.\n- `split_lock_mitigate=0`: Prevents micro-stutters during heavy gaming or emulation.\n- `zswap.enabled=1`: Fast memory compression."
+        ),
+        ConfigItem(
+            label="Maximum Security Profile",
+            key="preset_security",
+            scope="DEFAULT",
+            type_="preset",
+            default=None,
+            group="Security Profiles",
+            confirm_message="Apply Maximum Security Hardened kernel parameters?",
+            preset_payload={
+                "mitigations": "auto",
+                "apparmor": "1",
+                "audit": "1",
+                "init_on_alloc": "1",
+                "init_on_free": "1",
+                "slub_debug": "1",
+                "LOADER.editor": "no",
+            },
+            extended_help="**Maximum Security Profile**\n\n- `mitigations=auto`: Enables all CPU vulnerability hardware mitigations.\n- `apparmor=1`: Enables Mandatory Access Control.\n- `init_on_alloc=1` & `init_on_free=1`: Zeroes memory pages on alloc/free.\n- `editor=no`: Disables interactive command-line editing at boot."
+        ),
+        ConfigItem(
+            label="Silent Fast Boot Profile",
+            key="preset_fastboot",
+            scope="DEFAULT",
+            type_="preset",
+            default=None,
+            group="Boot Experience Profiles",
+            confirm_message="Apply Silent Fast Boot parameters?",
+            preset_payload={
+                "quiet": True,
+                "loglevel": "3",
+                "splash": True,
+                "LOADER.timeout": "0",
+                "consoleblank": "300",
+            },
+            extended_help="**Silent Fast Boot Profile**\n\n- `quiet` & `loglevel=3`: Completely silences kernel scrolling logs.\n- `splash`: Shows graphical splash screen.\n- `timeout=0`: Instant boot into default kernel (hold Space during boot if needed)."
+        ),
+        ConfigItem(
+            label="Deep Diagnostics & Debug Profile",
+            key="preset_debug",
+            scope="DEFAULT",
+            type_="preset",
+            default=None,
+            group="Diagnostic Profiles",
+            confirm_message="Apply Full Verbose Debugging parameters?",
+            preset_payload={
+                "ignore_loglevel": True,
+                "loglevel": "7",
+                "rd.udev.log_level": "7",
+                "sysrq_always_enabled": True,
+                "nowatchdog": True,
+                "panic": "0",
+                "LOADER.editor": "yes",
+            },
+            extended_help="**Deep Diagnostics Profile**\n\n- `ignore_loglevel` & `loglevel=7`: Prints every single kernel and driver event to console.\n- `sysrq_always_enabled`: Enables Magic SysRq keys.\n- `panic=0`: Halts on panic so error trace can be photographed."
+        ),
+    ]
 }
+
+
+# =============================================================================
+# 5. DEFERRED BACKGROUND LOAD HANDLER
+# =============================================================================
+def DEFERRED_LOAD() -> list[int]:
+    """
+    Background loader invoked by the TUI after first paint.
+    Refreshes kernel discovery dynamically to catch newly installed kernels
+    and updates Tab 4 (systemd-boot Loader).
+    """
+    opts, hints = discover_kernel_options()
+    for item in SCHEMA.get(4, []):
+        if item.key == "default" and item.scope == "LOADER":
+            item.options = opts
+            item.hints = hints
+            break
+    return [4]
+
 
 # =============================================================================
 # DIRECT EXECUTION HANDLER
 # =============================================================================
 if __name__ == "__main__":
-    import sys, subprocess
+    import subprocess
     from pathlib import Path
 
     script_path = Path(__file__).resolve()
-    main_router = Path.home() / "user_scripts" / "dusky_tui" / "python" / "main" / "main.py"
+    main_router = _DUSKY_TUI_ROOT / "python" / "main" / "main.py"
 
     if main_router.exists():
         sys.exit(subprocess.run([sys.executable, str(main_router), str(script_path)] + sys.argv[1:]).returncode)

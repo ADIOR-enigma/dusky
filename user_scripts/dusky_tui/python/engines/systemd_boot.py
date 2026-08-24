@@ -1,3 +1,10 @@
+#!/usr/bin/env python3
+"""
+SystemdBootEngine - Bleeding-Edge systemd-boot (systemd 255-261+ / Linux 6.x-7.x+) Engine.
+Implements dynamic boot entry discovery, bidirectional clean kernel name translation,
+atomic loader/entry configuration updates, and full systemd-boot maintenance capabilities.
+"""
+import json
 import os
 import re
 import stat
@@ -9,52 +16,309 @@ from typing import Any, Self
 from python.frontend.core_types import BaseEngine
 from python.engines.cmdline import BridgedStateDict
 
+# PEP 695 Bleeding-Edge Type Aliases
+type KernelMeta = dict[str, Any]
+type EntryMap = dict[str, KernelMeta]
+type ChangeTuple = tuple[str, str, str, str]
 
+
+# =============================================================================
+# KERNEL AND ENTRY NAME NORMALIZATION UTILITIES
+# =============================================================================
+def clean_kernel_name(raw: str) -> str:
+    """
+    Transforms any raw kernel version, entry filename, or title into a clean,
+    human-readable kernel name (e.g., 'Arch Linux', 'Dusky Battery', 'Dusky Gaming').
+    """
+    if not raw:
+        return "Arch Linux"
+    s = str(raw).strip()
+    if s.startswith("@"):
+        return s
+
+    is_fallback = bool(re.search(r"fallback", s, flags=re.IGNORECASE))
+
+    # Strip parenthetical fallback annotations like '(fallback initramfs)' or '(fallback)'
+    s = re.sub(r"\s*\(\s*fallback[^)]*\)", "", s, flags=re.IGNORECASE)
+
+    # Strip file extensions
+    for ext in (".conf", ".preset", ".img", ".efi", ".efi.extra", ".bak", ".old"):
+        if s.endswith(ext):
+            s = s[:-len(ext)]
+
+    # Remove 32-hex machine-id prefix if present (Type #1 BLS: e.g. 22d434e8ca4f425482251d8a6ba8ddea-)
+    s = re.sub(r"^[a-f0-9]{32}-", "", s)
+
+    # Repeatedly strip redundant prefixes (vmlinuz-, initramfs-, linux-, arch-linux-, etc.)
+    while True:
+        prev = s
+        s = re.sub(r"^(?:vmlinuz|initramfs|linux|Linux|arch-linux|arch_linux|arch)[-_ ]+", "", s)
+        if s == prev:
+            break
+
+    # Strip SemVer kernel version prefix (e.g., '7.2.0-dusky-battery' -> 'dusky-battery', '7.1.9-arch1-2' -> 'arch1-2')
+    s = re.sub(r"^\d+\.\d+(?:\.\d+)?(?:-rc\d+)?(?:-git\d*)?-", "", s)
+
+    # Clean leftover fallback words from stem
+    s = re.sub(r"[-_ ]*fallback(?:[-_ ]*initramfs)?[-_ ]*", "", s, flags=re.IGNORECASE).strip()
+
+    sl = s.lower()
+    match sl:
+        case "" | "arch" | "arch1" | "archlinux" | "linux" | "default":
+            title = "Arch Linux"
+        case _ if re.match(r"^arch\d*(?:-\d+)?$", sl):
+            title = "Arch Linux"
+        case _ if sl.startswith(("dusky-", "dusky_")):
+            sub = sl[6:].replace("-", " ").replace("_", " ").strip().title()
+            title = f"Dusky {sub}"
+        case _ if "dusky" in sl:
+            clean_sub = sl.replace("dusky", "").replace("-", " ").replace("_", " ").strip().title()
+            title = f"Dusky {clean_sub}" if clean_sub else "Dusky"
+        case _ if "zen" in sl:
+            title = "Arch Linux Zen"
+        case _ if "lts" in sl:
+            title = "Arch Linux LTS"
+        case _ if "hardened" in sl:
+            title = "Arch Linux Hardened"
+        case _ if "cachyos" in sl:
+            title = "CachyOS"
+        case _ if "t2" in sl:
+            title = "T2 Linux"
+        case _:
+            title = s.replace("-", " ").replace("_", " ").strip().title()
+
+    if is_fallback and not title.endswith("(Fallback)"):
+        title = f"{title} (Fallback)"
+    return title
+
+
+def discover_all_kernels_and_entries() -> EntryMap:
+    """
+    Dynamically scans ESP boot loader entries, installed modules in /usr/lib/modules,
+    mkinitcpio presets in /etc/mkinitcpio.d, and boot kernels in /boot.
+    
+    Returns a mapping: clean_kernel_name -> metadata dict:
+        {
+            "clean_name": str,
+            "entry_file": str,
+            "kver": str,
+            "title": str,
+            "hint": str,
+            "source": str
+        }
+    """
+    results: EntryMap = {}
+
+    # 1. ESP entry directories (/boot/loader/entries, /efi/loader/entries, /boot/efi/loader/entries)
+    esp_entry_dirs = [
+        Path("/boot/loader/entries"),
+        Path("/efi/loader/entries"),
+        Path("/boot/efi/loader/entries"),
+    ]
+
+    # Query bootctl JSON if available
+    try:
+        res = subprocess.run(["bootctl", "list", "--json=short"], capture_output=True, text=True, timeout=2)
+        if res.returncode == 0 and res.stdout.strip():
+            entries_json = json.loads(res.stdout)
+            if isinstance(entries_json, list):
+                for entry in entries_json:
+                    src = entry.get("source", "")
+                    title_raw = entry.get("title", "")
+                    id_raw = entry.get("id", "")
+                    ver_raw = entry.get("version", "")
+                    filename = Path(src).name if src else (f"{id_raw}.conf" if id_raw and not id_raw.endswith(".conf") else id_raw)
+                    clean = clean_kernel_name(title_raw or filename or id_raw or ver_raw)
+                    results[clean] = {
+                        "clean_name": clean,
+                        "entry_file": filename,
+                        "kver": ver_raw,
+                        "title": title_raw,
+                        "hint": f"Boot Entry: {filename}" if filename else f"Version: {ver_raw}",
+                        "source": "bootctl_json",
+                    }
+    except Exception:
+        pass
+
+    # Direct filesystem scan of ESP entries
+    for entries_dir in esp_entry_dirs:
+        if entries_dir.is_dir():
+            try:
+                for conf in sorted(entries_dir.glob("*.conf")):
+                    if not conf.is_file():
+                        continue
+                    title = ""
+                    version = ""
+                    try:
+                        for line in conf.read_text(encoding="utf-8", errors="replace").splitlines():
+                            line_s = line.strip()
+                            if line_s.startswith(("title ", "title\t")):
+                                title = line_s.split(None, 1)[1].strip()
+                            elif line_s.startswith(("version ", "version\t")):
+                                version = line_s.split(None, 1)[1].strip()
+                    except Exception:
+                        pass
+                    clean = clean_kernel_name(title or conf.name)
+                    if clean not in results or not results[clean].get("entry_file"):
+                        results[clean] = {
+                            "clean_name": clean,
+                            "entry_file": conf.name,
+                            "kver": version,
+                            "title": title,
+                            "hint": f"Boot Entry: {conf.name}",
+                            "source": "esp_conf",
+                        }
+            except Exception:
+                pass
+
+    # 2. Scan /usr/lib/modules for installed kernel packages
+    modules_dir = Path("/usr/lib/modules")
+    if modules_dir.is_dir():
+        try:
+            for entry in sorted(modules_dir.iterdir()):
+                if entry.is_dir() and not entry.name.startswith((".", "old", "tmp")):
+                    clean = clean_kernel_name(entry.name)
+                    if clean not in results:
+                        results[clean] = {
+                            "clean_name": clean,
+                            "entry_file": "",
+                            "kver": entry.name,
+                            "title": clean,
+                            "hint": f"Installed Kernel: {entry.name}",
+                            "source": "modules",
+                        }
+        except Exception:
+            pass
+
+    # 3. Scan /etc/mkinitcpio.d for kernel presets
+    preset_dir = Path("/etc/mkinitcpio.d")
+    if preset_dir.is_dir():
+        try:
+            for preset in sorted(preset_dir.glob("*.preset")):
+                clean = clean_kernel_name(preset.name)
+                if clean not in results:
+                    results[clean] = {
+                        "clean_name": clean,
+                        "entry_file": "",
+                        "kver": "",
+                        "title": clean,
+                        "hint": f"Mkinitcpio Preset: {preset.name}",
+                        "source": "mkinitcpio",
+                    }
+        except Exception:
+            pass
+
+    # 4. Fallback check for standard kernels in /boot
+    boot_dir = Path("/boot")
+    if boot_dir.is_dir():
+        try:
+            for vmlinuz in sorted(boot_dir.glob("vmlinuz-*")):
+                clean = clean_kernel_name(vmlinuz.name)
+                if clean not in results:
+                    results[clean] = {
+                        "clean_name": clean,
+                        "entry_file": "",
+                        "kver": "",
+                        "title": clean,
+                        "hint": f"Kernel Image: {vmlinuz.name}",
+                        "source": "boot_image",
+                    }
+        except Exception:
+            pass
+
+    # Guarantee stock "Arch Linux" always exists as an available baseline
+    if "Arch Linux" not in results:
+        results["Arch Linux"] = {
+            "clean_name": "Arch Linux",
+            "entry_file": "arch-linux.conf",
+            "kver": "",
+            "title": "Arch Linux",
+            "hint": "Stock Arch Linux kernel (/boot/vmlinuz-linux)",
+            "source": "stock_default",
+        }
+
+    return results
+
+
+# =============================================================================
+# SYSTEMD-BOOT ENGINE IMPLEMENTATION
+# =============================================================================
 class SystemdBootEngine(BaseEngine):
     """
-    Intelligent engine for systemd-boot (systemd 261 / Linux 7.2+).
+    Intelligent engine for systemd-boot (systemd 255 - 261+ / Linux 6.x - 7.x+).
     
     Manages:
     - DEFAULT scope: Kernel command-line parameters in options line of entry .conf
-    - ENTRY scope: Entry metadata (title, sort-key, version, etc.) in entry .conf
-    - LOADER scope: Global bootloader settings in /boot/loader/loader.conf (default, timeout, console-mode, editor)
+    - ENTRY scope: Entry metadata (title, sort-key, version, linux, initrd, architecture) in entry .conf
+    - LOADER scope: Global bootloader settings in loader.conf (default, timeout, console-mode, editor, auto-entries, etc.)
     """
 
     def __init__(self, config_path: str = "") -> None:
+        self.loader_conf_path: Path = self._resolve_loader_path()
         self.config_path: Path = self._resolve_config_path(config_path)
-        self.loader_conf_path: Path = Path("/boot/loader/loader.conf")
         self.cache: BridgedStateDict = BridgedStateDict()
         self.file_mtime_ns: int = 0
         self.loader_mtime_ns: int = 0
+        self._cached_entries_map: EntryMap = {}
 
     @staticmethod
-    def _resolve_config_path(config_path: str) -> Path:
+    def _resolve_loader_path() -> Path:
+        for cand in [
+            Path("/boot/loader/loader.conf"),
+            Path("/efi/loader/loader.conf"),
+            Path("/boot/efi/loader/loader.conf"),
+        ]:
+            if cand.exists():
+                return cand
+        return Path("/boot/loader/loader.conf")
+
+    def _resolve_config_path(self, config_path: str) -> Path:
         if config_path:
             p = Path(config_path).expanduser().resolve()
             if p.exists():
                 return p
-        # Check /boot/loader/entries/ for any custom or default conf
-        entries_dir = Path("/boot/loader/entries")
-        if entries_dir.is_dir():
-            # Look for active/default conf first
-            loader_conf = Path("/boot/loader/loader.conf")
-            if loader_conf.exists():
+
+        # Check candidate entry directories
+        for entries_dir in [
+            Path("/boot/loader/entries"),
+            Path("/efi/loader/entries"),
+            Path("/boot/efi/loader/entries"),
+        ]:
+            if not entries_dir.is_dir():
+                continue
+
+            # Look for active/default conf referenced in loader.conf
+            if self.loader_conf_path.exists():
                 try:
-                    for line in loader_conf.read_text(encoding="utf-8", errors="replace").splitlines():
-                        if line.startswith("default ") or line.startswith("default\t"):
-                            def_val = line.split(None, 1)[1].strip()
-                            cand = entries_dir / def_val
-                            if cand.exists():
-                                return cand
-                            for match in entries_dir.glob(f"*{def_val}*"):
-                                if match.is_file():
-                                    return match
+                    for line in self.loader_conf_path.read_text(encoding="utf-8", errors="replace").splitlines():
+                        line_s = line.strip()
+                        if line_s.startswith(("default ", "default\t")):
+                            def_val = line_s.split(None, 1)[1].strip()
+                            if def_val and not def_val.startswith("@"):
+                                cand = entries_dir / def_val
+                                if cand.is_file():
+                                    return cand
+                                if not def_val.endswith(".conf"):
+                                    cand_conf = entries_dir / f"{def_val}.conf"
+                                    if cand_conf.is_file():
+                                        return cand_conf
+                                for match in entries_dir.glob(f"*{def_val}*"):
+                                    if match.is_file():
+                                        return match
                 except Exception:
                     pass
-            # Look for dusky or arch entries
-            for cand in sorted(entries_dir.glob("*.conf"), key=lambda f: (0 if "dusky" in f.name else 1, f.name)):
-                if cand.is_file():
-                    return cand
+
+            # Look for custom entries first, then stock arch, then first available .conf
+            all_confs = sorted(entries_dir.glob("*.conf"))
+            if all_confs:
+                for cand in all_confs:
+                    if "dusky" in cand.name.lower():
+                        return cand
+                for cand in all_confs:
+                    if "arch" in cand.name.lower() and "fallback" not in cand.name.lower():
+                        return cand
+                return all_confs[0]
+
         return Path("/boot/loader/entries/arch-linux.conf")
 
     @classmethod
@@ -65,8 +329,92 @@ class SystemdBootEngine(BaseEngine):
     def target_path(self) -> str:
         return str(self.config_path)
 
+    def get_entries_map(self) -> EntryMap:
+        if not self._cached_entries_map:
+            self._cached_entries_map = discover_all_kernels_and_entries()
+        return self._cached_entries_map
+
+    def map_raw_to_clean(self, raw_val: str) -> str:
+        """Translates a raw loader.conf default value (e.g. long filename) to its clean UI name."""
+        if not raw_val or raw_val.startswith("@"):
+            return raw_val
+
+        entries = self.get_entries_map()
+
+        # 1. Direct match on entry filename
+        for clean_name, meta in entries.items():
+            entry_file = meta.get("entry_file", "")
+            if entry_file and (raw_val == entry_file or raw_val == Path(entry_file).stem):
+                return clean_name
+
+        # 2. Match on clean normalization
+        clean = clean_kernel_name(raw_val)
+        if clean in entries:
+            return clean
+
+        # 3. Partial / wildcard pattern match
+        pattern = raw_val.strip("*").lower()
+        if pattern:
+            for clean_name in entries:
+                if pattern in clean_name.lower():
+                    return clean_name
+
+        return clean
+
+    def map_clean_to_raw(self, clean_name: str) -> str:
+        """Translates a clean UI selection (e.g. 'Arch Linux' or 'Dusky Battery') to the loader.conf entry format."""
+        if not clean_name or clean_name.startswith("@"):
+            return clean_name
+
+        entries = self.get_entries_map()
+
+        # 1. Exact match in discovered entries
+        if clean_name in entries:
+            meta = entries[clean_name]
+            entry_file = meta.get("entry_file", "")
+            if entry_file:
+                return entry_file
+
+        # 2. Check on-disk entry directories for matching filename or title
+        for entries_dir in [
+            Path("/boot/loader/entries"),
+            Path("/efi/loader/entries"),
+            Path("/boot/efi/loader/entries"),
+        ]:
+            if entries_dir.is_dir():
+                try:
+                    for conf in entries_dir.glob("*.conf"):
+                        if not conf.is_file():
+                            continue
+                        if clean_kernel_name(conf.name) == clean_name:
+                            return conf.name
+                        try:
+                            for line in conf.read_text(encoding="utf-8", errors="replace").splitlines():
+                                if line.strip().startswith(("title ", "title\t")):
+                                    title_in_file = line.strip().split(None, 1)[1].strip()
+                                    if clean_kernel_name(title_in_file) == clean_name or title_in_file.lower() == clean_name.lower():
+                                        return conf.name
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+        # 3. Derive standard filename / wildcard fallback
+        cl = clean_name.lower()
+        match cl:
+            case "arch linux":
+                return "arch-linux.conf"
+            case "arch linux (fallback)":
+                return "arch-linux-fallback.conf"
+            case _ if cl.startswith("dusky "):
+                sub = cl[6:].replace(" ", "-")
+                return f"*{sub}*"
+            case _:
+                return f"*{clean_name.replace(' ', '-').lower()}*"
+
     def load_state(self) -> dict[str, Any]:
         self.cache = BridgedStateDict()
+        self._cached_entries_map = discover_all_kernels_and_entries()
 
         # 1. Load entry config (DEFAULT cmdline parameters and ENTRY metadata)
         if self.config_path.exists():
@@ -75,6 +423,7 @@ class SystemdBootEngine(BaseEngine):
                     self.file_mtime_ns = os.fstat(f.fileno()).st_mtime_ns
                     content = f.read()
 
+                initrd_count = 0
                 for line in content.splitlines():
                     line_clean = line.strip()
                     if not line_clean or line_clean.startswith("#"):
@@ -92,7 +441,12 @@ class SystemdBootEngine(BaseEngine):
                             self.cache[f"DEFAULT/{k}"] = v
                     elif " " in line_clean or "\t" in line_clean:
                         k, v = line_clean.split(None, 1)
-                        self.cache[f"ENTRY/{k}"] = v.strip()
+                        if k == "initrd":
+                            initrd_count += 1
+                            self.cache[f"ENTRY/initrd:{initrd_count}"] = v.strip()
+                            self.cache["ENTRY/initrd"] = v.strip()
+                        else:
+                            self.cache[f"ENTRY/{k}"] = v.strip()
             except OSError:
                 pass
 
@@ -105,7 +459,13 @@ class SystemdBootEngine(BaseEngine):
                         line_clean = line.strip()
                         if line_clean and not line_clean.startswith("#") and (" " in line_clean or "\t" in line_clean):
                             k, v = line_clean.split(None, 1)
-                            self.cache[f"LOADER/{k}"] = v.strip()
+                            raw_val = v.strip()
+                            if k == "default":
+                                clean_val = self.map_raw_to_clean(raw_val)
+                                self.cache["LOADER/default"] = clean_val
+                                self.cache["LOADER/default_raw"] = raw_val
+                            else:
+                                self.cache[f"LOADER/{k}"] = raw_val
             except OSError:
                 pass
 
@@ -114,14 +474,13 @@ class SystemdBootEngine(BaseEngine):
     def write_value(self, target_key: str, target_scope: str, new_value: str, item_type: str = "string") -> tuple[bool, str, str]:
         return self.write_batch([(target_key, target_scope, new_value, item_type)])
 
-    def write_batch(self, changes: list[tuple[str, str, str, str]]) -> tuple[bool, str, str]:
+    def write_batch(self, changes: list[ChangeTuple]) -> tuple[bool, str, str]:
         if not changes:
             return True, "No pending changes.", ""
 
         loader_changes = [c for c in changes if c[1] == "LOADER"]
         entry_and_cmdline_changes = [c for c in changes if c[1] in ("DEFAULT", "ENTRY")]
 
-        success = True
         msgs = []
 
         if loader_changes:
@@ -138,7 +497,7 @@ class SystemdBootEngine(BaseEngine):
 
         return True, " ".join(msgs) or "Successfully saved changes.", ""
 
-    def _write_loader_conf(self, changes: list[tuple[str, str, str, str]]) -> tuple[bool, str]:
+    def _write_loader_conf(self, changes: list[ChangeTuple]) -> tuple[bool, str]:
         lines: list[str] = []
         if self.loader_conf_path.exists():
             try:
@@ -147,7 +506,13 @@ class SystemdBootEngine(BaseEngine):
             except OSError:
                 lines = []
 
-        changes_dict = {key: val for key, _, val, _ in changes}
+        changes_dict = {}
+        for key, _, val, _ in changes:
+            if key == "default":
+                changes_dict[key] = self.map_clean_to_raw(str(val))
+            else:
+                changes_dict[key] = str(val)
+
         out_lines: list[str] = []
         handled_keys: set[str] = set()
 
@@ -172,7 +537,7 @@ class SystemdBootEngine(BaseEngine):
         content = "\n".join(out_lines) + "\n"
         return self._atomic_write(self.loader_conf_path, content)
 
-    def _write_entry_conf(self, changes: list[tuple[str, str, str, str]]) -> tuple[bool, str]:
+    def _write_entry_conf(self, changes: list[ChangeTuple]) -> tuple[bool, str]:
         lines: list[str] = []
         if self.config_path.exists():
             try:
