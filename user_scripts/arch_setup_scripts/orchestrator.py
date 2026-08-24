@@ -4435,9 +4435,9 @@ def _task_label(task: OrchestratorTask) -> Text:
 
 class TaskSearchScreen(ModalScreen[str | None]):
     BINDINGS = [
-        Binding("escape", "dismiss_modal", "Dismiss"),
-        Binding("ctrl+n", "cursor_down", "Down"),
-        Binding("ctrl+p", "cursor_up", "Up"),
+        Binding("escape", "dismiss_modal", "Dismiss", priority=True),
+        Binding("ctrl+n", "cursor_down", "Down", priority=True),
+        Binding("ctrl+p", "cursor_up", "Up", priority=True),
     ]
 
     def __init__(self, tasks: list[OrchestratorTask]):
@@ -4566,7 +4566,9 @@ class TaskSearchScreen(ModalScreen[str | None]):
 
 class LogSearchScreen(ModalScreen[None]):
     BINDINGS = [
-        Binding("escape", "dismiss_modal", "Dismiss"),
+        Binding("escape", "dismiss_modal", "Dismiss", priority=True),
+        Binding("ctrl+n", "cursor_down", "Down", priority=True),
+        Binding("ctrl+p", "cursor_up", "Up", priority=True),
     ]
 
     def __init__(self, title: str, lines: list[str]):
@@ -4739,7 +4741,7 @@ class ManualModalScreen(ModalScreen[str]):
 
 
 class SudoPasswordScreen(ModalScreen[bool]):
-    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+    BINDINGS = [Binding("escape", "cancel", "Cancel", priority=True)]
 
     def compose(self) -> ComposeResult:
         with Container(id="sudo_dialog"):
@@ -4781,9 +4783,9 @@ class SudoPasswordScreen(ModalScreen[bool]):
 
 class ConfirmQuitScreen(ModalScreen[str]):
     BINDINGS = [
-        Binding("escape", "cancel", "Cancel"),
-        Binding("y,a,enter", "confirm_abort", "Abort"),
-        Binding("n,c,q", "cancel", "Cancel"),
+        Binding("escape", "cancel", "Cancel", priority=True),
+        Binding("y,a,enter", "confirm_abort", "Abort", priority=True),
+        Binding("n,c,q", "cancel", "Cancel", priority=True),
     ]
 
     def compose(self) -> ComposeResult:
@@ -4818,8 +4820,12 @@ class ConfirmQuitScreen(ModalScreen[str]):
 
 class HelpScreen(ModalScreen[None]):
     BINDINGS = [
-        Binding("f1", "dismiss", "Dismiss"),
-        Binding("question_mark", "dismiss", "Dismiss"),
+        Binding("escape", "dismiss", "Dismiss", priority=True),
+        Binding("f1", "dismiss", "Dismiss", priority=True),
+        Binding("question_mark", "dismiss", "Dismiss", priority=True),
+        Binding("q", "dismiss", "Dismiss", priority=True),
+        Binding("enter", "dismiss", "Dismiss", priority=True),
+        Binding("space", "dismiss", "Dismiss", priority=True),
     ]
 
     def compose(self) -> ComposeResult:
@@ -4855,10 +4861,7 @@ class HelpScreen(ModalScreen[None]):
 
     def on_key(self, event: events.Key) -> None:
         key = event.key.lower()
-        if key == "escape":
-            event.stop()
-            return
-        if key in ("f1", "question_mark", "q", "enter", "space", "?") or event.character in ("?", "q"):
+        if key in ("escape", "f1", "question_mark", "q", "enter", "space", "?") or event.character in ("?", "q"):
             self.dismiss(None)
             event.stop()
 
@@ -4872,7 +4875,11 @@ class HelpScreen(ModalScreen[None]):
 
 
 class FailureSummaryScreen(ModalScreen[str]):
-    BINDINGS = [Binding("escape", "close", "Close")]
+    BINDINGS = [
+        Binding("escape", "close", "Close", priority=True),
+        Binding("c,q", "close", "Close", priority=True),
+        Binding("r", "retry", "Retry", priority=True),
+    ]
 
     def __init__(
         self,
@@ -4924,16 +4931,12 @@ class FailureSummaryScreen(ModalScreen[str]):
 
 
 class CompletionDialog(ModalScreen[bool]):
-    """Final dialog shown when the sequence finishes: review logs or quit.
-
-    Note: `q`/`escape` are NOT bound here on purpose. The orchestrator's app-
-    level priority bindings route those keys to `action_request_quit`, which
-    special-cases this dialog (quitting directly, since the run is already
-    finished). Enter/space and the buttons both resolve to "stay and review".
-    """
+    """Final dialog shown when the sequence finishes: review logs or quit."""
 
     BINDINGS = [
-        Binding("enter,space", "dismiss_stay", "View Logs"),
+        Binding("escape", "dismiss_stay", "View Logs", priority=True),
+        Binding("enter,space,v", "dismiss_stay", "View Logs", priority=True),
+        Binding("q", "dismiss_quit", "Quit", priority=True),
     ]
 
     def __init__(
@@ -4961,6 +4964,18 @@ class CompletionDialog(ModalScreen[bool]):
 
     def action_dismiss_stay(self) -> None:
         self.dismiss(False)
+
+    def action_dismiss_quit(self) -> None:
+        self.dismiss(True)
+
+    def on_key(self, event: events.Key) -> None:
+        key = event.key.lower()
+        if key in ("escape", "enter", "space", "v"):
+            self.dismiss(False)
+            event.stop()
+        elif key == "q":
+            self.dismiss(True)
+            event.stop()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(event.button.id == "btn_completion_quit")
@@ -5421,13 +5436,30 @@ class DuskyOrchestratorApp(App):
         self._is_dragging_pane = False
 
     def action_request_quit(self) -> None:
+        if isinstance(self.screen, HelpScreen):
+            self.screen.dismiss(None)
+            return
+
+        if isinstance(self.screen, (TaskSearchScreen, LogSearchScreen, SudoPasswordScreen, FailureSummaryScreen)):
+            self.screen.dismiss(None)
+            return
+
+        if isinstance(self.screen, (ConflictModalScreen, ManualModalScreen)):
+            with suppress(Exception):
+                self.screen.dismiss("abort")
+            return
+
         if isinstance(self.screen, ConfirmQuitScreen):
+            self.screen.dismiss("cancel")
             return
 
         if isinstance(self.screen, CompletionDialog):
-            # The sequence is already finished: quitting from the completion
-            # dialog must not ask about aborting a running run.
-            self.exit()
+            self.screen.dismiss(False)
+            return
+
+        if isinstance(self.screen, ModalScreen):
+            with suppress(Exception):
+                self.screen.dismiss(None)
             return
 
         async def on_quit_decision(result: str | None) -> None:
