@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 VERSION = "9.6.0"
 SCRIPT_DIR: Path = Path(__file__).resolve().parent
@@ -661,11 +661,11 @@ done
 
         sys.stdout.write("\033[1;36m[DUSKY PRE-FLIGHT]\033[0m Securing administrative privileges...\n")
 
-        if cls.detect_nopasswd():
-            sys.stdout.write("\033[1;36m[DUSKY PRE-FLIGHT]\033[0m Passwordless sudo detected.\n")
-            return True
-
         password: str | None = cli_password
+        if password is None:
+            env_pwd = os.environ.get("DUSKY_SUDO_PASSWORD")
+            if env_pwd:
+                password = env_pwd
         if password is None and password_file is not None:
             with suppress(OSError):
                 text = password_file.read_text(encoding="utf-8", errors="ignore")
@@ -678,6 +678,10 @@ done
                 sys.stdout.write("\033[1;36m[DUSKY PRE-FLIGHT]\033[0m Sudo credentials cached for this session.\n")
                 return True
             sys.stderr.write(f"\033[1;31m[ERROR]\033[0m Provided sudo password failed: {err}\n")
+
+        if cls.detect_nopasswd():
+            sys.stdout.write("\033[1;36m[DUSKY PRE-FLIGHT]\033[0m Passwordless sudo detected.\n")
+            return True
 
         if sys.stdin.isatty():
             import getpass
@@ -1352,13 +1356,13 @@ class RunLogger:
             return
 
         try:
-            stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-            self.root = logs_dir() / f"{stamp}_{safe_filename(profile.name)}_{run_id}"
+            self.root = logs_dir() / f"{run_id}_{safe_filename(profile.name)}_{run_id}"
             ensure_secure_dir(self.root)
             self.main_path = self.root / "dusky_update.log"
             self._main = open(self.main_path, "a", encoding="utf-8", errors="replace")
             self.system(f"Logging started for profile: {profile.name}")
             self.system(f"Run ID: {run_id}")
+            self.system(f"Python: {sys.version.split()[0]} | User: {user_home().name} | Kernel: {os.uname().release}")
         except OSError as e:
             sys.stderr.write(f"[WARN] Cannot create task log directory under {logs_dir()}: {e}\n")
 
@@ -1380,7 +1384,9 @@ class RunLogger:
         log_path = self.task_log_path(task, index)
         with suppress(OSError):
             with open(log_path, "a", encoding="utf-8", errors="replace") as f:
-                f.write(text + "\n")
+                if not text.endswith("\n"):
+                    text += "\n"
+                f.write(text)
 
     def close_task(
         self,
@@ -1397,19 +1403,21 @@ class RunLogger:
             with open(log_path, "a", encoding="utf-8", errors="replace") as f:
                 f.write(f"\n[{now_ts()}] TASK END: {task.name}\n")
                 f.write(f"[{now_ts()}] STATUS: {status}\n")
-                f.write(f"[{now_ts()}] EXIT CODE: {exit_code}\n")
+                if exit_code is not None:
+                    f.write(f"[{now_ts()}] EXIT CODE: {exit_code}\n")
                 f.write(f"[{now_ts()}] DURATION: {duration:.2f}s\n")
 
     def write_report(
         self,
         profile: 'ProfileConfig',
         tasks: list,
-        statuses: dict[str, str],
-        counters: dict[str, int],
+        statuses: dict[str, str] | None = None,
+        counters: dict[str, int] | None = None,
     ) -> None:
         if not self.enabled or not self.write_reports or self.root is None:
             return
 
+        cnt = counters or {}
         report = {
             "run_id": self.run_id,
             "generated": now_iso(),
@@ -1420,7 +1428,7 @@ class RunLogger:
             "user": target_user_pw().pw_name,
             "uid": target_user_pw().pw_uid,
             "home": str(user_home()),
-            "counters": counters,
+            "counters": cnt,
             "tasks": [],
         }
 
@@ -1436,22 +1444,28 @@ class RunLogger:
             "",
         ]
 
-        for k, v in sorted(counters.items()):
+        for k, v in sorted(cnt.items()):
             lines.append(f"- {k}: {v}")
 
         lines.extend(["", "## Tasks", ""])
 
         for task in tasks:
-            status = statuses.get(task.state_key, "pending")
+            st = getattr(task, "status", None)
+            if not st and statuses:
+                st = statuses.get(task.state_key, "pending")
+            st = st or "pending"
+            dur = getattr(task, "duration", 0.0)
             item = {
                 "script": task.name,
                 "mode": task.mode,
-                "status": status,
-                "path": str(task.resolved_path),
+                "status": st,
+                "path": str(task.resolved_path) if getattr(task, "resolved_path", None) else "",
                 "args": task.args,
+                "duration": round(dur, 2),
             }
             report["tasks"].append(item)
-            lines.append(f"- [{task.mode}] {task.name} -> {status}")
+            dur_str = f" ({dur:.2f}s)" if dur > 0 else ""
+            lines.append(f"- [{task.mode}] {task.name} -> {st}{dur_str}")
 
         with suppress(OSError):
             (self.root / "report.json").write_text(
@@ -1707,6 +1721,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument('--force', action='store_true')
     parser.add_argument('--stop-on-fail', action='store_true')
     parser.add_argument('--allow-diverged-reset', action='store_true')
+    parser.add_argument('--sudo-password', type=str, default=None)
     parser.add_argument('--list', action='store_true')
     parser.add_argument('--list-once', action='store_true')
     parser.add_argument('--forget-once', nargs='+', metavar='SCRIPT', default=None)
@@ -2120,8 +2135,8 @@ class DuskyTask:
     args: list[str]
     interactive_override: bool | None = None
     status: Literal['pending', 'running', 'success', 'failed', 'skipped'] = 'pending'
-    resolved_path: Optional[Path] = None
-    interpreter: Optional[list[str]] = None
+    resolved_path: Path | None = None
+    interpreter: list[str] | None = None
     path_state: str = "ok"  # "ok", "missing", "conflict"
 
     # Extended Orchestrator Subsystem Fields
@@ -2146,6 +2161,8 @@ def parse_manifest(profile: ProfileConfig) -> list[DuskyTask]:
         DuskyTask("Atomic Snapshot (CoW)", 'GIT', False, False, []),
         DuskyTask("Apply Bare Updates (Reset)", 'GIT', False, False, [])
     ]
+    for i, t in enumerate(tasks):
+        t.state_key = hashlib.blake2b(f"{t.mode}|{t.name}".encode("utf-8")).hexdigest()
 
     interactive_heuristics = {'reboot_post_lua_update.sh', 'tui_matugen.py', 'dusky_firefox_tui.sh'}
 
@@ -2399,9 +2416,10 @@ def log(level: str, msg: str):
     elif level == "SECTION":
         prefix = f"\n{CLR_CYN}═══════{CLR_RST}"
 
-    if 'app' in globals() and globals()['app'] is not None and getattr(globals()['app'], '_running', False):
+    app_instance = globals().get('app')
+    if app_instance is not None and getattr(app_instance, '_running', False):
         with suppress(Exception):
-            globals()['app'].log_main(msg)
+            app_instance.log_main(f"{prefix} {msg}" if level not in ("RAW", "SECTION") else (f"{prefix} {msg}\n" if level == "SECTION" else msg))
     else:
         if level == "SECTION":
             sys.stdout.write(f"{prefix} {msg}\n")
@@ -2411,11 +2429,11 @@ def log(level: str, msg: str):
             sys.stdout.write(f"{prefix} {msg}\n")
         sys.stdout.flush()
 
-    if LOG_FILE and GLOBAL_CONFIG.get("logging", {}).get("enabled", True):
-        with suppress(OSError):
-            stripped = strip_ansi(msg)
-            with open(LOG_FILE, "a", encoding="utf-8") as f:
-                f.write(f"[{timestamp}] [{level:<7s}] {stripped}\n")
+        if LOG_FILE and GLOBAL_CONFIG.get("logging", {}).get("enabled", True):
+            with suppress(OSError):
+                stripped = strip_ansi(msg)
+                with open(LOG_FILE, "a", encoding="utf-8") as f:
+                    f.write(f"[{timestamp}] [{level:<7s}] {stripped}\n")
 
 
 def desktop_notify(summary: str, body: str, urgency: str = "normal") -> None:
@@ -2467,7 +2485,7 @@ def auto_prune() -> None:
                                 shutil.rmtree(d, ignore_errors=True)
 
 
-def make_private_dir_under(base: Path, folder_name: str) -> Optional[Path]:
+def make_private_dir_under(base: Path, folder_name: str) -> Path | None:
     if not ensure_secure_dir(base):
         return None
     candidate = base / folder_name
@@ -2491,7 +2509,7 @@ def make_private_dir_under(base: Path, folder_name: str) -> Optional[Path]:
     return None
 
 
-def make_private_file_under(base: Path, prefix: str, suffix: str = ".log") -> Optional[Path]:
+def make_private_file_under(base: Path, prefix: str, suffix: str = ".log") -> Path | None:
     if not ensure_secure_dir(base):
         return None
     try:
@@ -3685,7 +3703,7 @@ class GitEngine:
 
         return paths, status_map, old_mode_map, old_oid_map
 
-    async def _backup_user_modifications(self, change_paths: list, change_status: dict, task_idx: int) -> Optional[Path]:
+    async def _backup_user_modifications(self, change_paths: list, change_status: dict, task_idx: int) -> Path | None:
         if not change_paths:
             return None
 
@@ -3731,7 +3749,7 @@ class GitEngine:
         self._tlog(f"[bold {THEME['success']}]Backed up {len(change_paths)} tracked change(s) → {backup_dir}[/]", task_idx, True)
         return backup_dir
 
-    async def _backup_full_tracked_tree(self, task_idx: int) -> Optional[Path]:
+    async def _backup_full_tracked_tree(self, task_idx: int) -> Path | None:
         backup_base = backups_dir()
         _, ls_files, _ = await self._run_raw('ls-files', '-z')
         tracked = [f for f in ls_files.split('\0') if f]
@@ -3782,7 +3800,7 @@ class GitEngine:
         self._tlog(f"[bold {THEME['success']}]Full tracked-tree backup: {backup_dir} ({copied} file(s))[/]", task_idx, True)
         return backup_dir
 
-    async def _backup_git_history(self, task_idx: int) -> Optional[Path]:
+    async def _backup_git_history(self, task_idx: int) -> Path | None:
         backup_base = backups_dir()
         required_bytes = path_copy_size_bytes(GIT_DIR)
         if not check_disk_space(backup_base):
@@ -3833,7 +3851,7 @@ class GitEngine:
         if not (backup_dir and backup_dir.is_dir() and change_paths):
             return True
 
-        merge_dir: Optional[Path] = None
+        merge_dir: Path | None = None
         restore_count = merge_count = deletion_count = 0
         all_ok = True
 
@@ -3948,7 +3966,7 @@ class GitEngine:
     async def execute_phase(self) -> bool:
         UPSTREAM_TRACKING_REF = f'refs/dusky-updater/upstream/{self.profile.branch}'
 
-        your_changes_backup: Optional[Path] = None
+        your_changes_backup: Path | None = None
         local_head = ""
         change_paths: list = []
         change_status: dict = {}
@@ -4014,6 +4032,8 @@ class GitEngine:
 
             self._tlog(f"[bold {THEME['success']}]Bare repository integrity verified.[/]", idx)
             self.app.update_task_state(idx, "success")  # type: ignore
+            if self.app.run_logger:
+                self.app.run_logger.close_task(self.app.tasks[idx], idx, "completed", 0, 0.0)
 
             # Task 1: Fetch Upstream & Diff
             idx = 1
@@ -4071,8 +4091,12 @@ class GitEngine:
                     self._tlog(f"[bold {THEME['success']}]Repository synchronization perfect. Origin matched.[/]", idx, True)
                     await self._ensure_repo_defaults()
                     self.app.update_task_state(idx, "success")  # type: ignore
+                    if self.app.run_logger:
+                        self.app.run_logger.close_task(self.app.tasks[idx], idx, "completed", 0, 0.0)
                     for i in range(2, 5):
                         self.app.update_task_state(i, "skipped")  # type: ignore
+                        if self.app.run_logger:
+                            self.app.run_logger.close_task(self.app.tasks[i], i, "skipped", 0, 0.0)
                     return True
                 meta.update(status="up_to_date_with_mods", before_head=local_head, after_head=remote_head, local_mods=len(change_paths))
                 self.app.git_summary = meta
@@ -4220,6 +4244,8 @@ class GitEngine:
                     raise RuntimeError("Git history backup failed.")
 
             self.app.update_task_state(idx, "success")  # type: ignore
+            if self.app.run_logger:
+                self.app.run_logger.close_task(self.app.tasks[idx], idx, "completed", 0, 0.0)
 
             # Task 2: Forensic Collision Backup
             idx = 2
@@ -4233,6 +4259,8 @@ class GitEngine:
                 collision_backup=self._last_collision_dir,
             )
             self.app.update_task_state(idx, "success")  # type: ignore
+            if self.app.run_logger:
+                self.app.run_logger.close_task(self.app.tasks[idx], idx, "completed", 0, 0.0)
 
             # Task 3: Atomic Snapshot (CoW)
             idx = 3
@@ -4253,6 +4281,8 @@ class GitEngine:
             )
 
             self.app.update_task_state(idx, "success")  # type: ignore
+            if self.app.run_logger:
+                self.app.run_logger.close_task(self.app.tasks[idx], idx, "completed", 0, 0.0)
 
 # Task 4: Apply Reset
             idx = 4
@@ -4290,6 +4320,8 @@ class GitEngine:
             if meta.get("diff") or meta.get("commits"):
                 persist_last_git_diff(meta)
             self.app.update_task_state(idx, "success")  # type: ignore
+            if self.app.run_logger:
+                self.app.run_logger.close_task(self.app.tasks[idx], idx, "completed", 0, 0.0)
             return True
 
         except Exception as e:
@@ -4829,12 +4861,31 @@ class DuskyApp(App):
         if self.once_store:
             self.once_store.close()
 
-    def log_main(self, message: str) -> None:
+    def log_main(self, message: Any) -> None:
         self.query_one("#log-main", RichLog).write(message)
         if "main" not in self._log_lines:
             max_lines = GLOBAL_CONFIG.get("ui", {}).get("max_log_lines", 6000)
             self._log_lines["main"] = deque(maxlen=max_lines)
         self._log_lines["main"].append(str(message))
+
+        if hasattr(message, "plain"):
+            plain = message.plain
+        elif hasattr(message, "code"):
+            plain = message.code
+        else:
+            plain = strip_ansi(str(message))
+
+        if self.run_logger and self.run_logger.enabled:
+            for line in plain.splitlines():
+                if line.strip():
+                    self.run_logger.system(line)
+
+        if LOG_FILE and GLOBAL_CONFIG.get("logging", {}).get("enabled", True):
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            with suppress(OSError):
+                with open(LOG_FILE, "a", encoding="utf-8") as f:
+                    for line in plain.splitlines():
+                        f.write(f"[{timestamp}] [MAIN   ] {line}\n")
 
     def log_task(self, message: Any, index: int) -> None:
         with suppress(Exception):
@@ -4843,6 +4894,17 @@ class DuskyApp(App):
             max_lines = GLOBAL_CONFIG.get("ui", {}).get("max_log_lines", 6000)
             self._log_lines[index] = deque(maxlen=max_lines)
         self._log_lines[index].append(str(message))
+
+        if hasattr(message, "plain"):
+            plain = message.plain
+        elif hasattr(message, "code"):
+            plain = message.code
+        else:
+            plain = strip_ansi(str(message))
+
+        if self.run_logger and self.run_logger.enabled and 0 <= index < len(self.tasks):
+            task = self.tasks[index]
+            self.run_logger.write_task(task, index, plain)
 
     def _restore_last_git_diff(self) -> None:
         payload = None
@@ -4859,6 +4921,8 @@ class DuskyApp(App):
         self.git_summary.update(payload)
         for i in range(5):
             self.update_task_state(i, "success")
+            if self.run_logger:
+                self.run_logger.close_task(self.tasks[i], i, "completed", 0, 0.0)
         diff = payload.get("diff") or ""
         commits = payload.get("commits", "?")
         files_changed = payload.get("files_changed", "?")
@@ -5564,6 +5628,15 @@ class DuskyApp(App):
                     self.log_main(f"\n[bold {THEME['error']} blink]SYSTEM HALTED. GIT INTEGRITY VIOLATION.[/]")
                     for index in range(5, len(self.tasks)):
                         self.update_task_state(index, "skipped")
+                        if self.run_logger:
+                            self.run_logger.close_task(self.tasks[index], index, "skipped", 0, 0.0)
+                    if self.run_logger:
+                        self.run_logger.write_report(
+                            self.profile,
+                            self.tasks,
+                            {t.state_key: t.status for t in self.tasks},
+                            {"success": 0, "failed": 1, "missing": 0, "skipped": len(self.tasks) - 5},
+                        )
                     report_block = self._render_final_overview_block(
                         verdict="SYSTEM HALTED",
                         success_count=0,
@@ -5599,6 +5672,13 @@ class DuskyApp(App):
         if OPT_SYNC_ONLY:
             msg = "SYNC SIMULATED." if OPT_DRY_RUN else "SYNC COMPLETE."
             self.log_main(f"\n[bold {THEME['success']}]{msg} (--sync-only specified)[/]")
+            if self.run_logger:
+                self.run_logger.write_report(
+                    self.profile,
+                    self.tasks,
+                    {t.state_key: t.status for t in self.tasks},
+                    {"success": 5, "failed": 0, "missing": 0, "skipped": len(self.tasks) - 5},
+                )
             report_block = self._render_final_overview_block(
                 verdict="SYNC COMPLETE" if not OPT_DRY_RUN else "SYNC SIMULATED",
                 success_count=5,
@@ -5629,6 +5709,13 @@ class DuskyApp(App):
             self.abort_flag = True
             self.phase_durations["phase1_5_resolve"] = time.monotonic() - p15_start
             self.log_main(f"[bold {THEME['error']}][FATAL][/] Post-sync script resolution failed. Cannot proceed.")
+            if self.run_logger:
+                self.run_logger.write_report(
+                    self.profile,
+                    self.tasks,
+                    {t.state_key: t.status for t in self.tasks},
+                    {"success": 0, "failed": 1, "missing": len(self.missing_scripts), "skipped": len(self.tasks) - 5},
+                )
             report_block = self._render_final_overview_block(
                 verdict="RESOLUTION FAILED",
                 success_count=0,
@@ -6058,7 +6145,7 @@ if __name__ == "__main__":
 
         if not OPT_SYNC_ONLY and not OPT_DRY_RUN:
             if not has_sudo and any(t.mode == 'S' for t in tasks):
-                if not SudoEngine.preflight():
+                if not SudoEngine.preflight(cli_password=getattr(args, 'sudo_password', None)):
                     sys.exit(1)
                 has_sudo = True
 
@@ -6066,6 +6153,8 @@ if __name__ == "__main__":
         setup_runtime_dir()
         if not acquire_lock():
             sys.exit(1)
+
+        setup_logging()
 
         if not OPT_DRY_RUN:
             auto_prune()
@@ -6077,8 +6166,6 @@ if __name__ == "__main__":
                     "Resolve the above errors and re-run.\n"
                 )
                 sys.exit(1)
-
-        setup_logging()
 
         app = DuskyApp(profile, tasks, has_sudo)
         app.run()
