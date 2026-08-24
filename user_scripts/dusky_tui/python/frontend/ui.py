@@ -1553,6 +1553,22 @@ class TabContainer(Horizontal):
         if hasattr(self.app, "check_tab_overflow"):
             self.app.check_tab_overflow()
 
+    def on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
+        event.stop()
+        if self.max_scroll_x > 0:
+            target = min(float(self.max_scroll_x), self.scroll_x + 10)
+            self.scroll_to(x=target, animate=False)
+            if hasattr(self.app, "check_tab_overflow"):
+                self.app.check_tab_overflow()
+
+    def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
+        event.stop()
+        if self.scroll_x > 0:
+            target = max(0.0, self.scroll_x - 10)
+            self.scroll_to(x=target, animate=False)
+            if hasattr(self.app, "check_tab_overflow"):
+                self.app.check_tab_overflow()
+
 
 class CustomRichTabWidget(Static):
     """
@@ -2144,20 +2160,16 @@ Tooltip {
     def compose(self) -> ComposeResult:
         with Vertical(id="main-box"):
             with Horizontal(id="tab-bar"):
-                yield Label(" ◀ ", id="tab-left", classes="tab-arrow")
+                yield Label("   ", id="tab-left", classes="tab-arrow")
 
                 with TabContainer(id="tabs-container"):
                     tabs_widget = Tabs(
                         *[Tab(name, id=f"tab-id-{i}") for i, name in self.tabs.items()],
                         id="tabs"
                     )
-
-                    tabs_width = sum(Text(name).cell_len + 2 for name in self.tabs.values())
-                    tabs_widget.styles.width = tabs_width
-
                     yield tabs_widget
 
-                yield Label(" ▶ ", id="tab-right", classes="tab-arrow")
+                yield Label("   ", id="tab-right", classes="tab-arrow")
 
             yield Label("", id="telemetry-banner")
 
@@ -2938,6 +2950,7 @@ Tooltip {
             pass
 
         self._intern_styles()
+        self.call_after_refresh(self.check_tab_overflow)
         self.run_deferred_boot(initial_tab=0)
 
         if first_ol := self.current_option_list:
@@ -3500,19 +3513,59 @@ Tooltip {
             has_overflow = container.max_scroll_x > 0
 
             if has_overflow:
+                left.display = True
+                right.display = True
+                left.update(" ◀ " if container.scroll_x > 0.5 else "   ")
+                right.update(" ▶ " if container.scroll_x < (container.max_scroll_x - 0.5) else "   ")
                 if container.styles.align != ("left", "middle"):
                     container.styles.align = ("left", "middle")
-
-                left.display = container.scroll_x > 0.5
-                right.display = container.scroll_x < (container.max_scroll_x - 0.5)
-
             else:
+                left.display = False
+                right.display = False
+                left.update("")
+                right.update("")
                 if container.styles.align != ("center", "middle"):
                     container.styles.align = ("center", "middle")
 
-                left.display = False
-                right.display = False
+        except Exception:
+            pass
 
+    def scroll_tab_into_view(self, tab_widget: Tab) -> None:
+        if not self._cached_tabs_container:
+            return
+
+        try:
+            container = self._cached_tabs_container
+            tabs = self.query_one(Tabs)
+
+            if tab_widget.region.width == 0:
+                self.call_after_refresh(lambda: self.scroll_tab_into_view(tab_widget))
+                return
+
+            tab_offset_x = tab_widget.region.x - tabs.region.x
+            tab_width = tab_widget.region.width
+            container_width = container.size.width
+            current_scroll = container.scroll_x
+
+            # If tab starts before current viewport, scroll left to show it cleanly with margin
+            if tab_offset_x < current_scroll:
+                target_x = max(0.0, float(tab_offset_x - 1))
+                container.scroll_to(x=target_x, animate=False)
+            # If tab ends after current viewport, scroll right to show it cleanly with margin
+            elif tab_offset_x + tab_width > current_scroll + container_width:
+                target_x = min(float(container.max_scroll_x), float(tab_offset_x + tab_width - container_width + 1))
+                container.scroll_to(x=target_x, animate=False)
+
+            self.check_tab_overflow()
+        except Exception:
+            pass
+
+    def on_resize(self, event: events.Resize) -> None:
+        self.check_tab_overflow()
+        try:
+            tabs = self.query_one(Tabs)
+            if tabs.active_tab:
+                self.scroll_tab_into_view(tabs.active_tab)
         except Exception:
             pass
 
@@ -3754,7 +3807,7 @@ Tooltip {
         try:
             idx = int(event.tab.id.split("-")[-1])
             self.query_one(ContentSwitcher).current = f"tab-{idx}"
-            event.tab.scroll_visible(animate=True, top=False)
+            self.scroll_tab_into_view(event.tab)
 
             if idx not in self._tab_data_ready and self._engines_for_tab(idx).issubset(self._loaded_engines):
                 self._apply_states_to_tab(idx, self._states)
@@ -3796,14 +3849,18 @@ Tooltip {
     @on(events.Click, "#tab-left")
     def scroll_tabs_left(self, event: events.Click) -> None:
         event.stop()
-        if self._cached_tabs_container:
-            self._cached_tabs_container.scroll_relative(x=-40, animate=True)
+        if self._cached_tabs_container and self._cached_tabs_container.scroll_x > 0:
+            target = max(0.0, float(self._cached_tabs_container.scroll_x - 20))
+            self._cached_tabs_container.scroll_to(x=target, animate=False)
+            self.check_tab_overflow()
 
     @on(events.Click, "#tab-right")
     def scroll_tabs_right(self, event: events.Click) -> None:
         event.stop()
-        if self._cached_tabs_container:
-            self._cached_tabs_container.scroll_relative(x=40, animate=True)
+        if self._cached_tabs_container and self._cached_tabs_container.scroll_x < self._cached_tabs_container.max_scroll_x:
+            target = min(float(self._cached_tabs_container.max_scroll_x), float(self._cached_tabs_container.scroll_x + 20))
+            self._cached_tabs_container.scroll_to(x=target, animate=False)
+            self.check_tab_overflow()
 
     # =========================================================================
     # SHORTCUT VISUALS

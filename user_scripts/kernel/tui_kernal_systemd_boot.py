@@ -1072,6 +1072,14 @@ def DEFERRED_LOAD() -> list[int]:
             item.hints = target_hints
             break
 
+    # 3. Refresh direct renaming items in Tab 5 if new kernels appeared
+    current_items = SCHEMA.get(5, [])
+    if current_items:
+        target_entry_item = current_items[0]
+        tail_items = [it for it in current_items if it.scope != "ENTRY_OVERRIDE" and it.key != "target_entry"]
+        new_override_items = build_entry_override_items()
+        SCHEMA[5] = [target_entry_item] + new_override_items + tail_items
+
     return [4, 5]
 
 
