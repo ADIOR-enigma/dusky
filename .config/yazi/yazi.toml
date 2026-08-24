@@ -13,7 +13,7 @@ linemode       = "permissions"
 show_hidden    = true 
 show_symlink   = true
 scrolloff      = 30
-mouse_events   = [ "click", "scroll" ]
+mouse_events   = [ "click", "scroll", "drag" ]
 
 [preview]
 wrap            = "no"
@@ -96,7 +96,7 @@ preload_workers  = 2
 process_workers  = 5
 bizarre_retry    = 3
 image_alloc      = 536870912  # 512MB
-image_bound      = [ 5000, 5000 ]
+image_bound      = [ 10000, 10000 ]
 suppress_preload = false
 
 [plugin]
