@@ -570,14 +570,21 @@ class NoticeBox(Vertical):
 class ConfirmDialog(ModalScreen[bool]):
     BINDINGS = [
         Binding("escape", "dismiss_false", "Cancel"),
-        Binding("enter,space", "dismiss_true", "Confirm"),
+        Binding("left,h,up,k", "nav_prev", "Previous Option", priority=True),
+        Binding("right,l,down,j", "nav_next", "Next Option", priority=True),
+        Binding("tab", "nav_next", "Next Option", priority=True),
+        Binding("shift+tab", "nav_prev", "Previous Option", priority=True),
+        Binding("enter,space", "select_current", "Confirm", priority=True),
     ]
 
-    def __init__(self, message: str, title: str = "CONFIRM", level: str = "warning") -> None:
+    selected_index: reactive[int] = reactive(1)
+
+    def __init__(self, message: str, title: str = "CONFIRM", level: str = "warning", default_confirm: bool = True) -> None:
         super().__init__()
         self.message = message
         self.title_text = title
         self.level = level
+        self.selected_index = 1 if default_confirm else 0
 
     def compose(self) -> ComposeResult:
         with Vertical(id="confirm-dialog", classes=f"-{self.level}"):
@@ -587,6 +594,35 @@ class ConfirmDialog(ModalScreen[bool]):
             with Horizontal(classes="modal-btn-container"):
                 yield Label(" Cancel ", classes="modal-cancel-btn", id="btn-cancel")
                 yield Label(" Confirm ", classes="modal-close-btn", id="btn-confirm")
+
+    def on_mount(self) -> None:
+        self._update_btn_styles()
+
+    def watch_selected_index(self, old_val: int, new_val: int) -> None:
+        self._update_btn_styles()
+
+    def _update_btn_styles(self) -> None:
+        btn_ids = ["#btn-cancel", "#btn-confirm"]
+        for idx, b_id in enumerate(btn_ids):
+            try:
+                lbl = self.query_one(b_id, Label)
+                if idx == self.selected_index:
+                    lbl.add_class("-focused")
+                    lbl.remove_class("-unfocused")
+                else:
+                    lbl.remove_class("-focused")
+                    lbl.add_class("-unfocused")
+            except Exception:
+                pass
+
+    def action_nav_prev(self) -> None:
+        self.selected_index = (self.selected_index - 1) % 2
+
+    def action_nav_next(self) -> None:
+        self.selected_index = (self.selected_index + 1) % 2
+
+    def action_select_current(self) -> None:
+        self.dismiss(self.selected_index == 1)
 
     def action_dismiss_false(self) -> None:
         self.dismiss(False)
@@ -612,6 +648,7 @@ class AlertDialog(ModalScreen[None]):
     BINDINGS = [
         Binding("escape", "dismiss_modal", "Dismiss"),
         Binding("enter,space", "dismiss_modal", "Dismiss"),
+        Binding("left,right,up,down,tab", "dismiss_modal", "Dismiss", priority=True),
     ]
 
     def __init__(
@@ -633,7 +670,7 @@ class AlertDialog(ModalScreen[None]):
             yield Markdown(self.message, id="alert-message")
 
             with Horizontal(classes="modal-btn-container"):
-                yield Label(f" {self.btn_text} ", classes="modal-close-btn")
+                yield Label(f" {self.btn_text} ", classes="modal-close-btn -focused")
 
     def action_dismiss_modal(self) -> None:
         self.dismiss(None)
@@ -665,7 +702,7 @@ class PasswordScreen(ModalScreen[str | None]):
 
             with Horizontal(classes="modal-btn-container"):
                 yield Label(" Cancel ", classes="modal-cancel-btn", id="btn-cancel")
-                yield Label(" Authenticate ", classes="modal-close-btn", id="btn-authenticate")
+                yield Label(" Authenticate ", classes="modal-close-btn -focused", id="btn-authenticate")
 
     def on_mount(self) -> None:
         self.query_one(Input).focus()
@@ -697,7 +734,14 @@ class PasswordScreen(ModalScreen[str | None]):
 class UnsavedChangesDialog(ModalScreen[str]):
     BINDINGS = [
         Binding("escape", "dismiss_cancel", "Cancel"),
+        Binding("left,h,up,k", "nav_prev", "Previous Option", priority=True),
+        Binding("right,l,down,j", "nav_next", "Next Option", priority=True),
+        Binding("tab", "nav_next", "Next Option", priority=True),
+        Binding("shift+tab", "nav_prev", "Previous Option", priority=True),
+        Binding("enter,space", "select_current", "Select", priority=True),
     ]
+
+    selected_index: reactive[int] = reactive(2)
 
     def __init__(self, count: int) -> None:
         super().__init__()
@@ -716,6 +760,41 @@ class UnsavedChangesDialog(ModalScreen[str]):
                 yield Label(" Cancel ", classes="modal-cancel-btn", id="btn-cancel")
                 yield Label(" Discard ", classes="modal-cancel-btn", id="btn-discard")
                 yield Label(" Save ", classes="modal-close-btn", id="btn-save")
+
+    def on_mount(self) -> None:
+        self._update_btn_styles()
+
+    def watch_selected_index(self, old_val: int, new_val: int) -> None:
+        self._update_btn_styles()
+
+    def _update_btn_styles(self) -> None:
+        btn_ids = ["#btn-cancel", "#btn-discard", "#btn-save"]
+        for idx, b_id in enumerate(btn_ids):
+            try:
+                lbl = self.query_one(b_id, Label)
+                if idx == self.selected_index:
+                    lbl.add_class("-focused")
+                    lbl.remove_class("-unfocused")
+                else:
+                    lbl.remove_class("-focused")
+                    lbl.add_class("-unfocused")
+            except Exception:
+                pass
+
+    def action_nav_prev(self) -> None:
+        self.selected_index = (self.selected_index - 1) % 3
+
+    def action_nav_next(self) -> None:
+        self.selected_index = (self.selected_index + 1) % 3
+
+    def action_select_current(self) -> None:
+        match self.selected_index:
+            case 0:
+                self.dismiss("cancel")
+            case 1:
+                self.dismiss("discard")
+            case 2:
+                self.dismiss("save")
 
     def action_dismiss_cancel(self) -> None:
         self.dismiss("cancel")
@@ -740,9 +819,9 @@ class UnsavedChangesDialog(ModalScreen[str]):
 
 class HybridInputScreen(ModalScreen[str | None]):
     BINDINGS = [
-        Binding("escape", "dismiss_modal", "Cancel"),
-        Binding("down,j", "focus_list", "Focus List"),
-        Binding("up,k", "focus_input", "Focus Input"),
+        Binding("escape", "dismiss_modal", "Cancel", priority=True),
+        Binding("down,j", "focus_list", "Focus List", priority=True),
+        Binding("up,k", "focus_input", "Focus Input", priority=True),
     ]
 
     def __init__(self, prompt: str, default: str, options: list[Any] | None = None) -> None:
@@ -764,7 +843,7 @@ class HybridInputScreen(ModalScreen[str | None]):
 
             with Horizontal(classes="modal-btn-container"):
                 yield Label(" Cancel ", classes="modal-cancel-btn", id="btn-cancel")
-                yield Label(" Ok ", classes="modal-close-btn", id="btn-confirm")
+                yield Label(" Ok ", classes="modal-close-btn -focused", id="btn-confirm")
 
     def on_mount(self) -> None:
         self.query_one(Input).focus()
@@ -818,9 +897,11 @@ class HybridInputScreen(ModalScreen[str | None]):
 
 class PickerScreen(ModalScreen[str | None]):
     BINDINGS = [
-        Binding("escape", "dismiss_modal", "Cancel"),
-        Binding("up,k", "cursor_up", "Up"),
-        Binding("down,j", "cursor_down", "Down"),
+        Binding("escape", "dismiss_modal", "Cancel", priority=True),
+        Binding("up,k", "cursor_up", "Up", priority=True),
+        Binding("down,j", "cursor_down", "Down", priority=True),
+        Binding("page_up,ctrl+u", "page_up", "Page Up", priority=True),
+        Binding("page_down,ctrl+d", "page_down", "Page Down", priority=True),
     ]
 
     def __init__(self, title: str, options: list[str], hints: list[str], current: str | None = None) -> None:
@@ -836,7 +917,7 @@ class PickerScreen(ModalScreen[str | None]):
             yield OptionList(id="picker-list")
 
             with Horizontal(classes="modal-btn-container"):
-                yield Label(" Cancel ", classes="modal-close-btn")
+                yield Label(" Cancel ", classes="modal-close-btn -focused")
 
     def on_mount(self) -> None:
         ol = self.query_one(OptionList)
@@ -873,6 +954,12 @@ class PickerScreen(ModalScreen[str | None]):
     def action_cursor_down(self) -> None:
         self.query_one(OptionList).action_cursor_down()
 
+    def action_page_up(self) -> None:
+        self.query_one(OptionList).action_page_up()
+
+    def action_page_down(self) -> None:
+        self.query_one(OptionList).action_page_down()
+
     def action_dismiss_modal(self) -> None:
         self.dismiss(None)
 
@@ -888,9 +975,11 @@ class PickerScreen(ModalScreen[str | None]):
 
 class SearchScreen(ModalScreen[tuple[int, int] | None]):
     BINDINGS = [
-        Binding("escape", "dismiss_modal", "Cancel"),
-        Binding("down,j", "cursor_down", "Down"),
-        Binding("up,k", "cursor_up", "Up"),
+        Binding("escape", "dismiss_modal", "Cancel", priority=True),
+        Binding("down,j", "cursor_down", "Down", priority=True),
+        Binding("up,k", "cursor_up", "Up", priority=True),
+        Binding("page_up,ctrl+u", "page_up", "Page Up", priority=True),
+        Binding("page_down,ctrl+d", "page_down", "Page Down", priority=True),
     ]
 
     def compose(self) -> ComposeResult:
@@ -900,7 +989,7 @@ class SearchScreen(ModalScreen[tuple[int, int] | None]):
             yield OptionList(id="search-list")
 
             with Horizontal(classes="modal-btn-container"):
-                yield Label(" Cancel ", classes="modal-close-btn")
+                yield Label(" Cancel ", classes="modal-close-btn -focused")
 
     def on_mount(self) -> None:
         self.query_one(Input).focus()
@@ -1002,6 +1091,12 @@ class SearchScreen(ModalScreen[tuple[int, int] | None]):
     def action_cursor_up(self) -> None:
         self.query_one(OptionList).action_cursor_up()
 
+    def action_page_up(self) -> None:
+        self.query_one(OptionList).action_page_up()
+
+    def action_page_down(self) -> None:
+        self.query_one(OptionList).action_page_down()
+
     def action_dismiss_modal(self) -> None:
         self.dismiss(None)
 
@@ -1017,7 +1112,11 @@ class SearchScreen(ModalScreen[tuple[int, int] | None]):
 
 class DiffScreen(ModalScreen[None]):
     BINDINGS = [
-        Binding("escape,enter,space", "dismiss_modal", "Dismiss"),
+        Binding("escape,enter,space,q", "dismiss_modal", "Dismiss", priority=True),
+        Binding("up,k", "cursor_up", "Up", priority=True),
+        Binding("down,j", "cursor_down", "Down", priority=True),
+        Binding("page_up,ctrl+u", "page_up", "Page Up", priority=True),
+        Binding("page_down,ctrl+d", "page_down", "Page Down", priority=True),
     ]
 
     def compose(self) -> ComposeResult:
@@ -1026,7 +1125,7 @@ class DiffScreen(ModalScreen[None]):
             yield OptionList(id="diff-list")
 
             with Horizontal(classes="modal-btn-container"):
-                yield Label(" Close ", classes="modal-close-btn")
+                yield Label(" Close ", classes="modal-close-btn -focused")
 
     def on_mount(self) -> None:
         ol = self.query_one(OptionList)
@@ -1052,6 +1151,18 @@ class DiffScreen(ModalScreen[None]):
         if not added_any:
             ol.add_option(Option("No changes detected from initial load state.", disabled=True))
 
+    def action_cursor_up(self) -> None:
+        self.query_one(OptionList).action_cursor_up()
+
+    def action_cursor_down(self) -> None:
+        self.query_one(OptionList).action_cursor_down()
+
+    def action_page_up(self) -> None:
+        self.query_one(OptionList).action_page_up()
+
+    def action_page_down(self) -> None:
+        self.query_one(OptionList).action_page_down()
+
     def action_dismiss_modal(self) -> None:
         self.dismiss(None)
 
@@ -1067,7 +1178,11 @@ class DiffScreen(ModalScreen[None]):
 
 class ShortcutsInfoScreen(ModalScreen[None]):
     BINDINGS = [
-        Binding("escape,enter,space", "dismiss_modal", "Dismiss"),
+        Binding("escape,enter,space,q,f1", "dismiss_modal", "Dismiss", priority=True),
+        Binding("up,k", "cursor_up", "Up", priority=True),
+        Binding("down,j", "cursor_down", "Down", priority=True),
+        Binding("page_up,ctrl+u", "page_up", "Page Up", priority=True),
+        Binding("page_down,ctrl+d", "page_down", "Page Down", priority=True),
     ]
 
     def compose(self) -> ComposeResult:
@@ -1076,7 +1191,7 @@ class ShortcutsInfoScreen(ModalScreen[None]):
             yield OptionList(id="shortcuts-list")
 
             with Horizontal(classes="modal-btn-container"):
-                yield Label(" Close ", classes="modal-close-btn")
+                yield Label(" Close ", classes="modal-close-btn -focused")
 
     def on_mount(self) -> None:
         ol = self.query_one(OptionList)
@@ -1891,13 +2006,21 @@ ConfirmDialog, AlertDialog, PasswordScreen, UnsavedChangesDialog {
     background: $primary; color: $background; text-style: bold;
     padding: 0 2; width: auto; height: 1; margin: 0 1;
 }
-.modal-close-btn:hover { background: $foreground; color: $background; }
+.modal-close-btn:hover, .modal-close-btn.-focused {
+    background: $primary; color: $background; text-style: bold;
+}
 
 .modal-cancel-btn {
     background: $secondary; color: $foreground; text-style: bold;
     padding: 0 2; width: auto; height: 1; margin: 0 1;
 }
-.modal-cancel-btn:hover { background: $primary; color: $background; }
+.modal-cancel-btn:hover, .modal-cancel-btn.-focused {
+    background: $primary; color: $background; text-style: bold;
+}
+
+.modal-cancel-btn.-unfocused, .modal-close-btn.-unfocused {
+    background: $secondary 40%; color: $foreground 70%; text-style: none;
+}
 
 #modal-title, #picker-title {
     color: $primary; margin-bottom: 1; text-style: bold;
@@ -5001,6 +5124,9 @@ Tooltip {
     # ITEM ADJUSTMENT / RESET
     # =========================================================================
     def action_adjust(self, direction: int, bypass_lock: bool = False) -> None:
+        if self._modal_active():
+            return
+
         ol = self.current_option_list
         if not ol or not ol.last_highlighted_id:
             return
@@ -5072,6 +5198,9 @@ Tooltip {
             self._safe_apply_value(tab_idx, item_idx, item, new_val)
 
     def action_reset_item(self) -> None:
+        if self._modal_active():
+            return
+
         self.trigger_shortcut_blink("r")
 
         ol = self.current_option_list
@@ -5236,6 +5365,9 @@ Tooltip {
         self.push_screen(HybridInputScreen("Save Current State as Preset (Name):", ""), check_reply)
 
     def action_import_preset(self) -> None:
+        if self._modal_active():
+            return
+
         def check_reply(name: str | None) -> None:
             if not name:
                 return
@@ -5312,6 +5444,9 @@ Tooltip {
     # ITEM ACTIVATION
     # =========================================================================
     def action_submit_current(self) -> None:
+        if self._modal_active():
+            return
+
         ol = self.current_option_list
 
         if ol and ol.last_highlighted_id:
@@ -5440,6 +5575,9 @@ Tooltip {
                 self.action_toggle_expand()
 
     def action_toggle_expand(self) -> None:
+        if self._modal_active():
+            return
+
         ol = self.current_option_list
         if not ol or not ol.last_highlighted_id:
             return
