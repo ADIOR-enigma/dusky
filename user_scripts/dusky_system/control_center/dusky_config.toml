@@ -1371,6 +1371,14 @@ title = "Audio"
 icon = "audio-volume-high-symbolic"
 
 [[pages.layout]]
+type = "warning_banner"
+[pages.layout.properties]
+title = ""
+message = "Denoise requires Dusky Audio to be On."
+icon = ""
+compact = true
+
+[[pages.layout]]
 type = "grid_section"
 [pages.layout.properties]
 title = "Quick Audio"
@@ -1475,7 +1483,7 @@ type = "button"
 [pages.layout.items.properties]
 title = "Open Audio Studio"
 button_text = "Launch Studio"
-description = "Full 4-Tab GUI: Noise, Voice FX, Delay/Reverb & 9-Band Parametric EQ"
+description = "Full: Noise, Voice FX, Delay/Reverb & 9-Band Parametric EQ"
 icon = "applications-multimedia-symbolic"
 style = "suggested"
 [pages.layout.items.on_press]
