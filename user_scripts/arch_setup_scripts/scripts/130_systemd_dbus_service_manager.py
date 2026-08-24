@@ -2,12 +2,12 @@
 #d: Manage systemd and D-Bus services
 
 import argparse
-import datetime
 import json
 import os
 import pwd
 import re
 import shutil
+import string
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -96,6 +96,8 @@ SYSTEM_SERVICES: list[ServiceConfig] = [
     ServiceConfig("$HOME/user_scripts/hypr/input/service/numlock_disable.service", "disable"),
     # Clean up modules from old kernels on boot (Default: Enable)
     ServiceConfig("/usr/lib/systemd/system/linux-modules-cleanup.service", "enable"),
+    # Dusky Keylogger Keystroke Statistics Daemon (Default: Disable)
+    ServiceConfig("$HOME/user_scripts/keylogger/systemd/dusky_keylogger.service", "disable"),
 ]
 
 SYSTEMD_SYSTEM_DIR = Path("/etc/systemd/system")
@@ -192,10 +194,97 @@ def expand_path(raw_path: str, ctx: UserContext) -> Path:
         path_str = os.path.join(str(ctx.home), path_str[6:])
 
     final_path = Path(os.path.normpath(os.path.expanduser(path_str)))
-    if not ctx.is_root and not final_path.is_relative_to(ctx.home):
-        log_warn(f"Warning: Path {final_path} resolves outside designated user boundaries ({ctx.home}).")
+    system_roots = (ctx.home, Path("/usr"), Path("/etc"), Path("/opt"), Path("/var"), Path("/run"))
+    if not ctx.is_root and not any(final_path.is_relative_to(r) for r in system_roots):
+        log_warn(f"Warning: Path {final_path} resolves outside designated boundaries ({ctx.home}).")
 
     return final_path
+
+
+def write_atomic(dest: Path, content: str, mode: int = 0o644) -> bool:
+    """
+    Executes a genuinely atomic write adhering to strict POSIX principles.
+    Mitigates TOCTOU permission exploits, zero-byte file truncation, and power-loss corruption.
+    """
+    temp_file = dest.with_name(f".{dest.name}.{os.getpid()}.tmp")
+    temp_file.unlink(missing_ok=True)
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        fd = os.open(temp_file, flags, 0o600)
+        with open(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+            os.fchmod(f.fileno(), mode)
+        temp_file.replace(dest)
+
+        # Fsync parent directory metadata to enforce filesystem node linkage
+        try:
+            dir_fd = os.open(dest.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
+        return True
+    except OSError as e:
+        log_error(f"Critical IO error writing {dest.name}: {e}")
+        return False
+    finally:
+        temp_file.unlink(missing_ok=True)
+
+
+def deploy_unit_file(src_path: Path, target_file: Path, ctx: UserContext) -> bool:
+    """
+    Reads, sanitizes, substitutes environment variables, and atomically deploys unit files.
+    Guarantees seamless portability across different usernames, home paths, and machines.
+    """
+    try:
+        raw_content = src_path.read_text(encoding="utf-8", errors="surrogateescape")
+
+        # 1. Build comprehensive template dictionary
+        install_dir = src_path.parent.parent
+        service_dir = src_path.parent
+        local_venv = install_dir / ".venv" / "bin" / "python"
+        uv_keylogger_venv = ctx.home / "contained_apps" / "uv" / "dusky_key_logger" / "bin" / "python"
+
+        if local_venv.exists():
+            venv_py = str(local_venv)
+        elif uv_keylogger_venv.exists():
+            venv_py = str(uv_keylogger_venv)
+        else:
+            venv_py = shutil.which("python3") or "/usr/bin/python3"
+
+        replacements = {
+            "USER": ctx.username,
+            "HOME": str(ctx.home),
+            "UID": str(ctx.uid),
+            "GID": str(ctx.gid),
+            "INSTALL_DIR": str(install_dir),
+            "SERVICE_DIR": str(service_dir),
+            "VENV_PYTHON": venv_py,
+            "DATA_DIR": str(ctx.home / ".config" / "dusky" / "settings" / "keylogger" / "data"),
+            "CONFIG_DIR": str(ctx.home / ".config" / "dusky" / "settings" / "keylogger"),
+            "XDG_DATA_HOME": str(get_user_data_dir(ctx)),
+            "XDG_CONFIG_HOME": str(get_user_config_dir(ctx)),
+            "XDG_STATE_HOME": str(ctx.home / ".local" / "state"),
+            "XDG_RUNTIME_DIR": f"/run/user/{ctx.uid}",
+        }
+
+        # 2. Template variable substitution ($USER, ${USER}, $HOME, etc.)
+        content = string.Template(raw_content).safe_substitute(replacements)
+
+        # 3. Path sanitization: rewrite foreign /home/<other_user>/ paths to active ctx.home
+        # This handles cases where someone hardcoded a path from another computer
+        content = re.sub(r"/home/[^/\s]+/", f"{ctx.home}/", content)
+        content = re.sub(r"(?<=[\s=:\"'])~/(?=[a-zA-Z0-9_\.])", f"{ctx.home}/", content)
+
+        # 4. Atomic file write with strict 0644 permissions and fsync
+        return write_atomic(target_file, content, mode=0o644)
+    except Exception as e:
+        log_error(f"Failed to process and deploy {src_path.name}: {e}")
+        return False
 
 
 def safe_mkdir(target_dir: Path) -> bool:
@@ -361,6 +450,12 @@ def process_service_batch(
         if not safe_mkdir(target_dir):
             log_error(f"Aborting batch due to directory creation failure: {target_dir}")
             return
+        # Garbage-collect any stale temp files from previous hard power-losses
+        for tmp_file in target_dir.glob(".*.tmp"):
+            try:
+                tmp_file.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     installed_units: list[ServiceConfig] = []
     valid_extensions = {".service", ".timer", ".socket", ".target"}
@@ -385,14 +480,11 @@ def process_service_batch(
 
         log_info(f"Installing to {target_file}...")
         if dry_run:
-            log_info(f"[Dry-Run] Copy {src_path} -> {target_file} (mode=0644)")
+            log_info(f"[Dry-Run] Deploy {src_path} -> {target_file} (mode=0644)")
         else:
-            try:
-                shutil.copy2(src_path, target_file)
-                target_file.chmod(0o644)
+            if deploy_unit_file(src_path, target_file, ctx):
                 log_success(f"Installed {service_name}")
-            except Exception as e:
-                log_error(f"Failed to install {service_name}: {e}")
+            else:
                 continue
 
         installed_units.append(cfg)
@@ -771,10 +863,10 @@ def main() -> None:
         if run_dbus:
             process_symlinks(DBUS_SYMLINKS, dry_run=args.dry_run, ctx=ctx)
 
-        if run_system and ctx.is_root:
+        if run_system and (ctx.is_root or args.dry_run):
             process_service_batch(SYSTEM_SERVICES, target_dir=SYSTEMD_SYSTEM_DIR, is_user=False, use_defaults=args.default, dry_run=args.dry_run, ctx=ctx)
 
-        if run_user or run_dbus or (run_system and ctx.is_root):
+        if run_user or run_dbus or (run_system and (ctx.is_root or args.dry_run)):
             console.print("-" * 50)
             log_success("All assigned operations completed successfully.")
 

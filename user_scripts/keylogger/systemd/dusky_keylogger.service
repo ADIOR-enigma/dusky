@@ -1,5 +1,4 @@
 # Dusky Keylogger -- always-on keystroke statistics daemon
-# Rendered by install.py via string.Template ($USER, $HOME, ...).
 # Do not set PrivateDevices=yes -- that hides /dev/input.
 [Unit]
 Description=Dusky Keylogger - always-on keystroke statistics daemon

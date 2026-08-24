@@ -39,7 +39,7 @@ from pathlib import Path
 INSTALL_DIR = Path(__file__).resolve().parent
 SERVICE_NAME = "dusky_keylogger"
 SERVICE_FILE = Path("/etc/systemd/system") / f"{SERVICE_NAME}.service"
-SERVICE_TEMPLATE = INSTALL_DIR / "systemd" / "dusky_keylogger.service.in"
+SERVICE_SRC = INSTALL_DIR / "systemd" / f"{SERVICE_NAME}.service"
 
 C_RED = "\033[1;31m"
 C_GREEN = "\033[1;32m"
@@ -347,21 +347,25 @@ def build_venv(user: str, home: str) -> str:
 
 
 def install_service(venv_py: str, user: str, home: str) -> None:
-    if not SERVICE_TEMPLATE.exists():
-        fail(f"Service template missing: {SERVICE_TEMPLATE}")
+    if not SERVICE_SRC.exists():
+        fail(f"Service file missing: {SERVICE_SRC}")
     data_dir = f"{home}/.config/dusky/settings/keylogger/data"
     # Canonical config dir (writable under ProtectSystem=strict so the daemon
     # can auto-create/backfill config.json inside its sandbox).
     config_dir = f"{home}/.config/dusky/settings/keylogger"
-    template = string.Template(SERVICE_TEMPLATE.read_text(encoding="utf-8"))
-    rendered = template.substitute(
-        USER=user,
-        HOME=home,
-        INSTALL_DIR=str(INSTALL_DIR),
-        VENV_PYTHON=venv_py,
-        DATA_DIR=data_dir,
-        CONFIG_DIR=config_dir,
-    )
+    raw_content = SERVICE_SRC.read_text(encoding="utf-8")
+    if "$" in raw_content:
+        template = string.Template(raw_content)
+        rendered = template.safe_substitute(
+            USER=user,
+            HOME=home,
+            INSTALL_DIR=str(INSTALL_DIR),
+            VENV_PYTHON=venv_py,
+            DATA_DIR=data_dir,
+            CONFIG_DIR=config_dir,
+        )
+    else:
+        rendered = raw_content
     step(f"Installing {SERVICE_FILE}...")
     tmp = SERVICE_FILE.with_suffix(".service.tmp")
     tmp.write_text(rendered, encoding="utf-8")
