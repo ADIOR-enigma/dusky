@@ -2080,11 +2080,21 @@ terminal = false
 type = "button"
 [pages.layout.items.properties]
 title = "Mako Notifications Configurator"
-description = "Mako TUI"
+description = "Mako TUI (Matugen template)"
 icon = "preferences-system-notifications-symbolic"
-[pages.layout.items.on_press]
+
+[[pages.layout.items.properties.buttons]]
+icon = "document-edit-symbolic"
+[pages.layout.items.properties.buttons.on_press]
 type = "exec"
-command = "foot --app-id=dusky_tui --hold python3 ~/user_scripts/mako_osd/mako_tui/tui_mako.py"
+command = "$HOME/user_scripts/dusky_system/control_center/dusky_text_editor.py \"$HOME/.config/matugen/templates/mako.ini\""
+
+[[pages.layout.items.properties.buttons]]
+icon = "utilities-terminal-symbolic"
+style = "suggested"
+[pages.layout.items.properties.buttons.on_press]
+type = "exec"
+command = "foot --app-id=dusky_tui --hold python3 $HOME/user_scripts/mako_osd/mako_tui/tui_mako.py"
 terminal = false
 
 [[pages.layout]]
@@ -2948,6 +2958,7 @@ icon = "preferences-system-notifications-symbolic"
 type = "section"
 [pages.layout.items.layout.properties]
 title = "Mako Config"
+description = "Matugen template — re-apply wallpaper to apply colors"
 
 [[pages.layout.items.layout.items]]
 type = "button"
@@ -2955,63 +2966,74 @@ type = "button"
 title = "Mako Side Switch"
 description = "Customize notification"
 icon = "preferences-system-notifications-symbolic"
-[pages.layout.items.layout.items.on_press]
+
+[[pages.layout.items.layout.items.properties.buttons]]
+icon = "document-edit-symbolic"
+[pages.layout.items.layout.items.properties.buttons.on_press]
 type = "exec"
-command = "foot --app-id=dusky_tui --hold python3 ~/user_scripts/mako_osd/mako_tui/tui_mako.py"
+command = "$HOME/user_scripts/dusky_system/control_center/dusky_text_editor.py \"$HOME/.config/matugen/templates/mako.ini\""
+
+[[pages.layout.items.layout.items.properties.buttons]]
+icon = "utilities-terminal-symbolic"
+style = "suggested"
+[pages.layout.items.layout.items.properties.buttons.on_press]
+type = "exec"
+command = "foot --app-id=dusky_tui --hold python3 $HOME/user_scripts/mako_osd/mako_tui/tui_mako.py"
 terminal = false
 
 [[pages.layout.items.layout.items]]
 type = "button"
 [pages.layout.items.layout.items.properties]
-title = "mako config"
-description = "Edit Current Configuration"
-icon = "preferences-system-symbolic"
+title = "Mako Template"
+description = "Edit Matugen template (re-apply wallpaper to apply colors)"
+icon = "preferences-system-notifications-symbolic"
 
 [[pages.layout.items.layout.items.properties.buttons]]
-icon = "preferences-system-symbolic"
+icon = "document-edit-symbolic"
 [pages.layout.items.layout.items.properties.buttons.on_press]
 type = "exec"
-command = "$HOME/user_scripts/dusky_system/control_center/dusky_text_editor.py \"$HOME/.config/mako/config\""
+command = "$HOME/user_scripts/dusky_system/control_center/dusky_text_editor.py \"$HOME/.config/matugen/templates/mako.ini\""
+
+[[pages.layout.items.layout.items.properties.buttons]]
+icon = "utilities-terminal-symbolic"
+style = "suggested"
+[pages.layout.items.layout.items.properties.buttons.on_press]
+type = "exec"
+command = "foot --app-id=dusky_tui --hold python3 $HOME/user_scripts/mako_osd/mako_tui/tui_mako.py"
+terminal = false
+
+[[pages.layout.items.layout]]
+type = "warning_banner"
+[pages.layout.items.layout.properties]
+title = "Matugen Template"
+message = "Colors are generated from wallpaper. After editing ~/.config/matugen/templates/mako.ini, re-apply your wallpaper or use 'Regenerate' in the TUI Profiles tab to rebuild ~/.config/matugen/generated/mako-colors.ini (included by ~/.config/mako/config)."
 
 [[pages.layout.items.layout]]
 type = "section"
 [pages.layout.items.layout.properties]
 title = "Path"
-description = "Located in ~/.config/mako/config"
+description = "Template: ~/.config/matugen/templates/mako.ini | Generated: ~/.config/matugen/generated/mako-colors.ini → ~/.config/mako/config"
 
 [[pages.layout.items.layout.items]]
-type = "directory_generator"
-[pages.layout.items.layout.items.properties]
-path = "~/.config/mako/config"
-sort = "name"
-
-[pages.layout.items.layout.items.item_template]
-type = "expander"
-[pages.layout.items.layout.items.item_template.properties]
-title = "{name_pretty}"
-description = "{name}"
-icon = "folder-symbolic"
-
-[[pages.layout.items.layout.items.item_template.items]]
 type = "button"
-[pages.layout.items.layout.items.item_template.items.properties]
-title = "Config"
-description = "config.json"
-icon = "preferences-system-symbolic"
-[pages.layout.items.layout.items.item_template.items.on_press]
+[pages.layout.items.layout.items.properties]
+title = "Open Template"
+description = "~/.config/matugen/templates/mako.ini"
+icon = "document-edit-symbolic"
+[pages.layout.items.layout.items.on_press]
 type = "exec"
-command = "$HOME/user_scripts/dusky_system/control_center/dusky_text_editor.py \"{path}/config.json\""
+command = "$HOME/user_scripts/dusky_system/control_center/dusky_text_editor.py \"$HOME/.config/matugen/templates/mako.ini\""
 terminal = false
 
-[[pages.layout.items.layout.items.item_template.items]]
+[[pages.layout.items.layout.items]]
 type = "button"
-[pages.layout.items.layout.items.item_template.items.properties]
-title = "Style"
-description = "style.css"
-icon = "document-edit-symbolic"
-[pages.layout.items.layout.items.item_template.items.on_press]
+[pages.layout.items.layout.items.properties]
+title = "View Generated Colors"
+description = "~/.config/matugen/generated/mako-colors.ini (read-only, overwritten by Matugen)"
+icon = "preferences-system-symbolic"
+[pages.layout.items.layout.items.on_press]
 type = "exec"
-command = "$HOME/user_scripts/dusky_system/control_center/dusky_text_editor.py \"{path}/style.css\""
+command = "$HOME/user_scripts/dusky_system/control_center/dusky_text_editor.py \"$HOME/.config/matugen/generated/mako-colors.ini\""
 terminal = false
 
 [[pages.layout.items]]
