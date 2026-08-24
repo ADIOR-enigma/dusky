@@ -10,7 +10,7 @@ tags:
 # Windows Install — Load VirtIO Drivers & Guest Tools
 
 > [!info] Context
-> You booted the VM after `Customize configuration before install` + `VirtIO` disk/NIC (`[[Configure the Storage]]` / `[[Configure Virtual Network Interface]]`) + second CDROM `virtio-win.iso` (`[[Mount the VirtIO-Win ISO Image]]`). Windows *will* show empty drive list — it has no virtio driver yet.
+> You booted the VM after `Customize configuration before install` + `VirtIO` disk/NIC ([[Configure the Storage]] / [[Configure Virtual Network Interface]]) + second CDROM `virtio-win.iso` ([[Mount the VirtIO-Win ISO Image]]). Windows *will* show empty drive list — it has no virtio driver yet.
 
 ## 1. Storage driver (mandatory)
 
@@ -59,6 +59,6 @@ Shut off VM:
 
 ![[Pasted image 20250726223648.png]]
 
-> [!success] Ready — proceed to `[[Optimize Windows Performance]]` + shared folder / TPM passthrough notes. For scripted labs, `30_kvm_vm_deploy.py` attaches both ISOs via `virt-install --disk path=…,device=cdrom,bus=sata,readonly=on` and boots `uefi,cdrom,hd,menu=on`.
+> [!success] Ready — proceed to [[Optimize Windows Performance]] + shared folder / TPM passthrough notes. For scripted labs, `30_kvm_vm_deploy.py` attaches both ISOs via `virt-install --disk path=…,device=cdrom,bus=sata,readonly=on` and boots `uefi,cdrom,hd,menu=on`.
 
-See: `[[Configure Windows Virtual Hardware]]`, `[[Enable Trusted Platform Module (TPM)]]`.
+See: [[Configure Windows Virtual Hardware]], [[Enable Trusted Platform Module (TPM)]].

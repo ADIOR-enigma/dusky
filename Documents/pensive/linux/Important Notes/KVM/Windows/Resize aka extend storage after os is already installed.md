@@ -65,4 +65,4 @@ Back in Disk Management → `C:` → **Extend Volume** now available.
 
 Verify in guest: `Get-PSDrive C | Format-List Used,Free`
 
-See: `[[Configure the Storage]]` (format/cache note), `30_kvm_vm_deploy.py:provision_disk` (create flags).
+See: [[Configure the Storage]] (format/cache note), `30_kvm_vm_deploy.py:provision_disk` (create flags).

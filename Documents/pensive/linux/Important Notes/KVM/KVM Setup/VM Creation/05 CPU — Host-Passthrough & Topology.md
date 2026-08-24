@@ -44,7 +44,7 @@ XML (`virsh edit win11` / `virsh edit archlinux`):
 - Topology **must** satisfy `sockets × dies × cores × threads = vcpu` — mismatched triggers Windows “performance warning” prompt; `25_looking_glass.py:apply_cpu_topology` computes `cores = vcpus / threads` but virt-manager lets you type it.
 
 > [!tip] Generate pinning + topology
-> Do not hand-type `cputune` for hybrid CPUs (P/E cores). Use `35_cpu_pinning_generator.py` (auto-detects host `lscpu`, suggests `vcpupin` + `emulatorpin` + `iothreadpin` away from vCPUs). Example `i7-12700H` preset lives in `[[Enable Hyper-V Enlightenments]]` full XML skeleton but is **machine-specific** — regenerate for your box.
+> Do not hand-type `cputune` for hybrid CPUs (P/E cores). Use `35_cpu_pinning_generator.py` (auto-detects host `lscpu`, suggests `vcpupin` + `emulatorpin` + `iothreadpin` away from vCPUs). Example `i7-12700H` preset lives in [[Enable Hyper-V Enlightenments]] full XML skeleton but is **machine-specific** — regenerate for your box.
 
 → **Apply**.
 
@@ -53,7 +53,7 @@ XML (`virsh edit win11` / `virsh edit archlinux`):
 > [!info] Windows route — add Hyper-V enlightenments + clock
 > After setting `host-passthrough` + topology, apply Hyper-V block + clock (mandatory for Windows perf). This is **Windows-only** — do not add for Linux.
 >
-> **Hyper-V enlightenments** (`[[Enable Hyper-V Enlightenments]]` fast path + `[[Hyper-V Enlightenments]]` upstream ref + `[[Hypervisor Features]]` XML schema):
+> **Hyper-V enlightenments** ([[Enable Hyper-V Enlightenments]] fast path + [[Hyper-V Enlightenments]] upstream ref + [[Hypervisor Features]] XML schema):
 > ```xml
 > <features>
 >   <hyperv mode="custom">
@@ -76,7 +76,7 @@ XML (`virsh edit win11` / `virsh edit archlinux`):
 >   <timer name="hpet" present="no"/><timer name="hypervclock" present="yes"/>
 > </clock>
 > ```
-> Verify inside Windows: `bcdedit /set useplatformclock No` (see `[[Disable useplatformclock]]`) — else stutter with `hpet=no`.
+> Verify inside Windows: `bcdedit /set useplatformclock No` (see [[Disable useplatformclock]]) — else stutter with `hpet=no`.
 >
 > Topology wrapper: `host-passthrough` + `dies=1` + computed `cores/threads`. Scripted: `30_*:build_command --features hyperv.* --clock hypervclock --cpu host-passthrough`.
 
@@ -89,7 +89,7 @@ XML (`virsh edit win11` / `virsh edit archlinux`):
 >   <timer name="hpet" present="no"/>
 > </clock>
 > ```
-> - Optional: `[[Optimize the Host with TuneD]]` `virtual-host` vs `[[KVM Setup/VM Creation/03 Storage — Virtio Bus, Cache, io_uring, Discard|03 Storage]]` tuning is host-level, not per-guest.
+> - Optional: [[Optimize the Host with TuneD]] `virtual-host` vs [[KVM Setup/VM Creation/03 Storage — Virtio Bus, Cache, io_uring, Discard|03 Storage]] tuning is host-level, not per-guest.
 
 ## Topology math helper
 
@@ -111,4 +111,4 @@ virsh -c qemu:///system dumpxml archlinux | grep -E "cpu mode=.host-passthrough|
 lscpu | grep -i virtualization   # host still VT-x / AMD-V
 ```
 
-See: `[[KVM Setup/VM Creation/00 Index — VM Creation (Unified)]]`, `[[Enable Hyper-V Enlightenments]]` (full skeleton + cputune), `[[Hyper-V Enlightenments]]` (upstream), `[[Hypervisor Features]]` (XML schema), `35_cpu_pinning_generator.py`.
+See: [[KVM Setup/VM Creation/00 Index — VM Creation (Unified)]], [[Enable Hyper-V Enlightenments]] (full skeleton + cputune), [[Hyper-V Enlightenments]] (upstream), [[Hypervisor Features]] (XML schema), `35_cpu_pinning_generator.py`.

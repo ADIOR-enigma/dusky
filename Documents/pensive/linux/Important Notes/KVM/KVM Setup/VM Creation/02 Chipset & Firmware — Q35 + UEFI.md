@@ -18,7 +18,7 @@ aliases:
 
 ## Prereq
 
-Wizard landed you in **Show virtual hardware details** (lightbulb) via `[[KVM Setup/VM Creation/01 Wizard — Create VM]]` ( **Customize configuration before install** ticked).
+Wizard landed you in **Show virtual hardware details** (lightbulb) via [[KVM Setup/VM Creation/01 Wizard — Create VM]] ( **Customize configuration before install** ticked).
 
 ## 1. Overview tab (virt-manager)
 
@@ -28,7 +28,7 @@ Wizard landed you in **Show virtual hardware details** (lightbulb) via `[[KVM Se
 ## 2. Chipset → `Q35`
 
 - **Action:** dropdown → **Q35**
-- **Why:** Native PCIe (vs `i440FX`'s PCI), required for PCIe passthrough, BAR resizing, `pcie-root-port` topology. Reference XML `[[arch GPU ACCELERATION reference xml]]` uses `pc-q35-10.1`; QEMU 11.1 exposes `pc-q35-11.1` as well.
+- **Why:** Native PCIe (vs `i440FX`'s PCI), required for PCIe passthrough, BAR resizing, `pcie-root-port` topology. Reference XML [[arch GPU ACCELERATION reference xml]] uses `pc-q35-10.1`; QEMU 11.1 exposes `pc-q35-11.1` as well.
 - **Applies to:** Windows **and** Linux (identical).
 
 ## 3. Firmware → `UEFI x86_64`
@@ -51,7 +51,7 @@ Wizard landed you in **Show virtual hardware details** (lightbulb) via `[[KVM Se
 > [!info] Windows route — `smm` + Secure Boot + TPM
 > - `smm` **must be `on`** — required by `tpm-crb` + Secure Boot (Win11 `win11` osinfo enforces it; `30_*:build_command` adds it).
 > - Without UEFI + `smm` + `tpm-crb 2.0` the Windows 11 installer blocks (“This PC can't run Windows 11”). No need to “disable Secure Boot” — shipped OVMF supports it.
-> - Next mandatory: `[[Enable Trusted Platform Module (TPM)]]` ( `swtpm` `tpm-crb` `2.0` ) — create via **Add Hardware → TPM → Emulated / CRB / 2.0** or `virt-install --tpm backend.type=emulator,backend.version=2.0,model=tpm-crb`.
+> - Next mandatory: [[Enable Trusted Platform Module (TPM)]] ( `swtpm` `tpm-crb` `2.0` ) — create via **Add Hardware → TPM → Emulated / CRB / 2.0** or `virt-install --tpm backend.type=emulator,backend.version=2.0,model=tpm-crb`.
 > - For patched/LTSC images with TPM check removed, you may omit TPM and set osinfo to `win10` instead — but keep `swtpm` installed.
 
 > [!info] Linux route
@@ -76,8 +76,8 @@ virsh -c qemu:///system dumpxml archlinux | grep -A3 '<loader'
 
 ## Next
 
-- `[[KVM Setup/VM Creation/03 Storage — Virtio Bus, Cache, io_uring, Discard]]` (bus/cache)
-- Windows only: `[[Enable Trusted Platform Module (TPM)]]` → `[[Enable Hyper-V Enlightenments]]`
+- [[KVM Setup/VM Creation/03 Storage — Virtio Bus, Cache, io_uring, Discard]] (bus/cache)
+- Windows only: [[Enable Trusted Platform Module (TPM)]] → [[Enable Hyper-V Enlightenments]]
 - Linux: directly to storage/network — no extra firmware steps.
 
-See: `[[KVM Setup/VM Creation/00 Index — VM Creation (Unified)]]`, `30_kvm_vm_deploy.py`, `[[Grub Kernal Parameters]]` (host boot cmdline, separate plane).
+See: [[KVM Setup/VM Creation/00 Index — VM Creation (Unified)]], `30_kvm_vm_deploy.py`, [[Grub Kernal Parameters]] (host boot cmdline, separate plane).

@@ -60,4 +60,4 @@ ls -l /dev/kvm
 virt-host-validate | grep -i kvm
 ```
 
-Related: `[[Verify VT-x and Kernel Modules and IOMMU]]` (IOMMUFD/ACS deeper), `[[KVM Packages]]`.
+Related: [[Verify VT-x and Kernel Modules and IOMMU]] (IOMMUFD/ACS deeper), [[KVM Packages]].

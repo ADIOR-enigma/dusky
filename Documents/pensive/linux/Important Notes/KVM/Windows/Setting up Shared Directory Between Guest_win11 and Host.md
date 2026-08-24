@@ -14,7 +14,7 @@ tags:
 
 ## Prereqs
 
-- **VirtIO Guest Tools** installed (see `[[Install a Windows Virtual Machine on KVM]]`).
+- **VirtIO Guest Tools** installed (see [[Install a Windows Virtual Machine on KVM]]).
 - VM **Shutoff** before hardware edits (virt-manager enforces).
 
 ## Part 1 — Host (virt-manager)
@@ -80,4 +80,4 @@ sudo chmod -R 775 /mnt/zram1/share
 
 Verify host: `virtiofsd` should be running (`ps -ef | grep virtiofsd`).
 
-See: `[[Install a Windows Virtual Machine on KVM]]`, `07_storage_setup.py` (pool ACL deep dive).
+See: [[Install a Windows Virtual Machine on KVM]], `07_storage_setup.py` (pool ACL deep dive).

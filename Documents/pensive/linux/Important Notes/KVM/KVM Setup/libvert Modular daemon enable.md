@@ -125,4 +125,4 @@ done
 sudo systemctl unmask libvirtd.service libvirtd.socket libvirtd-ro.socket libvirtd-admin.socket libvirtd-tcp.socket libvirtd-tls.socket
 ```
 
-See: `[[KVM Services]]` (legacy retained), `[[All Libvert Daemons]]`, `10_virt_modular_daemon.py`.
+See: [[KVM Services]] (legacy retained), [[All Libvert Daemons]], `10_virt_modular_daemon.py`.

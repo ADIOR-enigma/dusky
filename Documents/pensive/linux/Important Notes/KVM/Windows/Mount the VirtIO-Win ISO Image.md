@@ -39,6 +39,6 @@ You now have:
 > - AUR alt location: `/usr/share/virtio/virtio-win.iso` (older `virtio-win` revisions).
 > - CLI add: `virsh attach-disk win11 /var/lib/libvirt/images/virtio-win.iso sdc --type cdrom --mode readonly --config`
 
-After install, leave the virtio CD attached or keep the file in pool; guest tools can be reinstalled without re-mount. Next: `[[Install a Windows Virtual Machine on KVM]]`.
+After install, leave the virtio CD attached or keep the file in pool; guest tools can be reinstalled without re-mount. Next: [[Install a Windows Virtual Machine on KVM]].
 
 See: `05_virtio_iso.py:stage_virtio` (symlink vs download, 80 MiB floor, Range-resume, sha256).

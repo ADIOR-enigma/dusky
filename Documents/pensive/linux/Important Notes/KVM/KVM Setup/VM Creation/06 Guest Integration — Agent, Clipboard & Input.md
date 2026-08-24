@@ -29,7 +29,7 @@ virsh -c qemu:///system dumpxml archlinux | grep -A2 "com.redhat.spice.0"
 # expect: <channel type="spicevmc"><target type="virtio" name="com.redhat.spice.0"/>
 ```
 
-If missing: **Add Hardware → Channel → Name: `com.redhat.spice.0` → Type: `spicevmc`** → Apply. Same for Boxes `qemu:///session` (see `[[gnome-boxes]]`).
+If missing: **Add Hardware → Channel → Name: `com.redhat.spice.0` → Type: `spicevmc`** → Apply. Same for Boxes `qemu:///session` (see [[gnome-boxes]]).
 
 ### 2. QEMU Guest Agent channel (host-initiated power/FS/trim)
 
@@ -75,7 +75,7 @@ Without agent, `shutdown` injects ACPI — guest may ignore it.
 ## Part B — OS-specific agent install
 
 > [!info] Windows route — `virtio-win-guest-tools.exe`
-> 1. Inside Windows (after `[[Install a Windows Virtual Machine on KVM]]` `viostor`/`NetKVM`): **File Explorer → CD Drive (E:)** (`virtio-win.iso`) → run **`virtio-win-guest-tools.exe`** (meta-installer, not per-arch MSI).
+> 1. Inside Windows (after [[Install a Windows Virtual Machine on KVM]] `viostor`/`NetKVM`): **File Explorer → CD Drive (E:)** (`virtio-win.iso`) → run **`virtio-win-guest-tools.exe`** (meta-installer, not per-arch MSI).
 > 2. Reboot. Installs: `qxl`/`virtio-gpu` fallback, `spice-agent`, **QEMU Guest Agent**, `viostor`/`NetKVM`/`vioinput`/`viofs`.
 > 3. `Win+R` → `services.msc` → **QEMU Guest Agent** → **Startup: Automatic** → Start. Also **Spice Agent** → Automatic.
 > 4. Verify `Device Manager → Mice` no ghost `vioinput` cursor vanishing; if cursor vanishes → uninstall mouse device → re-run `virtio-win-guest-tools` (Looking Glass section notes this).
@@ -94,7 +94,7 @@ Without agent, `shutdown` injects ACPI — guest may ignore it.
 > # Wayland → Xwayland bridge if host→guest works but guest Wayland app → host fails:
 > # guest: sudo pacman -S --needed xorg-xwayland wl-clipboard xclip ; wl-paste --type text --watch xclip -selection clipboard
 > ```
-> Full Hyprland/UWSM + Boxes plumbing: `[[gnome-boxes]]` (scope `qemu:///session` vs `qemu:///system`, Xwayland, `systemd-user` bridge) + `[[gnome-boxes/linux]]` (concise guest agents). For `qemu:///system` Arch guests (this index), same `spice-vdagent` chain applies but without Boxes `session` wrapper — just ensure SPICE graphics + both channels + daemons.
+> Full Hyprland/UWSM + Boxes plumbing: [[gnome-boxes]] (scope `qemu:///session` vs `qemu:///system`, Xwayland, `systemd-user` bridge) + [[gnome-boxes/linux]] (concise guest agents). For `qemu:///system` Arch guests (this index), same `spice-vdagent` chain applies but without Boxes `session` wrapper — just ensure SPICE graphics + both channels + daemons.
 
 ## Part C — Input: Tablet vs Mouse (both OSes)
 
@@ -131,9 +131,9 @@ Mouse is **captured** inside VM window (classic `virt-viewer`). Release keys:
 
 ## Boxes `qemu:///session` note (why `gnome-boxes` stays separate)
 
-- `gnome-boxes` → `qemu:///session` (per-user) — SPICE WebDAV channel `org.spice-space.webdav.0` for folder sharing (not `virtiofs`), `spice-guest-tools` on Windows guest via `spice-space.org` (see `[[gnome-boxes/Windows]]`).
-- `virt-manager` `qemu:///system` → `virtiofs` shared folder via `memoryBacking memfd shared` + `filesystem type='mount' driver='virtiofs'` (see `[[Setting up Shared Directory Between Guest_win11 and Host]]`).
-- Clipboard plumbing for Boxes Hyprland guests is intentionally **comprehensive** in `[[gnome-boxes]]` (scope, channel, `spice-vdagent-user.service`, Wayland bridge). That file remains canonical for Boxes; this unified note covers `qemu:///system` VMs.
+- `gnome-boxes` → `qemu:///session` (per-user) — SPICE WebDAV channel `org.spice-space.webdav.0` for folder sharing (not `virtiofs`), `spice-guest-tools` on Windows guest via `spice-space.org` (see [[gnome-boxes/Windows]]).
+- `virt-manager` `qemu:///system` → `virtiofs` shared folder via `memoryBacking memfd shared` + `filesystem type='mount' driver='virtiofs'` (see [[Setting up Shared Directory Between Guest_win11 and Host]]).
+- Clipboard plumbing for Boxes Hyprland guests is intentionally **comprehensive** in [[gnome-boxes]] (scope, channel, `spice-vdagent-user.service`, Wayland bridge). That file remains canonical for Boxes; this unified note covers `qemu:///system` VMs.
 
 ## Verify (both OSes)
 
@@ -144,4 +144,4 @@ virsh -c qemu:///system dumpxml archlinux | grep -E "guest_agent|spice.0|input t
 # inside Arch guest: systemctl status spice-vdagentd qemu-guest-agent; pgrep -af spice-vdagent; pgrep -af Xwayland
 ```
 
-See: `[[KVM Setup/VM Creation/00 Index — VM Creation (Unified)]]`, `[[Add QEMU Guest Agent Channel]]` (Windows detail), `[[Remove the USB Tablet Device]]` (latency trade), `[[gnome-boxes]]` + `[[gnome-boxes/linux]]` (Boxes agents), `[[Looking Glass]]` (input escapeKey), `25_looking_glass.py:apply_latency_tuning`.
+See: [[KVM Setup/VM Creation/00 Index — VM Creation (Unified)]], [[Add QEMU Guest Agent Channel]] (Windows detail), [[Remove the USB Tablet Device]] (latency trade), [[gnome-boxes]] + [[gnome-boxes/linux]] (Boxes agents), [[Looking Glass]] (input escapeKey), `25_looking_glass.py:apply_latency_tuning`.

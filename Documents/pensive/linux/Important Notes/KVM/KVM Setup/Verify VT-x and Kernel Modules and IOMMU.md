@@ -84,4 +84,4 @@ flowchart LR
   D --> E[IRQ remap enabled]
 ```
 
-On failure, see `[[Verify VT-x and Kernel Modules and IOMMU#Troubleshooting|Troubleshooting]]` and `[[Host PC  Preparation for GPU isolation]]:§1.2` for the scripts' `audit_groups`/`audit_id_collisions` panels.
+On failure, see [[Verify VT-x and Kernel Modules and IOMMU|Troubleshooting]] and [[Host PC  Preparation for GPU isolation]]`:§1.2` for the scripts' `audit_groups`/`audit_id_collisions` panels.

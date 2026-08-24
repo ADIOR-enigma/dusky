@@ -29,4 +29,4 @@ tags:
 
 Revert by choosing **Let Windows choose** or **Adjust for best appearance**.
 
-See: `[[Optimize Windows Performance]]`.
+See: [[Optimize Windows Performance]].

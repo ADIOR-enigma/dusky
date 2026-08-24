@@ -12,7 +12,7 @@ aliases:
 # Remove the USB Tablet Device (Windows)
 
 > [!tip] Merged — canonical source
-> **Shared trade + steps + XML + release keys + `rawMouse=yes` lives in `[[KVM Setup/VM Creation/06 Guest Integration — Agent, Clipboard & Input#Part C — Input Tablet vs Mouse (both OSes)]]`.** This stub retains Windows filename for `[[wikilink]]` stability and Windows note below.
+> **Shared trade + steps + XML + release keys + `rawMouse=yes` lives in [[KVM Setup/VM Creation/06 Guest Integration — Agent, Clipboard & Input#Part C — Input: Tablet vs Mouse (both OSes)]].** This stub retains Windows filename for `[[wikilink]]` stability and Windows note below.
 
 ## Windows note
 
@@ -23,4 +23,4 @@ Same trade as Linux: default **USB Tablet** (absolute pointer, seamless capture)
 
 > [!warning] Don't remove both pointer devices — keep at least one `mouse`/`keyboard`.
 
-See: canonical `[[KVM Setup/VM Creation/06 Guest Integration — Agent, Clipboard & Input]]`, `[[Looking Glass]]`.
+See: canonical [[KVM Setup/VM Creation/06 Guest Integration — Agent, Clipboard & Input]], [[Looking Glass]].

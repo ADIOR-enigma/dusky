@@ -34,7 +34,7 @@ CLI: `--network network=default,model=virtio` (or `bridge=br0`). Windows needs `
 **Use:** VM needs internet + host SSH → `ssh 192.168.122.x`. Secure, stable.
 
 1. NIC → **Network source:** `Virtual network 'default' : NAT` → Apply
-2. If missing: `[[Activating Network and Setting it to Autostart]]` (`net-define` → `net-autostart` → `net-start`, `dnsmasq`+`nftables`)
+2. If missing: [[Activating Network and Setting it to Autostart]] (`net-define` → `net-autostart` → `net-start`, `dnsmasq`+`nftables`)
 
 > NAT collision: pipeline warns if host already owns `192.168.122.0/24` via another dev (would black-hole DHCP).
 
@@ -106,4 +106,4 @@ sudo systemctl restart NetworkManager
 # or script's rollback: restores original profile + default route
 ```
 
-See: `[[Activating Network and Setting it to Autostart]]`, `20_networking_nmcli.py` (`provision_bridge`/`provision_nat`/`host_owns_nat_subnet`).
+See: [[Activating Network and Setting it to Autostart]], `20_networking_nmcli.py` (`provision_bridge`/`provision_nat`/`host_owns_nat_subnet`).

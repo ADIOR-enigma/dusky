@@ -197,4 +197,4 @@ Arch stock: no firewall enabled — check `sshd` + network mode instead.
 | `default` missing | `virsh net-list --all`; `net-start`; `net-define /usr/share/libvirt/networks/default.xml` |
 | Bridge-on-Wi-Fi broken | use NAT (`default`) |
 
-See: `[[gnome-boxes]]` (Boxes scope+clipboard), `[[+ MOC KVM]]` (state not `/tmp`), `20_networking_nmcli.py`.
+See: [[gnome-boxes]] (Boxes scope+clipboard), [[+ MOC KVM]] (state not `/tmp`), `20_networking_nmcli.py`.

@@ -12,7 +12,7 @@ aliases:
 # Virtual NIC — Virtio Model (Windows)
 
 > [!tip] Merged — canonical source
-> **Shared `virtio` NIC + NAT/br0 chooser lives in `[[KVM Setup/VM Creation/04 Network — Virtio NIC (NAT vs Bridge)]]`.** Follow that note for **Device model `virtio`**, **Network source `Virtual network default : NAT`** vs **`Bridge device br0`** vs **`Macvtap`**, CLI `--network network=default,model=virtio`, firewall `nftables`/`UFW`, and topology table. This stub keeps **only Windows NetKVM driver** delta.
+> **Shared `virtio` NIC + NAT/br0 chooser lives in [[KVM Setup/VM Creation/04 Network — Virtio NIC (NAT vs Bridge)]].** Follow that note for **Device model `virtio`**, **Network source `Virtual network default : NAT`** vs **`Bridge device br0`** vs **`Macvtap`**, CLI `--network network=default,model=virtio`, firewall `nftables`/`UFW`, and topology table. This stub keeps **only Windows NetKVM driver** delta.
 
 ## Windows delta
 
@@ -31,4 +31,4 @@ aliases:
 
 CLI reminder (both OSes): `virsh -c qemu:///system domifaddr win11 --source lease` vs `--source agent` (once QEMU Guest Agent present).
 
-See: canonical `[[KVM Setup/VM Creation/04 Network — Virtio NIC (NAT vs Bridge)]]`, `[[Activating Network and Setting it to Autostart]]`, `[[Network Bridging for LAN access]]`, `[[Mount the VirtIO-Win ISO Image]]`, `[[Install a Windows Virtual Machine on KVM]]` (§2 NetKVM).
+See: canonical [[KVM Setup/VM Creation/04 Network — Virtio NIC (NAT vs Bridge)]], [[Activating Network and Setting it to Autostart]], [[Network Bridging for LAN access]], [[Mount the VirtIO-Win ISO Image]], [[Install a Windows Virtual Machine on KVM]] (§2 NetKVM).

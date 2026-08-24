@@ -59,4 +59,4 @@ Replace per vendor:
 > [!note] If toggle stays gray
 > Re-check `msinfo32` → **Virtualization-based security** should be `Running` and `Kernel DMA Protection`. If `Off`, re-edit `<cpu>` above and ensure no duplicate `<cpu>` entries (duplicate kills the second `feature`; `10_virt_modular_daemon:enforce_kv_config` collapses duplicates — `virsh define` does similarly).
 
-See: `[[+ MOC Windows Installation Through Virt Manager]]`, `30_kvm_vm_deploy.py` (no VBS by default).
+See: [[+ MOC Windows Installation Through Virt Manager]], `30_kvm_vm_deploy.py` (no VBS by default).

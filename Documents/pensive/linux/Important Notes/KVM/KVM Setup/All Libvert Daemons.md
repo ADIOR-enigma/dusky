@@ -84,4 +84,4 @@ systemctl is-active virtqemud.service # inactive (dead) = correct (socket-activa
 
 New distributions already use modular even though upgrades preserve prior mode.
 
-See: `[[libvert Modular daemon enable]]` (hands-on), `[[KVM Services]]` (legacy).
+See: [[libvert Modular daemon enable]] (hands-on), [[KVM Services]] (legacy).

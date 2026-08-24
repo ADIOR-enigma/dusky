@@ -178,5 +178,5 @@ scripts/vfio-group.sh 13
 
 ## Related snippets
 
-- **TuneD vs TLP**, **ACLs**, **VT-x** in `[[+ MOC KVM]]`
-- Networking helper: `[[setting up networking macos]]`
+- **TuneD vs TLP**, **ACLs**, **VT-x** in [[+ MOC KVM]]
+- Networking helper: [[setting up networking macos]]

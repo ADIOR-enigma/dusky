@@ -82,7 +82,7 @@ qemu-system-x86_64 --version  # ≥11.1
 
 ## Next
 
-- `[[KVM Group Add]]` + `[[Give the User System-Wide Permission]]` → groups + `LIBVIRT_DEFAULT_URI`
+- [[KVM Group Add]] + [[Give the User System-Wide Permission]] → groups + `LIBVIRT_DEFAULT_URI`
 - `07_storage_setup.py` — ACLs, `qemu.conf` `root:root` note
 
-See also: `05_virtio_iso.py`, `[[KVM Services]]` (legacy monolith doc retained as warning).
+See also: `05_virtio_iso.py`, [[KVM Services]] (legacy monolith doc retained as warning).

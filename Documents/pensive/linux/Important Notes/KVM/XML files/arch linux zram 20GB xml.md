@@ -10,7 +10,7 @@ tags:
 # Reference XML — Arch Linux (Ephemeral, 6 GiB)
 
 > [!danger] Ephemeral — contents die on reboot
-> Image at **`/mnt/zram1/archlinux.qcow2`** (RAM-backed per `[[Symbolic link to zram for image file]]`). For persistent Arch use `/var/lib/libvirt/images`. This XML is a throwaway-lab example (Arch rolling).
+> Image at **`/mnt/zram1/archlinux.qcow2`** (RAM-backed per [[Symbolic link to zram for image file]]). For persistent Arch use `/var/lib/libvirt/images`. This XML is a throwaway-lab example (Arch rolling).
 
 ```xml
 <domain type="kvm">

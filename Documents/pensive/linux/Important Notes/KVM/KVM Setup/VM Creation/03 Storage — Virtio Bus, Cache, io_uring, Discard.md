@@ -26,7 +26,7 @@ aliases:
 
 ### Step 1 — Select disk
 
-VM details (lightbulb) → **SATA Disk 1** (the volume you created in `[[KVM Setup/VM Creation/01 Wizard — Create VM|01 Wizard]]`)
+VM details (lightbulb) → **SATA Disk 1** (the volume you created in [[KVM Setup/VM Creation/01 Wizard — Create VM|01 Wizard]])
 
 ### Step 2 — Disk bus
 
@@ -54,7 +54,7 @@ Pipeline CLI equivalent (both OSes):
 ```
 
 > [!info] Windows route — driver load
-> Bus `virtio` is chosen **before first boot**, but Windows has no in-kernel virtio. At install the drive list will be **empty** until you load `viostor` from the 2nd CDROM (`virtio-win.iso`): **Load driver → Browse → `E:\viostor\w11\amd64` → Red Hat VirtIO SCSI controller** (see `[[Install a Windows Virtual Machine on KVM]]` §1). Without this, `virtio` disk stays invisible. Keep `virtio-win.iso` attached as SATA CDROM (`[[Mount the VirtIO-Win ISO Image]]`).
+> Bus `virtio` is chosen **before first boot**, but Windows has no in-kernel virtio. At install the drive list will be **empty** until you load `viostor` from the 2nd CDROM (`virtio-win.iso`): **Load driver → Browse → `E:\viostor\w11\amd64` → Red Hat VirtIO SCSI controller** (see [[Install a Windows Virtual Machine on KVM]] §1). Without this, `virtio` disk stays invisible. Keep `virtio-win.iso` attached as SATA CDROM ([[Mount the VirtIO-Win ISO Image]]).
 
 > [!info] Linux route — no driver load
 > Arch / Fedora / Ubuntu kernels ship `virtio_blk` + `virtio_pci` built-in. No extra ISO, no “Load driver” step — disk appears immediately. After install, verify `lsblk` shows `vda` (virtio) not `sda`.
@@ -82,11 +82,11 @@ Pipeline CLI equivalent (both OSes):
 
 ### Step 5 — Format
 
-- For file images: `qcow2` (snapshots) vs `raw` (no block-translation). Passing raw physical NVMe via VFIO skips virtio entirely — peak but no migration/snapshots (see `[[Host PC  Preparation for GPU isolation]]`).
+- For file images: `qcow2` (snapshots) vs `raw` (no block-translation). Passing raw physical NVMe via VFIO skips virtio entirely — peak but no migration/snapshots (see [[Host PC  Preparation for GPU isolation]]).
 
 ### Step 6 — Apply
 
-**Apply** → next: `[[KVM Setup/VM Creation/04 Network — Virtio NIC (NAT vs Bridge)]]`.
+**Apply** → next: [[KVM Setup/VM Creation/04 Network — Virtio NIC (NAT vs Bridge)]].
 
 ## Verify
 
@@ -97,4 +97,4 @@ virsh -c qemu:///system dumpxml archlinux | grep -A2 "<driver name='qemu'"
 qemu-img info /var/lib/libvirt/images/win11.qcow2 | grep -E 'virtual size|cluster_size'
 ```
 
-See: `[[KVM Setup/VM Creation/00 Index — VM Creation (Unified)]]`, `[[Mount the VirtIO-Win ISO Image]]` (Windows ISO attach), `[[Install a Windows Virtual Machine on KVM]]` (viostor load), `[[Resize aka extend storage after os is already installed]]` (grow), `30_kvm_vm_deploy.py:provision_disk`.
+See: [[KVM Setup/VM Creation/00 Index — VM Creation (Unified)]], [[Mount the VirtIO-Win ISO Image]] (Windows ISO attach), [[Install a Windows Virtual Machine on KVM]] (viostor load), [[Resize aka extend storage after os is already installed]] (grow), `30_kvm_vm_deploy.py:provision_disk`.

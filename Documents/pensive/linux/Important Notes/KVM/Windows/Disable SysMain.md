@@ -24,4 +24,4 @@ Verify: `services.msc` shows `SysMain` — `Disabled` / `Stopped`.
 
 > [!success] Done — persists across reboot.
 
-See: `[[Optimize Windows Performance]]` hub, `[[Disable Unnecessary Scheduled Tasks]]`.
+See: [[Optimize Windows Performance]] hub, [[Disable Unnecessary Scheduled Tasks]].

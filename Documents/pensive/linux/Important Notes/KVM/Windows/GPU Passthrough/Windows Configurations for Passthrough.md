@@ -11,7 +11,7 @@ tags:
 # Windows Guest — Passthrough Stack
 
 > [!tip] Workflow
-> Do this **inside the Windows VM** after you have a functional NAT or `br0` (`[[Network Bridging for LAN access]]`). SPICE viewer works until VDD/LG takes over.
+> Do this **inside the Windows VM** after you have a functional NAT or `br0` ([[Network Bridging for LAN access]]). SPICE viewer works until VDD/LG takes over.
 
 ## 1. Visual C++ Redistributable
 
@@ -95,4 +95,4 @@ New-ItemProperty -Path "HKLM:\SOFTWARE\OpenSSH" -Name "DefaultShell" -Value "C:\
 - **VirtIO-FS Service** appears only after `virtio-win-guest-tools` installed.
 - **Cursor vanishing** after `vioinput` → Device Manager → uninstall mouse → reinstall while viewing via Looking Glass (or uninstall `vioinput` via x64 pkg then re-add).
 
-Next: `[[Looking Glass]]` (host `$XDG` sharing `/dev/shm/looking-glass` wire-up).
+Next: [[Looking Glass]] (host `$XDG` sharing `/dev/shm/looking-glass` wire-up).

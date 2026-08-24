@@ -12,7 +12,7 @@ aliases:
 # Permissions — Historical (Pre-Modular) — Archived
 
 > [!warning] Legacy — retained as archive, not guidance
-> This file is the *old* model before `10_virt_modular_daemon.py` and systemd socket activation. Kept so diffs against current note stay visible. **Do not follow these steps on Aug 2026 Arch.** Use `[[Give the User System-Wide Permission]]` instead.
+> This file is the *old* model before `10_virt_modular_daemon.py` and systemd socket activation. Kept so diffs against current note stay visible. **Do not follow these steps on Aug 2026 Arch.** Use [[Give the User System-Wide Permission]] instead.
 
 ## What it taught (and why changed)
 
@@ -45,4 +45,4 @@ sudo usermod -aG libvirt "$(id -un)"  # + kvm,input only if your lab needs them
 # log out / reboot, then:  virsh -c qemu:///system version
 ```
 
-See current note: `[[Give the User System-Wide Permission]]`.
+See current note: [[Give the User System-Wide Permission]].

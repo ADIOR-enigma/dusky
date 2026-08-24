@@ -72,4 +72,4 @@ If you get `Permission denied` / `qemu:///session`:
 3. `ls -l /run/libvirt/virtqemud-sock` → `srwxrwx---  root libvirt`
 4. `loginctl user-status $USER | grep -i libvirt` (polkit session)
 
-See: `[[KVM Group Add]]`, `[[libvert Modular daemon enable]]`, `[[Set ACL on the Image Directory]]` (ACLs after group perms).
+See: [[KVM Group Add]], [[libvert Modular daemon enable]], [[Set ACL on the Image Directory]] (ACLs after group perms).

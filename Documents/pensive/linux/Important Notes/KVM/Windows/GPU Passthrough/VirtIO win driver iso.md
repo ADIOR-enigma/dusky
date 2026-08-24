@@ -37,11 +37,11 @@ Mechanism (`05_virtio_iso.py:stage_virtio`): tries AUR → symlink; else symlink
 ## 2. How we use it (preview)
 
 1. VM Details → **Add Hardware → Storage → CDROM** → pick `virtio-win.iso`
-2. Attach as `SATA CDROM` (see `[[Mount the VirtIO-Win ISO Image]]`)
+2. Attach as `SATA CDROM` (see [[Mount the VirtIO-Win ISO Image]])
 3. During Windows Setup → **Load driver → Browse → `E:\viostor\w11\amd64` → *Red Hat VirtIO SCSI controller***
 4. Same for `NetKVM` if you need LAN during OOBE
 
 > [!tip] Next
-> `[[+ MOC Windows Installation Through Virt Manager]]` (wizard) or `30_kvm_vm_deploy.py` (`--disk …device=cdrom,bus=sata,readonly=on`).
+> [[+ MOC Windows Installation Through Virt Manager]] (wizard) or `30_kvm_vm_deploy.py` (`--disk …device=cdrom,bus=sata,readonly=on`).
 
 Verify after install: `Device Manager → Storage controllers` shows **Red Hat VirtIO SCSI pass-through controller** (not “Standard SATA AHCI”).

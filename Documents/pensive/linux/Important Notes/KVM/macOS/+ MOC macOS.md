@@ -67,8 +67,8 @@ sudo setfacl -R -m u:libvirt-qemu:rx /home/$USER/OSX-KVM
 
 ## Post-install
 
-- **Networking:** `[[setting up networking macos]]`
-- **Resolution:** `[[all notes macos]]` → `vmware-svga`, `displayplacer`, OpenCore `config.plist:Resolution`, OVMF menu
-- **iMessage:** `[[all notes macos]]` + <https://dortania.github.io/OpenCore-Post-Install/universal/iservices.html>
+- **Networking:** [[setting up networking macos]]
+- **Resolution:** [[all notes macos]] → `vmware-svga`, `displayplacer`, OpenCore `config.plist:Resolution`, OVMF menu
+- **iMessage:** [[all notes macos]] + <https://dortania.github.io/OpenCore-Post-Install/universal/iservices.html>
 
-See also: `[[all notes macos]]` (GPU/USB passthrough Arch adaptations).
+See also: [[all notes macos]] (GPU/USB passthrough Arch adaptations).

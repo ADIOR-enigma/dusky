@@ -13,7 +13,7 @@ aliases:
 # Storage Performance — Disk Bus / Cache / io_uring (Windows)
 
 > [!tip] Merged — canonical source
-> **Shared bus/cache/io_uring/discard/queues + CLI lives in `[[KVM Setup/VM Creation/03 Storage — Virtio Bus, Cache, io_uring, Discard]]`.** Follow that note for virt-manager **Disk bus → `VirtIO` / `VirtIO SCSI`**, **Cache `none` → `io_uring`/`native` → `unmap`**, and IOThread Virtqueue Mapping (QEMU 9.0+ blk / 10.0+ scsi). This stub keeps **only Windows-specific driver-load** delta.
+> **Shared bus/cache/io_uring/discard/queues + CLI lives in [[KVM Setup/VM Creation/03 Storage — Virtio Bus, Cache, io_uring, Discard]].** Follow that note for virt-manager **Disk bus → `VirtIO` / `VirtIO SCSI`**, **Cache `none` → `io_uring`/`native` → `unmap`**, and IOThread Virtqueue Mapping (QEMU 9.0+ blk / 10.0+ scsi). This stub keeps **only Windows-specific driver-load** delta.
 
 ## Windows delta
 
@@ -27,7 +27,7 @@ aliases:
 
 At **Where do you want to install Windows?** (empty list):
 
-1. **Load driver → Browse → CD Drive (E:)** (`virtio-win.iso` 2nd CDROM from `[[Mount the VirtIO-Win ISO Image]]`)
+1. **Load driver → Browse → CD Drive (E:)** (`virtio-win.iso` 2nd CDROM from [[Mount the VirtIO-Win ISO Image]])
 2. **`viostor → w10` or `w11` → `amd64` → OK**
 3. **Red Hat VirtIO SCSI controller → Next** → drive appears → select → Next
 
@@ -45,4 +45,4 @@ qemu-img info /var/lib/libvirt/images/win11.qcow2 | grep -E 'virtual size|cluste
 # inside Windows: Device Manager → Storage controllers → Red Hat VirtIO SCSI pass-through controller
 ```
 
-See: canonical `[[KVM Setup/VM Creation/03 Storage — Virtio Bus, Cache, io_uring, Discard]]`, `[[Install a Windows Virtual Machine on KVM]]` (§1 `viostor`), `[[Mount the VirtIO-Win ISO Image]]`, `[[Resize aka extend storage after os is already installed]]` (grow).
+See: canonical [[KVM Setup/VM Creation/03 Storage — Virtio Bus, Cache, io_uring, Discard]], [[Install a Windows Virtual Machine on KVM]] (§1 `viostor`), [[Mount the VirtIO-Win ISO Image]], [[Resize aka extend storage after os is already installed]] (grow).

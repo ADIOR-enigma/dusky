@@ -10,7 +10,7 @@ tags:
 # Reference XML — Arch (Intel Virtio-GL Accel, Full)
 
 > [!info] Scope
-> Full domain dump for an Arch guest on Intel iGPU with `virtio`+`virgl` (not VFIO). Mirrors `virt-manager --connect qemu:///system` export then modernized (`ovmf` JSON firmware, `host-passthrough`, `memballoon virtio` retained here as accel labs often keep balloon; passthrough variants use `none`). For passthrough see `[[Host PC  Preparation for GPU isolation]]`.
+> Full domain dump for an Arch guest on Intel iGPU with `virtio`+`virgl` (not VFIO). Mirrors `virt-manager --connect qemu:///system` export then modernized (`ovmf` JSON firmware, `host-passthrough`, `memballoon virtio` retained here as accel labs often keep balloon; passthrough variants use `none`). For passthrough see [[Host PC  Preparation for GPU isolation]].
 
 > [!warning] Original had deep backingStore chain (`vol.177…`) — example below collapses to single `vda` for readability. Your local `vol.*` chain is an artifact of snapshot history; `virsh blockcommit` collapses it if desired.
 
@@ -87,4 +87,4 @@ tags:
 
 Validate: `virt-xml-validate arch.xml && virsh -c qemu:///system define arch.xml`
 
-See sibling: `[[arch linux GPU ACCELERATION intel integrated xml]]` (snippets), `[[+ MOC KVM]]`.
+See sibling: [[arch linux GPU ACCELERATION intel integrated xml]] (snippets), [[+ MOC KVM]].

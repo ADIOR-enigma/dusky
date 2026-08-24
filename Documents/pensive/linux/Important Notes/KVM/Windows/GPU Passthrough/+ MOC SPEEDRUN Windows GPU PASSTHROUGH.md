@@ -9,7 +9,7 @@ tags:
 
 # SPEEDRUN — GPU Passthrough (Condensed, Aug 2026)
 
-> [!warning] Fast lane — no explanations. For learning use `[[+ MOC Windows GPU Passthrough]]` + `[[Host PC  Preparation for GPU isolation]]`. Stateful phases survive reboot via `/var/lib/arsonix/state.json` (not `/tmp`). Shared `Q35/virtio/TPM/CPU` steps deduped — see `[[KVM Setup/VM Creation/00 Index — VM Creation (Unified)]]` for full wizard; this note keeps only host VFIO + socket + shm.
+> [!warning] Fast lane — no explanations. For learning use [[+ MOC Windows GPU Passthrough]] + [[Host PC  Preparation for GPU isolation]]. Stateful phases survive reboot via `/var/lib/arsonix/state.json` (not `/tmp`). Shared `Q35/virtio/TPM/CPU` steps deduped — see [[KVM Setup/VM Creation/00 Index — VM Creation (Unified)]] for full wizard; this note keeps only host VFIO + socket + shm.
 
 ## Prereqs
 
@@ -97,9 +97,9 @@ sudo lsinitcpio /boot/initramfs-linux.img | grep vfio; virt-host-validate
 ## VM (Windows) — canonical one-liner (instead of repeating wizard)
 
 > [!tip] Do not re-document Q35/virtio/CPU here — run:
-> `[[KVM Setup/VM Creation/00 Index — VM Creation (Unified)]]` → `virt-install --osinfo win11 --machine q35 --boot uefi --cpu host-passthrough --disk bus=virtio,cache=none,io=io_uring --network network=default,model=virtio --tpm emulator --features hyperv.*` or follow `[[+ MOC Windows Installation Through Virt Manager]]` (wizard → Q35/OVMF+smm+TPM, storage virtio+viostor, network virtio+NetKVM, CPU host-passthrough+Hyper-V, agent+tablet).
-> For Looking Glass: `[[Looking Glass]]` + `[[KVM Setup/VM Creation/06 Guest Integration — Agent, Clipboard & Input|06]]` (SPICE + `org.qemu.guest_agent.0`) then `[[The RDP method to disable display driver]]` + VDD.
+> [[KVM Setup/VM Creation/00 Index — VM Creation (Unified)]] → `virt-install --osinfo win11 --machine q35 --boot uefi --cpu host-passthrough --disk bus=virtio,cache=none,io=io_uring --network network=default,model=virtio --tpm emulator --features hyperv.*` or follow [[+ MOC Windows Installation Through Virt Manager]] (wizard → Q35/OVMF+smm+TPM, storage virtio+viostor, network virtio+NetKVM, CPU host-passthrough+Hyper-V, agent+tablet).
+> For Looking Glass: [[Looking Glass]] + [[KVM Setup/VM Creation/06 Guest Integration — Agent, Clipboard & Input|06]] (SPICE + `org.qemu.guest_agent.0`) then [[The RDP method to disable display driver]] + VDD.
 
-Networking → `[[Network Bridging for LAN access]]` (Option 2/3) or `[[KVM Setup/VM Creation/04 Network — Virtio NIC (NAT vs Bridge)]]`.
+Networking → [[Network Bridging for LAN access]] (Option 2/3) or [[KVM Setup/VM Creation/04 Network — Virtio NIC (NAT vs Bridge)]].
 
-See: `[[+ MOC Windows GPU Passthrough]]` (full), `[[KVM Setup/VM Creation/00 Index — VM Creation (Unified)]]` (VM creation truth), `[[Host PC  Preparation for GPU isolation]]` (deep VFIO).
+See: [[+ MOC Windows GPU Passthrough]] (full), [[KVM Setup/VM Creation/00 Index — VM Creation (Unified)]] (VM creation truth), [[Host PC  Preparation for GPU isolation]] (deep VFIO).

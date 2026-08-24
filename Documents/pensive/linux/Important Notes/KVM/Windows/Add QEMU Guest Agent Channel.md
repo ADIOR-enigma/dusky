@@ -12,7 +12,7 @@ aliases:
 # QEMU Guest Agent Channel (Windows)
 
 > [!tip] Merged — canonical source
-> **Shared both-channels + 3-part input model lives in `[[KVM Setup/VM Creation/06 Guest Integration — Agent, Clipboard & Input]]`.** This stub keeps **only Windows install** detail inline.
+> **Shared both-channels + 3-part input model lives in [[KVM Setup/VM Creation/06 Guest Integration — Agent, Clipboard & Input]].** This stub keeps **only Windows install** detail inline.
 
 ## Windows install (after canonical Add Hardware)
 
@@ -30,4 +30,4 @@ virsh -c qemu:///system qemu-agent-command win11 '{"execute":"guest-info"}' | py
 virsh -c qemu:///system shutdown win11 --mode agent   # clean > --mode acpi
 ```
 
-See: canonical `[[KVM Setup/VM Creation/06 Guest Integration — Agent, Clipboard & Input]]` (both OSes, Linux `spice-vdagent`/`qemu-guest-agent` via `pacman`), `[[Looking Glass]]`.
+See: canonical [[KVM Setup/VM Creation/06 Guest Integration — Agent, Clipboard & Input]] (both OSes, Linux `spice-vdagent`/`qemu-guest-agent` via `pacman`), [[Looking Glass]].

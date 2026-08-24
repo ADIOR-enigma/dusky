@@ -43,4 +43,4 @@ XML (`virsh dumpxml win11 | grep -A4 '<tpm'`):
 > [!note] Skip condition
 > If your ISO has TPM patched out (custom de-bloated/LTSC), you can omit TPM and set osinfo to `win10` instead — but keep `swtpm` installed for future `win11` guests.
 
-See: `[[Configure Chipset and Firmware]]` (UEFI/SMM), `[[Enable Hyper-V Enlightenments]]`.
+See: [[Configure Chipset and Firmware]] (UEFI/SMM), [[Enable Hyper-V Enlightenments]].

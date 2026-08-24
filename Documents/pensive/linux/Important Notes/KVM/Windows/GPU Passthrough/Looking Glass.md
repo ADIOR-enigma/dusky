@@ -30,7 +30,7 @@ LG Host (capture)                 memory-backend-file SHARE
 
 ## Prereqs
 
-- [ ] VFIO bound (`vfio-pci` per `[[Host PC  Preparation for GPU isolation]]`)
+- [ ] VFIO bound (`vfio-pci` per [[Host PC  Preparation for GPU isolation]])
 - [ ] VM is Windows 10 libvirt (`qemu:///system`)
 - [ ] `kvm` group: `groups | grep kvm`
 - [ ] packages: `sudo pacman -S --needed linux-headers` (+ `dkms` if you ever used `kvmfr`)
@@ -230,4 +230,4 @@ looking-glass-client -f /dev/shm/looking-glass -m KEY_F6
 > ```
 > Replaced by native `<shmem>` (same QEMU args, validated by libvirt, `/dev/shm` managed, no xmlns escape hatch). Pipeline strips this block.
 
-See: `25_looking_glass.py`, `60_configure_client_ini.py`, `[[The RDP method to disable display driver]]`.
+See: `25_looking_glass.py`, `60_configure_client_ini.py`, [[The RDP method to disable display driver]].

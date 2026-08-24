@@ -28,7 +28,7 @@ tags:
 Reboot VM → Task Manager → **Startup apps** shows disabled list; `msconfig` → **Startup** mirrors it.
 
 > [!warning] Don’t disable
-> - `VirtIO-FS Service` / `QEMU Guest Agent` / `spice-agent` — needed for shared folder & clipboard (`[[Setting up Shared Directory Between Guest_win11 and Host]]`, `[[Add QEMU Guest Agent Channel]]`)
+> - `VirtIO-FS Service` / `QEMU Guest Agent` / `spice-agent` — needed for shared folder & clipboard ([[Setting up Shared Directory Between Guest_win11 and Host]], [[Add QEMU Guest Agent Channel]])
 > - `Microsoft Defender` if you rely on built-in AV (on Defender-stripped custom ISOs this service is absent — bonus).
 
-See: `[[Optimize Windows Performance]]`, `[[Disable Unnecessary Scheduled Tasks]]`.
+See: [[Optimize Windows Performance]], [[Disable Unnecessary Scheduled Tasks]].

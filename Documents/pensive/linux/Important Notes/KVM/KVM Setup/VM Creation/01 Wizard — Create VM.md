@@ -17,10 +17,10 @@ aliases:
 
 ## Prerequisites
 
-- Host up: `[[KVM Packages]]` → `[[KVM Loading Kernel Module]]` → `[[KVM Group Add]]` + `[[Give the User System-Wide Permission]]` ( `LIBVIRT_DEFAULT_URI=qemu:///system` )
-- Storage pool declared: `[[Set ACL on the Image Directory]]` / `[[Symbolic link to zram for image file]]` → `07_storage_setup.py` (pool dir + ACL `rwx`/`default:rwx`)
-- Sockets armed: `[[libvert Modular daemon enable]]` → `virtqemud.socket` active, `virt-manager --connect qemu:///system`
-- Enable XML editing: `virt-manager` → **Edit → Preferences → General → ✅ Enable XML editing** (required for Hyper-V/pinning/`<shmem>` later) — see `[[Configure Windows Virtual Hardware]]`
+- Host up: [[KVM Packages]] → [[KVM Loading Kernel Module]] → [[KVM Group Add]] + [[Give the User System-Wide Permission]] ( `LIBVIRT_DEFAULT_URI=qemu:///system` )
+- Storage pool declared: [[Set ACL on the Image Directory]] / [[Symbolic link to zram for image file]] → `07_storage_setup.py` (pool dir + ACL `rwx`/`default:rwx`)
+- Sockets armed: [[libvert Modular daemon enable]] → `virtqemud.socket` active, `virt-manager --connect qemu:///system`
+- Enable XML editing: `virt-manager` → **Edit → Preferences → General → ✅ Enable XML editing** (required for Hyper-V/pinning/`<shmem>` later) — see [[Configure Windows Virtual Hardware]]
 
 ## Step 1 — Source
 
@@ -34,7 +34,7 @@ aliases:
 
 > [!info] Windows route
 > - OS box → type `win11` → pick **Microsoft Windows 11** (`win11` → `http://microsoft.com/win/11`). Drives libosinfo defaults: Q35, OVMF, TPM, Hyper-V enlightenments. For Windows 10 use `win10`. Do **not** hand-type; select the entry.
-> - This choice forces `[[KVM Setup/VM Creation/02 Chipset & Firmware — Q35 + UEFI]]` (`smm=on`) + `[[Enable Trusted Platform Module (TPM)]]` (`tpm-crb` 2.0) automatically in `virt-manager` 4.1+; script `30_*:build_command --osinfo win11` does same.
+> - This choice forces [[KVM Setup/VM Creation/02 Chipset & Firmware — Q35 + UEFI]] (`smm=on`) + [[Enable Trusted Platform Module (TPM)]] (`tpm-crb` 2.0) automatically in `virt-manager` 4.1+; script `30_*:build_command --osinfo win11` does same.
 
 > [!info] Linux route
 > - OS box → type `archlinux` → **Arch Linux** (`http://archlinux.org/archlinux/rolling`) or `linux2024` / `fedora40` / `ubuntu24.04` as appropriate. Linux osinfo **does not** add TPM/Hyper-V; no `smm` requirement, no Secure Boot need (optional). Virtio drivers are **in-kernel** — no 2nd ISO needed.
@@ -65,16 +65,16 @@ aliases:
 4. **Choose Volume → Forward**
 
 > [!info] Ephemeral (`/mnt/zram1`) warning
-> If your pool is RAM-backed (`zram` / `tmpfs` per `[[Symbolic link to zram for image file]]`), contents **vanish on reboot**. Use only for throwaway labs; otherwise keep persistent `/var/lib/libvirt/images`. Pipeline `07_*` warns if you mix volatile/persistent.
+> If your pool is RAM-backed (`zram` / `tmpfs` per [[Symbolic link to zram for image file]]), contents **vanish on reboot**. Use only for throwaway labs; otherwise keep persistent `/var/lib/libvirt/images`. Pipeline `07_*` warns if you mix volatile/persistent.
 
 ## Step 5 — Finalize
 
 1. **Name:** e.g. `win11` / `archlinux` (`^[A-Za-z0-9._+-]{1,50}$` — libvirt name)
-2. **✅ Customize configuration before install** ← **must tick** (so you land in hardware detail view for `[[KVM Setup/VM Creation/02 Chipset & Firmware — Q35 + UEFI|02 Chipset]]` → `[[KVM Setup/VM Creation/03 Storage — Virtio Bus, Cache, io_uring, Discard|03 Storage]]` → `[[KVM Setup/VM Creation/04 Network — Virtio NIC (NAT vs Bridge)|04 Network]]` → `[[KVM Setup/VM Creation/05 CPU — Host-Passthrough & Topology|05 CPU]]` **before first boot**)
+2. **✅ Customize configuration before install** ← **must tick** (so you land in hardware detail view for [[KVM Setup/VM Creation/02 Chipset & Firmware — Q35 + UEFI|02 Chipset]] → [[KVM Setup/VM Creation/03 Storage — Virtio Bus, Cache, io_uring, Discard|03 Storage]] → [[KVM Setup/VM Creation/04 Network — Virtio NIC (NAT vs Bridge)|04 Network]] → [[KVM Setup/VM Creation/05 CPU — Host-Passthrough & Topology|05 CPU]] **before first boot**)
 → **Finish** → lands in **Show virtual hardware details** (lightbulb).
 
 > [!tip] Windows extra disk (VirtIO)
-> Windows needs a 2nd CDROM for `virtio-win.iso` **before first boot** (else no `viostor`/`NetKVM`). After Finish → **Add Hardware → Storage → CDROM → `virtio-win.iso`** (see `[[Mount the VirtIO-Win ISO Image]]`). Linux **skip** — drivers in-kernel.
+> Windows needs a 2nd CDROM for `virtio-win.iso` **before first boot** (else no `viostor`/`NetKVM`). After Finish → **Add Hardware → Storage → CDROM → `virtio-win.iso`** (see [[Mount the VirtIO-Win ISO Image]]). Linux **skip** — drivers in-kernel.
 
 ## Screenshots (retained files)
 
@@ -86,11 +86,11 @@ If images fail to render in reading view, they remain in `Windows/` as archival 
 
 ## Next
 
-- `[[KVM Setup/VM Creation/02 Chipset & Firmware — Q35 + UEFI]]` (Q35 → OVMF)
-- `[[KVM Setup/VM Creation/03 Storage — Virtio Bus, Cache, io_uring, Discard]]` (bus/cache/queues)
-- `[[KVM Setup/VM Creation/04 Network — Virtio NIC (NAT vs Bridge)]]` (virtio + NAT/br0)
-- `[[KVM Setup/VM Creation/05 CPU — Host-Passthrough & Topology]]` (host-passthrough)
-- Then OS install: `[[Install a Windows Virtual Machine on KVM]]` (Windows `viostor`/`NetKVM`) or boot Arch ISO directly.
+- [[KVM Setup/VM Creation/02 Chipset & Firmware — Q35 + UEFI]] (Q35 → OVMF)
+- [[KVM Setup/VM Creation/03 Storage — Virtio Bus, Cache, io_uring, Discard]] (bus/cache/queues)
+- [[KVM Setup/VM Creation/04 Network — Virtio NIC (NAT vs Bridge)]] (virtio + NAT/br0)
+- [[KVM Setup/VM Creation/05 CPU — Host-Passthrough & Topology]] (host-passthrough)
+- Then OS install: [[Install a Windows Virtual Machine on KVM]] (Windows `viostor`/`NetKVM`) or boot Arch ISO directly.
 
 ## CLI mirror (same result, scripted)
 
@@ -109,4 +109,4 @@ virt-install --connect qemu:///system --name archlinux --memory 4096 --vcpus 4 \
   --disk path=/var/lib/libvirt/images/archlinux.iso,device=cdrom,bus=sata,readonly=on
 ```
 
-See: `30_kvm_vm_deploy.py`, `[[KVM Setup/VM Creation/00 Index — VM Creation (Unified)]]`.
+See: `30_kvm_vm_deploy.py`, [[KVM Setup/VM Creation/00 Index — VM Creation (Unified)]].

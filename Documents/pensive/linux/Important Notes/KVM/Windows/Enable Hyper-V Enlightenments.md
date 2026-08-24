@@ -11,7 +11,7 @@ tags:
 # Hyper-V Enlightenments — Fast Path
 
 > [!info] Context
-> KVM emulates Hyper-V enlightenments so Windows behaves as if on Hyper-V — huge win for clocks, IPIs, TLB. `30_kvm_vm_deploy.py:HYPERV` lists the canonical 10: `relaxed,vapic,spinlocks,vpindex,synic,stimer,frequencies,reenlightenment,tlbflush,ipi`. This note is the **pinning + enlightenment + clock** preset (12700H-tuned in the old revision; generic below). See `[[Hyper-V Enlightenments]]` (upstream docs) + `[[Hypervisor Features]]` for full semantics.
+> KVM emulates Hyper-V enlightenments so Windows behaves as if on Hyper-V — huge win for clocks, IPIs, TLB. `30_kvm_vm_deploy.py:HYPERV` lists the canonical 10: `relaxed,vapic,spinlocks,vpindex,synic,stimer,frequencies,reenlightenment,tlbflush,ipi`. This note is the **pinning + enlightenment + clock** preset (12700H-tuned in the old revision; generic below). See [[Hyper-V Enlightenments]] (upstream docs) + [[Hypervisor Features]] for full semantics.
 
 ## Preset — paste-safe XML (integrated)
 
@@ -130,6 +130,6 @@ Generate yours: `/home/dusk/user_scripts/dusky_vm/passthrough/35_cpu_pinning_gen
 </hyperv></features>
 ```
 
-→ **Apply**. Next: `[[Configure the Storage]]` / `[[Looking Glass]]` (if VFIO).
+→ **Apply**. Next: [[Configure the Storage]] / [[Looking Glass]] (if VFIO).
 
 See: `30_kvm_vm_deploy.py`, `35_cpu_pinning_generator.py`.

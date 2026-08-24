@@ -21,7 +21,7 @@ tags:
 *This file is intentionally **comprehensive** (670-line original retained in structure) — it is already Aug 2026-current for Boxes.*
 
 > [!abstract] Canonical location
-> Native **Arch** `gnome-boxes` package (not Flatpak). For host-level KVM/libvirt pass-through, see `[[+ MOC KVM]]` (`qemu:///system`).
+> Native **Arch** `gnome-boxes` package (not Flatpak). For host-level KVM/libvirt pass-through, see [[+ MOC KVM]] (`qemu:///system`).
 
 ## Scope
 
@@ -199,4 +199,4 @@ journalctl --user -b --grep='spice-vdagent|wl-paste|xclip'
 
 Checklist: scope visible? `grep -A2 "<graphics type='spice'"`? `grep -A3 "com.redhat.spice.0"`? `systemctl status spice-vdagentd`? `pgrep spice-vdagent`? `pgrep Xwayland`? SPICE viewer attached?
 
-See: `[[SSHing into vm]]` (NAT vs user-mode), `[[linux]]` (guest agents).
+See: [[SSHing into vm]] (NAT vs user-mode), [[linux]] (guest agents).

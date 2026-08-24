@@ -35,4 +35,4 @@ Restart-Computer
 
 If stutter persists, verify `35_cpu_pinning_generator.py` pinning and that host `tuned` isn’t in `balanced` vs `virtual-host`.
 
-See: `[[Enable Hyper-V Enlightenments]]`, `[[Optimize Windows Performance]]`.
+See: [[Enable Hyper-V Enlightenments]], [[Optimize Windows Performance]].

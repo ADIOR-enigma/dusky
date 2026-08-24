@@ -11,7 +11,7 @@ aliases:
 
 # dGPU Passthrough — Quick Cheat Sheet
 
-> [!warning] This is a *condensed* cheat sheet. The canonical, audited guide is `[[Host PC  Preparation for GPU isolation]]` (Phase 1–7) + `15_gpu_probing_kernal_param_mkinit.py`. Use this only for recall after you understand the full flow.
+> [!warning] This is a *condensed* cheat sheet. The canonical, audited guide is [[Host PC  Preparation for GPU isolation]] (Phase 1–7) + `15_gpu_probing_kernal_param_mkinit.py`. Use this only for recall after you understand the full flow.
 
 ## 1. Identify IDs (sysfs is truth, not scraped text)
 
@@ -72,8 +72,8 @@ sudo dmesg | grep -i vfio
 ```
 
 > [!tip] Cross-refs
-> - Full IOMMU/ACS/ID-collision audits: `[[Host PC  Preparation for GPU isolation]]:§1.2`
+> - Full IOMMU/ACS/ID-collision audits: [[Host PC  Preparation for GPU isolation]]`:§1.2`
 > - Slot = all functions (VGA+audio+xHCI+UCSI): `15_*:enumerate_pci`
 > - Revert: delete `arsonix-vfio.conf`, remove `vfio-pci.ids`/`module_blacklist`, `mkinitcpio -P` — see Host Preparation Appendix.
 
-See also: `[[Grub Kernal Parameters]]` (legacy GRUB warning), `[[Verify VT-x and Kernel Modules and IOMMU]]`.
+See also: [[Grub Kernal Parameters]] (legacy GRUB warning), [[Verify VT-x and Kernel Modules and IOMMU]].

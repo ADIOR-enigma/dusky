@@ -88,4 +88,4 @@ sudo tuned-adm profile balanced
 sudo pacman -Rns tuned; sudo systemctl enable --now tlp
 ```
 
-Related: `[[+ MOC KVM]]`, `[[KVM Services]]` — tuning complements modular idle savings.
+Related: [[+ MOC KVM]], [[KVM Services]] — tuning complements modular idle savings.

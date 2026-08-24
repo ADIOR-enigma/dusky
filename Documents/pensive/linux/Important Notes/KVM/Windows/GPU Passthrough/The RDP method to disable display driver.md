@@ -10,12 +10,12 @@ tags:
 # RDP Rescue — Disable Emulated Display Adapter
 
 > [!abstract] Goal
-> Safely hand off rendering from `QXL`/`Microsoft Basic` (emulated) to pass-through NVIDIA via RDP, keeping a live session after the emulated adapter goes dark (`[[Looking Glass]]` Phase 3.2). Canonical automation: `55_rdp.py` (+ `50_win.py` dispatch).
+> Safely hand off rendering from `QXL`/`Microsoft Basic` (emulated) to pass-through NVIDIA via RDP, keeping a live session after the emulated adapter goes dark ([[Looking Glass]] Phase 3.2). Canonical automation: `55_rdp.py` (+ `50_win.py` dispatch).
 
 ## Prereqs
 
-- [ ] Custom ISOs: confirm RDP **not** ripped out (your Win10 lite had RDP removed — use Win11 or non-stripped image for this path; else use virt-manager method in `[[Looking Glass_old]]`)
-- [ ] Network virtio: `[[Configure Virtual Network Interface]]` → `virtio` + **Option 1/3** bridge/NAT per `[[Network Bridging for LAN access]]`
+- [ ] Custom ISOs: confirm RDP **not** ripped out (your Win10 lite had RDP removed — use Win11 or non-stripped image for this path; else use virt-manager method in [[Looking Glass_old]])
+- [ ] Network virtio: [[Configure Virtual Network Interface]] → `virtio` + **Option 1/3** bridge/NAT per [[Network Bridging for LAN access]]
 - [ ] IP known, user with password, RDP enabled, network **Private**
 
 ### 1. IP
@@ -74,9 +74,9 @@ xfreerdp3 /v:192.168.122.9 /u:dusky /cert:ignore /dynamic-resolution
 1. `devmgmt.msc` → **Display adapters**
 2. Right-click **Microsoft Basic Display Adapter** / **Red Hat QXL controller** → **Disable device → Yes**
    Windows loses emulated output → scans next GPU → **NVIDIA** wakes; RDP stays (independent RDP channel)
-3. Continue in `[[Looking Glass]]` Phase 3.7 (VDD virtual monitor, `looking-glass-host` capture)
+3. Continue in [[Looking Glass]] Phase 3.7 (VDD virtual monitor, `looking-glass-host` capture)
 
 > [!tip] Troubleshoot
 > `55_rdp.py:print_rdp_troubleshooting` checks WARP/VPN/UFW (host) and gives one-click PowerShell to: `fDenyTSConnections=0`, `UserAuthentication=0`, `LimitBlankPasswordUse=0`, `NetworkCategory Private`, `Enable-NetFirewallRule -DisplayGroup "Remote Desktop"`. Also verifies `xfreerdp3` binary (`freerdp` pkg).
 
-See: `55_rdp.py`, `50_win.py` (`rdp`/`launch` actions, SPICE wait), `[[Looking Glass]]`.
+See: `55_rdp.py`, `50_win.py` (`rdp`/`launch` actions, SPICE wait), [[Looking Glass]].

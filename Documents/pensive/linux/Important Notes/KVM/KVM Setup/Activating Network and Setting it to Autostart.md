@@ -12,7 +12,7 @@ tags:
 # KVM Default Network — Provision & Autostart
 
 > [!info] NAT mental model
-> Like a home router: VMs **outbound** full internet via host NAT; **inbound** from LAN not visible. For LAN-visible hosting use `[[Network Bridging for LAN access]]` (Option 3 `br0`). Canonical: `20_networking_nmcli.py`.
+> Like a home router: VMs **outbound** full internet via host NAT; **inbound** from LAN not visible. For LAN-visible hosting use [[Network Bridging for LAN access]] (Option 3 `br0`). Canonical: `20_networking_nmcli.py`.
 
 ## 1. Diagnose
 
@@ -92,4 +92,4 @@ virsh -c qemu:///system net-dhcp-leases default
 > [!tip] NAT subnet collision
 > `20_*.py:host_owns_nat_subnet` warns if `192.168.122.0/24` already routed via another device — guest DHCP will black-hole. Move NAT CIDR or disable conflicting docker/lxd route.
 
-See: `[[Network Bridging for LAN access]]`, `20_networking_nmcli.py`.
+See: [[Network Bridging for LAN access]], `20_networking_nmcli.py`.

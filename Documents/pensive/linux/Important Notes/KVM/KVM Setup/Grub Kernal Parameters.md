@@ -59,4 +59,4 @@ ls -l /boot/loader/entries/ /etc/kernel/ /etc/cmdline.d/
 > - `vfio-pci.ids=` on the GRUB line alone loses the race on early-modeset; `modprobe.d` + `modconf` before `kms` is the reliable claim.
 > Keep GRUB instructions only for hosts actually running GRUB; otherwise follow this note.
 
-See: `[[KVM Prepare dGPU passthrough]]`, `[[Host PC  Preparation for GPU isolation]]`, `15_gpu_probing_kernal_param_mkinit.py`.
+See: [[KVM Prepare dGPU passthrough]], [[Host PC  Preparation for GPU isolation]], `15_gpu_probing_kernal_param_mkinit.py`.

@@ -78,4 +78,4 @@ touch "$TARGET"/test_file && ls -l "$TARGET"/test_file && rm "$TARGET"/test_file
 
 State record: `qemu_user`/`qemu_group` + `storage_dir` in `/var/lib/arsonix/state.json`.
 
-See: `[[Symbolic link to zram for image file]]`, `07_storage_setup.py`.
+See: [[Symbolic link to zram for image file]], `07_storage_setup.py`.

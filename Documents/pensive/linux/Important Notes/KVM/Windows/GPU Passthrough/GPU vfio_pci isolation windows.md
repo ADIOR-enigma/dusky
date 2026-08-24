@@ -8,7 +8,7 @@ tags:
 
 # GPU `vfio-pci` Isolation — Compact Recipe
 
-> [!info] This is the short form. Canonical deep dive: `[[Host PC  Preparation for GPU isolation]]` (Phases 1–7) + `15_gpu_probing_kernal_param_mkinit.py`.
+> [!info] This is the short form. Canonical deep dive: [[Host PC  Preparation for GPU isolation]] (Phases 1–7) + `15_gpu_probing_kernal_param_mkinit.py`.
 
 ## Identify
 
@@ -27,7 +27,7 @@ intel_iommu=on iommu=pt vfio-pci.ids=10de:25a0,10de:2291 module_blacklist=nvidia
 # AMD: omit vfio-pci.ids here; rely on modprobe.d (below)
 ```
 
-> [!warning] Legacy GRUB kept as collapsed context in `[[Grub Kernal Parameters]]`; host actually boots systemd-boot BLS. `vfio-pci.ids=` on cmdline alone is racy — `modprobe.d` baked into initramfs is authoritative.
+> [!warning] Legacy GRUB kept as collapsed context in [[Grub Kernal Parameters]]; host actually boots systemd-boot BLS. `vfio-pci.ids=` on cmdline alone is racy — `modprobe.d` baked into initramfs is authoritative.
 
 ## mkinitcpio
 
@@ -76,4 +76,4 @@ sudo virsh -c qemu:///system net-start default && sudo virsh -c qemu:///system n
 ```
 
 > [!tip] Use `qemu:///system` always for passthrough. `qemu:///session` cannot do `hostdev` PCIe.
-> Post-isolation next: `[[Windows Configurations for Passthrough]]` → `[[Looking Glass]]`.
+> Post-isolation next: [[Windows Configurations for Passthrough]] → [[Looking Glass]].

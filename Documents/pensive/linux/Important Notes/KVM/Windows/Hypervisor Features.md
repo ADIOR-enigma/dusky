@@ -53,6 +53,6 @@ tags:
 `relaxed` (timer slack), `vapic` (VP assist), `spinlocks` (retries ≥4095), `vpindex`, `runtime` (stolen), `synic`/`stimer`/`direct`, `reset`, `vendor_id` (≤12 chars), `frequencies`, `reenlightenment` (needs `frequencies`, TSC scaling), `tlbflush`/`direct`/`extended`, `ipi`, `evmcs` (Intel nested), `avic` (APICv/AVIC), `no-nonarch-coresharing`, `version-id-*`, `syndbg`, `emsr_bitmap`, `xmm_input`.
 
 > [!tip] Recommended baseline for Windows (this vault)
-> `relaxed,vapic,spinlocks=8191,vpindex,runtime,synic,stimer+direct,reset,vendor_id=Microsoft Hv,frequencies,reenlightenment,tlbflush,ipi,evmcs` plus `kvm.hidden=on`, `vmport=off`, `ioapic=kvm`, `smm=on`. See `[[Enable Hyper-V Enlightenments]]` and `[[Hyper-V Enlightenments]]` for rationale and upstream “do not enable” list (`syndbg`, `passthrough`, `enforce-cpuid`).
+> `relaxed,vapic,spinlocks=8191,vpindex,runtime,synic,stimer+direct,reset,vendor_id=Microsoft Hv,frequencies,reenlightenment,tlbflush,ipi,evmcs` plus `kvm.hidden=on`, `vmport=off`, `ioapic=kvm`, `smm=on`. See [[Enable Hyper-V Enlightenments]] and [[Hyper-V Enlightenments]] for rationale and upstream “do not enable” list (`syndbg`, `passthrough`, `enforce-cpuid`).
 
 Use `virsh domcapabilities | grep -A2 '<feature'` to verify host exposure before enabling.

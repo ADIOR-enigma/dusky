@@ -46,4 +46,4 @@ virtlogd.socket / virtlockd.socket
 
 If `virtqemud.socket` is `masked` or `not-found`, you are on a legacy `libvirtd`-only build — `pacman -Syu` (libvirt 12.6+ ships modular). The pipeline bails with *“No virt*d.socket units found”* in that case (`10_virt_modular_daemon.py:discover_fleet`).
 
-See: `[[libvert Modular daemon enable]]`, `[[All Libvert Daemons]]`.
+See: [[libvert Modular daemon enable]], [[All Libvert Daemons]].

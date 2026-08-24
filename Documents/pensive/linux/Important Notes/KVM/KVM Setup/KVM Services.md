@@ -10,7 +10,7 @@ tags:
 # KVM Services — Legacy Monolith
 
 > [!warning] Legacy — do **not** use on Aug 2026 Arch
-> This note documents the *old* monolithic `libvirtd.service` path. Modern Arch (libvirt 12.6+, systemd 261+) uses **modular, socket-activated** daemons. Keep this note only as historical context; the replacement is `[[libvert Modular daemon enable]]` (`10_virt_modular_daemon.py`).
+> This note documents the *old* monolithic `libvirtd.service` path. Modern Arch (libvirt 12.6+, systemd 261+) uses **modular, socket-activated** daemons. Keep this note only as historical context; the replacement is [[libvert Modular daemon enable]] (`10_virt_modular_daemon.py`).
 
 ## What the monolith did (and why it was replaced)
 
@@ -58,4 +58,4 @@ virsh -c qemu:///system version      # waking test; then auto-idles
 > [!info] Why `virtqemud.conf` permissions are inert
 > Quoting `libvirtd.conf` verbatim: *“This setting is not required or honoured if using systemd socket activation.”* `unix_sock_group`/`unix_sock_rw_perms` are **ignored** when a `.socket` unit is listening. Socket owner/group/mode come from `[Socket] SocketGroup=`/`SocketMode=` in `/etc/systemd/system/virtqemud.socket.d/10-arsonix.conf` (`10_virt_modular_daemon.py:DROPIN_RW`).
 
-See: `[[libvert Modular daemon enable]]`, `[[All Libvert Daemons]]`, `[[check libvert modular daemon availability]]`.
+See: [[libvert Modular daemon enable]], [[All Libvert Daemons]], [[check libvert modular daemon availability]].

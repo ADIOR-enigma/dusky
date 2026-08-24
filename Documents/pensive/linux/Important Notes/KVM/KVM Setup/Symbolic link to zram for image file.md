@@ -86,4 +86,4 @@ virsh pool-dumpxml arsonix-images | grep -A2 '<target>'
 
 Otherwise: **keep persistent** and use `qcow2` `lazy_refcounts` / `cluster_size=64k` (see `30_kvm_vm_deploy.py:provision_disk`).
 
-See: `[[Set ACL on the Image Directory]]` (ACL deep dive), `07_storage_setup.py`.
+See: [[Set ACL on the Image Directory]] (ACL deep dive), `07_storage_setup.py`.

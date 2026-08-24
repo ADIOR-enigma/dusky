@@ -10,7 +10,7 @@ tags:
 # GNOME Boxes — Windows Guest (SPICE Tools)
 
 > [!info] Scope
-> Boxes `qemu:///session` Windows VM — SPICE for display + clipboard (no VFIO here). For `qemu:///system` Windows + passthrough see `[[+ MOC Windows GPU Passthrough]]`.
+> Boxes `qemu:///session` Windows VM — SPICE for display + clipboard (no VFIO here). For `qemu:///system` Windows + passthrough see [[+ MOC Windows GPU Passthrough]].
 
 ## spice-guest-tools (display, agent, qxl)
 
@@ -33,6 +33,6 @@ For **folder sharing** via SPICE WebDAV need **Spice WebDAV daemon** inside Wind
 - <https://www.spice-space.org/download/windows/spice-webdavd/> → install → plus **SPICE WebDAV channel** in VM XML (Boxes usually omits; add via `virt-manager --connect qemu:///session` → Add Hardware → Channel → `org.spice-space.webdav.0` per SPICE manual: <https://www.spice-space.org/spice-user-manual.html#_folder_sharing>)
 
 > [!note] virtiofs vs WebDAV
-> `virtiofs` (`host_zram` shared folder for `qemu:///system` VMs) is different stack (see `[[Setting up Shared Directory Between Guest_win11 and Host]]`). Boxes `session` VMs typically use **WebDAV**, not `virtiofs`, for folder sharing.
+> `virtiofs` (`host_zram` shared folder for `qemu:///system` VMs) is different stack (see [[Setting up Shared Directory Between Guest_win11 and Host]]). Boxes `session` VMs typically use **WebDAV**, not `virtiofs`, for folder sharing.
 
-See: `[[gnome-boxes]]` (scope + clipboard plumbing), `[[SSHing into vm]]`.
+See: [[gnome-boxes]] (scope + clipboard plumbing), [[SSHing into vm]].

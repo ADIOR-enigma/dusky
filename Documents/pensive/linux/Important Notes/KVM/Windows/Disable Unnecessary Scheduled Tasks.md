@@ -45,4 +45,4 @@ Enable-ScheduledTask -TaskPath '\Microsoft\Windows\Defrag\' -TaskName ScheduledD
 > [!warning] Don’t blindly disable all
 > Keep `Time Synchronization` / `UpdateOrchestrator` if you rely on Windows Update control via `Windows Update MiniTool` / `O&O ShutUp10`.
 
-See: `[[Optimize Windows Performance]]`.
+See: [[Optimize Windows Performance]].

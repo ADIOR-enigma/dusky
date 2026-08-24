@@ -44,4 +44,4 @@ id -nG
 - Arch's `/etc/libvirt/qemu.conf` ships with every `user=`/`group=` key **commented out** → upstream compiled default is `root:root` (`07_storage_setup.py:resolve_qemu_identity` parses only *uncommented* lines).
 - When QEMU runs as `root:root`, traversal ACLs on `/`→`/var/lib/libvirt/images` are provisioned **only for the human operator** — the privileged QEMU can already traverse. If you de-privilege QEMU (`user="qemu"`), `07_storage_setup.py` provisions ACLs for both principals.
 
-See also: `[[Give the User System-Wide Permission]]`, `[[Set ACL on the Image Directory]]`.
+See also: [[Give the User System-Wide Permission]], [[Set ACL on the Image Directory]].

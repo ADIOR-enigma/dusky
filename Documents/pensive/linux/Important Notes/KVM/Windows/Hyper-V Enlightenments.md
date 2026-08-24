@@ -48,4 +48,4 @@ Or raw QEMU: `-cpu host,hv_relaxed,hv_vpindex,hv_time,…`.
 - **Enable:** `relaxed,vapic,spinlocks,vpindex,runtime,synic,stimer+direct,frequencies,reenlightenment,tlbflush,ipi,evmcs` (Intel) — `30_kvm_vm_deploy.py` default.
 - **Avoid in prod:** `syndbg,passthrough,enforce-cpuid` (debug/dev). `reset` generally unnecessary. `no-nonarch-coresharing=on` only with correct pinning + topology. `spinlocks=0xfff` if host overcommitted, else `0xffffffff`.
 
-See: `[[Hypervisor Features]]` (XML schema), `[[Enable Hyper-V Enlightenments]]` (pasted XML + cputune).
+See: [[Hypervisor Features]] (XML schema), [[Enable Hyper-V Enlightenments]] (pasted XML + cputune).

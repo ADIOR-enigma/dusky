@@ -11,7 +11,7 @@ tags:
 # Looking Glass — Legacy (Muxless, `qemu:commandline`) — Archived
 
 > [!warning] Archived — retained as historical reference only
-> This is the **pre-2026** muxless guide that used raw `<qemu:commandline>` `ivshmem-plain` + `kvmfr`. It works but is superseded by the native `<shmem>` path in `[[Looking Glass]]` (`25_looking_glass.py`: native `ivshmem-plain` emits identical `-device`/`-object` pair, validates, handles `/dev/shm` labeling, and tracks `<memballoon>`/NUMA). Keep this file diff-visible; **do not base new VMs on it**.
+> This is the **pre-2026** muxless guide that used raw `<qemu:commandline>` `ivshmem-plain` + `kvmfr`. It works but is superseded by the native `<shmem>` path in [[Looking Glass]] (`25_looking_glass.py`: native `ivshmem-plain` emits identical `-device`/`-object` pair, validates, handles `/dev/shm` labeling, and tracks `<memballoon>`/NUMA). Keep this file diff-visible; **do not base new VMs on it**.
 
 ## Phase 1 — Host (legacy method, kept verbatim)
 
@@ -85,4 +85,4 @@ looking-glass-client -f /dev/shm/looking-glass -m KEY_F6
 | RDP | Rescue bridge | display disabled → RDP needed |
 | Basic Adapter | Emulated GPU | must be disabled for NVIDIA |
 
-> Current alternative: see `[[Looking Glass]]` Phase 2 (`<shmem>`). If you still have a `qemu:commandline` VM, run `25_looking_glass.py --domain <name>` to migrate it.
+> Current alternative: see [[Looking Glass]] Phase 2 (`<shmem>`). If you still have a `qemu:commandline` VM, run `25_looking_glass.py --domain <name>` to migrate it.

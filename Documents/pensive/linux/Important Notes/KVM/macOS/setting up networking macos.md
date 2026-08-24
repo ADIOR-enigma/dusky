@@ -12,7 +12,7 @@ tags:
 # macOS — QEMU Networking
 
 > [!info] Context (Aug 2026)
-> `OSX-KVM` boot scripts directly invoke `qemu-system-x86_64` (not libvirt). This note maps QEMU network backends; libvirt-managed `virbr0` (`default` NAT) and `br0` paths from `[[Activating Network and Setting it to Autostart]]` / `[[Network Bridging for LAN access]]` apply if you import the macOS VM into libvirt via `macOS-libvirt-*.xml`.
+> `OSX-KVM` boot scripts directly invoke `qemu-system-x86_64` (not libvirt). This note maps QEMU network backends; libvirt-managed `virbr0` (`default` NAT) and `br0` paths from [[Activating Network and Setting it to Autostart]] / [[Network Bridging for LAN access]] apply if you import the macOS VM into libvirt via `macOS-libvirt-*.xml`.
 
 ## User Mode (`slirp`) — easiest, no host prep
 
@@ -93,7 +93,7 @@ sudo chmod u+s /usr/lib/qemu/qemu-bridge-helper  # setuid — understand risk
 
 ## Bridged (2023 `br0` — Arch `nmcli` variant)
 
-Modern `br0` via NetworkManager (see `[[Network Bridging for LAN access]]` Option 3):
+Modern `br0` via NetworkManager (see [[Network Bridging for LAN access]] Option 3):
 
 ```bash
 sudo mkdir -p /etc/qemu && sudo cp bridge.conf /etc/qemu
@@ -110,4 +110,4 @@ brctl show   # or: bridge link / ip link
 > - Import into libvirt (`virsh define macOS.xml`) → **virbr0 NAT** (host↔guest `192.168.122.x`)
 > - LAN-visible → `br0` bridge (Ethernet only; Wi-Fi bridges need `macvtap`)
 
-See: `[[all notes macos]]`, `[[+ MOC macOS]]`.
+See: [[all notes macos]], [[+ MOC macOS]].

@@ -53,4 +53,4 @@ virt-host-validate   # PASS QEMU/KVM; IOMMU WARN OK pre-VFIO
 virsh --version; qemu-system-x86_64 --version
 ```
 
-See: `[[+ MOC Windows GPU Passthrough]]`, `05_virtio_iso.py`, `10_virt_modular_daemon.py`.
+See: [[+ MOC Windows GPU Passthrough]], `05_virtio_iso.py`, `10_virt_modular_daemon.py`.
