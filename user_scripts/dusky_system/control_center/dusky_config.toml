@@ -1361,7 +1361,7 @@ icon = "video-display-symbolic"
 style = "suggested"
 [pages.layout.items.properties.buttons.on_press]
 type = "exec"
-command = "kitty --class dusky_tui --title \"Monitors & Refresh Rate Wizard\" --hold python3 $HOME/user_scripts/hypr/monitor/tui_monitors.py"
+command = "kitty --class dusky_tui --title \"Monitors & Refresh Rate Wizard\" --hold python3 $HOME/user_scripts/hypr/monitor/monitor_wizard.py"
 
 
 
