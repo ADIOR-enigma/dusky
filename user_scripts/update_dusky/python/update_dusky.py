@@ -4645,8 +4645,12 @@ class HelpScreen(ModalScreen[None]):
             text.append("  Alt+Left / Alt+H / [   Shrink sidebar width\n")
             text.append("  Mouse Drag     Click and drag split border left or right\n\n")
 
-            text.append("List & Item Selection\n", style=f"bold {THEME['accent']}")
-            text.append("  j / k or Up/Down       Navigate tasks in left sidebar\n")
+            text.append("List & Log Navigation\n", style=f"bold {THEME['accent']}")
+            text.append("  j / k                  Navigate scripts in left sidebar\n")
+            text.append("  Up / Down              Scroll active log line-by-line in right pane\n")
+            text.append("  PageUp / PageDown      Scroll active log page-by-page in right pane\n")
+            text.append("  Home / End             Scroll active log to top / bottom in right pane\n")
+            text.append("  Tab / Shift+Tab        Toggle focus between sidebar and log pane\n")
             text.append("  Enter                  Select task and view task log\n")
             text.append("  y / a                  Confirm / Abort in modal dialogs\n")
             text.append("  n / c / Esc            Cancel in modal dialogs\n")
@@ -4727,6 +4731,10 @@ class CompletionDialog(ModalScreen[bool]):
 # ==============================================================================
 #  MAIN APPLICATION ENGINE
 # ==============================================================================
+class FocusableRichLog(RichLog):
+    can_focus = True
+
+
 class DuskyApp(App):
     CSS = DUSKY_CSS
     BINDINGS = [
@@ -4747,8 +4755,16 @@ class DuskyApp(App):
         Binding("ctrl+right", "expand_left_pane", "Expand Sidebar", priority=True),
         Binding("bracketleft", "shrink_left_pane", "Shrink Sidebar"),
         Binding("bracketright", "expand_left_pane", "Expand Sidebar"),
-        Binding("j", "tree_down", "Tree Down"),
-        Binding("k", "tree_up", "Tree Up"),
+        Binding("j", "tree_down", "Tree Down", priority=True),
+        Binding("k", "tree_up", "Tree Up", priority=True),
+        Binding("up", "scroll_preview_up", "Scroll Log Up", priority=True),
+        Binding("down", "scroll_preview_down", "Scroll Log Down", priority=True),
+        Binding("pageup", "scroll_preview_page_up", "Page Up", priority=True),
+        Binding("pagedown", "scroll_preview_page_down", "Page Down", priority=True),
+        Binding("home", "scroll_preview_home", "Home", priority=True),
+        Binding("end", "scroll_preview_end", "End", priority=True),
+        Binding("tab", "toggle_focus", "Switch Focus", priority=True),
+        Binding("shift+tab", "toggle_focus", "Switch Focus", priority=True),
     ]
 
     def __init__(self, profile: ProfileConfig, tasks: list[DuskyTask], has_sudo: bool):
@@ -4809,10 +4825,10 @@ class DuskyApp(App):
             with Vertical(id="log_container"):
                 max_lines = GLOBAL_CONFIG.get("ui", {}).get("max_log_lines", 6000)
                 with ContentSwitcher(initial="log-main", id="log_switcher"):
-                    yield RichLog(id="log-main", markup=True, wrap=True, auto_scroll=True, max_lines=max_lines)
-                    yield RichLog(id="log-report", markup=True, wrap=True, auto_scroll=False, max_lines=max_lines)
+                    yield FocusableRichLog(id="log-main", markup=True, wrap=True, auto_scroll=True, max_lines=max_lines)
+                    yield FocusableRichLog(id="log-report", markup=True, wrap=True, auto_scroll=False, max_lines=max_lines)
                     for i in range(len(self.tasks)):
-                        yield RichLog(id=f"log-task-{i}", markup=True, wrap=True, auto_scroll=True, max_lines=max_lines)
+                        yield FocusableRichLog(id=f"log-task-{i}", markup=True, wrap=True, auto_scroll=True, max_lines=max_lines)
 
         yield ProgressBar(total=len(self.tasks), id="main_progress", show_eta=False)
 
@@ -5947,6 +5963,15 @@ class DuskyApp(App):
     def action_expand_left_pane(self) -> None:
         self._set_pane_widths(self.sidebar_width + 4)
 
+    def _get_active_visible_log(self) -> RichLog | None:
+        with suppress(Exception):
+            switcher = self.query_one("#log_switcher", ContentSwitcher)
+            if switcher.current:
+                return self.query_one(f"#{switcher.current}", RichLog)
+        with suppress(Exception):
+            return self.query_one("#log-main", RichLog)
+        return None
+
     def action_tree_down(self) -> None:
         with suppress(Exception):
             self.query_one("#task_list", ListView).action_cursor_down()
@@ -5954,6 +5979,46 @@ class DuskyApp(App):
     def action_tree_up(self) -> None:
         with suppress(Exception):
             self.query_one("#task_list", ListView).action_cursor_up()
+
+    def action_scroll_preview_up(self) -> None:
+        with suppress(Exception):
+            if log_w := self._get_active_visible_log():
+                log_w.scroll_up(animate=False)
+
+    def action_scroll_preview_down(self) -> None:
+        with suppress(Exception):
+            if log_w := self._get_active_visible_log():
+                log_w.scroll_down(animate=False)
+
+    def action_scroll_preview_page_up(self) -> None:
+        with suppress(Exception):
+            if log_w := self._get_active_visible_log():
+                log_w.scroll_page_up(animate=False)
+
+    def action_scroll_preview_page_down(self) -> None:
+        with suppress(Exception):
+            if log_w := self._get_active_visible_log():
+                log_w.scroll_page_down(animate=False)
+
+    def action_scroll_preview_home(self) -> None:
+        with suppress(Exception):
+            if log_w := self._get_active_visible_log():
+                log_w.scroll_home(animate=False)
+
+    def action_scroll_preview_end(self) -> None:
+        with suppress(Exception):
+            if log_w := self._get_active_visible_log():
+                log_w.scroll_end(animate=False)
+
+    def action_toggle_focus(self) -> None:
+        with suppress(Exception):
+            task_list = self.query_one("#task_list", ListView)
+            log_w = self._get_active_visible_log()
+            if self.focused == log_w:
+                task_list.focus()
+            else:
+                if log_w:
+                    log_w.focus()
 
     def on_mouse_down(self, event: events.MouseDown) -> None:
         if isinstance(self.screen, ModalScreen):
@@ -6025,6 +6090,14 @@ class DuskyApp(App):
                 self.log_main("[FATAL] Emergency abort requested from PTY session.")
                 self.action_quit()
                 event.stop()
+                return
+
+            if event.key in (
+                "pageup", "pagedown", "home", "end", "up", "down",
+                "j", "k", "f1", "question_mark", "f", "tab", "shift+tab",
+                "alt+left", "alt+right", "alt+h", "alt+l",
+                "ctrl+left", "ctrl+right", "bracketleft", "bracketright",
+            ):
                 return
 
             data = self._pty_key_bytes(event)
