@@ -227,7 +227,7 @@
         "format": "󰍛 {percentage}%",
         "format-alt": "󰍛 {used:0.1f}G",
         "interval": 3,
-        "on-click-right": "dusky-run kitty --class io_monitor.sh -e $HOME/user_scripts/drives/io_monitor.sh",
+        "on-click-right": "dusky-run kitty --class dusky_disk_monitor_io.py -e $HOME/user_scripts/drives/dusky_disk_monitor_io.py",
         "tooltip-format": "RAM: {used:0.2f} GiB / {total:0.2f} GiB ({percentage}%)\nAvailable: {avail:0.2f} GiB\nSwap: {swapUsed:0.2f} GiB / {swapTotal:0.2f} GiB\n\nRMB: I/O Monitor",
         "states": {
             "warning": 70,

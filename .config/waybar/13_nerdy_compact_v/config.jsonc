@@ -96,7 +96,7 @@
                 "critical": 20
             },
             "tooltip-format": "{timeTo}\nHealth 󱟦 {health}%\nPower Draw {power:.2f} W",
-            "on-click": "dusky-run kitty --class power_saver.sh --hold -e \"$HOME/user_scripts/battery/power_saving/power_saver.sh\"",
+            "on-click": "dusky-run kitty --class power_saver.sh --hold -e \"$HOME/user_scripts/battery/power_saver.sh\" --interactive",
             "on-click-right": "dusky-run kitty --class dusky_hypridle.sh -e \"$HOME/user_scripts/hypridle/dusky_hypridle.sh\""
         },
 
@@ -147,7 +147,7 @@
             "align": 0.5,
             "format": "\n{percentage}",
             "interval": 2,
-            "on-click": "dusky-run kitty --class io_monitor.sh -e \"$HOME/user_scripts/drives/io_monitor.sh\"",
+            "on-click": "dusky-run kitty --class dusky_disk_monitor_io.py -e \"$HOME/user_scripts/drives/dusky_disk_monitor_io.py\"",
             "states": {
                "critical": 80
             },

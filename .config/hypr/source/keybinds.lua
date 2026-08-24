@@ -180,13 +180,13 @@ hl.bind(
 
 cond_bind(
     "ALT + 5",
-    hl.dsp.exec_cmd(terminal .. " -e " .. dusky_scripts .. "drives/drive_manager.sh unlock browser"),
+    hl.dsp.exec_cmd(terminal .. " -e " .. dusky_scripts .. "drives/drive_manager/drive_manager.py unlock browser"),
     { description = "Unlock Browser" }
 )
 
 cond_bind(
     "ALT + SHIFT + 5",
-    hl.dsp.exec_cmd(terminal .. " -e " .. dusky_scripts .. "drives/drive_manager.sh lock browser"),
+    hl.dsp.exec_cmd(terminal .. " -e " .. dusky_scripts .. "drives/drive_manager/drive_manager.py lock browser"),
     { description = "Lock Browser", locked = true }
 )
 

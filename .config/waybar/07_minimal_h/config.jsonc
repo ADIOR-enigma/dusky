@@ -216,7 +216,7 @@
     "memory": {
         "format": " {percentage}",
         "interval": 2,
-        "on-click": "dusky-run kitty --class io_monitor.sh -e $HOME/user_scripts/drives/io_monitor.sh",
+        "on-click": "dusky-run kitty --class dusky_disk_monitor_io.py -e $HOME/user_scripts/drives/dusky_disk_monitor_io.py",
         "tooltip-format": "Used: {used}GiB",
         "states": {
             "critical": 80

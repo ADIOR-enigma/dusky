@@ -337,7 +337,7 @@
   "memory": {
     "interval": 2,
     "format": "󰘚 {percentage}%",
-    "on-click": "dusky-run kitty --class io_monitor.sh -e $HOME/user_scripts/drives/io_monitor.sh",
+    "on-click": "dusky-run kitty --class dusky_disk_monitor_io.py -e $HOME/user_scripts/drives/dusky_disk_monitor_io.py",
     "states": {
       "warning": 70,
       "critical": 90
@@ -350,7 +350,7 @@
       "warning": 30,
       "critical": 15
     },
-    "on-click": "dusky-run kitty --class power_saver.sh --hold -e $HOME/user_scripts/battery/power_saving/power_saver.sh",
+    "on-click": "dusky-run kitty --class power_saver.sh --hold -e $HOME/user_scripts/battery/power_saver.sh --interactive",
     "on-click-right": "dusky-run kitty --class dusky_hypridle.sh -e $HOME/user_scripts/hypridle/dusky_hypridle.sh",
     "format": "{icon} {capacity}%",
     "format-charging": "󰂄 {capacity}%",

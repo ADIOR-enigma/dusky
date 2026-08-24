@@ -184,7 +184,7 @@
         "format-charging": "  +{capacity} +{power:.0f}W",
         "format-plugged": "󰚥 {capacity}%",
         "format-icons": ["󰂎", "󰁺", "󰁻", "󰁼", "󰁽", "󰁾", "󰁿", "󰂀", "󰂁", "󰂂", "󰁹"],
-        "on-click": "dusky-run kitty --class power_saver.sh --hold -e $HOME/user_scripts/battery/power_saving/power_saver.sh",
+        "on-click": "dusky-run kitty --class power_saver.sh --hold -e $HOME/user_scripts/battery/power_saver.sh --interactive",
         "on-click-right": "dusky-run kitty --class dusky_hypridle.sh -e $HOME/user_scripts/hypridle/dusky_hypridle.sh",
         "tooltip-format": "{timeTo}\n\n󱟦 Health: {health}%\n󱐋 Power: {power:.2f}W"
     },
