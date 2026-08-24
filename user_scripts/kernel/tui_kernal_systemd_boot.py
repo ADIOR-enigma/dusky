@@ -2,7 +2,7 @@
 """
 Systemd-Boot Kernel Manager - Advanced Dusky TUI Schema.
 Provides dynamic multi-kernel switching, granular cmdline parameter tuning,
-UEFI loader configuration, and EFI bootloader maintenance actions.
+direct renaming for any installed kernel entry, and EFI maintenance actions.
 """
 import sys
 from pathlib import Path
@@ -12,7 +12,7 @@ if str(_DUSKY_TUI_ROOT) not in sys.path:
     sys.path.insert(0, str(_DUSKY_TUI_ROOT))
 
 from python.frontend.core_types import ConfigItem
-from python.engines.systemd_boot import discover_all_kernels_and_entries, clean_kernel_name
+from python.engines.systemd_boot import discover_all_kernels_and_entries, clean_kernel_name, slugify_entry_key
 
 # =============================================================================
 # 1. DYNAMIC KERNEL & BOOT ENTRY DISCOVERY
@@ -65,7 +65,37 @@ def discover_kernel_options() -> tuple[list[str], list[str]]:
     return all_options, all_hints
 
 
+def build_entry_override_items() -> list[ConfigItem]:
+    """Generates direct title renaming items for all discovered boot entries."""
+    entries_map = discover_all_kernels_and_entries()
+    items: list[ConfigItem] = []
+    
+    for name in sorted(entries_map.keys(), key=lambda n: (0 if n == "Arch Linux" else 1 if n == "Arch Linux (Fallback)" else 2, n)):
+        if name.startswith("@"):
+            continue
+        slug = slugify_entry_key(name)
+        meta = entries_map[name]
+        file_hint = meta.get("entry_file") or name
+        items.append(
+            ConfigItem(
+                label=f"Rename: {name}",
+                key=slug,
+                scope="ENTRY_OVERRIDE",
+                type_="string",
+                default=name,
+                group="Rename Installed Boot Entries",
+                extended_help=(
+                    f"**Rename `{name}` Boot Menu Title**\n\n"
+                    f"Modifies the `title` line in the `{file_hint}` entry file.\n"
+                    f"This controls the exact text displayed for this kernel on the systemd-boot menu."
+                )
+            )
+        )
+    return items
+
+
 _INITIAL_KERNEL_OPTIONS, _INITIAL_KERNEL_HINTS = discover_kernel_options()
+_INITIAL_TARGET_OPTIONS = ["Auto (Follows Default Kernel)"] + [opt for opt in _INITIAL_KERNEL_OPTIONS if not opt.startswith("@")]
 
 # =============================================================================
 # 2. CORE APPLICATION ROUTING & ENVIRONMENT
@@ -84,7 +114,7 @@ USER_PRESETS_TAB = "Presets"
 TAB_NOTICES = {
     0: {"level": "warning", "message": "Modifications to root or LUKS storage parameters can render the system unbootable. Proceed with caution."},
     4: {"level": "info", "message": "Configures global /boot/loader/loader.conf (default kernel selection, timeout, resolution, security)."},
-    5: {"level": "info", "message": "Configures entry metadata (title, sort-key) and executes EFI bootloader maintenance."},
+    5: {"level": "info", "message": "Rename any installed kernel entry, inspect active entry metadata, and execute EFI maintenance."},
 }
 
 # =============================================================================
@@ -770,58 +800,75 @@ SCHEMA = {
     # -------------------------------------------------------------------------
     5: [
         ConfigItem(
-            label="Entry Title",
+            label="Selected Entry to Manage",
+            key="target_entry",
+            scope="LOADER",
+            type_="picker",
+            options=_INITIAL_TARGET_OPTIONS,
+            hints=["Automatically manages whichever kernel is default/active"] + ["Inspect & configure this specific boot entry" for _ in _INITIAL_TARGET_OPTIONS[1:]],
+            default="Auto (Follows Default Kernel)",
+            group="Active Entry Selection",
+            extended_help=(
+                "**Selected Boot Entry to Manage**\n\n"
+                "Controls which kernel entry file is active for inspection and cmdline parameter editing.\n\n"
+                "- `Auto (Follows Default Kernel)`: Automatically binds to whichever kernel you selected as default in Tab 4.\n"
+                "- `<Entry Name>`: Explicitly locks the editor to inspect and tune a specific kernel entry."
+            )
+        ),
+        *build_entry_override_items(),
+        ConfigItem(
+            label="Active Entry Title",
             key="title",
             scope="ENTRY",
             type_="string",
             default="unset",
-            group="Entry Identification",
-            extended_help="**Boot Menu Entry Title (`title`)**\n\nThe clean title displayed on the systemd-boot screen (e.g. `Arch Linux`, `Dusky Battery`, `Dusky Gaming`)."
+            group="Active Entry Metadata",
+            extended_help="**Active Entry Title (`title`)**\n\nThe title line inside the currently active boot entry file."
         ),
         ConfigItem(
-            label="Sort Key",
+            label="Active Entry Sort Key",
             key="sort-key",
             scope="ENTRY",
             type_="string",
             default="unset",
-            group="Entry Identification",
-            extended_help="**Entry Sort Key (`sort-key`)**\n\nDefines menu ordering and grouping (e.g. `dusky-battery`, `arch`)."
+            group="Active Entry Metadata",
+            extended_help="**Active Entry Sort Key (`sort-key`)**\n\nDefines menu ordering and grouping for the currently active boot entry."
         ),
         ConfigItem(
-            label="Kernel Version",
+            label="Active Entry Version",
             key="version",
             scope="ENTRY",
             type_="string",
             default="unset",
-            group="Entry Identification",
-            extended_help="**Kernel Version (`version`)**\n\nVersion string associated with this boot entry."
+            group="Active Entry Metadata",
+            extended_help="**Active Entry Version (`version`)**\n\nKernel version string associated with the currently active boot entry."
         ),
         ConfigItem(
-            label="Architecture",
+            label="Active Architecture",
             key="architecture",
             scope="ENTRY",
             type_="string",
             default="unset",
-            group="Entry Identification",
-            extended_help="**Entry Architecture (`architecture`)**\n\nTarget CPU architecture for this bootloader entry (e.g. `x86-64`)."
+            group="Active Entry Metadata",
+            extended_help="**Active Entry Architecture (`architecture`)**\n\nTarget CPU architecture for this bootloader entry (e.g. `x86-64`)."
         ),
         ConfigItem(
-            label="Kernel Image",
+            label="Active Kernel Image",
             key="linux",
             scope="ENTRY",
             type_="string",
             default="unset",
-            group="Entry Identification",
-            extended_help="**Kernel Image Path (`linux`)**\n\nRelative path to the kernel executable on the ESP (e.g. `/vmlinuz-linux`)."
+            group="Active Entry Metadata",
+            extended_help="**Active Kernel Image Path (`linux`)**\n\nRelative path to the kernel executable on the ESP (e.g. `/vmlinuz-linux`)."
         ),
         ConfigItem(
-            label="Initramfs Image",
+            label="Active Initramfs Image",
             key="initrd",
             scope="ENTRY",
             type_="string",
             default="unset",
-            group="Entry Identification",
-            extended_help="**Initramfs Image Path (`initrd`)**\n\nRelative path to the initial ramdisk image on the ESP (e.g. `/initramfs-linux.img`)."
+            group="Active Entry Metadata",
+            extended_help="**Active Initramfs Image Path (`initrd`)**\n\nRelative path to the initial ramdisk image on the ESP (e.g. `/initramfs-linux.img`)."
         ),
         ConfigItem(
             label="View Bootloader Status",
@@ -1004,15 +1051,28 @@ def DEFERRED_LOAD() -> list[int]:
     """
     Background loader invoked by the TUI after first paint.
     Refreshes kernel discovery dynamically to catch newly installed kernels
-    and updates Tab 4 (systemd-boot Loader).
+    and updates Tab 4 (systemd-boot Loader) and Tab 5 (Boot Entry Metadata).
     """
     opts, hints = discover_kernel_options()
+    
+    # 1. Update Tab 4 (Default Entry picker)
     for item in SCHEMA.get(4, []):
         if item.key == "default" and item.scope == "LOADER":
             item.options = opts
             item.hints = hints
             break
-    return [4]
+
+    # 2. Update Tab 5 (Target Entry selector)
+    target_opts = ["Auto (Follows Default Kernel)"] + [opt for opt in opts if not opt.startswith("@")]
+    target_hints = ["Automatically manages whichever kernel is default/active"] + ["Inspect & configure this specific boot entry" for _ in target_opts[1:]]
+
+    for item in SCHEMA.get(5, []):
+        if item.key == "target_entry" and item.scope == "LOADER":
+            item.options = target_opts
+            item.hints = target_hints
+            break
+
+    return [4, 5]
 
 
 # =============================================================================
