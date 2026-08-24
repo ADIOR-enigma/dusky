@@ -302,6 +302,7 @@ iftop
 lshw
 hwinfo
 dmidecode
+strace
 wev
 pacman-contrib
 gnome-keyring

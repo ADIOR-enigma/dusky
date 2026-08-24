@@ -224,7 +224,7 @@ ALL_GROUPS: Dict[str, List[str]] = {
     "sysadmin": [
         "btop", "htop", "dgop", "nvtop", "inxi", "sysstat", "sysbench", "logrotate", "acpid",
         "tlp", "tlp-rdw", "thermald", "powertop", "gdu", "iotop", "iftop", "lshw", "hwinfo",
-        "dmidecode", "wev", "pacman-contrib", "libsecret", "seahorse", "greetd-agreety",
+        "dmidecode", "strace", "wev", "pacman-contrib", "libsecret", "seahorse", "greetd-agreety",
         "greetd", "greetd-tuigreet", "yad", "dysk", "fwupd", "perl", "accountsservice",
         "pkgfile", "rebuild-detector",
     ],
