@@ -1171,7 +1171,7 @@ hl.window_rule({
         class = "^(com\\.github\\.dusky\\.controlcenter)$",
     },
     float = true,
-    size = {630, "(monitor_h*0.90)"},
+    size = {660, "(monitor_h*0.90)"},
     center = true,
     animation = "slide up",
     workspace = "unset",
