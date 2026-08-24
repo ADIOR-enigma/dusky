@@ -4418,10 +4418,20 @@ class TaskItem(ListItem):
 
 class TaskSearchScreen(ModalScreen[int | None]):
     BINDINGS = [
-        Binding("escape", "dismiss_modal", "Dismiss"),
-        Binding("ctrl+n", "cursor_down", "Down"),
-        Binding("ctrl+p", "cursor_up", "Up"),
+        Binding("escape", "dismiss_modal", "Dismiss", priority=True),
+        Binding("ctrl+n", "cursor_down", "Down", priority=True),
+        Binding("ctrl+p", "cursor_up", "Up", priority=True),
     ]
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key.lower() == "escape":
+            self.dismiss(None)
+            event.stop()
+
+    @on(events.Click)
+    def on_background_click(self, event: events.Click) -> None:
+        if event.control is self:
+            self.dismiss(None)
 
     def __init__(self, tasks: list[DuskyTask]):
         super().__init__()
@@ -4541,8 +4551,26 @@ class TaskSearchScreen(ModalScreen[int | None]):
 
 class LogSearchScreen(ModalScreen[None]):
     BINDINGS = [
-        Binding("escape", "dismiss_modal", "Dismiss"),
+        Binding("escape", "dismiss_modal", "Dismiss", priority=True),
+        Binding("ctrl+n", "cursor_down", "Down", priority=True),
+        Binding("ctrl+p", "cursor_up", "Up", priority=True),
     ]
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key.lower() == "escape":
+            self.dismiss(None)
+            event.stop()
+
+    def action_cursor_down(self) -> None:
+        self.query_one("#log_search_list", OptionList).action_cursor_down()
+
+    def action_cursor_up(self) -> None:
+        self.query_one("#log_search_list", OptionList).action_cursor_up()
+
+    @on(events.Click)
+    def on_background_click(self, event: events.Click) -> None:
+        if event.control is self:
+            self.dismiss(None)
 
     def __init__(self, title: str, lines: list[str]):
         super().__init__()
@@ -4587,9 +4615,9 @@ class LogSearchScreen(ModalScreen[None]):
 
 class ConfirmQuitScreen(ModalScreen[str]):
     BINDINGS = [
-        Binding("escape", "cancel", "Cancel"),
-        Binding("y,a,enter", "confirm_abort", "Abort"),
-        Binding("n,c,q", "cancel", "Cancel"),
+        Binding("escape", "cancel", "Cancel", priority=True),
+        Binding("y,a,enter", "confirm_abort", "Abort", priority=True),
+        Binding("n,c,q", "cancel", "Cancel", priority=True),
     ]
 
     def compose(self) -> ComposeResult:
@@ -4624,8 +4652,10 @@ class ConfirmQuitScreen(ModalScreen[str]):
 
 class HelpScreen(ModalScreen[None]):
     BINDINGS = [
-        Binding("f1", "dismiss", "Dismiss"),
-        Binding("question_mark", "dismiss", "Dismiss"),
+        Binding("escape", "dismiss", "Dismiss", priority=True),
+        Binding("f1", "dismiss", "Dismiss", priority=True),
+        Binding("question_mark", "dismiss", "Dismiss", priority=True),
+        Binding("q", "dismiss", "Dismiss", priority=True),
     ]
 
     def compose(self) -> ComposeResult:
@@ -4662,10 +4692,7 @@ class HelpScreen(ModalScreen[None]):
 
     def on_key(self, event: events.Key) -> None:
         key = event.key.lower()
-        if key == "escape":
-            event.stop()
-            return
-        if key in ("f1", "question_mark", "q", "enter", "space", "?") or event.character in ("?", "q"):
+        if key in ("escape", "f1", "question_mark", "q", "enter", "space", "?") or event.character in ("?", "q"):
             self.dismiss(None)
             event.stop()
 
@@ -4686,9 +4713,10 @@ class CompletionDialog(ModalScreen[bool]):
     """Final dialog shown when the pipeline finishes: review logs or quit."""
 
     BINDINGS = [
-        Binding("escape", "dismiss_stay", "View Logs"),
-        Binding("enter,space", "dismiss_stay", "View Logs"),
-        Binding("q", "dismiss_quit", "Quit"),
+        Binding("escape", "dismiss_stay", "View Logs", priority=True),
+        Binding("enter,space", "dismiss_stay", "View Logs", priority=True),
+        Binding("v", "dismiss_stay", "View Logs", priority=True),
+        Binding("q", "dismiss_quit", "Quit", priority=True),
     ]
 
     def __init__(self, title: str = "dusky updated", message: str = "", level: str = "success") -> None:
@@ -4704,6 +4732,15 @@ class CompletionDialog(ModalScreen[bool]):
             with Horizontal(classes="modal-btn-container"):
                 yield Label(" View Logs ", classes="modal-close-btn", id="btn-view")
                 yield Label(" Quit ", classes="modal-cancel-btn", id="btn-quit")
+
+    def on_key(self, event: events.Key) -> None:
+        key = event.key.lower()
+        if key in ("escape", "enter", "space", "v"):
+            self.dismiss(False)
+            event.stop()
+        elif key == "q":
+            self.dismiss(True)
+            event.stop()
 
     def action_dismiss_stay(self) -> None:
         self.dismiss(False)
@@ -6041,11 +6078,20 @@ class DuskyApp(App):
         self._is_dragging_pane = False
 
     def action_request_quit(self) -> None:
+        if isinstance(self.screen, HelpScreen):
+            self.screen.dismiss(None)
+            return
+
+        if isinstance(self.screen, (TaskSearchScreen, LogSearchScreen)):
+            self.screen.dismiss(None)
+            return
+
         if isinstance(self.screen, ConfirmQuitScreen):
+            self.screen.dismiss("cancel")
             return
 
         if isinstance(self.screen, CompletionDialog):
-            self.exit()
+            self.screen.dismiss(False)
             return
 
         def on_quit_decision(result: str | None) -> None:
