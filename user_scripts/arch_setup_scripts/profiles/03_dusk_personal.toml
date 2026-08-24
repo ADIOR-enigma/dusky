@@ -34,6 +34,7 @@ dirs = [
     "~/user_scripts/nvim",
     "~/user_scripts/mako_osd/dusky_keys",
     "~/user_scripts/way_layers/visualizer",
+    "~/user_scripts/keylogger",
 ]
 
 [conflict_resolutions]
@@ -152,5 +153,6 @@ scripts = [
     "U | wallpaper_selector.py --build-cache",
     "U | kokoro_installer.sh",
     "U | parakeet_installer.sh",
+    "U | keylogger_installer.py",
     "U | dusky_neovim_manager.sh -a -t dusky",
 ]

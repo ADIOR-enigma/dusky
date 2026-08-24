@@ -16,12 +16,12 @@ No usernames are hardcoded -- the invoking user is resolved via
 SUDO_USER / pwd at runtime.
 
 Usage:
-    python3 install.py                 # install everything
-    python3 install.py --enable        # install + enable + start service
-    python3 install.py --uninstall     # stop, disable, remove service + venv
-    python3 install.py --uninstall --purge   # ...also delete data
-    python3 install.py --status        # inspect current state (no root needed)
-    python3 install.py --dry-run       # show what would happen (no root)
+    python3 keylogger_installer.py                 # install everything
+    python3 keylogger_installer.py --enable        # install + enable + start service
+    python3 keylogger_installer.py --uninstall     # stop, disable, remove service + venv
+    python3 keylogger_installer.py --uninstall --purge   # ...also delete data
+    python3 keylogger_installer.py --status        # inspect current state (no root needed)
+    python3 keylogger_installer.py --dry-run       # show what would happen (no root)
 """
 
 import argparse
@@ -217,7 +217,7 @@ def cmd_status(_args: argparse.Namespace) -> int:
         print(f"Service {flag}: {C_GREEN}{proc.stdout.strip()}{C_RESET}")
 
     print("\nNext steps:")
-    print("  python3 install.py --enable   -> build everything and start the daemon")
+    print("  python3 keylogger_installer.py --enable   -> build everything and start the daemon")
     print("  systemctl status dusky_keylogger")
     return 0
 

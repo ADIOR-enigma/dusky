@@ -22,7 +22,7 @@ under systemd, with the data directory mode 0700.
 ## Install (Arch)
 
 ```bash
-python3.14 install.py --enable
+python3 keylogger_installer.py --enable
 # log out/in if you were just added to group input
 systemctl status dusky_keylogger
 ```
@@ -44,6 +44,6 @@ dusky seed --days 7           # synthetic data, testing only
 
 Default: `~/.config/dusky/settings/keylogger/data/keys.db`
 Override: `DUSKY_KEYLOGGER_DATA_DIR` or `config.json` `data_dir`.
-Legacy `~/.local/share/dusky-keylogger/` is detected by `install.py --status`.
+Legacy `~/.local/share/dusky-keylogger/` is detected by `keylogger_installer.py --status`.
 
 Keystroke databases contain passwords you typed. Treat the file as secret.
