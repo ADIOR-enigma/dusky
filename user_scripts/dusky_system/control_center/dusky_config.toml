@@ -2963,27 +2963,6 @@ description = "Matugen template — re-apply wallpaper to apply colors"
 [[pages.layout.items.layout.items]]
 type = "button"
 [pages.layout.items.layout.items.properties]
-title = "Mako Side Switch"
-description = "Customize notification"
-icon = "preferences-system-notifications-symbolic"
-
-[[pages.layout.items.layout.items.properties.buttons]]
-icon = "document-edit-symbolic"
-[pages.layout.items.layout.items.properties.buttons.on_press]
-type = "exec"
-command = "$HOME/user_scripts/dusky_system/control_center/dusky_text_editor.py \"$HOME/.config/matugen/templates/mako.ini\""
-
-[[pages.layout.items.layout.items.properties.buttons]]
-icon = "utilities-terminal-symbolic"
-style = "suggested"
-[pages.layout.items.layout.items.properties.buttons.on_press]
-type = "exec"
-command = "foot --app-id=dusky_tui --hold python3 $HOME/user_scripts/mako_osd/mako_tui/tui_mako.py"
-terminal = false
-
-[[pages.layout.items.layout.items]]
-type = "button"
-[pages.layout.items.layout.items.properties]
 title = "Mako Template"
 description = "Edit Matugen template (re-apply wallpaper to apply colors)"
 icon = "preferences-system-notifications-symbolic"
