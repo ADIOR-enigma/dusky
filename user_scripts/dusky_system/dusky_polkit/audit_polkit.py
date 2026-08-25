@@ -185,24 +185,15 @@ def audit_logind_sessions():
                 session_paths.append(parts[-1])
     
     lines.append("Found session paths:")
+    from importlib.machinery import SourceFileLoader
+    try:
+        dp_mod = SourceFileLoader("dusky_polkit", str(Path(__file__).resolve().parent / "dusky_polkit")).load_module()
+        dp_decode = dp_mod.Agent.unescape_component
+    except Exception as e:
+        dp_decode = lambda c: f"[Error importing: {e}]"
+
     for sp in session_paths:
         comp = sp.rsplit("/", 1)[-1]
-        def buggy_decode(c: str) -> str:
-            if c.startswith("_"):
-                c = c[1:]
-            out, i = [], 0
-            while i < len(c):
-                if c[i] == "_" and i + 3 <= len(c):
-                    try:
-                        out.append(chr(int(c[i + 1:i + 3], 16)))
-                        i += 3
-                        continue
-                    except ValueError:
-                        pass
-                out.append(c[i])
-                i += 1
-            return "".join(out)
-
         def standard_decode(c: str) -> str:
             out, i = [], 0
             while i < len(c):
@@ -218,9 +209,10 @@ def audit_logind_sessions():
             return "".join(out)
 
         lines.append(f"  * Object Path: {sp}")
-        lines.append(f"      Raw component:       {comp}")
-        lines.append(f"      Buggy script output: {buggy_decode(comp)}")
-        lines.append(f"      Correct decoded ID:  {standard_decode(comp)}")
+        lines.append(f"      Raw component:         {comp}")
+        lines.append(f"      Dusky script decoded:  {dp_decode(comp)}")
+        lines.append(f"      Standard decoded ID:   {standard_decode(comp)}")
+        lines.append(f"      Match status:          {'PASS' if dp_decode(comp) == standard_decode(comp) else 'FAIL'}")
 
 def audit_environment():
     banner("7. PROCESS & SYSTEMD USER ENVIRONMENT")

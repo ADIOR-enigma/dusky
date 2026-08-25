@@ -1539,6 +1539,20 @@ hl.window_rule({
     dim_around = true
 })
 
+--- Dusky Polkit Agent ---
+hl.window_rule({
+    name = "pin-dusky-polkit-agent",
+    match = { class = "^(dusky-polkit)$" },
+    float = true,
+    center = true,
+    size = {640, 260},
+    pin = true,
+    workspace = "unset",
+    focus_on_activate = true,
+    stay_focused = true,
+    dim_around = true
+})
+
 --- GCR / Gnome Keyring Prompter ---
 hl.window_rule({
     name = "pin-keyring-prompter",

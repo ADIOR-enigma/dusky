@@ -1,15 +1,15 @@
 #!/usr/bin/python
-# Dusky Polkit - a minimal polkit authentication agent.
+# Dusky Polkit - a minimal, high-performance polkit authentication agent.
 #
-# One task only: when polkit needs a password, pop up a foot terminal,
-# collect it, hand it to the setuid-helper socket, and report back.
+# Speaks the D-Bus wire protocol directly over AF_UNIX (no external dbus libraries).
+# Uses Linux pidfd and selectors for zero-latency child terminal lifecycle management.
 #
-# Pure stdlib. Speaks the D-Bus wire protocol directly (no dbus libs),
-# because no CLI tool on Arch can export an object server-side.
+# Optimized for modern Arch Linux (Wayland / Hyprland).
 
 import ctypes
 import os
 import pwd
+import select
 import selectors
 import signal
 import socket
@@ -32,7 +32,8 @@ LOGIND_MGR = "org.freedesktop.login1.Manager"
 MAX_ATTEMPTS = 3
 AUTH_TIMEOUT = 120.0
 HBUF_CAP = 65536        # helper protocol lines must stay sane
-PWBUF_CAP = 8192        # a password longer than this is garbage
+PWBUF_CAP = 8192        # a password longer than this is invalid input
+
 BUS_NAME_WATCH_RULE = (
     "type='signal',sender='org.freedesktop.DBus',"
     "interface='org.freedesktop.DBus',member='NameOwnerChanged',"
@@ -47,28 +48,49 @@ BENIGN_ERRORS = frozenset({
 
 INTROSPECT_XML = (
     '<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN" '
-    '"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd"><node>'
-    '<interface name="org.freedesktop.PolicyKit1.AuthenticationAgent">'
-    '<method name="BeginAuthentication">'
-    '<arg direction="in" type="s"/><arg direction="in" type="s"/>'
-    '<arg direction="in" type="s"/><arg direction="in" type="a{ss}"/>'
-    '<arg direction="in" type="s"/><arg direction="in" type="a(sa{sv})"/>'
-    "</method>"
-    '<method name="CancelAuthentication"><arg direction="in" type="s"/></method>'
-    "</interface></node>"
+    '"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">\n'
+    '<node>\n'
+    '  <interface name="org.freedesktop.DBus.Introspectable">\n'
+    '    <method name="Introspect">\n'
+    '      <arg name="xml_data" type="s" direction="out"/>\n'
+    '    </method>\n'
+    '  </interface>\n'
+    '  <interface name="org.freedesktop.DBus.Peer">\n'
+    '    <method name="Ping"/>\n'
+    '    <method name="GetMachineId">\n'
+    '      <arg name="machine_uuid" type="s" direction="out"/>\n'
+    '    </method>\n'
+    '  </interface>\n'
+    '  <interface name="org.freedesktop.PolicyKit1.AuthenticationAgent">\n'
+    '    <method name="BeginAuthentication">\n'
+    '      <arg name="action_id" type="s" direction="in"/>\n'
+    '      <arg name="message" type="s" direction="in"/>\n'
+    '      <arg name="icon_name" type="s" direction="in"/>\n'
+    '      <arg name="details" type="a{ss}" direction="in"/>\n'
+    '      <arg name="cookie" type="s" direction="in"/>\n'
+    '      <arg name="identities" type="a(sa{sv})" direction="in"/>\n'
+    '    </method>\n'
+    '    <method name="CancelAuthentication">\n'
+    '      <arg name="cookie" type="s" direction="in"/>\n'
+    '    </method>\n'
+    '  </interface>\n'
+    '</node>\n'
 )
 
 PROMPT_SH = (
     "stty -echo 2>/dev/null; "
     "trap 'stty echo 2>/dev/null' EXIT INT TERM; "
-    'printf "%s\\n" "$DUSKY_NOTICE$DUSKY_MESSAGE"; '
+    'if [ -n "$DUSKY_NOTICE" ]; then printf "%s\\n" "$DUSKY_NOTICE"; fi; '
+    'printf "%s\\n" "$DUSKY_MESSAGE"; '
     'printf "%s" "$DUSKY_PROMPT"; '
     'IFS= read -rs pw && printf "%s\\n" "$pw" > "$DUSKY_FIFO"'
 )
 
-ALIGN = {"y": 1, "b": 4, "n": 2, "q": 2, "i": 4, "u": 4,
-         "x": 8, "t": 8, "d": 8, "s": 4, "o": 4, "g": 1,
-         "a": 4, "(": 8, "{": 8, "v": 1}
+ALIGN = {
+    "y": 1, "b": 4, "n": 2, "q": 2, "i": 4, "u": 4,
+    "x": 8, "t": 8, "d": 8, "s": 4, "o": 4, "g": 1,
+    "a": 4, "(": 8, "{": 8, "v": 1, "h": 4,
+}
 
 
 class BusError(Exception):
@@ -102,7 +124,7 @@ def _read_type(sig: str, i: int) -> tuple[object, int]:
         node: list = [c]
         closer = ")" if c == "(" else "}"
         i += 1
-        while sig[i] != closer:
+        while i < len(sig) and sig[i] != closer:
             child, i = _read_type(sig, i)
             node.append(child)
         return node, i + 1
@@ -127,6 +149,8 @@ def first_char(node) -> str:
 class Writer:
     """Marshals python values into D-Bus wire bytes (little endian)."""
 
+    __slots__ = ("buf",)
+
     def __init__(self) -> None:
         self.buf = bytearray()
 
@@ -141,15 +165,16 @@ class Writer:
                 self.pad(4)
                 len_pos = len(self.buf)
                 self.buf += b"\0\0\0\0"
-                self.pad(ALIGN[first_char(elem)])
-                start = len(self.buf)
-                if isinstance(v, dict):
-                    for k, val in v.items():
-                        self.put(elem, [k, val])
-                else:
-                    for item in v:
-                        self.put(elem, item)
-                struct.pack_into("<I", self.buf, len_pos, len(self.buf) - start)
+                if v:
+                    self.pad(ALIGN[first_char(elem)])
+                    start = len(self.buf)
+                    if isinstance(v, dict):
+                        for k, val in v.items():
+                            self.put(elem, [k, val])
+                    else:
+                        for item in v:
+                            self.put(elem, item)
+                    struct.pack_into("<I", self.buf, len_pos, len(self.buf) - start)
             elif kind == "(":
                 self.pad(8)
                 for sub, item in zip(node[1:], v):
@@ -170,10 +195,10 @@ class Writer:
             self.buf += struct.pack("<h", v)
         elif c == "q":
             self.buf += struct.pack("<H", v)
+        elif c in "uh":
+            self.buf += struct.pack("<I", v)
         elif c == "i":
             self.buf += struct.pack("<i", v)
-        elif c == "u":
-            self.buf += struct.pack("<I", v)
         elif c == "x":
             self.buf += struct.pack("<q", v)
         elif c == "t":
@@ -181,11 +206,11 @@ class Writer:
         elif c == "d":
             self.buf += struct.pack("<d", v)
         elif c in "so":
-            raw = v.encode()
+            raw = v.encode() if isinstance(v, str) else v
             self.buf += struct.pack("<I", len(raw))
             self.buf += raw + b"\0"
         elif c == "g":
-            raw = v.encode()
+            raw = v.encode() if isinstance(v, str) else v
             self.buf.append(len(raw))
             self.buf += raw + b"\0"
         elif c == "v":
@@ -238,6 +263,8 @@ class Reader:
                 elem = node[1]
                 self.align(4)
                 ln = self.u32()
+                if ln == 0:
+                    return []
                 self.align(ALIGN[first_char(elem)])
                 end = self.p + ln
                 out = []
@@ -262,7 +289,7 @@ class Reader:
             return struct.unpack("<H", self.take(2))[0]
         if c == "i":
             return struct.unpack("<i", self.take(4))[0]
-        if c == "u":
+        if c in "uh":
             return struct.unpack("<I", self.take(4))[0]
         if c == "x":
             return struct.unpack("<q", self.take(8))[0]
@@ -290,13 +317,10 @@ def build_message(mtype: int, flags: int, serial: int,
 
     hf = Writer()
     for code, kind, val in fields:
-        # header fields are struct(byte, variant); encode the variant
-        # directly as g-signature + scalar rather than routing through
-        # the generic variant writer (which would re-parse sig strings)
         hf.pad(8)
         hf.buf.append(code)
         hf.put("g", kind)
-        if kind == "u":
+        if kind in "uh":
             hf.put("u", val)
         else:
             hf.put(kind, val)  # s / o / g
@@ -319,25 +343,27 @@ def parse_message(buf: bytes) -> tuple[dict, int] | tuple[None, int]:
     if len(buf) < total:
         return None, 0
 
-    # the uint32 at offset 12 IS the header-array length; the array
-    # content itself starts at offset 16 with no extra inline count
-    hr = Reader(buf[16:hdr_end])
-    fields: dict[int, object] = {}
-    while hr.p < hlen:
-        hr.align(8)
-        code = hr.take(1)[0]
-        sig = hr._gstr()
-        fields[code] = hr.value(parse_sig(sig)[0])
+    try:
+        hr = Reader(buf[16:hdr_end])
+        fields: dict[int, object] = {}
+        while hr.p < hlen:
+            hr.align(8)
+            code = hr.take(1)[0]
+            sig = hr._gstr()
+            fields[code] = hr.value(parse_sig(sig)[0])
 
-    vals = ()
-    sig = fields.get(8)
-    if body_len and sig:
-        br = Reader(buf[body_start:total])
-        vals = tuple(br.value(node) for node in parse_sig(sig))
+        vals = ()
+        sig = fields.get(8)
+        if body_len and sig:
+            br = Reader(buf[body_start:total])
+            vals = tuple(br.value(node) for node in parse_sig(sig))
 
-    msg = {"type": buf[1], "flags": buf[2], "serial": serial,
-           "fields": fields, "sig": sig, "body": vals}
-    return msg, total
+        msg = {"type": buf[1], "flags": buf[2], "serial": serial,
+               "fields": fields, "sig": sig, "body": vals}
+        return msg, total
+    except Exception as e:
+        log(f"warning: failed to decode D-Bus message serial={serial}: {e}")
+        return None, total
 
 
 class Agent:
@@ -347,10 +373,9 @@ class Agent:
         self.rbuf = b""
         self.serial = 0
         self.stopping = False
+        self.session_id: str = ""
         self.current: dict | None = None
         self.queue: deque[dict] = deque()
-        # agent-addressed messages stashed while a blocking sync_call was
-        # scanning the stream; drained back through dispatch by run()
         self.deferred: list[dict] = []
 
     # ---------------- bus plumbing ----------------
@@ -393,11 +418,12 @@ class Agent:
             except (BlockingIOError, InterruptedError):
                 if time.monotonic() > deadline:
                     raise OSError("send timeout")
-                time.sleep(0.001)
+                select.select([], [sk], [], 0.05)
 
     def send_msg(self, mtype: int, flags: int, fields: list,
                  body_sig: str = "", body_args=()) -> int:
-        assert self.sock is not None
+        if self.sock is None:
+            return 0
         self.serial += 1
         data = build_message(mtype, flags, self.serial, fields, body_sig, body_args)
         self.sendall_nb(self.sock, data)
@@ -412,26 +438,32 @@ class Agent:
 
     def sync_call(self, dest: str, path: str, iface: str, member: str,
                   sig: str, args: tuple, reply_sig: str) -> tuple:
+        assert self.sock is not None
         serial = self.send_msg(1, 0, self.call_fields(dest, path, iface, member, sig),
                                sig, args)
         deadline = time.monotonic() + 10.0
         off = 0
         while True:
             msg, used = parse_message(self.rbuf[off:])
-            if msg is None:
-                if time.monotonic() > deadline:
+            if used == 0:
+                rem = deadline - time.monotonic()
+                if rem <= 0:
                     self.rbuf = self.rbuf[off:]
                     raise BusError(f"timeout awaiting reply for {member}")
+                r, _, _ = select.select([self.sock], [], [], min(rem, 1.0))
+                if not r:
+                    continue
                 try:
-                    chunk = self.sock.recv(65536)  # type: ignore[union-attr]
+                    chunk = self.sock.recv(65536)
                 except (BlockingIOError, InterruptedError):
-                    time.sleep(0.005)
                     continue
                 if not chunk:
                     raise BusError("bus closed awaiting reply")
                 self.rbuf += chunk
                 continue
             off += used
+            if msg is None:
+                continue
             if msg["type"] == 2 and msg["fields"].get(5) == serial:
                 self.rbuf = self.rbuf[off:]
                 return msg["body"]
@@ -440,10 +472,8 @@ class Agent:
                 text = msg["body"][0] if msg["body"] else ""
                 self.rbuf = self.rbuf[off:]
                 raise BusError(f"{iface}.{member}: {err}: {text}")
-            if msg["type"] == 1 and msg["fields"].get(1) == OBJ_PATH:
-                # never swallow live agent traffic while blocking on a
-                # reply (e.g. Begin racing our post-restart re-register)
-                self.deferred.append(msg)
+            # Any other message or signal received during sync_call must be preserved
+            self.deferred.append(msg)
 
     # ---------------- registration ----------------
 
@@ -453,8 +483,7 @@ class Agent:
 
     @staticmethod
     def unescape_component(comp: str) -> str:
-        if comp.startswith("_"):
-            comp = comp[1:]
+        """Decode systemd sd-bus path component escaping (e.g. _33 -> 3, _2d1 -> -1)."""
         out, i = [], 0
         while i < len(comp):
             if comp[i] == "_" and i + 3 <= len(comp):
@@ -469,19 +498,57 @@ class Agent:
         return "".join(out)
 
     def resolve_session(self) -> str:
-        sid = os.environ.get("XDG_SESSION_ID", "")
+        sid = os.environ.get("XDG_SESSION_ID", "").strip()
         if sid:
             return sid
-        log("XDG_SESSION_ID unset; asking logind via GetSessionByPID")
-        obj_path = self.sync_call(LOGIND_NAME, LOGIND_PATH, LOGIND_MGR,
-                                  "GetSessionByPID", "u",
-                                  (os.getpid(),), "o")[0]
-        comp = obj_path.rstrip("/").rsplit("/", 1)[-1]
-        return self.unescape_component(comp)
+
+        # Tier 2: Try GetSessionByPID for this process
+        try:
+            obj_path = self.sync_call(LOGIND_NAME, LOGIND_PATH, LOGIND_MGR,
+                                      "GetSessionByPID", "u",
+                                      (os.getpid(),), "o")[0]
+            comp = obj_path.rstrip("/").rsplit("/", 1)[-1]
+            resolved = self.unescape_component(comp)
+            if resolved:
+                return resolved
+        except Exception:
+            pass
+
+        # Tier 3: Query logind User object for active session
+        try:
+            uid = os.getuid()
+            user_obj = self.sync_call(LOGIND_NAME, LOGIND_PATH, LOGIND_MGR,
+                                      "GetUser", "u", (uid,), "o")[0]
+            # Try Display property (so)
+            prop = self.sync_call(LOGIND_NAME, user_obj,
+                                  "org.freedesktop.DBus.Properties",
+                                  "Get", "ss",
+                                  ("org.freedesktop.login1.User", "Display"),
+                                  "v")[0]
+            if prop and isinstance(prop, tuple) and len(prop) > 1:
+                disp_val = prop[1]
+                if isinstance(disp_val, (tuple, list)) and disp_val and disp_val[0]:
+                    return str(disp_val[0])
+
+            # Try Sessions property a(so)
+            prop_sess = self.sync_call(LOGIND_NAME, user_obj,
+                                       "org.freedesktop.DBus.Properties",
+                                       "Get", "ss",
+                                       ("org.freedesktop.login1.User", "Sessions"),
+                                       "v")[0]
+            if prop_sess and isinstance(prop_sess, tuple) and len(prop_sess) > 1:
+                sess_list = prop_sess[1]
+                if isinstance(sess_list, (tuple, list)) and sess_list:
+                    return str(sess_list[0][0])
+        except Exception as e:
+            log(f"warning: logind user query failed: {e}")
+
+        raise BusError("unable to resolve logind session ID")
 
     def register(self) -> None:
         session_id = self.resolve_session()
-        lang = os.environ.get("LANG", "")
+        self.session_id = session_id
+        lang = os.environ.get("LANG", "C.UTF-8")
         last_err: Exception = BusError("unreachable")
         for attempt in range(3):
             try:
@@ -492,9 +559,6 @@ class Agent:
                 return
             except BusError as e:
                 last_err = e
-                # a predecessor that died moments ago may still own the
-                # slot; polkitd drops it as soon as its bus connection
-                # closes, so a short backoff resolves the race
                 log(f"register attempt {attempt + 1} failed: {e}")
                 time.sleep(0.5)
         raise last_err
@@ -509,21 +573,24 @@ class Agent:
             log(f"warning: NameOwnerChanged watch failed: {e}")
 
     def reregister(self) -> None:
+        # Cancel any stale in-flight authentication from old polkitd instance
+        if self.current is not None:
+            cur = self.current
+            self.finish_auth(cur, cancelled=True)
+        self.queue.clear()
         try:
             self.register()
         except Exception as e:
-            # stay alive; polkitd dispatching to us will fail until this
-            # succeeds but killing ourselves would just add churn
-            log(f"re-registration failed (will not retry automatically): {e}")
+            log(f"re-registration failed: {e}")
 
     def unregister(self) -> None:
         try:
-            session_id = os.environ.get("XDG_SESSION_ID", "")
-            if not session_id:
+            sid = self.session_id or os.environ.get("XDG_SESSION_ID", "")
+            if not sid:
                 return
             self.sync_call(BUS_NAME, AUTHORITY_PATH, AUTHORITY_IFACE,
                            "UnregisterAuthenticationAgent", "(sa{sv})s",
-                           (self.subject(session_id), OBJ_PATH), "")
+                           (self.subject(sid), OBJ_PATH), "")
         except Exception:
             pass
 
@@ -553,15 +620,14 @@ class Agent:
         try:
             action_id, message, icon_name, details, cookie, identities = vals
         except (ValueError, TypeError):
-            # never let a malformed dispatch abort some other live auth
             log(f"malformed BeginAuthentication from {sender!r}; ignoring")
             return
-        # polkitd occasionally re-dispatches an in-flight cookie; answering
-        # twice would spawn duplicate prompts for one request
+
         if (self.current is not None and self.current["cookie"] == cookie) or \
                 any(q["cookie"] == cookie for q in self.queue):
             log(f"ignoring duplicate dispatch cookie={cookie}")
             return
+
         auth = {
             "sender": sender, "reply_serial": serial,
             "action": action_id, "message": message, "icon": icon_name,
@@ -569,7 +635,7 @@ class Agent:
             "attempts": 0, "prompted": False, "submitted": False,
             "notice": "", "helper": None, "hbuf": b"",
             "fifo_path": None, "fifo_fd": -1, "proc": None,
-            "fifobuf": b"", "deadline": 0.0,
+            "pidfd": -1, "fifobuf": b"", "deadline": 0.0,
         }
         if self.current is not None:
             self.queue.append(auth)
@@ -586,7 +652,6 @@ class Agent:
 
     @staticmethod
     def fifo_name(cookie: str) -> str:
-        # the cookie comes off the bus; never let it shape a raw filename
         safe = "".join(c for c in cookie if c.isalnum() or c in ".-_")[:64]
         return f"{safe or 'req'}.fifo"
 
@@ -611,7 +676,7 @@ class Agent:
             except FileExistsError:
                 pass
             auth["fifo_path"] = path
-        fd = os.open(auth["fifo_path"], os.O_RDWR | os.O_NONBLOCK)
+        fd = os.open(auth["fifo_path"], os.O_RDWR | os.O_NONBLOCK | os.O_CLOEXEC)
         auth["fifo_fd"] = fd
         self.sel.register(fd, selectors.EVENT_READ, "fifo")
         auth["fifobuf"] = b""
@@ -620,40 +685,52 @@ class Agent:
         term = os.environ.get("DUSKY_POLKIT_TERMINAL", "foot")
         cmd = term.split()
         extra = []
-        if os.path.basename(cmd[0]) == "foot":
-            extra = ["--app-id=dusky-polkit", "--title=Dusky Polkit"]
+        base = os.path.basename(cmd[0])
+        if base == "foot":
+            extra = [
+                "--app-id=dusky-polkit",
+                "--title=Dusky Polkit",
+                "--window-size-chars=66x10",
+                "--override=pad=16x16",
+            ]
+        elif base == "kitty":
+            extra = ["--class=dusky-polkit", "--title=Dusky Polkit"]
+        elif base in ("alacritty", "ghostty"):
+            extra = ["--class=dusky-polkit,dusky-polkit", "--title=Dusky Polkit", "-e"]
+
         env = dict(os.environ)
         env.update({
             "DUSKY_FIFO": auth["fifo_path"] or "",
             "DUSKY_NOTICE": notice,
-            "DUSKY_PROMPT": f"Password for {auth['user']}: ",
+            "DUSKY_USER": auth["user"],
+            "DUSKY_ACTION": auth["action"],
             "DUSKY_MESSAGE": auth["message"] or f"Authentication required ({auth['action']})",
         })
-        # a retry spawns a fresh window; the stale one still blocks on its
-        # own read() and must be reaped before the reference is replaced
-        old = auth.get("proc")
-        if old is not None and old.poll() is None:
-            old.kill()
-            try:
-                old.wait(timeout=1.0)
-            except subprocess.TimeoutExpired:
-                pass
-        proc: subprocess.Popen | None
+
+        self.kill_terminal(auth)
+
         try:
+            runner = ["/usr/bin/python3", os.path.abspath(__file__), "--ui"]
+            exec_args = cmd + extra + runner
             proc = subprocess.Popen(
-                cmd + extra + ["sh", "-c", PROMPT_SH],
+                exec_args,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 env=env,
                 start_new_session=True,
             )
+            auth["proc"] = proc
+            # Register Linux pidfd in selectors for instantaneous child exit notification
+            try:
+                pfd = os.pidfd_open(proc.pid)
+                auth["pidfd"] = pfd
+                self.sel.register(pfd, selectors.EVENT_READ, "child")
+            except Exception:
+                auth["pidfd"] = -1
         except OSError as e:
-            # terminal missing/broken: say so loudly, then let the caller's
-            # error path complete this auth as cancelled (no dead-end UI)
             log(f"terminal spawn failed ({cmd[0]}): {e}")
             raise
-        auth["proc"] = proc
 
     def connect_helper(self, auth: dict) -> bool:
         try:
@@ -668,14 +745,17 @@ class Agent:
         auth["helper"] = sk
         auth["hbuf"] = b""
         auth["prompted"] = False
-        # fresh conversation: allow a new password submission on retries
         auth["submitted"] = False
         self.sel.register(sk, selectors.EVENT_READ, "helper")
         return True
 
     def start_auth(self, auth: dict) -> None:
         self.open_fifo(auth)
-        self.spawn_terminal(auth, auth["notice"])
+        try:
+            self.spawn_terminal(auth, auth["notice"])
+        except Exception:
+            self.finish_auth(auth, cancelled=True)
+            return
         auth["notice"] = ""
         if not self.connect_helper(auth):
             self.helper_failed(auth)
@@ -700,24 +780,26 @@ class Agent:
             self.auth_failure(auth)
 
     def auth_failure(self, auth: dict) -> None:
-        had_prompt = auth["prompted"]
+        had_prompt = auth.get("prompted", False)
         self.drop_helper(auth)
-        auth["attempts"] += 1
+        auth["attempts"] = auth.get("attempts", 0) + 1
         if not had_prompt:
-            # Helper refused outright (locked account, broken PAM).
-            # Complete silently so polkitd does not re-dispatch forever.
-            log(f"helper failed before prompt cookie={auth['cookie']}")
+            log(f"helper failed before prompt cookie={auth.get('cookie', '?')}")
             self.finish_auth(auth, cancelled=True)
             return
         if auth["attempts"] >= MAX_ATTEMPTS:
-            log(f"auth failed after {auth['attempts']} attempts cookie={auth['cookie']}")
+            log(f"auth failed after {auth['attempts']} attempts cookie={auth.get('cookie', '?')}")
             self.finish_auth(auth, error=True)
             return
-        notice = auth["notice"] or f"Authentication failed (attempt {auth['attempts'] + 1}/{MAX_ATTEMPTS})\n"
+        notice = auth.get("notice") or f"Authentication failed (attempt {auth['attempts'] + 1}/{MAX_ATTEMPTS})\n"
         auth["notice"] = notice
-        log(f"retry {auth['attempts'] + 1}/{MAX_ATTEMPTS} cookie={auth['cookie']}")
+        log(f"retry {auth['attempts'] + 1}/{MAX_ATTEMPTS} cookie={auth.get('cookie', '?')}")
         self.open_fifo(auth)
-        self.spawn_terminal(auth, auth["notice"])
+        try:
+            self.spawn_terminal(auth, auth["notice"])
+        except Exception:
+            self.finish_auth(auth, cancelled=True)
+            return
         auth["notice"] = ""
         if not self.connect_helper(auth):
             self.helper_failed(auth)
@@ -725,15 +807,12 @@ class Agent:
         auth["deadline"] = time.monotonic() + AUTH_TIMEOUT
 
     def helper_failed(self, auth: dict) -> None:
-        # Socket unreachable/broken: cannot authenticate at all.
         self.finish_auth(auth, cancelled=True)
 
     def submit_password(self, auth: dict, password: str) -> None:
         if auth["submitted"]:
             return
         if auth["helper"] is None:
-            # helper died between prompt and submission; a silent drop here
-            # would leave the window accepting passwords that go nowhere
             log(f"password arrived with no helper cookie={auth['cookie']}")
             self.close_fifo(auth)
             self.auth_failure(auth)
@@ -755,7 +834,10 @@ class Agent:
                 self.sel.unregister(fd)
             except (KeyError, ValueError):
                 pass
-            os.close(fd)
+            try:
+                os.close(fd)
+            except OSError:
+                pass
             auth["fifo_fd"] = -1
         auth["fifobuf"] = b""
 
@@ -773,17 +855,30 @@ class Agent:
             auth["helper"] = None
 
     def kill_terminal(self, auth: dict) -> None:
-        proc = auth["proc"]
-        if proc is None:
-            return
-        if proc.poll() is None:
-            # foot ignores SIGTERM in this context; escalate hard
-            proc.kill()
+        pfd = auth.get("pidfd", -1)
+        if pfd >= 0:
             try:
-                proc.wait(timeout=2.0)
-            except subprocess.TimeoutExpired:
+                self.sel.unregister(pfd)
+            except (KeyError, ValueError):
                 pass
-        auth["proc"] = None
+            try:
+                os.close(pfd)
+            except OSError:
+                pass
+            auth["pidfd"] = -1
+
+        proc = auth.get("proc")
+        if proc is not None:
+            if proc.poll() is None:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except OSError:
+                    proc.kill()
+                try:
+                    proc.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    pass
+            auth["proc"] = None
 
     def finish_auth(self, auth: dict, ok: bool = False,
                     cancelled: bool = False, error: bool = False) -> None:
@@ -802,8 +897,6 @@ class Agent:
                              "org.freedesktop.PolicyKit1.Error.Failed",
                              "Authentication failed")
         else:
-            # empty method-return covers both success and user-cancel,
-            # matching how upstream agents reply to avoid redispatch loops
             self.reply_return(auth["sender"], auth["reply_serial"])
 
         if self.current is auth:
@@ -817,7 +910,7 @@ class Agent:
             log(f"cancelled by authority cookie={cookie}")
             self.finish_auth(cur, cancelled=True)
             return
-        for queued in self.queue:
+        for queued in list(self.queue):
             if queued["cookie"] == cookie:
                 self.queue.remove(queued)
                 self.reply_return(queued["sender"], queued["reply_serial"])
@@ -852,8 +945,6 @@ class Agent:
                 raise ConnectionError("bus disconnected")
             if member == "NameOwnerChanged" and msg["body"] and msg["body"][0] == BUS_NAME:
                 if msg["body"][2]:
-                    # polkitd came back (crash/restart): its memory of us
-                    # died with it; claim the slot again immediately
                     log(f"polkitd reappeared (owner {msg['body'][2]}); re-registering")
                     self.reregister()
                 return
@@ -877,6 +968,8 @@ class Agent:
             self.send_msg(2, 1,
                           [(5, "u", msg["serial"]), (6, "s", sender),
                            (8, "g", "s")], "s", (INTROSPECT_XML,))
+        elif member == "Ping":
+            self.reply_return(sender, msg["serial"])
         else:
             self.reply_error(sender, msg["serial"],
                              "org.freedesktop.DBus.Error.UnknownMethod",
@@ -895,10 +988,11 @@ class Agent:
         self.rbuf += chunk
         while True:
             msg, used = parse_message(self.rbuf)
-            if msg is None:
+            if used == 0:
                 break
             self.rbuf = self.rbuf[used:]
-            self.dispatch(msg)
+            if msg is not None:
+                self.dispatch(msg)
 
     def pump_helper(self, auth: dict) -> None:
         sk = auth["helper"]
@@ -912,13 +1006,10 @@ class Agent:
             self.auth_failure(auth)
             return
         if not chunk:
-            # helper hung up: with no prior prompt this is fatal (mirrors
-            # upstream); otherwise treat like FAILURE to allow retry
             self.auth_failure(auth)
             return
         auth["hbuf"] += chunk
         if len(auth["hbuf"]) > HBUF_CAP:
-            # protocol violation: peer flooding without newline framing
             log(f"helper buffer overflow cookie={auth['cookie']}")
             self.finish_auth(auth, cancelled=True)
             return
@@ -944,7 +1035,6 @@ class Agent:
                 break
             auth["fifobuf"] += chunk
             if len(auth["fifobuf"]) > PWBUF_CAP:
-                # nobody types an 8 KB password; this is garbage input
                 log(f"password buffer overflow cookie={auth['cookie']}")
                 self.finish_auth(auth, cancelled=True)
                 return
@@ -954,16 +1044,14 @@ class Agent:
                 self.submit_password(auth, password)
                 break
 
-    def reap_terminal(self, auth: dict) -> None:
-        proc = auth["proc"]
-        if proc is None or auth["submitted"]:
-            return
-        if proc.poll() is not None:
+    def handle_child_exit(self, auth: dict) -> None:
+        # Prompt window closed/killed
+        self.kill_terminal(auth)
+        if not auth["submitted"]:
             log(f"user closed prompt cookie={auth['cookie']}")
             self.finish_auth(auth, cancelled=True)
 
     def run(self) -> None:
-        last_poll = 0.0
         while not self.stopping:
             if self.deferred:
                 stash, self.deferred = self.deferred, []
@@ -972,12 +1060,17 @@ class Agent:
                         self.dispatch(msg)
                     except Exception as e:
                         log(f"deferred dispatch error: {e}")
+
             timeout = 1.0
             if self.current is not None:
                 remaining = self.current["deadline"] - time.monotonic()
+                if remaining <= 0:
+                    log(f"auth timed out cookie={self.current['cookie']}")
+                    self.finish_auth(self.current, cancelled=True)
+                    continue
                 timeout = max(0.05, min(timeout, remaining))
+
             events = self.sel.select(timeout)
-            now = time.monotonic()
             for key, _mask in events:
                 try:
                     if key.data == "bus":
@@ -986,25 +1079,21 @@ class Agent:
                         self.pump_helper(self.current)
                     elif key.data == "fifo" and self.current is not None:
                         self.pump_fifo(self.current)
+                    elif key.data == "child" and self.current is not None:
+                        self.handle_child_exit(self.current)
                 except ConnectionError:
-                    # bus death must escape: swallowing it here would spin
-                    # forever on a dead socket instead of restarting
                     raise
                 except Exception as e:
-                    # never let a single malformed exchange kill the agent
                     log(f"event handler error ({key.data}): {e}")
                     cur = self.current
                     if cur is not None:
                         self.finish_auth(cur, cancelled=True)
-                now = time.monotonic()
+
             cur = self.current
             if cur is not None:
-                if now >= cur["deadline"]:
+                if time.monotonic() >= cur["deadline"]:
                     log(f"auth timed out cookie={cur['cookie']}")
                     self.finish_auth(cur, cancelled=True)
-                elif now - last_poll >= 0.25:
-                    last_poll = now
-                    self.reap_terminal(cur)
 
     def shutdown_cleanup(self) -> None:
         if self.current is not None:
@@ -1023,12 +1112,83 @@ class Agent:
                 self.sel.unregister(self.sock)
             except (KeyError, ValueError):
                 pass
-            self.sock.close()
+            try:
+                self.sock.close()
+            except OSError:
+                pass
+
+
+def run_ui() -> int:
+    """Standalone child prompter executed in the transient terminal window."""
+    import getpass
+    fifo_path = os.environ.get("DUSKY_FIFO", "")
+    notice = os.environ.get("DUSKY_NOTICE", "").strip()
+    message = os.environ.get("DUSKY_MESSAGE", "Authentication is required").strip()
+    action = os.environ.get("DUSKY_ACTION", "").strip()
+    user = os.environ.get("DUSKY_USER", os.environ.get("USER", "root")).strip()
+
+    try:
+        from rich.console import Console
+        from rich.panel import Panel
+        from rich.table import Table
+        from rich.text import Text
+
+        console = Console(highlight=False, soft_wrap=True)
+
+        grid = Table.grid(padding=(0, 0))
+        grid.add_column()
+
+        if notice:
+            grid.add_row(Text(f"⚠  {notice}", style="bold red"))
+            grid.add_row(Text(""))
+
+        grid.add_row(Text(message, style="bold white"))
+
+        if action:
+            grid.add_row(Text(""))
+            grid.add_row(Text("Action: ", style="dim") + Text(action, style="cyan"))
+
+        grid.add_row(Text("User:   ", style="dim") + Text(user, style="bold green"))
+
+        panel = Panel(
+            grid,
+            title="[bold bright_cyan]🔒 Dusky Polkit[/bold bright_cyan]",
+            subtitle="[dim]Authentication Agent[/dim]",
+            border_style="bright_blue",
+            padding=(1, 2),
+        )
+
+        console.print(panel)
+        console.print(f"[bold bright_white]Password for [bold green]{user}[/bold green]: [/bold bright_white]", end="", flush=True)
+    except Exception:
+        # Fallback to standard ANSI output if rich is unavailable
+        if notice:
+            print(f"\033[1;31m⚠  {notice}\033[0m")
+        print(f"\033[1;37m{message}\033[0m")
+        if action:
+            print(f"\033[2mAction:\033[0m \033[36m{action}\033[0m")
+        print(f"\033[2mUser:\033[0m   \033[1;32m{user}\033[0m")
+        print(f"Password for {user}: ", end="", flush=True)
+
+    try:
+        pw = getpass.getpass(prompt="")
+    except (KeyboardInterrupt, EOFError):
+        return 1
+
+    if fifo_path:
+        try:
+            with open(fifo_path, "w", encoding="utf-8") as f:
+                f.write(pw + "\n")
+                f.flush()
+        except OSError:
+            return 1
+
+    return 0
 
 
 def main() -> int:
     agent = Agent()
-    for sig_name in ("SIGTERM", "SIGINT"):
+    for sig_name in ("SIGTERM", "SIGINT", "SIGHUP"):
         signum = getattr(signal, sig_name, None)
         if signum is not None:
             signal.signal(signum, lambda *_: setattr(agent, "stopping", True))
@@ -1048,8 +1208,6 @@ def main() -> int:
         log(f"bus lost: {e}; exiting (systemd will restart)")
         return 1
     except Exception as e:
-        # exit non-zero so systemd's Restart=on-failure brings us back;
-        # the traceback in the journal keeps the cause visible
         import traceback
         traceback.print_exc()
         log(f"unexpected failure: {e}")
@@ -1060,4 +1218,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--ui":
+        sys.exit(run_ui())
     sys.exit(main())
