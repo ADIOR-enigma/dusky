@@ -22,6 +22,12 @@ type KernelMeta = dict[str, Any]
 type EntryMap = dict[str, KernelMeta]
 type ChangeTuple = tuple[str, str, str, str]
 
+# systemd-boot vendor GUID (Boot Loader Interface UAPI specification, stable)
+_SD_BOOT_GUID = "4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
+_EFI_VAR_DIR = Path("/sys/firmware/efi/efivars")
+_EFIVAR_LOADER_ENTRIES  = _EFI_VAR_DIR / f"LoaderEntries-{_SD_BOOT_GUID}"
+_EFIVAR_ENTRY_DEFAULT   = _EFI_VAR_DIR / f"LoaderEntryDefault-{_SD_BOOT_GUID}"
+
 
 # =============================================================================
 # KERNEL AND ENTRY NAME NORMALIZATION UTILITIES
@@ -159,6 +165,30 @@ def discover_all_kernels_and_entries() -> EntryMap:
                     }
     except Exception:
         pass
+
+    # EFI variable fallback: LoaderEntries is world-readable and provides exact entry IDs
+    # even when /boot/loader/entries is permission-denied for non-root discovery
+    if _EFIVAR_LOADER_ENTRIES.is_file():
+        try:
+            raw_bytes = _EFIVAR_LOADER_ENTRIES.read_bytes()
+            efi_str = raw_bytes[4:].decode("utf-16-le").rstrip("\x00")
+            for entry_id in efi_str.split("\x00"):
+                entry_id = entry_id.strip()
+                if not entry_id or entry_id.startswith("auto-"):
+                    continue
+                clean = clean_kernel_name(entry_id)
+                if clean not in results or not results[clean].get("entry_file"):
+                    results[clean] = {
+                        "clean_name": clean,
+                        "entry_file": entry_id if entry_id.endswith(".conf") else f"{entry_id}.conf",
+                        "entry_path": "",
+                        "kver": "",
+                        "title": clean,
+                        "hint": f"Boot entry: {entry_id}",
+                        "source": "efi_var",
+                    }
+        except Exception:
+            pass
 
     # Direct filesystem scan of ESP entries
     for entries_dir in esp_entry_dirs:
@@ -452,18 +482,17 @@ class SystemdBootEngine(BaseEngine):
         if p and p.is_file():
             return p.name
 
-        # 3. Derive standard filename / wildcard fallback
+        # 3. Derive standard filename / glob fallback (per loader.conf(5), entry IDs
+        #    include the literal ".conf" suffix and glob matching is case-insensitive)
         cl = clean_name.lower()
+        slug = cl.replace(" ", "-")
         match cl:
             case "arch linux":
                 return "arch-linux.conf"
             case "arch linux (fallback)":
                 return "arch-linux-fallback.conf"
-            case _ if cl.startswith("dusky "):
-                sub = cl[6:].replace(" ", "-")
-                return f"*{sub}*"
             case _:
-                return f"*{clean_name.replace(' ', '-').lower()}*"
+                return f"*{slug}*.conf"
 
     def load_state(self) -> dict[str, Any]:
         self.cache = BridgedStateDict()
@@ -489,6 +518,22 @@ class SystemdBootEngine(BaseEngine):
                             else:
                                 self.cache[f"LOADER/{k}"] = raw_val
             except OSError:
+                pass
+
+        # Cross-check against the LoaderEntryDefault EFI variable, which takes
+        # absolute precedence over loader.conf at boot time. If the variable is
+        # set, it represents the actual effective default regardless of loader.conf.
+        if _EFIVAR_ENTRY_DEFAULT.is_file():
+            try:
+                efi_bytes = _EFIVAR_ENTRY_DEFAULT.read_bytes()
+                efi_default = efi_bytes[4:].decode("utf-16-le").rstrip("\x00")
+                if efi_default:
+                    efi_clean = self.map_raw_to_clean(efi_default)
+                    raw_default = efi_default
+                    clean_default = efi_clean
+                    self.cache["LOADER/default"] = efi_clean
+                    self.cache["LOADER/default_raw"] = efi_default
+            except Exception:
                 pass
 
         # Target entry selection state (defaults to Auto)
@@ -675,7 +720,32 @@ class SystemdBootEngine(BaseEngine):
                     out_lines.append(f"{k:<16}{val_s}")
 
         content = "\n".join(out_lines) + "\n"
-        return self._atomic_write(self.loader_conf_path, content)
+        ok, msg = self._atomic_write(self.loader_conf_path, content)
+        if not ok:
+            return ok, msg
+
+        # Sync the LoaderEntryDefault EFI variable via bootctl set-default.
+        # The EFI variable takes absolute precedence over loader.conf at boot time
+        # (per loader.conf(5): "the name of the selected entry will be stored as an
+        # EFI variable, overriding this option"), so we must update it atomically
+        # whenever the default changes, otherwise the change silently has no effect.
+        if "default" in changes_dict:
+            default_val = changes_dict["default"]
+            # Per bootctl(1): passing "" clears the EFI variable, restoring
+            # loader.conf as the sole source of truth for the default entry.
+            bootctl_arg = default_val if default_val not in ("unset", "__delete__", "") else ""
+            try:
+                res = subprocess.run(
+                    ["bootctl", "set-default", bootctl_arg],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if res.returncode != 0:
+                    stderr = (res.stderr or "").strip()
+                    msg += f" (Warning: bootctl set-default failed: {stderr})"
+            except Exception:
+                pass
+
+        return ok, msg
 
     def _write_entry_conf(self, changes: list[ChangeTuple]) -> tuple[bool, str]:
         lines: list[str] = []
