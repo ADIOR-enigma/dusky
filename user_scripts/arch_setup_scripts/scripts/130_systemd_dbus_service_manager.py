@@ -46,6 +46,9 @@ class SymlinkConfig:
 # 1. Systemd User Services (Target: ~/.config/systemd/user/)
 # ------------------------------------------------------------------------------
 USER_SERVICES: list[ServiceConfig] = [
+    # Dusky Polkit Authentication Agent (Default: Enable)
+    # NOTE: replaces hyprpolkitagent - disable that one to avoid double prompts.
+    ServiceConfig("$HOME/user_scripts/dusky_system/dusky_polkit/dusky_polkit.service", "disable"),
     # Network Meter (Default: Enable)
     ServiceConfig("$HOME/user_scripts/waybar/network/network_meter.service", "enable"),
     # Dusky Control Center Daemon (Default: Disable)
