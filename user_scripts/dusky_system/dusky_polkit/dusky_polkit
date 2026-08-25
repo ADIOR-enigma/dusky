@@ -7,6 +7,7 @@
 # Optimized for modern Arch Linux (Wayland / Hyprland).
 
 import ctypes
+import gc
 import os
 import pwd
 import select
@@ -105,8 +106,12 @@ _libc = None
 
 
 def trim_memory() -> None:
-    """Release glibc's retained free arenas back to the OS."""
+    """Collect Python garbage and release glibc free arenas back to the OS."""
     global _libc
+    try:
+        gc.collect()
+    except Exception:
+        pass
     try:
         if _libc is None:
             _libc = ctypes.CDLL("libc.so.6")
