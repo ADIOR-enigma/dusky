@@ -1545,7 +1545,7 @@ hl.window_rule({
     match = { class = "^(dusky-polkit)$" },
     float = true,
     center = true,
-    size = {640, 250},
+    size = {640, 240},
     pin = true,
     workspace = "unset",
     focus_on_activate = true,
