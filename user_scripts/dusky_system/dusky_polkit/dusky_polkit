@@ -1159,7 +1159,7 @@ def run_ui() -> int:
         grid.add_column()
 
         if notice:
-            grid.add_row(Text.from_markup(f"[bold #f38ba8]⚠  {notice}[/bold #f38ba8]"))
+            grid.add_row(Text.from_markup(f"[bold #f38ba8]  {notice}[/bold #f38ba8]"))
             grid.add_row(Text(""))
 
         grid.add_row(Text.from_markup(f"[bold #ffffff]{clean_msg}[/bold #ffffff]"))
@@ -1173,7 +1173,7 @@ def run_ui() -> int:
 
         panel = Panel(
             grid,
-            title="[bold #89b4fa]🔒 Dusky Polkit[/bold #89b4fa]",
+            title="[bold #89b4fa] Dusky Polkit[/bold #89b4fa]",
             border_style="bold #89b4fa",
             padding=(0, 2),
         )
