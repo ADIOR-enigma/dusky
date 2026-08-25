@@ -1527,7 +1527,7 @@ hl.window_rule({
     dim_around = true
 })
 
---- Hyprland Polkit Agent ---
+--- Legacy Polkit Agent (kept for compatibility) ---
 hl.window_rule({
     name = "pin-polkit-agent",
     match = { class = "^(hyprpolkitagent)$" },

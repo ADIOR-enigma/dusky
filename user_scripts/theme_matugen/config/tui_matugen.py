@@ -279,15 +279,6 @@ SCHEMA: dict[int, list[ConfigItem]] = {
             group="Dusky Services",
             extended_help="**Dusky Visualizer Colors**\n\nGenerates palette variables for desktop audio visualizer."
         ),
-        ConfigItem(
-            label="Hyprpolkit",
-            key="hyprpolkitagent",
-            scope="DEFAULT",
-            type_="bool",
-            default=True,
-            group="Authentication",
-            extended_help="**Hyprland Polkit Agent**\n\nRestarts `hyprpolkitagent` user service on theme updates."
-        ),
     ],
 
     # -------------------------------------------------------------------------
@@ -597,7 +588,7 @@ SCHEMA: dict[int, list[ConfigItem]] = {
                 "dusky_sites": True, "dusky_tui": True, "dusky_visualizer_colors": True,
                 "fastfetch": True, "foot": True, "gtk3": True, "gtk4": True,
                 "gtksourceview": True, "hyprland": True, "hyprlock": True,
-                "hyprpolkitagent": True, "icon_theme": True, "kate_syntax": True,
+                "icon_theme": True, "kate_syntax": True,
                 "kdeglobals": True, "khal": False, "kitty": True, "konsole": True,
                 "konsole_profile": True, "kvantum_kvconfig": False, "kvantum_svg": False,
                 "mako": True, "master_dump": False, "neovim": True, "obs": False,
@@ -608,7 +599,7 @@ SCHEMA: dict[int, list[ConfigItem]] = {
                 "vscode": False, "waybar": True, "wlogout": True, "yazi": True,
                 "zathura": False, "zed": False, "zellij": False
             },
-            extended_help="**Standard Workstation**\n\nCurated Dusky suite: GTK 3/4, Icons, Qt5/6, KDE (kdeglobals + kate_syntax + konsole), Hyprland stack (hyprland, hyprlock, waybar, wlogout, rofi, mako), theme_notify, hyprpolkitagent, dusky_tui/visualizer, kitty/foot, neovim/yazi, cava/btop/fastfetch, pywalfox/dusky_sites/papirus-folders, standalone_commands. All 51 keys listed explicitly so strict-snapshot semantics are predictable."
+            extended_help="**Standard Workstation**\n\nCurated Dusky suite: GTK 3/4, Icons, Qt5/6, KDE (kdeglobals + kate_syntax + konsole), Hyprland stack (hyprland, hyprlock, waybar, wlogout, rofi, mako), theme_notify, dusky_tui/visualizer, kitty/foot, neovim/yazi, cava/btop/fastfetch, pywalfox/dusky_sites/papirus-folders, standalone_commands. All 50 keys listed explicitly so strict-snapshot semantics are predictable."
         ),
         ConfigItem(
             label="Minimal — Core Only",
@@ -624,7 +615,7 @@ SCHEMA: dict[int, list[ConfigItem]] = {
                 "dusky_sites": False, "dusky_tui": True, "dusky_visualizer_colors": False,
                 "fastfetch": False, "foot": True, "gtk3": False, "gtk4": False,
                 "gtksourceview": False, "hyprland": True, "hyprlock": False,
-                "hyprpolkitagent": False, "icon_theme": False, "kate_syntax": False,
+                "icon_theme": False, "kate_syntax": False,
                 "kdeglobals": False, "khal": False, "kitty": True, "konsole": False,
                 "konsole_profile": False, "kvantum_kvconfig": False, "kvantum_svg": False,
                 "mako": True, "master_dump": False, "neovim": False, "obs": False,
@@ -651,7 +642,7 @@ SCHEMA: dict[int, list[ConfigItem]] = {
                 "dusky_sites": True, "dusky_tui": True, "dusky_visualizer_colors": True,
                 "fastfetch": True, "foot": True, "gtk3": True, "gtk4": True,
                 "gtksourceview": True, "hyprland": True, "hyprlock": True,
-                "hyprpolkitagent": True, "icon_theme": True, "kate_syntax": True,
+                "icon_theme": True, "kate_syntax": True,
                 "kdeglobals": True, "khal": True, "kitty": True, "konsole": True,
                 "konsole_profile": True, "kvantum_kvconfig": True, "kvantum_svg": True,
                 "mako": True, "master_dump": True, "neovim": True, "obs": True,

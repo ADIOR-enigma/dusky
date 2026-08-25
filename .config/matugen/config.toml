@@ -412,14 +412,6 @@ output_path = '~/.config/matugen/generated/dusky_sites.css'
 #   systemctl --user restart dusky_quickpanal.service || :
 # '''
 
-[templates.hyprpolkitagent]
-input_path  = '/dev/null'
-output_path = '/dev/null'
-post_hook   = '''
-  systemctl --user reset-failed hyprpolkitagent || :
-  systemctl --user restart hyprpolkitagent || :
-'''
-
 
 # =============================================================================
 # 5. Standalone Commands & Final Hooks

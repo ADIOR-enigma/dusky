@@ -3656,7 +3656,7 @@ class ServiceToggleRow(DynamicIconMixin, HyprlandIPCMixin, Adw.ActionRow, _Servi
 
     Efficiency: Checks state ONLY when mapped (page visible). No periodic polling.
     Correctness: If service was toggled outside CC, navigating back triggers fresh is-active.
-    Security: System scope uses pkexec → hyprpolkitagent prompts, caches via auth_admin_keep.
+    Security: System scope uses pkexec → dusky_polkit prompts, caches via auth_admin_keep.
     Robustness: Generation counters, cancellables, 4s/45s timeouts, revert on failure.
     """
 

@@ -47,7 +47,7 @@ class SymlinkConfig:
 # ------------------------------------------------------------------------------
 USER_SERVICES: list[ServiceConfig] = [
     # Dusky Polkit Authentication Agent (Default: Enable)
-    # NOTE: replaces hyprpolkitagent - disable that one to avoid double prompts.
+    # Replaces hyprpolkitagent (removed by 010_package_removal.sh).
     ServiceConfig("$HOME/user_scripts/dusky_system/dusky_polkit/dusky_polkit.service", "enable"),
     # Network Meter (Default: Enable)
     ServiceConfig("$HOME/user_scripts/waybar/network/network_meter.service", "enable"),
