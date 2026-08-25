@@ -1128,9 +1128,24 @@ def run_ui() -> int:
     import getpass
     fifo_path = os.environ.get("DUSKY_FIFO", "")
     notice = os.environ.get("DUSKY_NOTICE", "").strip()
-    message = os.environ.get("DUSKY_MESSAGE", "Authentication is required").strip()
+    message = os.environ.get("DUSKY_MESSAGE", "").strip()
     action = os.environ.get("DUSKY_ACTION", "").strip()
     user = os.environ.get("DUSKY_USER", os.environ.get("USER", "root")).strip()
+
+    # Simplify verbose polkit defaults to clean, intuitive phrasing
+    if not message or any(p in message for p in ("as another user", "as the super user")):
+        if "pkexec" in message or action == "org.freedesktop.policykit.exec":
+            clean_msg = "Root authorization required for pkexec"
+        else:
+            clean_msg = "Root password required to authenticate"
+    else:
+        prefix = "Authentication is required to "
+        if message.startswith(prefix):
+            clean_msg = message[len(prefix):].capitalize()
+        elif message.startswith("Authentication is needed to "):
+            clean_msg = message[28:].capitalize()
+        else:
+            clean_msg = message
 
     try:
         from rich.console import Console
@@ -1144,36 +1159,35 @@ def run_ui() -> int:
         grid.add_column()
 
         if notice:
-            grid.add_row(Text(f"⚠  {notice}", style="bold red"))
+            grid.add_row(Text.from_markup(f"[bold #f38ba8]⚠  {notice}[/bold #f38ba8]"))
             grid.add_row(Text(""))
 
-        grid.add_row(Text(message, style="bold white"))
+        grid.add_row(Text.from_markup(f"[bold #ffffff]{clean_msg}[/bold #ffffff]"))
+        grid.add_row(Text(""))
 
-        if action:
-            grid.add_row(Text(""))
-            grid.add_row(Text("Action: ", style="dim") + Text(action, style="cyan"))
+        meta = Text.from_markup(f"[#a6adc8]User:[/#a6adc8] [bold #a6e3a1]{user}[/bold #a6e3a1]")
+        if action and action != "org.freedesktop.policykit.exec" and action not in clean_msg:
+            meta += Text.from_markup(f"   [#6c7086]•[/#6c7086]   [#a6adc8]Action:[/#a6adc8] [bold #89dceb]{action}[/bold #89dceb]")
 
-        grid.add_row(Text("User:   ", style="dim") + Text(user, style="bold green"))
+        grid.add_row(meta)
 
         panel = Panel(
             grid,
-            title="[bold bright_cyan]🔒 Dusky Polkit[/bold bright_cyan]",
-            subtitle="[dim]Authentication Agent[/dim]",
-            border_style="bright_blue",
-            padding=(1, 2),
+            title="[bold #89b4fa]🔒 Dusky Polkit[/bold #89b4fa]",
+            border_style="bold #89b4fa",
+            padding=(0, 2),
         )
 
         console.print(panel)
-        console.print(f"[bold bright_white]Password for [bold green]{user}[/bold green]: [/bold bright_white]", end="", flush=True)
-    except Exception:
-        # Fallback to standard ANSI output if rich is unavailable
+        console.print("[bold #cdd6f4]Password: [/bold #cdd6f4]", end="")
+        sys.stdout.flush()
+    except ImportError:
+        # Fallback to standard ANSI output only if rich is not installed
         if notice:
             print(f"\033[1;31m⚠  {notice}\033[0m")
-        print(f"\033[1;37m{message}\033[0m")
-        if action:
-            print(f"\033[2mAction:\033[0m \033[36m{action}\033[0m")
-        print(f"\033[2mUser:\033[0m   \033[1;32m{user}\033[0m")
-        print(f"Password for {user}: ", end="", flush=True)
+        print(f"\033[1;37m{clean_msg}\033[0m")
+        print(f"\033[2mUser:\033[0m \033[1;32m{user}\033[0m" + (f"   \033[2m•  Action:\033[0m \033[36m{action}\033[0m" if action and action != "org.freedesktop.policykit.exec" and action not in clean_msg else ""))
+        print("Password: ", end="", flush=True)
 
     try:
         pw = getpass.getpass(prompt="")
