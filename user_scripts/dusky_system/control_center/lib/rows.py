@@ -2511,7 +2511,17 @@ class EntryRow(DynamicIconMixin, HyprlandIPCMixin, Adw.EntryRow):
 
         if initial_val := properties.get("initial_value"):
             self.set_text(str(initial_val))
-        elif val_cmd := properties.get("value_command"):
+
+        if _is_dynamic_icon(icon_config) and isinstance(icon_config, dict):
+            self._start_icon_update_loop(icon_config)
+
+        self.connect("map", self._on_entry_map)
+        self.connect("unmap", self._on_entry_unmap)
+
+    def _on_entry_map(self, _widget: Gtk.Widget) -> None:
+        self._start_hyprland_ipc()
+        self._resume_all_polls()
+        if (val_cmd := self.properties.get("value_command")) and not self.get_text():
             self._poll_command(
                 self._state.value,
                 str(val_cmd).strip(),
@@ -2519,10 +2529,9 @@ class EntryRow(DynamicIconMixin, HyprlandIPCMixin, Adw.EntryRow):
                 timeout=SUBPROCESS_TIMEOUT_LONG,
             )
 
-        if _is_dynamic_icon(icon_config) and isinstance(icon_config, dict):
-            self._start_icon_update_loop(icon_config)
-
-        self._start_hyprland_ipc()
+    def _on_entry_unmap(self, _widget: Gtk.Widget) -> None:
+        self._stop_hyprland_ipc()
+        self._pause_all_polls()
 
     def _on_initial_value_loaded(self, output: str) -> None:
         val = output.strip()
