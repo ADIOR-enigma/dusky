@@ -95,7 +95,7 @@ DEBUG_CFLAGS="-g"
 DEBUG_CXXFLAGS="$DEBUG_CFLAGS"
 
 BUILDENV=(!distcc color !ccache !check !sign)
-OPTIONS=(strip docs !libtool !staticlibs emptydirs zipman purge !debug lto)
+OPTIONS=(strip docs !libtool !staticlibs emptydirs zipman purge !debug lto autodeps)
 INTEGRITY_CHECK=(sha256)
 STRIP_BINARIES="--strip-all"
 STRIP_SHARED="--strip-unneeded"
@@ -113,7 +113,7 @@ DLAGENTS=('file::/usr/bin/curl -qgC - -o %o %u'
           'rsync::/usr/bin/rsync --no-motd -z %u %o'
           'scp::/usr/bin/scp -C %u %o')
 
-VCSCLIENTS=('bzr::bazaar'
+VCSCLIENTS=('bzr::breezy'
             'fossil::fossil'
             'git::git'
             'hg::mercurial'
@@ -122,7 +122,7 @@ VCSCLIENTS=('bzr::bazaar'
 COMPRESSGZ=(gzip -c -f -n)
 COMPRESSBZ2=(bzip2 -c -f)
 COMPRESSXZ=(xz -c -z -)
-COMPRESSZST=(zstd -c -T0 -19 --ultra -)
+COMPRESSZST=(zstd -c -T0 -)
 COMPRESSLRZ=(lrzip -q)
 COMPRESSLZO=(lzop -q)
 COMPRESSZ=(compress -c -f)
@@ -136,13 +136,21 @@ SRCEXT='.src.tar.gz'
 _MAKEPKG_ENV_SCRUB = (
     "CFLAGS",
     "CXXFLAGS",
+    "CPPFLAGS",
     "LDFLAGS",
+    "LTOFLAGS",
     "RUSTFLAGS",
     "MAKEFLAGS",
     "NINJAFLAGS",
     "CARGO_BUILD_RUSTFLAGS",
     "CARGO_TARGET_CPU",
     "MAKEPKG_CONF",
+    "CARCH",
+    "CHOST",
+    "DEBUG_CFLAGS",
+    "DEBUG_CXXFLAGS",
+    "DEBUG_RUSTFLAGS",
+    "GOAMD64",
 )
 
 
@@ -1526,9 +1534,18 @@ def generate_repo_db(repo_dir: Path) -> None:
 # ==============================================================================
 # AUR
 # ==============================================================================
-def aur_rpc_info(pkgs: Sequence[str]) -> Dict[str, str]:
-    """Batch AUR RPC v5/info → {Name: Version}."""
-    out: Dict[str, str] = {}
+@dataclass(frozen=True)
+class AURPackageInfo:
+    name: str
+    version: str
+    pkgbase: str
+    depends: Tuple[str, ...] = ()
+    makedepends: Tuple[str, ...] = ()
+
+
+def aur_rpc_info(pkgs: Sequence[str]) -> Dict[str, AURPackageInfo]:
+    """Batch AUR RPC v5/info → {Name: AURPackageInfo}."""
+    out: Dict[str, AURPackageInfo] = {}
     if not pkgs:
         return out
     hdr = {
@@ -1563,23 +1580,38 @@ def aur_rpc_info(pkgs: Sequence[str]) -> Dict[str, str]:
         if not data:
             continue
         for row in data.get("results", []):
-            name, ver = row.get("Name"), row.get("Version")
-            if isinstance(name, str) and isinstance(ver, str):
-                out[name] = ver
+            name = row.get("Name")
+            ver = row.get("Version")
+            pkgbase = row.get("PackageBase") or name
+            if isinstance(name, str) and isinstance(ver, str) and isinstance(pkgbase, str):
+                deps = tuple(row.get("Depends") or [])
+                makedeps = tuple(row.get("MakeDepends") or [])
+                out[name] = AURPackageInfo(
+                    name=name,
+                    version=ver,
+                    pkgbase=pkgbase,
+                    depends=deps,
+                    makedepends=makedeps,
+                )
     return out
 
 
-def aur_get_version(pkg: str) -> Optional[str]:
+def aur_get_info(pkg: str) -> Optional[AURPackageInfo]:
     return aur_rpc_info([pkg]).get(pkg)
+
+
+def aur_get_version(pkg: str) -> Optional[str]:
+    info_obj = aur_get_info(pkg)
+    return info_obj.version if info_obj else None
 
 
 def package_is_current(repo: Path, pkg: str, ver: str) -> bool:
     """True if repo has name-pkgver-pkgrel-(x86_64|any). Epoch is not in filenames."""
-    want = PkgVer.parse_rpc(ver)
-    if not repo.is_dir():
+    if not ver or not repo.is_dir():
         return False
+    want = PkgVer.parse_rpc(ver)
     for p in repo.iterdir():
-        if not p.is_file() or p.name.endswith(".sig"):
+        if not p.is_file() or p.name.endswith(".sig") or ".part" in p.name:
             continue
         parsed = parse_pkg_filename(p.name)
         if not parsed:
@@ -1590,6 +1622,8 @@ def package_is_current(repo: Path, pkg: str, ver: str) -> bool:
         if arch not in {"x86_64", "any"}:
             continue
         if fver == want.pkgver and frel == want.pkgrel:
+            return True
+        if pkg.endswith(("-git", "-hg", "-svn", "-bzr")):
             return True
     return False
 
@@ -1623,24 +1657,36 @@ def extract_runtime_deps(pkgfile: Path) -> List[str]:
         return []
 
 
-def parse_srcinfo_text(text: str) -> Tuple[List[str], List[str]]:
-    """Returns (depends, makedepends) bare names."""
+def parse_srcinfo_text(text: str) -> Tuple[str, List[str], List[str], List[str]]:
+    """Returns (pkgbase, pkgnames, depends, makedepends) bare names."""
+    pkgbase = ""
+    pkgnames: List[str] = []
     depends: List[str] = []
     makedepends: List[str] = []
     for line in text.splitlines():
         s = line.strip()
-        if s.startswith("depends = "):
+        if s.startswith("pkgbase = "):
+            pkgbase = s[len("pkgbase = ") :].strip()
+        elif s.startswith("pkgname = "):
+            pn = s[len("pkgname = ") :].strip()
+            if pn and PKGNAME_RE.fullmatch(pn):
+                pkgnames.append(pn)
+        elif s.startswith("depends = "):
             raw = s[len("depends = ") :].strip()
-            bucket = depends
+            dep = re.split(r"[<>=]", raw, maxsplit=1)[0].strip()
+            if dep and PKGNAME_RE.fullmatch(dep):
+                depends.append(dep)
         elif s.startswith("makedepends = "):
             raw = s[len("makedepends = ") :].strip()
-            bucket = makedepends
-        else:
-            continue
-        dep = re.split(r"[<>=]", raw, maxsplit=1)[0].strip()
-        if dep and PKGNAME_RE.fullmatch(dep):
-            bucket.append(dep)
-    return depends, makedepends
+            dep = re.split(r"[<>=]", raw, maxsplit=1)[0].strip()
+            if dep and PKGNAME_RE.fullmatch(dep):
+                makedepends.append(dep)
+        elif s.startswith("checkdepends = "):
+            raw = s[len("checkdepends = ") :].strip()
+            dep = re.split(r"[<>=]", raw, maxsplit=1)[0].strip()
+            if dep and PKGNAME_RE.fullmatch(dep):
+                makedepends.append(dep)
+    return pkgbase, pkgnames, depends, makedepends
 
 
 def classify_deps(
@@ -1751,8 +1797,8 @@ def build_aur_package(
         err(f"Invalid AUR pkg name: {pkg}")
         return False, False, False
 
-    ver = aur_get_version(pkg)
-    if not ver:
+    info_obj = aur_get_info(pkg)
+    if not info_obj:
         r = isolated.pacman("-Si", "--", pkg, capture=True)
         if r.returncode == 0:
             step(f"{pkg} is in official repos; skipping AUR")
@@ -1760,11 +1806,14 @@ def build_aur_package(
         err(f"{pkg} not found on AUR")
         return False, False, False
 
+    ver = info_obj.version
+    pkgbase = info_obj.pkgbase or pkg
+
     if package_is_current(aur_repo, pkg, ver):
         step(f"{pkg}-{ver} already present in ISO repo")
         return True, True, False
 
-    clone_root = clone_base / f"clone_{pkg}"
+    clone_root = clone_base / f"clone_{pkgbase}"
     if clone_root.exists():
         shutil.rmtree(clone_root, ignore_errors=True)
     clone_root.mkdir(parents=True)
@@ -1777,7 +1826,7 @@ def build_aur_package(
             check=False,
         )
 
-    target_dir = clone_root / pkg
+    target_dir = clone_root / pkgbase
     git_env = git_noninteractive_env()
     cloned = False
     last_clone_err = ""
@@ -1790,7 +1839,7 @@ def build_aur_package(
                 "clone",
                 "--depth",
                 "1",
-                f"https://aur.archlinux.org/{pkg}.git",
+                f"https://aur.archlinux.org/{pkgbase}.git",
                 str(target_dir),
             ],
             as_user=real_user,
@@ -1804,12 +1853,12 @@ def build_aur_package(
             break
         time.sleep(2)
     if not cloned:
-        console.print(f"[bold red][XX] Clone failed {pkg}: {last_clone_err}[/]")
+        console.print(f"[bold red][XX] Clone failed {pkg} (pkgbase={pkgbase}): {last_clone_err}[/]")
         shutil.rmtree(clone_root, ignore_errors=True)
         return False, False, False
 
     if not (target_dir / "PKGBUILD").exists():
-        err(f"PKGBUILD missing {pkg}")
+        err(f"PKGBUILD missing {pkg} in {pkgbase}.git")
         shutil.rmtree(clone_root, ignore_errors=True)
         return False, False, False
 
@@ -1825,7 +1874,7 @@ def build_aur_package(
     # --- Pre-build deps from .SRCINFO ---
     env_info = makepkg_clean_env(makepkg_conf)
     ps = run_cmd(
-        ["makepkg", "--printsrcinfo"],
+        ["makepkg", "--config", str(makepkg_conf), "--printsrcinfo"],
         as_user=real_user,
         env=env_info,
         cwd=target_dir,
@@ -1835,27 +1884,31 @@ def build_aur_package(
         timeout=120,
     )
     pre_deps: List[str] = []
+    sibling_pkgnames: set[str] = {pkg, pkgbase}
     if ps.returncode == 0 and ps.stdout:
-        d_list, m_list = parse_srcinfo_text(ps.stdout)
+        src_pkgbase, src_pkgnames, d_list, m_list = parse_srcinfo_text(ps.stdout)
+        sibling_pkgnames.update(src_pkgnames)
+        if src_pkgbase:
+            sibling_pkgnames.add(src_pkgbase)
         pre_deps = list(dict.fromkeys([*d_list, *m_list]))
     else:
-        warn(f"{pkg}: makepkg --printsrcinfo failed; relying on makepkg -s only")
+        warn(f"{pkg}: makepkg --printsrcinfo failed")
 
     if pre_deps:
         download_official_deps(
             isolated, official_repo, aur_repo, pre_deps, aur_queue, aur_known
         )
-        _, aurish = classify_deps(isolated, pre_deps)
+        official_deps, aurish = classify_deps(isolated, pre_deps)
         blocked: List[str] = []
-        ready_files: List[Path] = []
+        aur_files_to_install: List[Path] = []
         for dep in aurish:
-            if dep == pkg:
+            if dep in sibling_pkgnames:
                 continue
             if pkg_installed(dep):
                 continue
             files = find_repo_pkg_files(aur_repo, dep)
             if files:
-                ready_files.extend(files)
+                aur_files_to_install.append(files[0])
                 continue
             # Need it built first
             if dep not in aur_known:
@@ -1868,7 +1921,49 @@ def build_aur_package(
             shutil.rmtree(clone_root, ignore_errors=True)
             return False, False, True
 
-    build_work = clone_base / f"work_{pkg}"
+        # Install any already-built AUR packages needed on the host
+        if aur_files_to_install:
+            step(f"Installing built AUR dependency packages: {', '.join(f.name for f in aur_files_to_install)}")
+            subprocess.run(
+                ["pacman", "-U", "--needed", "--noconfirm", *[str(f) for f in aur_files_to_install]],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                shell=False,
+                check=False,
+            )
+
+        # Install missing official dependencies on host
+        if official_deps:
+            t_res = subprocess.run(
+                ["pacman", "-T", "--", *official_deps],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                shell=False,
+                check=False,
+            )
+            missing_official = [
+                line.strip()
+                for line in (t_res.stdout or "").splitlines()
+                if line.strip() and PKGNAME_RE.fullmatch(line.strip())
+            ]
+            if missing_official:
+                step(f"Installing missing build dependencies on host: {', '.join(missing_official)}")
+                cache_dirs: List[str] = ["--cachedir", str(aur_repo)]
+                if official_repo is not None and official_repo.exists():
+                    cache_dirs += ["--cachedir", str(official_repo)]
+                inst_res = subprocess.run(
+                    ["pacman", "-S", "--needed", "--noconfirm", *cache_dirs, *missing_official],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    shell=False,
+                    check=False,
+                )
+                if inst_res.returncode != 0:
+                    warn(f"Failed to install host build deps ({', '.join(missing_official)}): {inst_res.stdout[:500]}")
+
+    build_work = clone_base / f"work_{pkgbase}"
     src_dest = build_work / "src"
     pkgdest = build_work / "pkgdest"
     for d in (build_work, src_dest, pkgdest):
@@ -1897,17 +1992,9 @@ def build_aur_package(
     success = False
     last_out = ""
     for attempt in range(1, 7):
-        if os.geteuid() != 0:
-            subprocess.run(
-                ["sudo", "-v"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                shell=False,
-                check=False,
-            )
         try:
             r = run_cmd(
-                ["makepkg", "-s", "--noconfirm", "--skippgpcheck", "-C"],
+                ["makepkg", "--config", str(makepkg_conf), "--nodeps", "--noconfirm", "--skippgpcheck", "-C"],
                 as_user=real_user,
                 env=env,
                 cwd=target_dir,
@@ -2382,6 +2469,16 @@ def configure_iso_pacman_conf(cfg: ISOConfig) -> None:
                 out.append(f"CacheDir = {cfg.aur_repo}")
             out.append("CacheDir = /var/cache/pacman/pkg")
             continue
+        if s == "[core]":
+            # Add offline repository section before [core] so local cached packages take top precedence
+            out.append(f"[{REPO_NAME}]")
+            out.append("SigLevel = Optional TrustAll")
+            out.append(f"Server = file://{cfg.official_repo}")
+            if cfg.aur_repo is not None and cfg.aur_repo.exists():
+                out.append(f"Server = file://{cfg.aur_repo}")
+            out.append("")
+            out.append(line)
+            continue
         out.append(line)
 
     final_txt = "\n".join(out)
@@ -2521,6 +2618,27 @@ def build_iso_image(cfg: ISOConfig) -> Path:
             "archiso layout changed — update injection."
         )
     content = content.replace(marker, marker + "\n" + injection, 1)
+
+    # Patch mkarchiso _make_pacman_conf to emit each CacheDir on its own line
+    pacman_conf_fix = r'''_make_pacman_conf() {
+    _msg_info "Copying custom pacman.conf to work directory..."
+    local _pconf="${work_dir}/${buildmode}.pacman.conf"
+    pacman-conf --config "${pacman_conf}" \
+        | sed '/CacheDir/d;/DBPath/d;/HookDir/d;/LogFile/d;/RootDir/d' > "${_pconf}"
+    local _cd
+    while IFS= read -r _cd; do
+        [[ -n "${_cd}" ]] && sed -i "/\[options\]/a CacheDir = ${_cd}" "${_pconf}"
+    done < <(pacman-conf --config "${pacman_conf}" CacheDir)
+    sed -i "/\[options\]/a HookDir = ${pacstrap_dir}/etc/pacman.d/hooks/" "${_pconf}"
+}'''
+    if "_make_pacman_conf() {" in content:
+        content = re.sub(
+            r"_make_pacman_conf\(\) \{.*?\n\}",
+            pacman_conf_fix,
+            content,
+            flags=re.DOTALL,
+        )
+
     mk_custom.write_text(content, encoding="utf-8")
 
     for d in (cfg.work_dir, cfg.out_dir):
