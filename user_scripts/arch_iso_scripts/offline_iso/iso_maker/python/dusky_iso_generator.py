@@ -2208,9 +2208,10 @@ def _umount_tree(path: Path) -> None:
 def setup_clean_room(cfg: ISOConfig) -> None:
     info("Clean room")
     cfg.final_dest.mkdir(parents=True, exist_ok=True)
-    for old_iso in cfg.final_dest.glob("dusky_*.iso"):
-        step(f"Removing old ISO: {old_iso.name}")
-        old_iso.unlink(missing_ok=True)
+    for old_file in cfg.final_dest.glob("dusky_*"):
+        if old_file.is_file() and (old_file.name.endswith(".iso") or old_file.name.endswith(".sha256")):
+            step(f"Removing old build artifact: {old_file.name}")
+            old_file.unlink(missing_ok=True)
 
     if cfg.workspace.exists():
         _umount_tree(cfg.workspace)
