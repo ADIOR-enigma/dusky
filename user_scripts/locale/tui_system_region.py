@@ -5,8 +5,8 @@ DUSKY TUI: SYSTEM REGION & LOCALE MANAGER SCHEMA
 ===============================================================================
 Target: /etc/locale.gen
 Engine: locale_gen
-Manages systemd timezone, NTP, RTC, system locale (/etc/locale.conf),
-console keymaps (/etc/vconsole.conf), and glibc locale compilation.
+Comprehensive region, clock, locale (/etc/locale.conf), and console/Wayland
+keyboard manager (/etc/vconsole.conf) for modern Linux systems.
 """
 import sys
 import zoneinfo
@@ -38,7 +38,6 @@ THEME_FILE = "~/.config/matugen/generated/dusky_tui.json"
 # =============================================================================
 # 3. DYNAMIC METADATA & PICKER OPTIONS
 # =============================================================================
-# Popular timezones pinned at the top + sorted complete zoneinfo catalog
 _POPULAR_TZS = [
     "Asia/Kolkata",
     "UTC",
@@ -116,6 +115,17 @@ _POPULAR_KEYMAPS = [
     "fi",
     "br-abnt2",
     "ca",
+]
+
+_POPULAR_FONTS = [
+    "default8x16",
+    "ter-v16n",
+    "ter-v24n",
+    "ter-v32n",
+    "eurlatgr",
+    "Lat2-Terminus16",
+    "lat9w-16",
+    "iso01-12x22",
 ]
 
 # =============================================================================
@@ -268,6 +278,56 @@ SCHEMA = {
             extended_help="Controls alphabetical sorting order of filenames and text (`C` or `C.UTF-8` for byte-order sorting).",
         ),
         ConfigItem(
+            label="System Messages & UI (LC_MESSAGES)",
+            key="LC_MESSAGES",
+            scope="DEFAULT",
+            type_="picker",
+            options=["unset"] + _POPULAR_LOCALES,
+            default="unset",
+            group="Regional Overrides",
+            extended_help="Controls the language of system messages, prompts, and application UI text.",
+        ),
+        ConfigItem(
+            label="Address Format (LC_ADDRESS)",
+            key="LC_ADDRESS",
+            scope="DEFAULT",
+            type_="picker",
+            options=["unset"] + _POPULAR_LOCALES,
+            default="unset",
+            group="Regional Overrides",
+            extended_help="Overrides conventions used to format postal addresses and country identifiers.",
+        ),
+        ConfigItem(
+            label="Telephone Format (LC_TELEPHONE)",
+            key="LC_TELEPHONE",
+            scope="DEFAULT",
+            type_="picker",
+            options=["unset"] + _POPULAR_LOCALES,
+            default="unset",
+            group="Regional Overrides",
+            extended_help="Overrides conventions used to format telephone numbers.",
+        ),
+        ConfigItem(
+            label="Name Format (LC_NAME)",
+            key="LC_NAME",
+            scope="DEFAULT",
+            type_="picker",
+            options=["unset"] + _POPULAR_LOCALES,
+            default="unset",
+            group="Regional Overrides",
+            extended_help="Overrides conventions used to format personal names, honorifics, and salutations.",
+        ),
+        ConfigItem(
+            label="Character Classification (LC_CTYPE)",
+            key="LC_CTYPE",
+            scope="DEFAULT",
+            type_="picker",
+            options=["unset", "C.UTF-8", "en_US.UTF-8"] + _POPULAR_LOCALES,
+            default="unset",
+            group="Regional Overrides",
+            extended_help="Controls character classification and case conversion rules (upper/lowercase matching).",
+        ),
+        ConfigItem(
             label="Interactive LANG Selection (fzf)",
             key="action_set_lang",
             scope="DEFAULT",
@@ -296,16 +356,26 @@ SCHEMA = {
             ),
         ),
         ConfigItem(
-            label="X11 / Wayland Layout (XKBLAYOUT)",
+            label="Virtual Console Font (FONT)",
+            key="FONT",
+            scope="DEFAULT",
+            type_="picker",
+            options=_POPULAR_FONTS,
+            default="default8x16",
+            group="Virtual Console (TTY)",
+            extended_help="Configures the console font loaded during early boot (`/etc/vconsole.conf`).",
+        ),
+        ConfigItem(
+            label="Wayland / XKB Layout (XKBLAYOUT)",
             key="XKBLAYOUT",
             scope="DEFAULT",
             type_="string",
             default="us",
             group="Graphical Keyboard Layout",
-            extended_help="X11 and Wayland keyboard layout (e.g. `us`, `gb`, `de`, `fr`, `es`).",
+            extended_help="Wayland and XKB keyboard layout (e.g. `us`, `gb`, `de`, `fr`, `in`, `es`).",
         ),
         ConfigItem(
-            label="X11 / Wayland Model (XKBMODEL)",
+            label="Wayland / XKB Model (XKBMODEL)",
             key="XKBMODEL",
             scope="DEFAULT",
             type_="string",
@@ -314,13 +384,22 @@ SCHEMA = {
             extended_help="Keyboard hardware model identifier (standard: `pc105+inet`).",
         ),
         ConfigItem(
-            label="X11 / Wayland Options (XKBOPTIONS)",
+            label="Wayland / XKB Variant (XKBVARIANT)",
+            key="XKBVARIANT",
+            scope="DEFAULT",
+            type_="string",
+            default="",
+            group="Graphical Keyboard Layout",
+            extended_help="Keyboard layout variant (e.g. `intl`, `altgr-intl`, `dvorak`, `colemak`, `nodeadkeys`).",
+        ),
+        ConfigItem(
+            label="Wayland / XKB Options (XKBOPTIONS)",
             key="XKBOPTIONS",
             scope="DEFAULT",
             type_="string",
             default="terminate:ctrl_alt_bksp",
             group="Graphical Keyboard Layout",
-            extended_help="Keyboard modifier options (e.g. `terminate:ctrl_alt_bksp`, `caps:escape`).",
+            extended_help="Keyboard modifier options (e.g. `terminate:ctrl_alt_bksp`, `caps:escape`, `caps:swapescape`, `grp:alt_shift_toggle`).",
         ),
         ConfigItem(
             label="Interactive TTY Keymap Search (fzf)",
@@ -330,6 +409,15 @@ SCHEMA = {
             default="km=$(localectl list-keymaps | fzf --prompt='Select TTY Keymap > ') && [ -n \"$km\" ] && localectl set-keymap \"$km\"",
             group="Quick Actions",
             extended_help="Fuzzy search and apply TTY keymap via `localectl set-keymap`.",
+        ),
+        ConfigItem(
+            label="Interactive Wayland Layout Search (fzf)",
+            key="action_set_x11_keymap",
+            scope="DEFAULT",
+            type_="action",
+            default="layout=$(localectl list-x11-keymap-layouts | fzf --prompt='Select Wayland/XKB Layout > ') && [ -n \"$layout\" ] && localectl set-x11-keymap \"$layout\"",
+            group="Quick Actions",
+            extended_help="Fuzzy search and apply graphical Wayland/XKB keyboard layout via `localectl set-x11-keymap`.",
         ),
     ],
 
@@ -674,13 +762,22 @@ SCHEMA = {
             extended_help="Executes `locale-gen` as root to compile all enabled locales in `/etc/locale.gen` into `/usr/lib/locale/locale-archive`.",
         ),
         ConfigItem(
+            label="List Compiled Locales (locale -a)",
+            key="action_list_locales",
+            scope="DEFAULT",
+            type_="action",
+            default="locale -a",
+            group="System Diagnostics",
+            extended_help="Lists all compiled glibc locale archives currently installed on the system (`locale -a`).",
+        ),
+        ConfigItem(
             label="View Active Locale Status (localectl)",
             key="action_view_localectl",
             scope="DEFAULT",
             type_="action",
             default="localectl status",
             group="System Diagnostics",
-            extended_help="Displays the active system locale, TTY keymap, and X11 layout state (`localectl status`).",
+            extended_help="Displays the active system locale, TTY keymap, and X11/Wayland layout state (`localectl status`).",
         ),
         ConfigItem(
             label="View Timedate Status (timedatectl)",
@@ -690,6 +787,24 @@ SCHEMA = {
             default="timedatectl status",
             group="System Diagnostics",
             extended_help="Displays the system clock synchronization, NTP status, and RTC mode (`timedatectl status`).",
+        ),
+        ConfigItem(
+            label="View Timesyncd NTP Status (timedatectl)",
+            key="action_view_timesync",
+            scope="DEFAULT",
+            type_="action",
+            default="timedatectl timesync-status",
+            group="System Diagnostics",
+            extended_help="Displays detailed NTP network time synchronization metrics, server addresses, offset, and jitter (`timedatectl timesync-status`).",
+        ),
+        ConfigItem(
+            label="View Shell Environment Locales (locale)",
+            key="action_view_shell_locale",
+            scope="DEFAULT",
+            type_="action",
+            default="locale",
+            group="System Diagnostics",
+            extended_help="Displays all currently active locale environment variables in the active shell environment (`locale`).",
         ),
     ],
 }
@@ -708,4 +823,5 @@ if __name__ == "__main__":
     else:
         print(f"[-] Error: Main Dusky TUI router not found at {main_router}", file=sys.stderr)
         sys.exit(1)
+
 

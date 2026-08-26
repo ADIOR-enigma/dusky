@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """
-LocaleGenEngine - Intelligent glibc /etc/locale.gen and systemd region engine.
-Supports:
-- /etc/locale.gen glibc locale enable/disable toggling with in-place preservation.
-- systemd-timedated: Timezone, NTP synchronization, Local RTC.
-- systemd-localed: Primary LANG and granular LC_* variable configuration (/etc/locale.conf).
-- systemd-vconsole: TTY console keymap and X11/Wayland keyboard mappings (/etc/vconsole.conf).
+LocaleGenEngine - Intelligent glibc /etc/locale.gen, /etc/locale.conf, /etc/vconsole.conf,
+and systemd-timedated / systemd-localed / systemd-timesyncd region engine.
+
+Features:
+- /etc/locale.gen glibc locale enable/disable in-place commenting/uncommenting.
+- systemd-timedated: Timezone configuration, NTP clock synchronization, Local RTC mode.
+- systemd-localed & /etc/locale.conf: Primary LANG and all 12 glibc LC_* format overrides.
+- systemd-vconsole & /etc/vconsole.conf: Virtual console KEYMAP, FONT, and Wayland/XKB keyboard layouts.
 - Live execution and atomic compilation of locale-gen.
+- Crash-proof atomic file replacement with fsync and non-root sudo fallback.
 """
 import os
 import re
@@ -82,7 +85,7 @@ class LocaleGenEngine(BaseEngine):
                 except Exception:
                     pass
 
-            # 3. Parse /etc/vconsole.conf for KEYMAP and XKB settings
+            # 3. Parse /etc/vconsole.conf for KEYMAP, FONT, and XKB settings
             if self.vconsole_conf_path.exists():
                 try:
                     for line in self.vconsole_conf_path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -101,6 +104,8 @@ class LocaleGenEngine(BaseEngine):
                                 self.cache["x11_model"] = v
                             elif k == "XKBOPTIONS":
                                 self.cache["x11_options"] = v
+                            elif k == "XKBVARIANT":
+                                self.cache["x11_variant"] = v
                 except Exception:
                     pass
 
@@ -184,7 +189,7 @@ class LocaleGenEngine(BaseEngine):
                 elif key == "rtc_local":
                     is_local = val_str.lower() in ("true", "1", "yes", "on", "t")
                     try:
-                        res = subprocess.run(["timedatectl", "set-local-rtc", "true" if is_local else "false"], capture_output=True, text=True, timeout=10)
+                        res = subprocess.run(["timedatectl", "set-local-rtc", "true" if is_local else "false", "--adjust-system-clock"], capture_output=True, text=True, timeout=10)
                         if res.returncode == 0:
                             action_messages.append(f"Hardware RTC set to {'Local Time' if is_local else 'UTC'}.")
                             self.cache["rtc_local"] = is_local
@@ -193,19 +198,38 @@ class LocaleGenEngine(BaseEngine):
                     except Exception as e:
                         action_messages.append(f"Failed to set RTC: {e}")
 
-                # System LANG and LC_* variables
+                # System LANG and LC_* variables (/etc/locale.conf)
                 elif key in ("LANG", "lang", "action_set_lang", "set_lang") or key.startswith("LC_"):
                     param_key = "LANG" if key in ("LANG", "lang", "action_set_lang", "set_lang") else key
-                    if val_str and val_str not in ("nil", "unset", ""):
+                    locale_conf_dict = {}
+                    if self.locale_conf_path.exists():
                         try:
-                            res = subprocess.run(["localectl", "set-locale", f"{param_key}={val_str}"], capture_output=True, text=True, timeout=10)
-                            if res.returncode == 0:
-                                action_messages.append(f"Locale {param_key} set to {val_str}.")
-                                self.cache[param_key] = val_str
-                            else:
-                                action_messages.append(f"localectl set-locale failed: {res.stderr.strip()}")
-                        except Exception as e:
-                            action_messages.append(f"Failed to set {param_key}: {e}")
+                            for l in self.locale_conf_path.read_text(encoding="utf-8", errors="replace").splitlines():
+                                if "=" in l and not l.strip().startswith("#"):
+                                    k, v = l.strip().split("=", 1)
+                                    locale_conf_dict[k.strip()] = v.strip().strip('"').strip("'")
+                        except Exception:
+                            pass
+
+                    if val_str in ("unset", "none", "nil", ""):
+                        if param_key in locale_conf_dict and param_key != "LANG":
+                            del locale_conf_dict[param_key]
+                            self.cache.pop(param_key, None)
+                            conf_lines = [f"{k}={v}\n" for k, v in sorted(locale_conf_dict.items())]
+                            ok, msg = self._atomic_write(self.locale_conf_path, "".join(conf_lines))
+                            if ok:
+                                action_messages.append(f"Unset locale override {param_key}.")
+                    else:
+                        locale_conf_dict[param_key] = val_str
+                        self.cache[param_key] = val_str
+                        conf_lines = [f"{k}={v}\n" for k, v in sorted(locale_conf_dict.items())]
+                        ok, msg = self._atomic_write(self.locale_conf_path, "".join(conf_lines))
+                        if ok:
+                            action_messages.append(f"Locale {param_key} set to {val_str}.")
+                        try:
+                            subprocess.run(["localectl", "set-locale", f"{param_key}={val_str}"], capture_output=True, text=True, timeout=5)
+                        except Exception:
+                            pass
 
                 # TTY Console Keymap
                 elif key in ("KEYMAP", "keymap", "action_set_keymap", "set_keymap"):
@@ -220,18 +244,58 @@ class LocaleGenEngine(BaseEngine):
                         except Exception as e:
                             action_messages.append(f"Failed to set keymap: {e}")
 
-                # X11 Keymap
-                elif key in ("XKBLAYOUT", "x11_layout"):
-                    if val_str and val_str not in ("nil", "unset", ""):
+                # Wayland / XKB Keymap & Console Settings (/etc/vconsole.conf)
+                elif key in ("KEYMAP_TOGGLE", "FONT", "FONT_MAP", "FONT_UNIMAP", "XKBLAYOUT", "x11_layout", "XKBMODEL", "x11_model", "XKBOPTIONS", "x11_options", "XKBVARIANT", "x11_variant"):
+                    vconsole_dict = {}
+                    if self.vconsole_conf_path.exists():
                         try:
-                            res = subprocess.run(["localectl", "set-x11-keymap", val_str], capture_output=True, text=True, timeout=10)
-                            if res.returncode == 0:
-                                action_messages.append(f"X11 layout set to {val_str}.")
-                                self.cache["XKBLAYOUT"] = val_str
-                            else:
-                                action_messages.append(f"localectl set-x11-keymap failed: {res.stderr.strip()}")
-                        except Exception as e:
-                            action_messages.append(f"Failed to set X11 layout: {e}")
+                            for l in self.vconsole_conf_path.read_text(encoding="utf-8", errors="replace").splitlines():
+                                if "=" in l and not l.strip().startswith("#"):
+                                    k, v = l.strip().split("=", 1)
+                                    vconsole_dict[k.strip()] = v.strip().strip('"').strip("'")
+                        except Exception:
+                            pass
+
+                    field_map = {
+                        "KEYMAP_TOGGLE": "KEYMAP_TOGGLE",
+                        "FONT": "FONT",
+                        "FONT_MAP": "FONT_MAP",
+                        "FONT_UNIMAP": "FONT_UNIMAP",
+                        "XKBLAYOUT": "XKBLAYOUT", "x11_layout": "XKBLAYOUT",
+                        "XKBMODEL": "XKBMODEL", "x11_model": "XKBMODEL",
+                        "XKBOPTIONS": "XKBOPTIONS", "x11_options": "XKBOPTIONS",
+                        "XKBVARIANT": "XKBVARIANT", "x11_variant": "XKBVARIANT",
+                    }
+                    target_k = field_map[key]
+                    if val_str in ("unset", "none", "nil", ""):
+                        vconsole_dict.pop(target_k, None)
+                        self.cache.pop(target_k, None)
+                    else:
+                        vconsole_dict[target_k] = val_str
+                        self.cache[target_k] = val_str
+
+                    conf_lines = [f"{k}={v}\n" for k, v in sorted(vconsole_dict.items())]
+                    ok, msg = self._atomic_write(self.vconsole_conf_path, "".join(conf_lines))
+                    if ok:
+                        action_messages.append(f"Updated vconsole setting {target_k}.")
+
+                    # Also update localectl for graphical Wayland/XKB layouts
+                    if target_k in ("XKBLAYOUT", "XKBMODEL", "XKBVARIANT", "XKBOPTIONS"):
+                        x_layout = vconsole_dict.get("XKBLAYOUT", "us")
+                        x_model = vconsole_dict.get("XKBMODEL", "")
+                        x_var = vconsole_dict.get("XKBVARIANT", "")
+                        x_opts = vconsole_dict.get("XKBOPTIONS", "")
+                        cmd = ["localectl", "set-x11-keymap", x_layout]
+                        if x_model or x_var or x_opts:
+                            cmd.append(x_model)
+                        if x_var or x_opts:
+                            cmd.append(x_var)
+                        if x_opts:
+                            cmd.append(x_opts)
+                        try:
+                            subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+                        except Exception:
+                            pass
 
                 # Interactive Shell Actions (if launched via action trigger)
                 elif itype == "action":
@@ -344,3 +408,4 @@ class LocaleGenEngine(BaseEngine):
                     temp_file_path.unlink()
                 except OSError:
                     pass
+
