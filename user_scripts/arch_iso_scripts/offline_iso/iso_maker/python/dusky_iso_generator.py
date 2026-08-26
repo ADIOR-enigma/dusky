@@ -1168,26 +1168,6 @@ def build_master_list(external_path: Optional[Path]) -> List[str]:
         except (OSError, UnicodeDecodeError, ValueError) as exc:
             warn(f"External list fail: {exc}")
 
-    releng_path = Path("/usr/share/archiso/configs/releng/packages.x86_64")
-    if releng_path.is_file():
-        try:
-            releng_txt = releng_path.read_text(encoding="utf-8")
-            rel_cnt = 0
-            for raw in releng_txt.splitlines():
-                pkg = raw.split("#", 1)[0].strip()
-                if not pkg or any(c.isspace() for c in pkg):
-                    continue
-                if not PKGNAME_RE.fullmatch(pkg):
-                    continue
-                if pkg not in seen:
-                    seen.add(pkg)
-                    master.append(pkg)
-                    rel_cnt += 1
-            if rel_cnt:
-                step(f"archiso releng -> {rel_cnt} unique")
-        except OSError:
-            pass
-
     if not master:
         die("Master package list empty")
     ok(f"Master: {len(master)} unique")
