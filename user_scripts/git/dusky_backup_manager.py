@@ -195,6 +195,29 @@ def add_ssh_key_to_agent() -> None:
         console.print("[warning]⚠ Passphrase required. Please enter it now:[/warning]")
         run_cmd(["ssh-add", str(SSH_KEY_PATH)], capture=False, check=True)
 
+def copy_to_wayland_clipboard(text: str) -> bool:
+    """Copies text to the Wayland system clipboard via wl-copy if running under Wayland."""
+    is_wayland = bool(os.environ.get("WAYLAND_DISPLAY") or os.environ.get("XDG_SESSION_TYPE") == "wayland")
+    if not is_wayland:
+        return False
+
+    wl_copy = shutil.which("wl-copy")
+    if not wl_copy:
+        return False
+
+    try:
+        proc = subprocess.run(
+            [wl_copy],
+            input=text,
+            text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=3,
+        )
+        return proc.returncode == 0
+    except Exception:
+        return False
+
 def setup_github_ssh_linking(email: str) -> None:
     """Handles generating, displaying, and verifying SSH keys on GitHub."""
     generate_ssh_key(email)
@@ -206,12 +229,15 @@ def setup_github_ssh_linking(email: str) -> None:
         sys.exit(1)
 
     pub_key_content = pub_key_file.read_text(encoding="utf-8").strip()
+    copied = copy_to_wayland_clipboard(pub_key_content)
+    clip_msg = "\n\n[success]✔ Public key automatically copied to clipboard![/success]" if copied else ""
 
     console.print(Panel(
         f"[warning]ACTION REQUIRED:[/warning] Add this public key to GitHub:\n"
         f"1. Go to: [highlight]https://github.com/settings/keys[/highlight]\n"
         f"2. Click 'New SSH Key', give it a name, and paste the key below:\n\n"
-        f"[white]{escape(pub_key_content)}[/white]",
+        f"[white]{escape(pub_key_content)}[/white]"
+        f"{clip_msg}",
         title="GitHub SSH Key Setup",
         border_style="yellow",
         box=box.ROUNDED
