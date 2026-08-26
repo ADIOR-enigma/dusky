@@ -2310,7 +2310,7 @@ icon = "system-lock-screen-symbolic"
 style = "suggested"
 [pages.layout.items.items.on_press]
 type = "exec"
-command = "kitty --class dusky_hyprlock_switcher.sh --hold sh -c $HOME/user_scripts/hyprlock/dusky_hyprlock_switcher.sh"
+command = "foot --app-id=dusky_tui --hold python3 $HOME/user_scripts/hyprlock/tui_hyprlock.py"
 
 [[pages.layout.items.items]]
 type = "button"
@@ -3244,7 +3244,7 @@ description = "Swap Lock Screen Layout (TUI)"
 icon = "system-lock-screen-symbolic"
 [pages.layout.items.layout.items.on_press]
 type = "exec"
-command = "kitty --class dusky_hyprlock_switcher.sh --hold sh -c $HOME/user_scripts/hyprlock/dusky_hyprlock_switcher.sh"
+command = "foot --app-id=dusky_tui --hold python3 $HOME/user_scripts/hyprlock/tui_hyprlock.py"
 terminal = false
 
 [[pages.layout.items.layout]]

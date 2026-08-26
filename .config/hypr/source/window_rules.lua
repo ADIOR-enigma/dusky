@@ -1440,16 +1440,6 @@ hl.window_rule({
     center = true
 })
 
-
---- dusky_hyprlock_switcher.sh script ---
-hl.window_rule({
-    name = "dusky_hyprlock_switcher.sh",
-    match = { class = "^(dusky_hyprlock_switcher.sh)$" },
-    float = true,
-    size = {821, 508},
-    center = true
-})
-
 --- waybar tui ---
 hl.window_rule({
     name = "waybar_tui",
