@@ -79,15 +79,12 @@ fi
 declare -i SYSTEM_RAM_KB=0
 declare -i SYSTEM_RAM_GB=0
 
-if ! SYSTEM_RAM_KB=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null); then
-    die "FATAL: Could not parse /proc/meminfo via awk."
+if [[ $(< /proc/meminfo) =~ MemTotal:[[:space:]]+([0-9]+) ]]; then
+    SYSTEM_RAM_KB=$(( BASH_REMATCH[1] ))
+    SYSTEM_RAM_GB=$(( SYSTEM_RAM_KB / 1048576 ))
+else
+    die "FATAL: Could not parse /proc/meminfo natively."
 fi
-
-if ! [[ "$SYSTEM_RAM_KB" =~ ^[0-9]+$ ]]; then
-    die "FATAL: Parsed MemTotal is not numeric: $SYSTEM_RAM_KB"
-fi
-
-SYSTEM_RAM_GB=$(( SYSTEM_RAM_KB / 1048576 ))
 
 # --- 5. Tuning Profile Resolution ---
 declare -i EXPECTED_MAX_PTES
