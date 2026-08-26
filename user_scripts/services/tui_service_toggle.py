@@ -78,7 +78,7 @@ CORE_USER_DEFS = {
         "On-Screen Display service for hardware lock keys. Shows a visual pop-up when Caps Lock, Num Lock, or Scroll Lock is toggled.",
     ),
     "dusky_polkit.service": (
-        "(Polkit) Dusky Authentication Agent",
+        "Dusky Polkit",
         "Lightweight Python/Rich Polkit agent. Prompts for root/admin password on privilege escalation (like pkexec).",
     ),
     "dusky_ram_monitor.service": (
