@@ -21,6 +21,7 @@ from textual.message import Message
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, Horizontal
+from textual.geometry import Size
 from textual.widgets import Label, Input, Tabs, Tab, ContentSwitcher, OptionList, Markdown, Static
 from textual.widgets.option_list import Option, OptionDoesNotExist
 from textual.screen import ModalScreen
@@ -1657,14 +1658,14 @@ class AppFooter(Vertical):
 # =============================================================================
 class TabContainer(Horizontal):
     """
-    A custom container that tells the App to re-evaluate tab overflow when scrolled.
+    A custom container that tells the App to re-evaluate tab overflow when scrolled or resized.
     """
 
     def watch_scroll_x(self, old_value: float, new_value: float) -> None:
         if hasattr(self.app, "check_tab_overflow"):
             self.app.check_tab_overflow()
 
-    def watch_max_scroll_x(self, old_value: float, new_value: float) -> None:
+    def watch_virtual_size(self, old_value: Size, new_value: Size) -> None:
         if hasattr(self.app, "check_tab_overflow"):
             self.app.check_tab_overflow()
 
@@ -1841,7 +1842,10 @@ ContentSwitcher > Vertical { width: 100%; height: 100%; background: transparent;
 #content-area.-show-help #help-panel { display: block; }
 
 Tabs { width: auto; height: 1; background: transparent; }
-Tabs > Underline { display: none; }
+Tabs #tabs-scroll { width: auto; }
+Tabs #tabs-list-bar { width: auto; height: 1; min-width: 0; }
+Tabs #tabs-list { width: auto; height: 1; min-width: 0; }
+Tabs Underline { display: none; }
 
 Tab { height: 1; padding: 0 1; color: $primary 60%; background: transparent; border: none; }
 Tab:hover { color: $foreground; background: $primary 25%; }
@@ -2188,6 +2192,7 @@ Tooltip {
 
         self._status_timer: Timer | None = None
 
+        self._cached_tab_bar: Horizontal | None = None
         self._cached_tabs_container: Horizontal | None = None
         self._cached_tab_left: Label | None = None
         self._cached_tab_right: Label | None = None
@@ -3062,6 +3067,7 @@ Tooltip {
         first_engine = self.engine_pool[self.default_engine_key]
         self.query_one("#file-link", FileLink).path = first_engine.target_path
 
+        self._cached_tab_bar = self.query_one("#tab-bar", Horizontal)
         self._cached_tabs_container = self.query_one("#tabs-container", Horizontal)
         self._cached_tab_left = self.query_one("#tab-left", Label)
         self._cached_tab_right = self.query_one("#tab-right", Label)
@@ -3624,29 +3630,57 @@ Tooltip {
 
         return None
 
+    def _get_tabs_total_width(self) -> int:
+        try:
+            tabs_widget = self.query_one(Tabs)
+            tab_list = list(tabs_widget.query(Tab))
+            if not tab_list:
+                return 0
+            total = 0
+            for tab in tab_list:
+                if tab.region.width > 0:
+                    total += tab.region.width
+                else:
+                    total += len(str(tab.label)) + 2
+            return total
+        except Exception:
+            return 0
+
     def check_tab_overflow(self) -> None:
         if not self._cached_tabs_container or not self._cached_tab_left or not self._cached_tab_right:
             return
 
         try:
             container = self._cached_tabs_container
+            bar = getattr(self, "_cached_tab_bar", None)
             left = self._cached_tab_left
             right = self._cached_tab_right
 
-            has_overflow = container.max_scroll_x > 0
+            tabs_w = self._get_tabs_total_width()
+            bar_w = bar.size.width if bar else 0
+            cont_w = container.size.width
+
+            if bar_w > 0 and tabs_w > 0:
+                has_overflow = (tabs_w > bar_w) or (left.display and tabs_w > cont_w)
+            else:
+                has_overflow = container.max_scroll_x > 0
 
             if has_overflow:
-                left.display = True
-                right.display = True
+                if not left.display:
+                    left.display = True
+                    right.display = True
                 left.update(" ◀ " if container.scroll_x > 0.5 else "   ")
                 right.update(" ▶ " if container.scroll_x < (container.max_scroll_x - 0.5) else "   ")
                 if container.styles.align != ("left", "middle"):
                     container.styles.align = ("left", "middle")
             else:
-                left.display = False
-                right.display = False
+                if left.display:
+                    left.display = False
+                    right.display = False
                 left.update("")
                 right.update("")
+                if container.scroll_x > 0:
+                    container.scroll_to(x=0, animate=False)
                 if container.styles.align != ("center", "middle"):
                     container.styles.align = ("center", "middle")
 
