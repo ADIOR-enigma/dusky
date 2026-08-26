@@ -181,7 +181,8 @@ ALL_GROUPS: Dict[str, List[str]] = {
         "fontconfig", "python-pyquery", "python-textual", "python-rich", "papirus-icon-theme",
     ],
     "desktop": [
-        "waybar", "awww", "hyprlock", "hypridle", "hyprsunset", "hyprpicker", "rofi", "hyprshutdown",
+        #"waybar",
+        "awww", "hyprlock", "hypridle", "hyprsunset", "hyprpicker", "rofi", "hyprshutdown",
         "libdbusmenu-qt5", "libdbusmenu-glib", "brightnessctl",
     ],
     "audio": [
@@ -246,6 +247,7 @@ AUR_SEED: Tuple[str, ...] = (
     "tray-tui",
     "xdg-terminal-exec",
     "paru",
+    "waybar-git",
 )
 
 # ==============================================================================
