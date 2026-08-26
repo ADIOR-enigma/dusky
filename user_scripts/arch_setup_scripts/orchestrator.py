@@ -1380,6 +1380,8 @@ class SudoEngine:
 
         cls._askpass_path = None
         cls._sudoers_path = None
+        cls._password = None
+        cls._mode = "none"
 
     @classmethod
     def _write_askpass(cls, password: str) -> Path:
@@ -1560,6 +1562,13 @@ done
             return False
 
         with suppress(Exception):
+            subprocess.run(
+                ["sudo", "-k"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+            )
             proc = subprocess.run(
                 ["sudo", "-n", "-v"],
                 stdin=subprocess.DEVNULL,
@@ -4213,6 +4222,10 @@ def run_git_self_update(
 
                 destructive = True
 
+            elif merge_base == remote_head:
+                sys.stdout.write("[GIT] Local repository is ahead of upstream. Keeping local commits.\n")
+                return False
+
             elif merge_base != local_head:
                 _print_update_preview(base_cmd, local_head, remote_head)
 
@@ -6003,7 +6016,9 @@ class DuskyOrchestratorApp(App):
             self._prompt_last[name] = now
             self._prompt_buffer = ""
 
-            if name != "sudo_password" and count < 5:
+            if name == "sudo_password" and count < 5:
+                self.log_system("Auto-responded with cached sudo credentials.")
+            elif name != "sudo_password" and count < 5:
                 self.log_system(f"Auto-responded to prompt: {name}")
 
             break
@@ -6546,12 +6561,24 @@ class DuskyOrchestratorApp(App):
         ok = SudoEngine.refresh_sync()
         if ok:
             self.has_sudo = True
+            if self.sudo_task is None or self.sudo_task.done():
+                self.sudo_task = asyncio.create_task(
+                    SudoEngine.maintain_heartbeat(
+                        error_callback=lambda msg: self.log_system(msg, is_err=True)
+                    )
+                )
             return True
 
         self.log_system("Sudo credentials expired. Re-authentication required.", is_err=True)
         res = await self.push_screen_wait(SudoPasswordScreen())
         if res:
             self.has_sudo = True
+            if self.sudo_task is None or self.sudo_task.done():
+                self.sudo_task = asyncio.create_task(
+                    SudoEngine.maintain_heartbeat(
+                        error_callback=lambda msg: self.log_system(msg, is_err=True)
+                    )
+                )
             return True
         return False
 
@@ -7345,15 +7372,17 @@ def main() -> None:
     temp_state.close()
 
     once_store = OnceStore()
-    has_sudo = any(
-        t.mode == "S"
-        and not (t.once and once_store.marker_valid(t, selected_profile.name))
-        and (
-            t.always
-            or not StateStore.is_done(statuses.get(t.state_key))
+    has_sudo = (
+        any(t.mode == "S" for t in selected_profile.tasks)
+        or any(
+            not (t.once and once_store.marker_valid(t, selected_profile.name))
+            and (
+                t.always
+                or not StateStore.is_done(statuses.get(t.state_key))
+            )
+            for t in selected_profile.tasks
         )
-        for t in selected_profile.tasks
-    )
+    ) and bool(shutil.which("sudo"))
     once_store.close()
 
     if has_sudo:
