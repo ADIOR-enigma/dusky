@@ -263,20 +263,31 @@ def print_full_status():
 # ZRAM0 CONFIGURATION
 # =============================================================================
 
+def ensure_zram_device(dev_name: str = "zram0") -> None:
+    dev_path = Path(f"/dev/{dev_name}")
+    if not dev_path.exists():
+        hot_add = Path("/sys/class/zram-control/hot_add")
+        if hot_add.exists():
+            try:
+                hot_add.read_text()
+            except Exception:
+                pass
+        if not dev_path.exists():
+            run_cmd(["modprobe", "zram"], check=False)
+
 def parse_size_input(raw: str) -> str:
     val = raw.strip()
     if not val:
         total_ram = get_total_ram_gb()
         return "ram * 0.8" if total_ram <= 8.5 else ("ram * 0.5" if total_ram < 31.5 else "ram * 0.2")
     
-    val_clean = val.lower().replace(" ", "").replace("gb", "g").replace("gib", "g").replace("mb", "m").replace("mib", "m")
+    val_clean = val.lower().replace(" ", "").replace("gib", "g").replace("mib", "m").replace("kib", "k")
     
-    # Auto tier keyword
     if val_clean in ("auto", "default"):
         total_ram = get_total_ram_gb()
         return "ram * 0.8" if total_ram <= 8.5 else ("ram * 0.5" if total_ram < 31.5 else "ram * 0.2")
 
-    # Handle percentage shorthand like "80%", "80", "50%", "50", "20%"
+    # Handle percentage: "80%" -> "ram * 0.8"
     if val_clean.endswith("%"):
         try:
             pct = float(val_clean[:-1])
@@ -285,8 +296,8 @@ def parse_size_input(raw: str) -> str:
             return f"ram * {pct / 100.0:.2f}".rstrip("0").rstrip(".")
         except ValueError:
             pass
-    
-    # Handle pure whole numbers from 1 to 100 (assume percentage like 80 -> ram * 0.8)
+            
+    # Handle pure integers from 1 to 100: assume percentage (e.g. 80 -> ram * 0.8)
     try:
         n = float(val_clean)
         if 0.0 < n <= 2.0:
@@ -296,7 +307,22 @@ def parse_size_input(raw: str) -> str:
             return "ram" if pct == 1.0 else f"ram * {pct:.2f}".rstrip("0").rstrip(".")
     except ValueError:
         pass
-        return val_clean
+
+    # Handle explicit GB/MB fixed sizes (e.g. "4g", "4gb", "2048m", "512mb") -> convert to MiB integer for zram-generator
+    m_size = re.match(r"^([0-9.]+)\s*([gmk]b?)$", val_clean)
+    if m_size:
+        num = float(m_size.group(1))
+        unit = m_size.group(2)
+        if unit.startswith("g"):
+            return str(int(num * 1024))
+        elif unit.startswith("m"):
+            return str(int(num))
+        elif unit.startswith("k"):
+            return str(int(num / 1024))
+
+    # Format standard expressions cleanly (e.g. ram * 0.5)
+    val_formatted = re.sub(r"\s*([*/+-])\s*", r" \1 ", val_clean)
+    return val_formatted
 
 def set_zram0_size(size_raw: str):
     escalate_root_if_needed()
@@ -323,20 +349,18 @@ options = discard
     ZRAM0_CONF.write_text(content)
     
     # 1. Stop existing swap and setup units
+    run_cmd(["swapoff", "/dev/zram0"], check=False)
     run_cmd(["systemctl", "stop", "dev-zram0.swap"], check=False)
     run_cmd(["systemctl", "stop", "systemd-zram-setup@zram0.service"], check=False)
-    run_cmd(["swapoff", "/dev/zram0"], check=False)
     run_cmd(["zramctl", "--reset", "/dev/zram0"], check=False)
     
-    # 2. Reload systemd daemon to ingest new generator configuration
+    # 2. Ensure device exists and reload systemd daemon
+    ensure_zram_device("zram0")
     run_cmd(["systemctl", "daemon-reload"])
     
     # 3. Bring up new zram device and activate swap
-    res_start = run_cmd(["systemctl", "restart", "dev-zram0.swap"], check=False)
-    if not Path("/proc/swaps").read_text().count("/dev/zram0"):
-        # Fallback direct generator invocation if swap unit is delayed
-        run_cmd(["/usr/lib/systemd/system-generators/zram-generator", "--setup-device", "zram0"], check=False)
-        run_cmd(["swapon", "-p", "32767", "/dev/zram0"], check=False)
+    run_cmd(["/usr/lib/systemd/system-generators/zram-generator", "--setup-device", "zram0"], check=False)
+    run_cmd(["swapon", "-p", "32767", "/dev/zram0"], check=False)
     
     ok(f"ZRAM0 configured successfully to: {size_expr} (Priority: 32767)")
     notify("ZRAM0 Updated", f"ZRAM0 swap configured to {size_expr} @ Max Priority 32767")
@@ -344,9 +368,9 @@ options = discard
 def disable_zram0():
     escalate_root_if_needed()
     info("Disabling ZRAM0 compressed swap...")
+    run_cmd(["swapoff", "/dev/zram0"], check=False)
     run_cmd(["systemctl", "stop", "dev-zram0.swap"], check=False)
     run_cmd(["systemctl", "stop", "systemd-zram-setup@zram0.service"], check=False)
-    run_cmd(["swapoff", "/dev/zram0"], check=False)
     run_cmd(["zramctl", "--reset", "/dev/zram0"], check=False)
     if ZRAM0_CONF.exists():
         ZRAM0_CONF.unlink()
@@ -380,6 +404,10 @@ compression-algorithm = zstd(level=2)
 options = rw,nosuid,nodev,discard,noatime,lazytime,X-mount.mode=1777
 """
     ZRAM1_CONF.write_text(content)
+    run_cmd(["umount", "-q", "/mnt/zram1"], check=False)
+    run_cmd(["systemctl", "stop", "systemd-zram-setup@zram1.service"], check=False)
+    run_cmd(["zramctl", "--reset", "/dev/zram1"], check=False)
+    ensure_zram_device("zram1")
     run_cmd(["systemctl", "daemon-reload"])
     run_cmd(["systemctl", "restart", "systemd-zram-setup@zram1.service"], check=False)
     ok(f"ZRAM1 disk size updated to: {size_expr}")
@@ -395,11 +423,13 @@ def set_zram1_backend(backend: str):
             run_cmd(["python3", str(script_206), "--zram"])
         else:
             set_zram1_size("ram")
+        ok("/mnt/zram1 configured as Ext4 ZRAM Block device.")
         notify("ZRAM1 Attached", "/mnt/zram1 configured as Ext4 ZRAM Block device.")
     elif mode in ("tmpfs", "ram"):
         info("Switching /mnt/zram1 to Pure Tmpfs RAM Mount...")
         if script_206.exists():
             run_cmd(["python3", str(script_206), "--tmpfs"])
+        ok("/mnt/zram1 configured as Pure Tmpfs RAM disk.")
         notify("Tmpfs Attached", "/mnt/zram1 configured as Pure Tmpfs RAM disk.")
     elif mode in ("disable", "none", "off"):
         disable_zram1()
@@ -415,6 +445,7 @@ def disable_zram1():
     else:
         run_cmd(["systemctl", "stop", "systemd-zram-setup@zram1.service"], check=False)
         run_cmd(["umount", "-q", "/mnt/zram1"], check=False)
+        run_cmd(["zramctl", "--reset", "/dev/zram1"], check=False)
         if ZRAM1_CONF.exists():
             ZRAM1_CONF.unlink()
         run_cmd(["systemctl", "daemon-reload"])
@@ -432,6 +463,9 @@ def parse_disk_swap_bytes(raw: str) -> int:
         die(f"Invalid disk swap size format: '{raw}'. Examples: '4G', '8G', '512M'.")
     
     val = float(match.group(1))
+    if val <= 0:
+        die(f"Invalid disk swap size: '{raw}'. Size must be greater than 0.")
+        
     unit = match.group(2)
     
     if unit in ("G", "GB", "GIB"):
