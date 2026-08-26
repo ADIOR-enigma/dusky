@@ -42,6 +42,7 @@ parser = argparse.ArgumentParser(description="Elite Arch Linux Hybrid Memory Mou
 group = parser.add_mutually_exclusive_group()
 group.add_argument("--tmpfs", action="store_true", help="Autonomously deploy pure Tmpfs mapping")
 group.add_argument("--zram", action="store_true", help="Autonomously deploy Ext4 ZRAM block mapping")
+group.add_argument("--disable", "--none", dest="disable", action="store_true", help="Disable secondary RAM mount / clean up zram1")
 parser.add_argument("--no-color", action="store_true", help="Disable ANSI color output")
 
 args = parser.parse_args()
@@ -68,14 +69,37 @@ COMPRESSION_ALGORITHM = "zstd(level=2)"
 FS_OPTIONS = "rw,nosuid,nodev,discard,noatime,lazytime,X-mount.mode=1777"
 CMD_TIMEOUT = 15
 
-# --- Target User Identification (Wayland/Hyprland Safety) ---
-TARGET_UID = int(os.environ.get("SUDO_UID", str(os.getuid())))
-TARGET_GID = int(os.environ.get("SUDO_GID", str(os.getgid())))
+# --- Target User Identification (Dynamic & Wayland/Hyprland Safe) ---
+def resolve_target_user() -> tuple[int, int]:
+    sudo_uid = os.environ.get("SUDO_UID")
+    sudo_gid = os.environ.get("SUDO_GID")
+    if sudo_uid and int(sudo_uid) != 0:
+        return int(sudo_uid), int(sudo_gid or sudo_uid)
+    
+    try:
+        loginuid_path = Path("/proc/self/loginuid")
+        if loginuid_path.exists():
+            l_uid = int(loginuid_path.read_text().strip())
+            if 0 < l_uid < 65534:
+                import pwd
+                pw = pwd.getpwuid(l_uid)
+                return pw.pw_uid, pw.pw_gid
+    except Exception:
+        pass
 
-if TARGET_UID == 0:
-    err("Executed as raw root (UID 0).")
-    print("Wayland/Hyprland requires user-space ownership of temporary filesystems.")
-    die("Please execute this script using 'sudo ./206_memory_mounts.py' from your normal user account.")
+    try:
+        import pwd
+        for pw in pwd.getpwall():
+            if 1000 <= pw.pw_uid < 60000 and pw.pw_name != "nobody":
+                return pw.pw_uid, pw.pw_gid
+    except Exception:
+        pass
+
+    uid = os.getuid()
+    gid = os.getgid()
+    return (1000, 1000) if uid == 0 else (uid, gid)
+
+TARGET_UID, TARGET_GID = resolve_target_user()
 
 # --- Utility Functions ---
 def run_cmd(cmd: list[str], ignore_errors: bool = False) -> str:
@@ -253,9 +277,40 @@ ExecStartPost=/usr/sbin/tune2fs -O ^has_journal /dev/%i
     else:
         warn("Live ZRAM configuration delayed. Reboot the system to finalize the architecture.")
 
+def configure_none(mount_unit_name: str, mount_unit_path: Path) -> None:
+    info(f"Disabling secondary RAM disk for {C.BOLD}{MOUNT_POINT}{C.RST} (Minimal RAM mode)...")
+    
+    current = get_mount_source()
+    if current in ("/dev/zram1", "zram1"):
+        run_cmd(["systemctl", "stop", "systemd-zram-setup@zram1.service"], ignore_errors=True)
+    elif current == "tmpfs":
+        run_cmd(["systemctl", "stop", mount_unit_name], ignore_errors=True)
+        
+    if current:
+        run_cmd(["umount", "-q", MOUNT_POINT], ignore_errors=True)
+
+    zram_conf = Path("/etc/systemd/zram-generator.conf.d/99-elite-zram1.conf")
+    if zram_conf.exists():
+        zram_conf.unlink()
+
+    override_dir = Path("/etc/systemd/system/systemd-zram-setup@zram1.service.d")
+    if override_dir.exists():
+        for child in override_dir.glob("*"):
+            child.unlink()
+        override_dir.rmdir()
+
+    if mount_unit_path.exists():
+        run_cmd(["systemctl", "disable", mount_unit_name], ignore_errors=True)
+        mount_unit_path.unlink()
+
+    run_cmd(["systemctl", "daemon-reload"])
+    ok(f"Secondary RAM disk ({MOUNT_POINT}) disabled cleanly (zero RAM table overhead).")
+
 def ask_backend() -> str:
     current = get_mount_source()
     zram_conf = Path("/etc/systemd/zram-generator.conf.d/99-elite-zram1.conf")
+    mount_unit_name = run_cmd(["systemd-escape", "--path", f"--suffix=mount", MOUNT_POINT], ignore_errors=True)
+    mount_unit_path = Path("/etc/systemd/system") / mount_unit_name
     
     tmpfs_tag = f"{C.GRN} [LIVE & ACTIVE]{C.RST}" if current == "tmpfs" else ""
     
@@ -266,15 +321,19 @@ def ask_backend() -> str:
     else:
         zram_tag = ""
 
+    none_tag = f"{C.GRN} [CURRENTLY DISABLED]{C.RST}" if (not current and not zram_conf.exists() and not mount_unit_path.exists()) else ""
+
     print(f"\n  {C.CYN}[ Select backend for {MOUNT_POINT} ]{C.RST}")
-    print(f"   {C.BOLD}1{C.RST}) tmpfs (Pure RAM Mapping){tmpfs_tag}")
-    print(f"   {C.BOLD}2{C.RST}) zram  (Ext4 Compressed Block){zram_tag}")
+    print(f"   {C.BOLD}1{C.RST}) tmpfs   (Pure RAM Mapping){tmpfs_tag}")
+    print(f"   {C.BOLD}2{C.RST}) zram    (Ext4 Compressed Block){zram_tag}")
+    print(f"   {C.BOLD}3{C.RST}) disable (No secondary RAM disk / Zero RAM overhead){none_tag}")
     while True:
         raw = input("  > ").strip().lower()
         if raw in ("1", "tmpfs"): return "tmpfs"
         if raw in ("2", "zram"): return "zram"
+        if raw in ("3", "none", "disable", "disabled", "off"): return "none"
         if raw in ("q", "quit"): sys.exit(0)
-        print(f"  {C.RED}Invalid choice.{C.RST} Select 1 or 2.")
+        print(f"  {C.RED}Invalid choice.{C.RST} Select 1, 2, or 3.")
 
 # --- Entry Point ---
 def main() -> None:
@@ -283,9 +342,10 @@ def main() -> None:
 
     pre_flight_checks()
 
-    match (args.tmpfs, args.zram):
-        case (True, False): backend = "tmpfs"
-        case (False, True): backend = "zram"
+    match (args.tmpfs, args.zram, args.disable):
+        case (True, False, False): backend = "tmpfs"
+        case (False, True, False): backend = "zram"
+        case (False, False, True): backend = "none"
         case _: backend = ask_backend()
 
     for cmd in ["systemctl", "systemd-escape", "findmnt", "umount"]:
@@ -295,13 +355,15 @@ def main() -> None:
     mount_unit_name = run_cmd(["systemd-escape", "--path", f"--suffix=mount", MOUNT_POINT])
     mount_unit_path = Path("/etc/systemd/system") / mount_unit_name
 
-    prepare_mount_directory()
+    if backend != "none":
+        prepare_mount_directory()
 
     match backend:
         case "tmpfs": configure_tmpfs(mount_unit_name, mount_unit_path)
         case "zram": configure_zram(mount_unit_name, mount_unit_path)
+        case "none": configure_none(mount_unit_name, mount_unit_path)
             
-    ok(f"Subsystem configured. Target is ready for high-I/O workloads.")
+    ok(f"Subsystem configured successfully.")
 
 if __name__ == "__main__":
     try:
