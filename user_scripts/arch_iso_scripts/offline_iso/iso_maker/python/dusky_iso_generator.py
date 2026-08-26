@@ -39,19 +39,39 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 # Early help (no third-party, no root)
 # ==============================================================================
 _HELP = """\
-Dusky Arch ISO Factory — offline pacman/AUR repos + releng ISO
+󰏖 Dusky Arch ISO & Offline Repo Factory
+=======================================
 
 Usage:
-  sudo python3 dusky_factory.py [options]
+  ./dusky_iso_generator.py [options]
+
+Pipelines (--action):
+  official_iso   Download official Pacman repo + build ISO (Default)
+  aur_iso        Build AUR repo + build ISO
+  full           Full pipeline: Pacman repo + AUR repo + ISO
+  iso            Build ISO only (using existing offline repos)
+  official       Download official Pacman repo only (no ISO)
+  aur            Build AUR repo only (no ISO)
+  both           Build both Pacman & AUR repos (no ISO)
 
 Options:
-  --action ACTION             official|aur|both|iso|full|official_iso
-  --official-repo PATH        Official package repo directory
-  --aur-repo PATH             AUR package repo directory
-  --workspace PATH            Build workspace (default: /mnt/zram1 or /tmp)
-  --source-dir PATH           Installer payload / assets
-  --auto                      Non-interactive defaults
-  -h, --help                  This help
+  --action ACTION        Select pipeline action (see list above)
+  --official-repo PATH   Official package repo directory (default: /srv/offline-repo/official)
+  --aur-repo PATH        AUR package repo directory (default: /srv/offline-repo/aur)
+  --workspace PATH       Scratch workspace for ISO build (default: /mnt/zram1 or /tmp)
+  --source-dir PATH      Installer payload and dotfiles assets directory
+  --auto                 Non-interactive mode (use defaults without prompting)
+  -h, --help             Show this help message and exit
+
+Examples:
+  # Interactive menu (prompts for options):
+  ./dusky_iso_generator.py
+
+  # Full automated build on ZRAM:
+  ./dusky_iso_generator.py --action full --auto
+
+  # Build ISO only with custom workspace:
+  ./dusky_iso_generator.py --action iso --workspace /tmp/my_iso_build
 """
 
 if "-h" in sys.argv or "--help" in sys.argv:
@@ -1147,6 +1167,26 @@ def build_master_list(external_path: Optional[Path]) -> List[str]:
                 step(f"external -> {ext_cnt} unique")
         except (OSError, UnicodeDecodeError, ValueError) as exc:
             warn(f"External list fail: {exc}")
+
+    releng_path = Path("/usr/share/archiso/configs/releng/packages.x86_64")
+    if releng_path.is_file():
+        try:
+            releng_txt = releng_path.read_text(encoding="utf-8")
+            rel_cnt = 0
+            for raw in releng_txt.splitlines():
+                pkg = raw.split("#", 1)[0].strip()
+                if not pkg or any(c.isspace() for c in pkg):
+                    continue
+                if not PKGNAME_RE.fullmatch(pkg):
+                    continue
+                if pkg not in seen:
+                    seen.add(pkg)
+                    master.append(pkg)
+                    rel_cnt += 1
+            if rel_cnt:
+                step(f"archiso releng -> {rel_cnt} unique")
+        except OSError:
+            pass
 
     if not master:
         die("Master package list empty")
@@ -2716,31 +2756,78 @@ def prompt_action() -> str:
     console.print(
         Align.center(
             Panel(
-                "Dusky Factory",
+                "[bold cyan]󰏖 Dusky Arch ISO & Repo Factory[/]",
                 style="cyan",
                 box=box.ROUNDED,
                 expand=False,
             )
         )
     )
-    table = Table(box=box.SIMPLE, show_header=False)
-    table.add_column("No", style="magenta", width=4)
-    table.add_column("Action", style="white")
-    table.add_row("1", "Pacman Repo + ISO [default]")
-    table.add_row("2", "Download Pacman Repo (no ISO)")
-    table.add_row("3", "Build AUR Repo (no ISO)")
-    table.add_row("4", "Both Repos (Pacman + AUR, no ISO)")
-    table.add_row("5", "Build ISO only")
-    table.add_row("6", "Full pipeline: Pacman + AUR + ISO")
+    table = Table(
+        box=box.ROUNDED,
+        show_header=True,
+        header_style="bold bright_white",
+        title="[bold yellow]Select Build Pipeline[/]",
+        title_justify="center",
+    )
+    table.add_column("No", style="bold yellow", justify="center", width=4)
+    table.add_column("Category", style="bold white", width=14)
+    table.add_column("Pipeline Action", style="white")
+    table.add_column("Scope", style="dim")
+
+    table.add_row(
+        "1",
+        "[bold cyan]Pacman + ISO[/]",
+        "[bold cyan]Pacman Repo[/] + [bold green]ISO[/] [bold yellow](Default)[/]",
+        "Download official packages + generate ISO",
+    )
+    table.add_row(
+        "2",
+        "[bold magenta]AUR + ISO[/]",
+        "[bold magenta]AUR Repo[/] + [bold green]ISO[/]",
+        "Compile AUR packages + generate ISO",
+    )
+    table.add_row(
+        "3",
+        "[bold green]Full ISO[/]",
+        "[bold cyan]Pacman[/] + [bold magenta]AUR[/] + [bold green]ISO[/]",
+        "Complete end-to-end factory build",
+    )
+    table.add_row(
+        "4",
+        "[bold blue]ISO Only[/]",
+        "[bold green]Build ISO[/] only",
+        "Assemble ISO from existing offline repos",
+    )
+    table.add_section()
+    table.add_row(
+        "5",
+        "[bold cyan]Repo Only[/]",
+        "Download [bold cyan]Pacman Repo[/] (no ISO)",
+        "Sync & cache official repository",
+    )
+    table.add_row(
+        "6",
+        "[bold magenta]Repo Only[/]",
+        "Build [bold magenta]AUR Repo[/] (no ISO)",
+        "Compile & index AUR packages",
+    )
+    table.add_row(
+        "7",
+        "[bold purple]Repos Only[/]",
+        "Both Repos ([bold cyan]Pacman[/] + [bold magenta]AUR[/], no ISO)",
+        "Prepare all offline repos without ISO",
+    )
     console.print(table)
-    c = Prompt.ask("Enter choice", choices=["1", "2", "3", "4", "5", "6"], default="1")
+    c = Prompt.ask("Enter choice", choices=["1", "2", "3", "4", "5", "6", "7"], default="1")
     return {
         "1": "official_iso",
-        "2": "official",
-        "3": "aur",
-        "4": "both",
-        "5": "iso",
-        "6": "full",
+        "2": "aur_iso",
+        "3": "full",
+        "4": "iso",
+        "5": "official",
+        "6": "aur",
+        "7": "both",
     }[c]
 
 
@@ -2760,7 +2847,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument(
         "--action",
-        choices=["official", "aur", "both", "iso", "full", "official_iso"],
+        choices=["official", "aur", "both", "iso", "full", "official_iso", "aur_iso"],
     )
     parser.add_argument("--official-repo", type=Path)
     parser.add_argument("--aur-repo", type=Path)
@@ -2793,7 +2880,7 @@ def main() -> None:
 
     real_user, real_home = get_real_user()
     step(f"Real user: {real_user}  home: {real_home}")
-    if real_user == "root" and action in {"aur", "both", "full"}:
+    if real_user == "root" and action in {"aur", "both", "full", "aur_iso"}:
         warn("No non-root SUDO_USER/login user — makepkg via runuser to root is invalid")
         die("Invoke with: sudo -u youruser sudo python3 ...  OR export SUDO_USER")
 
@@ -2808,7 +2895,7 @@ def main() -> None:
     if not args.auto and sys.stdin.isatty():
         if action in {"official", "both", "full", "official_iso"}:
             official_repo = prompt_path("Official repo path", official_repo)
-        if action in {"aur", "both", "full"}:
+        if action in {"aur", "both", "full", "aur_iso"}:
             aur_repo = prompt_path("AUR repo path", aur_repo)
 
     try:
@@ -2825,7 +2912,7 @@ def main() -> None:
         source_dir = source_dir.absolute()
 
     workspace_base: Optional[Path] = args.workspace
-    if action in {"iso", "full", "official_iso"} and workspace_base is None:
+    if action in {"iso", "full", "official_iso", "aur_iso"} and workspace_base is None:
         if ZRAM_CANDIDATE.exists() and is_mountpoint(ZRAM_CANDIDATE):
             if not args.auto and sys.stdin.isatty():
                 use_z = Confirm.ask(
@@ -2887,7 +2974,7 @@ def main() -> None:
                 isolated.cleanup()
 
         # ----- AUR -----
-        if action in {"aur", "both", "full"}:
+        if action in {"aur", "both", "full", "aur_iso"}:
             info("=== AUR REPO BUILD ===")
             if os.geteuid() == 0:
                 warn("Running as root — makepkg/git via runuser as " + real_user)
@@ -3028,7 +3115,7 @@ def main() -> None:
                 isolated_aur.cleanup()
 
         # ----- ISO -----
-        if action in {"iso", "full", "official_iso"}:
+        if action in {"iso", "full", "official_iso", "aur_iso"}:
             info("=== ISO BUILD ===")
             if os.geteuid() != 0:
                 die("ISO build requires root")
