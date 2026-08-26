@@ -117,7 +117,7 @@ declare -i THRESHOLD_KB=$((30 * 1048576))
 if [[ "$MODE" == "AGGRESSIVE" ]] || { [[ "$MODE" == "AUTO" ]] && (( SYSTEM_RAM_KB >= THRESHOLD_KB )); }; then
     EXPECTED_MODE="PERFORMANCE_LEAN (32GB+)"
     EXPECTED_SWAPPINESS=150
-    EXPECTED_VFS_PRESSURE=100
+    EXPECTED_VFS_PRESSURE=50           # 50 retains dentry/inode caches for maximum gaming asset loading & compilation
     EXPECTED_SCALE_FACTOR=100          # 1.0% watermark boost
     EXPECTED_DIRTY_BYTES=1073741824    # 1GiB
     EXPECTED_DIRTY_BG_BYTES=268435456  # 256MiB
@@ -127,7 +127,7 @@ if [[ "$MODE" == "AGGRESSIVE" ]] || { [[ "$MODE" == "AUTO" ]] && (( SYSTEM_RAM_K
 else
     EXPECTED_MODE="STRICT_RAM_SAVINGS (<32GB)"
     EXPECTED_SWAPPINESS=190            # 0-200 valid since 5.8, 200=max
-    EXPECTED_VFS_PRESSURE=200          # >100 valid, 1000 = 10x reclaim
+    EXPECTED_VFS_PRESSURE=130          # 130 reclaims slab moderately while preventing game asset/dentry thrashing
     EXPECTED_SCALE_FACTOR=15           # 0.15% (15/10000)
     EXPECTED_DIRTY_BYTES=134217728     # 128MiB
     EXPECTED_DIRTY_BG_BYTES=33554432   # 32MiB
