@@ -40,7 +40,7 @@ enhanced = false
 hostname = "dusky"
 user = "dusky"
 reproducible = true
-extra_config = {}
+extra_config = { "CONFIG_VIRTIO" = true, "CONFIG_VIRTIO_PCI" = "m", "CONFIG_VIRTIO_PCI_LIB" = "m", "CONFIG_VIRTIO_PCI_MODERN" = true, "CONFIG_VIRTIO_BALLOON" = "m", "CONFIG_VIRTIO_BLK" = "m", "CONFIG_VIRTIO_NET" = "m", "CONFIG_VIRTIO_CONSOLE" = "m", "CONFIG_VIRTIO_INPUT" = "m", "CONFIG_DRM_VIRTIO_GPU" = "m", "CONFIG_HW_RANDOM_VIRTIO" = "m", "CONFIG_VIRTIO_FS" = "m", "CONFIG_NET_9P_VIRTIO" = "m", "CONFIG_VIRTIO_VSOCKETS" = "m", "CONFIG_VIRTIO_VSOCKETS_COMMON" = "m", "CONFIG_VIRTIO_DMA_SHARED_BUFFER" = "m", "CONFIG_FW_CFG_SYSFS" = "m" }
 
 [cpu]
 arch = "alderlake"
@@ -140,7 +140,7 @@ xdp = false
 mode = "strict"
 modprobed_db = true
 modprobed_db_path = "/home/dusk/.config/dusky/settings/dusky_kernel_compile/imports/workstation/modprobed.db"
-lmc_keep_extra = []
+lmc_keep_extra = ["drivers/virtio", "drivers/net", "drivers/gpu/drm/virtio", "net/9p"]
 manage_service = true
 sig_force = false
 
