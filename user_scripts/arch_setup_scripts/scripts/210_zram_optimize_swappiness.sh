@@ -225,6 +225,13 @@ vm.compaction_proactiveness = ${EXPECTED_COMPACTION}
 # required for Steam/Proton/Wine gaming compatibility (SteamOS uses 2147483642).
 vm.max_map_count = ${EXPECTED_MAX_MAP_COUNT}
 
+# --- SYSTEM & HARDWARE EFFICIENCY ---
+# kernel.nmi_watchdog: 0 disables the hardware NMI watchdog, eliminating periodic
+# hardware interrupts and saving CPU power/battery on laptops and desktops (ignored in VMs without vPMU).
+-kernel.nmi_watchdog = 0
+# kernel.printk: Suppresses low-priority kernel dmesg console spam while keeping warnings/errors.
+kernel.printk = 3 3 3 3
+
 # --- MODERN NETWORK STACK (BBR + CAKE) ---
 # net.ipv4.tcp_congestion_control: BBR handles congestion detection by measuring
 # bottleneck bandwidth and round-trip times, offering far better throughput.
@@ -237,9 +244,15 @@ net.core.default_qdisc = cake
 # to allow high-throughput TCP window scaling.
 net.ipv4.tcp_rmem = 4096 65536 4194304
 net.ipv4.tcp_wmem = 4096 65536 4194304
-# net.core.netdev_max_backlog: Default is 1000. Left at default to avoid overriding
-# higher values set by system tools or VM network bridges.
-# net.core.netdev_max_backlog = 16384
+# net.core.netdev_max_backlog: Queue length for incoming packets before processing.
+# 4096 prevents packet drops during high-speed network bursts (gigabit / WiFi 6).
+net.core.netdev_max_backlog = 4096
+# net.ipv4.tcp_fastopen: 3 enables TCP Fast Open for both incoming and outgoing connections,
+# reducing round-trip latency on supported HTTP/TLS handshakes.
+net.ipv4.tcp_fastopen = 3
+# net.ipv4.tcp_slow_start_after_idle: 0 prevents the TCP congestion window from resetting
+# to initial size after idle periods, improving burst responsiveness on long-lived connections.
+net.ipv4.tcp_slow_start_after_idle = 0
 
 # --- eBPF PERFORMANCE (user requested max performance) ---
 # net.core.bpf_jit_enable: 1 compiles eBPF programs on run instead of interpreting.
@@ -283,7 +296,11 @@ if ! sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -qw 
 fi
 modprobe sch_cake 2>/dev/null || true
 
-sysctl -e --load "$CONFIG_FILE" >/dev/null || log_warn "Some sysctl keys were ignored (likely removed in this kernel)."
+if [[ -x "/usr/lib/systemd/systemd-sysctl" ]]; then
+    /usr/lib/systemd/systemd-sysctl "$CONFIG_FILE" >/dev/null 2>&1 || sysctl -e --load "$CONFIG_FILE" >/dev/null 2>&1 || true
+else
+    sysctl -e --load "$CONFIG_FILE" >/dev/null 2>&1 || true
+fi
 
 # --- Apply MGLRU Tmpfiles ---
 if [[ -d "/sys/kernel/mm/lru_gen" ]]; then
@@ -346,7 +363,11 @@ fi
 if command -v loginctl >/dev/null 2>&1; then
     while read -r uid username _; do
         [[ "$uid" =~ ^[0-9]+$ ]] || continue
-        systemctl --user -M "${username}@.host" daemon-reexec >/dev/null 2>&1 || true
+        if ! systemctl --user -M "${username}@.host" daemon-reexec >/dev/null 2>&1; then
+            if [[ -d "/run/user/${uid}" ]]; then
+                runuser -u "$username" -- env XDG_RUNTIME_DIR="/run/user/${uid}" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${uid}/bus" systemctl --user daemon-reexec >/dev/null 2>&1 || true
+            fi
+        fi
     done < <(loginctl --no-legend list-users 2>/dev/null || true)
 fi
 

@@ -178,7 +178,7 @@ for size_dir in "${THP_BASE_DIR}"/hugepages-*kB; do
             eval_shmem="inherit"
         fi
     else
-        if (( sz == 2048 )); then
+        if (( sz == 64 || sz == 2048 )); then
             eval_enabled="madvise"
             eval_shmem="inherit"
         fi
@@ -275,7 +275,7 @@ for size_dir in "${THP_BASE_DIR}"/hugepages-*kB; do
             eval_shmem="inherit"
         fi
     else
-        if (( sz == 2048 )); then
+        if (( sz == 64 || sz == 2048 )); then
             eval_enabled="madvise"
             eval_shmem="inherit"
         fi
