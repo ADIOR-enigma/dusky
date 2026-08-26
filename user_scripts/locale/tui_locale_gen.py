@@ -39,10 +39,11 @@ THEME_FILE = "~/.config/matugen/generated/dusky_tui.json"
 TABS = [
     "Popular Locales",
     "English Variants",
-    "European Locales",
+    "Western & Central Europe",
+    "Nordic & Baltic",
+    "Eastern & Southern Europe",
     "Asian & Middle East",
-    "Americas & Other",
-    "System Actions",
+    "Americas & Actions",
 ]
 
 # =============================================================================
@@ -59,7 +60,7 @@ SCHEMA = {
             scope="DEFAULT",
             type_="bool",
             default=True,
-            group="Popular",
+            group="Popular Locales",
             extended_help="Standard American English UTF-8 locale.",
         ),
         ConfigItem(
@@ -68,7 +69,7 @@ SCHEMA = {
             scope="DEFAULT",
             type_="bool",
             default=False,
-            group="Popular",
+            group="Popular Locales",
             extended_help="British English UTF-8 locale.",
         ),
         ConfigItem(
@@ -77,7 +78,7 @@ SCHEMA = {
             scope="DEFAULT",
             type_="bool",
             default=False,
-            group="Popular",
+            group="Popular Locales",
             extended_help="Standard German UTF-8 locale.",
         ),
         ConfigItem(
@@ -86,7 +87,7 @@ SCHEMA = {
             scope="DEFAULT",
             type_="bool",
             default=False,
-            group="Popular",
+            group="Popular Locales",
             extended_help="Standard French UTF-8 locale.",
         ),
         ConfigItem(
@@ -95,7 +96,7 @@ SCHEMA = {
             scope="DEFAULT",
             type_="bool",
             default=False,
-            group="Popular",
+            group="Popular Locales",
             extended_help="Standard Spanish UTF-8 locale.",
         ),
         ConfigItem(
@@ -104,7 +105,7 @@ SCHEMA = {
             scope="DEFAULT",
             type_="bool",
             default=False,
-            group="Popular",
+            group="Popular Locales",
             extended_help="Standard Italian UTF-8 locale.",
         ),
         ConfigItem(
@@ -113,7 +114,7 @@ SCHEMA = {
             scope="DEFAULT",
             type_="bool",
             default=False,
-            group="Popular",
+            group="Popular Locales",
             extended_help="Standard Japanese UTF-8 locale.",
         ),
         ConfigItem(
@@ -122,7 +123,7 @@ SCHEMA = {
             scope="DEFAULT",
             type_="bool",
             default=False,
-            group="Popular",
+            group="Popular Locales",
             extended_help="Simplified Chinese UTF-8 locale.",
         ),
         ConfigItem(
@@ -131,7 +132,7 @@ SCHEMA = {
             scope="DEFAULT",
             type_="bool",
             default=False,
-            group="Popular",
+            group="Popular Locales",
             extended_help="Traditional Chinese UTF-8 locale.",
         ),
         ConfigItem(
@@ -140,7 +141,7 @@ SCHEMA = {
             scope="DEFAULT",
             type_="bool",
             default=False,
-            group="Popular",
+            group="Popular Locales",
             extended_help="Standard Korean UTF-8 locale.",
         ),
         ConfigItem(
@@ -149,7 +150,7 @@ SCHEMA = {
             scope="DEFAULT",
             type_="bool",
             default=False,
-            group="Popular",
+            group="Popular Locales",
             extended_help="Brazilian Portuguese UTF-8 locale.",
         ),
         ConfigItem(
@@ -158,7 +159,7 @@ SCHEMA = {
             scope="DEFAULT",
             type_="bool",
             default=False,
-            group="Popular",
+            group="Popular Locales",
             extended_help="Standard Russian UTF-8 locale.",
         ),
         ConfigItem(
@@ -167,7 +168,7 @@ SCHEMA = {
             scope="DEFAULT",
             type_="bool",
             default=False,
-            group="Popular",
+            group="Popular Locales",
             extended_help="Indian English UTF-8 locale.",
         ),
     ],
@@ -182,7 +183,7 @@ SCHEMA = {
             scope="DEFAULT",
             type_="bool",
             default=False,
-            group="English",
+            group="Global English",
             extended_help="Australian English UTF-8 locale.",
         ),
         ConfigItem(
@@ -191,7 +192,7 @@ SCHEMA = {
             scope="DEFAULT",
             type_="bool",
             default=False,
-            group="English",
+            group="Global English",
             extended_help="Canadian English UTF-8 locale.",
         ),
         ConfigItem(
@@ -200,7 +201,7 @@ SCHEMA = {
             scope="DEFAULT",
             type_="bool",
             default=False,
-            group="English",
+            group="Global English",
             extended_help="Irish English UTF-8 locale.",
         ),
         ConfigItem(
@@ -209,7 +210,7 @@ SCHEMA = {
             scope="DEFAULT",
             type_="bool",
             default=False,
-            group="English",
+            group="Global English",
             extended_help="New Zealand English UTF-8 locale.",
         ),
         ConfigItem(
@@ -218,7 +219,7 @@ SCHEMA = {
             scope="DEFAULT",
             type_="bool",
             default=False,
-            group="English",
+            group="Global English",
             extended_help="Singapore English UTF-8 locale.",
         ),
         ConfigItem(
@@ -227,7 +228,7 @@ SCHEMA = {
             scope="DEFAULT",
             type_="bool",
             default=False,
-            group="English",
+            group="Global English",
             extended_help="South African English UTF-8 locale.",
         ),
         ConfigItem(
@@ -236,7 +237,7 @@ SCHEMA = {
             scope="DEFAULT",
             type_="bool",
             default=False,
-            group="English",
+            group="Global English",
             extended_help="Hong Kong English UTF-8 locale.",
         ),
         ConfigItem(
@@ -245,22 +246,58 @@ SCHEMA = {
             scope="DEFAULT",
             type_="bool",
             default=False,
-            group="English",
+            group="Global English",
             extended_help="Philippines English UTF-8 locale.",
         ),
     ],
 
     # -------------------------------------------------------------------------
-    # TAB 2: EUROPEAN LOCALES
+    # TAB 2: WESTERN & CENTRAL EUROPE
     # -------------------------------------------------------------------------
     2: [
+        ConfigItem(
+            label="Austrian German (de_AT.UTF-8)",
+            key="de_AT.UTF-8 UTF-8",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Germanic",
+            extended_help="Austrian German UTF-8 locale.",
+        ),
+        ConfigItem(
+            label="Swiss German (de_CH.UTF-8)",
+            key="de_CH.UTF-8 UTF-8",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Germanic",
+            extended_help="Swiss German UTF-8 locale.",
+        ),
+        ConfigItem(
+            label="Belgian French (fr_BE.UTF-8)",
+            key="fr_BE.UTF-8 UTF-8",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Romance",
+            extended_help="Belgian French UTF-8 locale.",
+        ),
+        ConfigItem(
+            label="Swiss French (fr_CH.UTF-8)",
+            key="fr_CH.UTF-8 UTF-8",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Romance",
+            extended_help="Swiss French UTF-8 locale.",
+        ),
         ConfigItem(
             label="Portuguese / Portugal (pt_PT.UTF-8)",
             key="pt_PT.UTF-8 UTF-8",
             scope="DEFAULT",
             type_="bool",
             default=False,
-            group="Western & Central",
+            group="Romance",
             extended_help="Portuguese UTF-8 locale.",
         ),
         ConfigItem(
@@ -269,7 +306,7 @@ SCHEMA = {
             scope="DEFAULT",
             type_="bool",
             default=False,
-            group="Western & Central",
+            group="Low Countries",
             extended_help="Dutch UTF-8 locale.",
         ),
         ConfigItem(
@@ -278,7 +315,7 @@ SCHEMA = {
             scope="DEFAULT",
             type_="bool",
             default=False,
-            group="Western & Central",
+            group="Low Countries",
             extended_help="Belgian Dutch UTF-8 locale.",
         ),
         ConfigItem(
@@ -287,7 +324,7 @@ SCHEMA = {
             scope="DEFAULT",
             type_="bool",
             default=False,
-            group="Western & Central",
+            group="Central Europe",
             extended_help="Polish UTF-8 locale.",
         ),
         ConfigItem(
@@ -296,7 +333,7 @@ SCHEMA = {
             scope="DEFAULT",
             type_="bool",
             default=False,
-            group="Western & Central",
+            group="Central Europe",
             extended_help="Czech UTF-8 locale.",
         ),
         ConfigItem(
@@ -305,9 +342,15 @@ SCHEMA = {
             scope="DEFAULT",
             type_="bool",
             default=False,
-            group="Western & Central",
+            group="Central Europe",
             extended_help="Hungarian UTF-8 locale.",
         ),
+    ],
+
+    # -------------------------------------------------------------------------
+    # TAB 3: NORDIC & BALTIC LOCALES
+    # -------------------------------------------------------------------------
+    3: [
         ConfigItem(
             label="Swedish / Sverige (sv_SE.UTF-8)",
             key="sv_SE.UTF-8 UTF-8",
@@ -318,13 +361,22 @@ SCHEMA = {
             extended_help="Swedish UTF-8 locale.",
         ),
         ConfigItem(
-            label="Norwegian / Norge (nb_NO.UTF-8)",
+            label="Norwegian Bokmål (nb_NO.UTF-8)",
             key="nb_NO.UTF-8 UTF-8",
             scope="DEFAULT",
             type_="bool",
             default=False,
             group="Nordic",
             extended_help="Norwegian Bokmål UTF-8 locale.",
+        ),
+        ConfigItem(
+            label="Norwegian Nynorsk (nn_NO.UTF-8)",
+            key="nn_NO.UTF-8 UTF-8",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Nordic",
+            extended_help="Norwegian Nynorsk UTF-8 locale.",
         ),
         ConfigItem(
             label="Danish / Danmark (da_DK.UTF-8)",
@@ -345,12 +397,54 @@ SCHEMA = {
             extended_help="Finnish UTF-8 locale.",
         ),
         ConfigItem(
+            label="Icelandic / Ísland (is_IS.UTF-8)",
+            key="is_IS.UTF-8 UTF-8",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Nordic",
+            extended_help="Icelandic UTF-8 locale.",
+        ),
+        ConfigItem(
+            label="Estonian / Eesti (et_EE.UTF-8)",
+            key="et_EE.UTF-8 UTF-8",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Baltic",
+            extended_help="Estonian UTF-8 locale.",
+        ),
+        ConfigItem(
+            label="Latvian / Latvija (lv_LV.UTF-8)",
+            key="lv_LV.UTF-8 UTF-8",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Baltic",
+            extended_help="Latvian UTF-8 locale.",
+        ),
+        ConfigItem(
+            label="Lithuanian / Lietuva (lt_LT.UTF-8)",
+            key="lt_LT.UTF-8 UTF-8",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Baltic",
+            extended_help="Lithuanian UTF-8 locale.",
+        ),
+    ],
+
+    # -------------------------------------------------------------------------
+    # TAB 4: EASTERN & SOUTHERN EUROPE
+    # -------------------------------------------------------------------------
+    4: [
+        ConfigItem(
             label="Greek / Ελλάδα (el_GR.UTF-8)",
             key="el_GR.UTF-8 UTF-8",
             scope="DEFAULT",
             type_="bool",
             default=False,
-            group="Eastern & Southern",
+            group="Southern Europe",
             extended_help="Greek UTF-8 locale.",
         ),
         ConfigItem(
@@ -359,7 +453,7 @@ SCHEMA = {
             scope="DEFAULT",
             type_="bool",
             default=False,
-            group="Eastern & Southern",
+            group="Eastern Europe",
             extended_help="Romanian UTF-8 locale.",
         ),
         ConfigItem(
@@ -368,15 +462,60 @@ SCHEMA = {
             scope="DEFAULT",
             type_="bool",
             default=False,
-            group="Eastern & Southern",
+            group="Eastern Europe",
             extended_help="Ukrainian UTF-8 locale.",
+        ),
+        ConfigItem(
+            label="Bulgarian / България (bg_BG.UTF-8)",
+            key="bg_BG.UTF-8 UTF-8",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Eastern Europe",
+            extended_help="Bulgarian UTF-8 locale.",
+        ),
+        ConfigItem(
+            label="Croatian / Hrvatska (hr_HR.UTF-8)",
+            key="hr_HR.UTF-8 UTF-8",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Southern Europe",
+            extended_help="Croatian UTF-8 locale.",
+        ),
+        ConfigItem(
+            label="Slovak / Slovensko (sk_SK.UTF-8)",
+            key="sk_SK.UTF-8 UTF-8",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Central Europe",
+            extended_help="Slovak UTF-8 locale.",
+        ),
+        ConfigItem(
+            label="Slovenian / Slovenija (sl_SI.UTF-8)",
+            key="sl_SI.UTF-8 UTF-8",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Central Europe",
+            extended_help="Slovenian UTF-8 locale.",
+        ),
+        ConfigItem(
+            label="Serbian / Србија (sr_RS)",
+            key="sr_RS UTF-8",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Southern Europe",
+            extended_help="Serbian Cyrillic UTF-8 locale.",
         ),
     ],
 
     # -------------------------------------------------------------------------
-    # TAB 3: ASIAN & MIDDLE EAST LOCALES
+    # TAB 5: ASIAN & MIDDLE EAST LOCALES
     # -------------------------------------------------------------------------
-    3: [
+    5: [
         ConfigItem(
             label="Hindi / हिन्दी (hi_IN)",
             key="hi_IN UTF-8",
@@ -486,6 +625,15 @@ SCHEMA = {
             extended_help="Arabic (UAE) UTF-8 locale.",
         ),
         ConfigItem(
+            label="Arabic / Egypt (ar_EG.UTF-8)",
+            key="ar_EG.UTF-8 UTF-8",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Middle East",
+            extended_help="Arabic (Egypt) UTF-8 locale.",
+        ),
+        ConfigItem(
             label="Hebrew / Israel (he_IL.UTF-8)",
             key="he_IL.UTF-8 UTF-8",
             scope="DEFAULT",
@@ -551,16 +699,16 @@ SCHEMA = {
     ],
 
     # -------------------------------------------------------------------------
-    # TAB 4: AMERICAS & OTHER LOCALES
+    # TAB 6: AMERICAS & ACTIONS
     # -------------------------------------------------------------------------
-    4: [
+    6: [
         ConfigItem(
             label="Spanish / Mexico (es_MX.UTF-8)",
             key="es_MX.UTF-8 UTF-8",
             scope="DEFAULT",
             type_="bool",
             default=False,
-            group="Americas",
+            group="Latin America",
             extended_help="Mexican Spanish UTF-8 locale.",
         ),
         ConfigItem(
@@ -569,7 +717,7 @@ SCHEMA = {
             scope="DEFAULT",
             type_="bool",
             default=False,
-            group="Americas",
+            group="Latin America",
             extended_help="Argentine Spanish UTF-8 locale.",
         ),
         ConfigItem(
@@ -578,7 +726,7 @@ SCHEMA = {
             scope="DEFAULT",
             type_="bool",
             default=False,
-            group="Americas",
+            group="Latin America",
             extended_help="Chilean Spanish UTF-8 locale.",
         ),
         ConfigItem(
@@ -587,15 +735,45 @@ SCHEMA = {
             scope="DEFAULT",
             type_="bool",
             default=False,
-            group="Americas",
+            group="Latin America",
             extended_help="Colombian Spanish UTF-8 locale.",
         ),
-    ],
-
-    # -------------------------------------------------------------------------
-    # TAB 5: SYSTEM ACTIONS
-    # -------------------------------------------------------------------------
-    5: [
+        ConfigItem(
+            label="Spanish / Peru (es_PE.UTF-8)",
+            key="es_PE.UTF-8 UTF-8",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="Latin America",
+            extended_help="Peruvian Spanish UTF-8 locale.",
+        ),
+        ConfigItem(
+            label="Afrikaans / South Africa (af_ZA.UTF-8)",
+            key="af_ZA.UTF-8 UTF-8",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="African Locales",
+            extended_help="Afrikaans UTF-8 locale.",
+        ),
+        ConfigItem(
+            label="Swahili / Kenya (sw_KE)",
+            key="sw_KE UTF-8",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="African Locales",
+            extended_help="Swahili UTF-8 locale.",
+        ),
+        ConfigItem(
+            label="Zulu / South Africa (zu_ZA.UTF-8)",
+            key="zu_ZA.UTF-8 UTF-8",
+            scope="DEFAULT",
+            type_="bool",
+            default=False,
+            group="African Locales",
+            extended_help="Zulu UTF-8 locale.",
+        ),
         ConfigItem(
             label="Compile Locales (locale-gen)",
             key="action_locale_gen",
@@ -623,6 +801,15 @@ SCHEMA = {
             group="System Diagnostics",
             extended_help="Displays active system locale settings (`localectl status`).",
         ),
+        ConfigItem(
+            label="View Active Shell Locale (locale)",
+            key="action_view_shell_locale",
+            scope="DEFAULT",
+            type_="action",
+            default="locale",
+            group="System Diagnostics",
+            extended_help="Displays all active environment locale variables in the current session (`locale`).",
+        ),
     ],
 }
 
@@ -640,4 +827,5 @@ if __name__ == "__main__":
     else:
         print(f"[-] Error: Main Dusky TUI router not found at {main_router}", file=sys.stderr)
         sys.exit(1)
+
 
