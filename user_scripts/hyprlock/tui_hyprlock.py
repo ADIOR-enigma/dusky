@@ -47,6 +47,16 @@ TABS = ["Themes", "Actions"]
 # =============================================================================
 _THEMES_ROOT = Path("~/.config/hypr/hyprlock_themes").expanduser().resolve()
 
+def _clean_theme_name(raw_name: str, folder: str) -> str:
+    name = raw_name.strip()
+    if name.endswith("(Default)"):
+        name = name[:-9].strip()
+    if name.islower():
+        name = name.title()
+    if not name:
+        name = folder.replace("_", " ").title()
+    return name
+
 THEMES_META = []
 if _THEMES_ROOT.is_dir():
     _dirs = sorted(
@@ -68,9 +78,13 @@ if _THEMES_ROOT.is_dir():
                     author = str(data.get("author") or "").strip()
             except (OSError, json.JSONDecodeError):
                 pass
+
+        clean_name = _clean_theme_name(display_name, folder)
+
         THEMES_META.append({
             "folder": folder,
-            "name": display_name,
+            "name": clean_name,
+            "raw_name": display_name,
             "description": description,
             "author": author,
             "dir": d,
@@ -88,7 +102,7 @@ SCHEMA = {
     # -------------------------------------------------------------------------
     0: [
         ConfigItem(
-            label="Active Theme Tracker",
+            label="Active Theme",
             key="hyprlock",
             scope="DEFAULT",
             type_="int",
@@ -98,13 +112,13 @@ SCHEMA = {
             step=1,
             group="Themes",
             extended_help=(
-                "**System Hyprlock Theme Tracker**\n\n"
+                "**Active Hyprlock Theme**\n\n"
                 "Chronological index of the active Hyprlock layout. Adjusting this number "
                 "instantly switches the lock screen layout."
             ),
         ),
         ConfigItem(
-            label="Available Themes (Live Selection)",
+            label="Available Themes",
             key="active_theme_folder",
             scope="DEFAULT",
             type_="menu",
@@ -211,11 +225,12 @@ dynamic_theme_items = []
 for i, meta in enumerate(THEMES_META):
     fld = meta["folder"]
     nm = meta["name"]
+    raw_nm = meta["raw_name"]
     desc = meta["description"] or "No description provided."
     author = meta["author"] or "Unknown"
 
     help_text = (
-        f"**{nm}**\n\n"
+        f"**{raw_nm}**\n\n"
         f"- **Directory:** `{fld}`\n"
         f"- **Author:** {author}\n"
         f"- **Description:** {desc}\n\n"
@@ -224,7 +239,7 @@ for i, meta in enumerate(THEMES_META):
 
     dynamic_theme_items.append(
         ConfigItem(
-            label=f"{nm} ({fld})",
+            label=nm,
             key=f"__hyprlock_theme_{fld}",
             scope="DEFAULT",
             type_="preset",

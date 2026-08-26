@@ -108,9 +108,16 @@ class HyprlockEngine(BaseEngine):
                 except (OSError, json.JSONDecodeError):
                     pass
 
+            clean_name = display_name
+            if clean_name.endswith("(Default)"):
+                clean_name = clean_name[:-9].strip()
+            if clean_name.islower():
+                clean_name = clean_name.title()
+
             meta = {
                 "folder": folder,
-                "name": display_name,
+                "name": clean_name,
+                "raw_name": display_name,
                 "description": description,
                 "author": author,
                 "dir": d,
@@ -120,7 +127,7 @@ class HyprlockEngine(BaseEngine):
 
             self.theme_dirs.append(d)
             self.theme_folders.append(folder)
-            self.theme_names.append(display_name)
+            self.theme_names.append(clean_name)
             self.theme_metadata.append(meta)
 
     def _extract_source_from_config(self) -> str | None:
@@ -427,6 +434,14 @@ class HyprlockEngine(BaseEngine):
                     if not matched:
                         for idx, nm in enumerate(self.theme_names):
                             if nm.lower() == target_str.lower():
+                                target_idx = idx
+                                requires_write = True
+                                matched = True
+                                break
+                    # Raw name match fallback (e.g. including (Default))
+                    if not matched:
+                        for idx, m in enumerate(self.theme_metadata):
+                            if m.get("raw_name", "").lower() == target_str.lower():
                                 target_idx = idx
                                 requires_write = True
                                 matched = True
