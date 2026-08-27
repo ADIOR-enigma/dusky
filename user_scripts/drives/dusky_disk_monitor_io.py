@@ -575,9 +575,9 @@ class DriveWidget(Static, can_focus=True):
         table.add_column("F1", ratio=1)
         table.add_column("C2", justify="left", no_wrap=True, width=24)
         table.add_column("F2", ratio=1)
-        table.add_column("C3", justify="right", no_wrap=True, width=16)
+        table.add_column("C3", justify="left", no_wrap=True, width=16)
         table.add_column("F3", ratio=1)
-        table.add_column("C4", justify="right", no_wrap=True, width=17)
+        table.add_column("C4", justify="left", no_wrap=True, width=17)
 
         r_spark, self.peak_read = self.generate_sparkline(self.history_read, self.peak_read, width=16, color_hex=SUCCESS)
         w_spark, self.peak_write = self.generate_sparkline(self.history_write, self.peak_write, width=16, color_hex=ACCENT)
@@ -625,9 +625,9 @@ class DriveWidget(Static, can_focus=True):
                 "",
                 f"[{LABEL_COL}]UTIL    [{DIVIDER_COL}]│[/][/] [bold {ERROR}]{util_pct:>5.1f}%[/]",
                 "",
-                f"[{LABEL_COL}]CRITICAL [{DIVIDER_COL}]│[/][/] [bold {crit_col}]{smart.critical_warning:>3}[/]",
+                f"[{LABEL_COL}]CRITICAL [{DIVIDER_COL}]│[/][/] [bold {crit_col}]{smart.critical_warning:>4}[/]",
                 "",
-                f"[{LABEL_COL}]PWR CYC [{DIVIDER_COL}]│[/][/] [bold {FG}]{smart.power_cycles:>5}[/]",
+                f"[{LABEL_COL}]PWR CYC [{DIVIDER_COL}]│[/][/] [bold {FG}]{smart.power_cycles:>6}[/]",
             )
 
             # ROW 4 (Health / Errors / Power Hours)
@@ -637,9 +637,9 @@ class DriveWidget(Static, can_focus=True):
                 "",
                 f"[{LABEL_COL}]HEALTH  [{DIVIDER_COL}]│[/][/] [bold {ACCENT}]{smart.health:>5}[/]",
                 "",
-                f"[{LABEL_COL}]ERRORS   [{DIVIDER_COL}]│[/][/] [bold {err_col}]{smart.media_errors:>3}[/]",
+                f"[{LABEL_COL}]ERRORS   [{DIVIDER_COL}]│[/][/] [bold {err_col}]{smart.media_errors:>4}[/]",
                 "",
-                f"[{LABEL_COL}]PWR HRS [{DIVIDER_COL}]│[/][/] [bold {FG}]{smart.power_on_hours:>5}[/]",
+                f"[{LABEL_COL}]PWR HRS [{DIVIDER_COL}]│[/][/] [bold {FG}]{smart.power_on_hours:>6}[/]",
             )
 
             # ROW 5 (Temperature / Thermal Throttle / Power Cuts)
@@ -649,9 +649,9 @@ class DriveWidget(Static, can_focus=True):
                 "",
                 f"[{LABEL_COL}]TEMP    [{DIVIDER_COL}]│[/][/] [bold {TEMP_COL}]{smart.temp:>5}[/]",
                 "",
-                f"[{LABEL_COL}]T1 TIME  [{DIVIDER_COL}]│[/][/] [bold {FG}]{smart.therm_t1:>3}[/]",
+                f"[{LABEL_COL}]T1 TIME  [{DIVIDER_COL}]│[/][/] [bold {FG}]{smart.therm_t1:>4}[/]",
                 "",
-                f"[{LABEL_COL}]PWR CUT [{DIVIDER_COL}]│[/][/] [bold {ERROR}]{smart.unsafe_shutdowns:>5}[/]",
+                f"[{LABEL_COL}]PWR CUT [{DIVIDER_COL}]│[/][/] [bold {ERROR}]{smart.unsafe_shutdowns:>6}[/]",
             )
 
         self.update(table)
@@ -677,7 +677,7 @@ class IOMonitorApp(App):
 
     #ram_bar {{
         height: 1;
-        background: {MUTED};
+        background: {BG};
         color: {FG};
         padding: 0 1;
     }}
@@ -695,7 +695,7 @@ class IOMonitorApp(App):
         background: {ACCENT};
         color: {BG};
         text-style: bold;
-        padding: 0 1;
+        padding: 0;
         margin: 0;
     }}
 
@@ -911,9 +911,9 @@ class IOMonitorApp(App):
         dirty, wb, shmem = SysStatParser.get_ram_buffers()
         shmem_str = format_bytes(shmem * 1048576)
         ram_txt = Text.from_markup(
-            f"[{FG}]Dirty (Wait):[/] [bold {ACCENT}]{dirty:.1f} MB[/]  [{BG}]│[/]  "
-            f"[{FG}]Writeback (Active):[/] [bold {ERROR}]{wb:.1f} MB[/]  [{BG}]│[/]  "
-            f"[{FG}]Shared Mem (IPC):[/] [bold {SUCCESS}]{shmem_str}[/]"
+            f"[{LABEL_COL}]Dirty (Wait):[/] [bold {ACCENT}]{dirty:.1f} MB[/]  [{DIVIDER_COL}]│[/]  "
+            f"[{LABEL_COL}]Writeback (Active):[/] [bold {ERROR}]{wb:.1f} MB[/]  [{DIVIDER_COL}]│[/]  "
+            f"[{LABEL_COL}]Shared Mem (IPC):[/] [bold {SUCCESS}]{shmem_str}[/]"
         )
         try:
             self.query_one("#ram_txt", Static).update(ram_txt)
