@@ -679,7 +679,7 @@ class IOMonitorApp(App):
         height: 1;
         background: {MUTED};
         color: {FG};
-        padding: 0 1 0 2;
+        padding: 0 1;
     }}
 
     #ram_txt {{
@@ -689,7 +689,8 @@ class IOMonitorApp(App):
 
     Button#btn_sync {{
         height: 1;
-        min-width: 10;
+        min-width: 0;
+        width: auto;
         border: none;
         background: {ACCENT};
         color: {BG};
