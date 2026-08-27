@@ -1714,7 +1714,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument('--help', '-h', action='store_true')
     parser.add_argument('--version', action='store_true')
     parser.add_argument('--doctor', action='store_true')
-    parser.add_argument('--profile', type=str, default="01_update_default")
+    parser.add_argument(
+        '--profile',
+        '-p',
+        type=str,
+        default=os.environ.get("DUSKY_UPDATER_PROFILE", "01_update_default"),
+    )
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--skip-sync', action='store_true')
     parser.add_argument('--sync-only', action='store_true')
@@ -1947,15 +1952,35 @@ def list_profiles() -> list[Path]:
 
 
 def load_profile(name_or_path: str) -> ProfileConfig:
-    p = Path(name_or_path).expanduser()
-    if not p.is_file():
-        if not name_or_path.endswith(".toml"):
-            p = PROFILES_DIR / f"{name_or_path}.toml"
-        else:
-            p = PROFILES_DIR / name_or_path
+    available = list_profiles()
+    p: Path | None = None
+    query = name_or_path.strip()
 
-    if not p.is_file():
-        available = list_profiles()
+    candidate = Path(query).expanduser()
+    if candidate.is_file():
+        p = candidate
+    elif (PROFILES_DIR / f"{query}.toml").is_file():
+        p = PROFILES_DIR / f"{query}.toml"
+    elif (PROFILES_DIR / query).is_file():
+        p = PROFILES_DIR / query
+    elif query.isdigit():
+        idx = int(query) - 1
+        if 0 <= idx < len(available):
+            p = available[idx]
+
+    if p is None and available:
+        q_lower = query.lower()
+        for cand in available:
+            if cand.stem.lower() == q_lower or cand.name.lower() == q_lower:
+                p = cand
+                break
+        if p is None:
+            for cand in available:
+                if q_lower in cand.stem.lower() or cand.stem.lower().startswith(q_lower):
+                    p = cand
+                    break
+
+    if p is None:
         if available:
             p = available[0]
             sys.stderr.write(
@@ -6289,6 +6314,11 @@ if __name__ == "__main__":
         app = DuskyApp(profile, tasks, has_sudo)
         app.run()
 
+    except BrokenPipeError:
+        with suppress(Exception):
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull, sys.stdout.fileno())
+        sys.exit(0)
     except KeyboardInterrupt:
         sys.stdout.write("\n\033[1;33m[WARN]\033[0m User interrupt detected. Terminating.\n")
         sys.exit(130)
