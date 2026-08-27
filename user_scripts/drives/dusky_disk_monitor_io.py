@@ -529,7 +529,7 @@ class DriveWidget(Static, can_focus=True):
         border: solid {MUTED};
         background: {BG};
         height: auto;
-        margin: 0 1 1 1;
+        margin: 0 0 1 0;
         padding: 0 1;
         transition: border 150ms;
     }}
@@ -896,7 +896,7 @@ class IOMonitorApp(App):
 
     #main_scroll {{
         height: 1fr;
-        padding: 1 1;
+        padding: 0 1;
         overflow-y: auto;
         scrollbar-size: 1 1; 
         scrollbar-background: {BG};
