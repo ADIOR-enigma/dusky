@@ -297,7 +297,7 @@ togglalble with a keybind or from rofi.
     
 - **Accessibility:** Text-to-Speech (TTS) and Speech-to-Text (STT) capabilities (hardware dependent).
     
-- **Keybind Cheatsheet:** Press `CTRL` + `SHIFT` + `?` anytime to see your controls.
+- **Keybind Cheatsheet:** Press `CTRL` + `SHIFT` + `?` or `CTRL` + `SHIFT` + `SPACE` anytime to see your controls.
     
 
 
