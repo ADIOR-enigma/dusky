@@ -75,6 +75,8 @@ def ensure_smart_access() -> None:
     """Prompts for sudo upfront and spawns a background refresher for non-expiring telemetry."""
     if os.geteuid() != 0:
         if subprocess.run(["sudo", "-n", "true"], capture_output=True).returncode != 0:
+            if not sys.stdin.isatty():
+                return
             print("\n[!] Advanced NVMe SMART diagnostics require administrative privileges.")
             print("[*] Please authenticate to enable full telemetry (Temp, TBW, Health, etc):\n")
             try:
@@ -354,8 +356,8 @@ class SysStatParser:
         return SysStatParser._get_smartctl_data(device)
 
     @staticmethod
-    def get_ram_buffers() -> tuple[float, float]:
-        dirty = writeback = 0.0
+    def get_ram_buffers() -> tuple[float, float, float]:
+        dirty = writeback = shmem = 0.0
         try:
             with open("/proc/meminfo", "r", encoding="utf-8") as f:
                 for line in f:
@@ -363,9 +365,11 @@ class SysStatParser:
                         dirty = float(line.split()[1]) / 1024.0
                     elif line.startswith("Writeback:"):
                         writeback = float(line.split()[1]) / 1024.0
+                    elif line.startswith("Shmem:"):
+                        shmem = float(line.split()[1]) / 1024.0
         except (OSError, IndexError, ValueError):
             pass
-        return dirty, writeback
+        return dirty, writeback, shmem
 
     @staticmethod
     def get_device_metadata() -> dict[str, dict]:
@@ -377,10 +381,19 @@ class SysStatParser:
                 check=True,
             )
             data = json.loads(res.stdout)
-            devices_raw = [
-                d for d in data.get("blockdevices", [])
-                if d.get("name") and not d["name"].startswith(("loop", "sr", "ram", "dm", "fd", "nbd"))
-            ]
+            devices_raw = []
+            for d in data.get("blockdevices", []):
+                name = d.get("name", "")
+                if not name or name.startswith(("loop", "sr", "ram", "dm", "fd", "nbd")):
+                    continue
+                if name.startswith("zram"):
+                    try:
+                        sz_p = Path(f"/sys/block/{name}/size")
+                        if sz_p.exists() and int(sz_p.read_text().strip()) == 0:
+                            continue
+                    except Exception:
+                        continue
+                devices_raw.append(d)
 
             def fetch_single_meta(dev: dict) -> tuple[str, dict]:
                 name = dev["name"]
@@ -876,10 +889,11 @@ class IOMonitorApp(App):
                 focused.scroll_visible()
 
     def tick(self) -> None:
-        dirty, wb = SysStatParser.get_ram_buffers()
+        dirty, wb, shmem = SysStatParser.get_ram_buffers()
         ram_txt = Text.from_markup(
-            f"[{FG}]Dirty Pages (Wait):[/] [bold {ACCENT}]{dirty:>6.1f} MB[/]  [{BG}]│[/]  "
-            f"[{FG}]Writeback (Active):[/] [bold {ERROR}]{wb:>6.1f} MB[/]"
+            f"[{FG}]Dirty (Wait):[/] [bold {ACCENT}]{dirty:>5.1f} MB[/]  [{BG}]│[/]  "
+            f"[{FG}]Writeback (Active):[/] [bold {ERROR}]{wb:>5.1f} MB[/]  [{BG}]│[/]  "
+            f"[{FG}]Tmpfs (RAM):[/] [bold {SUCCESS}]{shmem:>6.1f} MB[/]"
         )
         try:
             self.query_one("#ram_txt", Static).update(ram_txt)
@@ -888,10 +902,17 @@ class IOMonitorApp(App):
 
         current_drives: list[str] = []
         try:
-            current_drives = [
-                d for d in os.listdir("/sys/block")
-                if not d.startswith(("loop", "sr", "ram", "dm", "fd", "nbd"))
-            ]
+            for d in os.listdir("/sys/block"):
+                if d.startswith(("loop", "sr", "ram", "dm", "fd", "nbd")):
+                    continue
+                if d.startswith("zram"):
+                    try:
+                        sz_p = Path(f"/sys/block/{d}/size")
+                        if not sz_p.exists() or int(sz_p.read_text().strip()) == 0:
+                            continue
+                    except Exception:
+                        continue
+                current_drives.append(d)
             current_drives.sort()
         except Exception:
             pass
