@@ -30,6 +30,7 @@ inner_uuid = "b982f02e-32f6-40cd-86de-964c90676cc2"
 hint = "LAP_P"
 fstype = "ext4"
 mount_options = ["noatime", "delalloc", "commit=20"]
+symlinks = ["~/.mozilla"]
 
 [drives.media]
 type = "PROTECTED"
