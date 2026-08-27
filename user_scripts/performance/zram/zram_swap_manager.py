@@ -484,13 +484,136 @@ def enable_zram0() -> None:
     set_zram0_size("auto")
 
 # =============================================================================
-# ZRAM1 CONFIGURATION
+# ZRAM1 CONFIGURATION & DATA MIGRATION ENGINE
 # =============================================================================
+
+def safely_unmount_and_stage(target_backend: str, mount_point: Path = MOUNT_POINT) -> Path | None:
+    """
+    Intelligently unmounts mount_point and stages files for seamless migration:
+    - Releasing active processes holding the mountpoint (SIGTERM -> SIGKILL) to quiesce filesystem.
+    - Syncs dirty buffers to prevent data loss.
+    - Accurately checks allocated disk block size (sparse-aware).
+    - Stages files using rsync with sparse and metadata preservation (fallback to cp -a).
+    - Cleans systemd failed states and performs unmount with lazy unmount fallback.
+    """
+    stage_dir: Path | None = None
+
+    src = run_cmd(["findmnt", "-rn", "-o", "SOURCE", "--mountpoint", str(mount_point)], check=False)
+    if src:
+        # 1. Quiesce filesystem by releasing holding processes
+        info(f"Releasing active processes holding {mount_point}...")
+        if shutil.which("fuser"):
+            subprocess.run(["fuser", "-km", "-TERM", str(mount_point)], capture_output=True, check=False)
+            time.sleep(0.3)
+            subprocess.run(["fuser", "-km", "-KILL", str(mount_point)], capture_output=True, check=False)
+            time.sleep(0.2)
+
+        try:
+            subprocess.run(["sync", "-f", str(mount_point)], capture_output=True, check=False)
+        except Exception:
+            pass
+
+        # 2. Check for user files to migrate
+        try:
+            items = [p for p in mount_point.iterdir() if p.name not in ("lost+found", ".Trash-1000")]
+            if items:
+                info(f"Detected {len(items)} file(s)/folder(s) on {mount_point}. Staging for migration...")
+                # Get accurate allocated disk usage in bytes
+                du_out = run_cmd(["du", "-s", "-B1", "--exclude=lost+found", "--exclude=.Trash-1000", str(mount_point)], check=False)
+                allocated_bytes = int(du_out.split()[0]) if du_out and du_out.split()[0].isdigit() else 1024 * 1024 * 1024
+
+                candidate_dirs = [Path("/var/tmp"), Path("/tmp")]
+                for cand in candidate_dirs:
+                    try:
+                        st = os.statvfs(str(cand))
+                        free_bytes = st.f_bavail * st.f_frsize
+                        if free_bytes > (allocated_bytes + 1024 * 1024 * 200):  # +200MB margin
+                            s_dir = cand / f".zram1_migration_{os.getpid()}_{int(time.time())}"
+                            s_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+                            
+                            # Prefer rsync with sparse and full Unix metadata preservation
+                            if shutil.which("rsync"):
+                                res = subprocess.run(
+                                    ["rsync", "-aHAX", "--sparse", "--exclude=lost+found", "--exclude=.Trash-1000", f"{mount_point}/", f"{s_dir}/"],
+                                    capture_output=True, text=True, check=False
+                                )
+                                if res.returncode == 0:
+                                    stage_dir = s_dir
+                            
+                            # Fallback to cp -a --sparse=always if rsync not available or errored
+                            if not stage_dir:
+                                for it in items:
+                                    if it.is_dir():
+                                        shutil.copytree(it, s_dir / it.name, symlinks=True, dirs_exist_ok=True)
+                                    else:
+                                        subprocess.run(["cp", "-a", "--sparse=always", str(it), str(s_dir / it.name)], capture_output=True, check=False)
+                                stage_dir = s_dir
+
+                            if stage_dir:
+                                ok(f"Successfully staged {len(items)} item(s) to {stage_dir}.")
+                                break
+                    except Exception as e:
+                        warn(f"Staging to {cand} failed: {e}. Trying next candidate...")
+                
+                if not stage_dir:
+                    warn("Could not stage files (insufficient space or permission). Discarding files as requested.")
+        except Exception as e:
+            warn(f"Error inspecting files in {mount_point}: {e}. Proceeding with discard.")
+
+        # 3. Stop systemd mount / generator services
+        run_cmd(["systemctl", "stop", "mnt-zram1.mount"], check=False)
+        run_cmd(["systemctl", "stop", "systemd-zram-setup@zram1.service"], check=False)
+
+        # 4. Standard unmount -> force lazy unmount fallback
+        run_cmd(["umount", "-q", str(mount_point)], check=False)
+        cur_src = run_cmd(["findmnt", "-rn", "-o", "SOURCE", "--mountpoint", str(mount_point)], check=False)
+        if cur_src:
+            warn(f"{mount_point} still busy. Performing lazy unmount (umount -f -l)...")
+            run_cmd(["umount", "-f", "-l", str(mount_point)], check=False)
+            time.sleep(0.3)
+
+    # Reset zram1 block device if existing and clear systemd failure states
+    run_cmd(["zramctl", "--reset", "/dev/zram1"], check=False)
+    run_cmd(["systemctl", "reset-failed", "mnt-zram1.mount", "systemd-zram-setup@zram1.service"], check=False)
+    return stage_dir
+
+
+def restore_staged_files(stage_dir: Path | None, mount_point: Path = MOUNT_POINT) -> None:
+    """Restores previously staged files back to mount_point after the new filesystem is mounted."""
+    if not stage_dir or not stage_dir.exists():
+        return
+    try:
+        info(f"Restoring migrated data to {mount_point}...")
+        if shutil.which("rsync"):
+            res = subprocess.run(
+                ["rsync", "-aHAX", "--sparse", f"{stage_dir}/", f"{mount_point}/"],
+                capture_output=True, text=True, check=False
+            )
+            if res.returncode == 0:
+                shutil.rmtree(stage_dir, ignore_errors=True)
+                ok(f"Restored migrated data to {mount_point} successfully.")
+                return
+        
+        # Fallback copy
+        items = list(stage_dir.iterdir())
+        for it in items:
+            dest = mount_point / it.name
+            if it.is_dir():
+                shutil.copytree(it, dest, symlinks=True, dirs_exist_ok=True)
+            else:
+                subprocess.run(["cp", "-a", "--sparse=always", str(it), str(dest)], capture_output=True, check=False)
+        shutil.rmtree(stage_dir, ignore_errors=True)
+        ok(f"Restored {len(items)} item(s) to {mount_point} successfully.")
+    except Exception as e:
+        warn(f"Failed to restore some files from {stage_dir}: {e}")
+
 
 def set_zram1_size(size_raw: str) -> None:
     escalate_root_if_needed()
     size_expr = parse_size_input(size_raw)
     info(f"Configuring ZRAM1 disk size expression: {C.BOLD}{size_expr}{C.RST}")
+
+    stage_dir = safely_unmount_and_stage("zram")
 
     # If tmpfs mount unit was enabled, disable and remove it cleanly
     if TMPFS_MOUNT_UNIT.exists():
@@ -509,14 +632,13 @@ options = rw,nosuid,nodev,discard,noatime,lazytime,X-mount.mode=1777
     write_file_atomic(ZRAM1_CONF, content)
     fix_mount_permissions()
 
-    run_cmd(["umount", "-q", "/mnt/zram1"], check=False)
-    run_cmd(["systemctl", "stop", "systemd-zram-setup@zram1.service"], check=False)
-    run_cmd(["zramctl", "--reset", "/dev/zram1"], check=False)
     ensure_zram_device("zram1")
     run_cmd(["systemctl", "daemon-reload"])
     run_cmd(["systemctl", "restart", "systemd-zram-setup@zram1.service"], check=False)
+    run_cmd(["systemctl", "restart", "mnt-zram1.mount"], check=False)
+    run_cmd(["mount", "/mnt/zram1"], check=False)
     
-    # Wait for mount and apply live chmod 1777
+    # Wait for mount
     for _ in range(10):
         src = run_cmd(["findmnt", "-rn", "-o", "SOURCE", "--mountpoint", "/mnt/zram1"], check=False)
         if src in ("/dev/zram1", "zram1"):
@@ -524,38 +646,33 @@ options = rw,nosuid,nodev,discard,noatime,lazytime,X-mount.mode=1777
         time.sleep(0.3)
     
     fix_mount_permissions()
+    restore_staged_files(stage_dir)
+    fix_mount_permissions()
     ok(f"ZRAM1 disk size updated to: {size_expr} (Ext4 Compressed RAM Block)")
     notify("ZRAM1 Updated", f"/mnt/zram1 size set to {size_expr}")
+
 
 def set_zram1_backend(backend: str) -> None:
     escalate_root_if_needed()
     mode = backend.lower().strip()
-    script_206 = get_script_206()
     
     match mode:
         case "zram" | "ext4":
             info("Switching /mnt/zram1 to Ext4 ZRAM Block Device...")
             current_size = get_zram1_size()
-            if script_206.exists():
-                run_cmd(["python3", str(script_206), "--zram", "--size", current_size])
-            else:
-                set_zram1_size(current_size)
-            fix_mount_permissions()
+            set_zram1_size(current_size)
             ok("/mnt/zram1 configured as Ext4 ZRAM Block device.")
             notify("ZRAM1 Attached", "/mnt/zram1 configured as Ext4 ZRAM Block device.")
             
         case "tmpfs" | "ram":
             info("Switching /mnt/zram1 to Pure Tmpfs RAM Mount...")
-            if script_206.exists():
-                run_cmd(["python3", str(script_206), "--tmpfs"])
-            else:
-                if ZRAM1_CONF.exists():
-                    ZRAM1_CONF.unlink()
-                run_cmd(["umount", "-q", "/mnt/zram1"], check=False)
-                run_cmd(["systemctl", "stop", "systemd-zram-setup@zram1.service"], check=False)
-                run_cmd(["zramctl", "--reset", "/dev/zram1"], check=False)
-                _, uid, gid, _ = get_real_user_info()
-                tmpfs_content = f"""# Managed by Dusky Memory & Swap Manager
+            stage_dir = safely_unmount_and_stage("tmpfs")
+
+            if ZRAM1_CONF.exists():
+                ZRAM1_CONF.unlink()
+            
+            _, uid, gid, _ = get_real_user_info()
+            tmpfs_content = f"""# Managed by Dusky Memory & Swap Manager
 [Unit]
 Description=High-Performance tmpfs for /mnt/zram1
 Before=local-fs.target
@@ -570,10 +687,21 @@ Options=rw,nosuid,nodev,relatime,size=100%,mode=1777,uid={uid},gid={gid}
 [Install]
 WantedBy=local-fs.target
 """
-                write_file_atomic(TMPFS_MOUNT_UNIT, tmpfs_content)
-                run_cmd(["systemctl", "daemon-reload"])
-                run_cmd(["systemctl", "enable", "--now", "mnt-zram1.mount"], check=False)
+            write_file_atomic(TMPFS_MOUNT_UNIT, tmpfs_content)
+            run_cmd(["systemctl", "daemon-reload"])
+            run_cmd(["systemctl", "enable", "--now", "mnt-zram1.mount"], check=False)
             
+            # Verify mount with direct fallback
+            for _ in range(8):
+                if run_cmd(["findmnt", "-rn", "-o", "SOURCE", "--mountpoint", "/mnt/zram1"], check=False) == "tmpfs":
+                    break
+                time.sleep(0.3)
+            
+            if run_cmd(["findmnt", "-rn", "-o", "SOURCE", "--mountpoint", "/mnt/zram1"], check=False) != "tmpfs":
+                run_cmd(["mount", "-t", "tmpfs", "-o", f"rw,nosuid,nodev,relatime,size=100%,mode=1777,uid={uid},gid={gid}", "tmpfs", "/mnt/zram1"], check=False)
+            
+            fix_mount_permissions()
+            restore_staged_files(stage_dir)
             fix_mount_permissions()
             ok("/mnt/zram1 configured as Pure Tmpfs RAM disk.")
             notify("Tmpfs Attached", "/mnt/zram1 configured as Pure Tmpfs RAM disk.")
@@ -584,24 +712,19 @@ WantedBy=local-fs.target
         case _:
             die(f"Invalid backend: '{backend}'. Choose 'zram', 'tmpfs', or 'disable'.")
 
+
 def disable_zram1() -> None:
     escalate_root_if_needed()
     info("Dismantling /mnt/zram1 secondary RAM disk...")
-    script_206 = get_script_206()
-    if script_206.exists():
-        run_cmd(["python3", str(script_206), "--disable"])
-    else:
-        run_cmd(["systemctl", "stop", "systemd-zram-setup@zram1.service"], check=False)
+    safely_unmount_and_stage("none")
+    if ZRAM1_CONF.exists():
+        ZRAM1_CONF.unlink()
+    if TMPFS_MOUNT_UNIT.exists():
         run_cmd(["systemctl", "disable", "--now", "mnt-zram1.mount"], check=False)
-        run_cmd(["umount", "-q", "/mnt/zram1"], check=False)
-        run_cmd(["zramctl", "--reset", "/dev/zram1"], check=False)
-        if ZRAM1_CONF.exists():
-            ZRAM1_CONF.unlink()
-        if TMPFS_MOUNT_UNIT.exists():
-            TMPFS_MOUNT_UNIT.unlink()
-        if OVERRIDE_CONF.exists():
-            OVERRIDE_CONF.unlink()
-        run_cmd(["systemctl", "daemon-reload"])
+        TMPFS_MOUNT_UNIT.unlink(missing_ok=True)
+    if OVERRIDE_CONF.exists():
+        OVERRIDE_CONF.unlink(missing_ok=True)
+    run_cmd(["systemctl", "daemon-reload"])
     ok("/mnt/zram1 disabled cleanly (zero memory overhead).")
     notify("ZRAM1 Disabled", "Secondary RAM disk /mnt/zram1 has been dismantled.")
 
