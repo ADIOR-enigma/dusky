@@ -15,6 +15,8 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 from typing import NoReturn
 
@@ -28,27 +30,50 @@ class C:
     BOLD = "\033[1m"
     RST = "\033[0m"
 
-def info(msg: str): print(f"{C.BLU}[INFO]{C.RST} {msg}")
-def ok(msg: str): print(f"{C.GRN}[ OK ]{C.RST} {msg}")
-def warn(msg: str): print(f"{C.YLW}[WARN]{C.RST} {msg}")
-def err(msg: str): print(f"{C.RED}[FAIL]{C.RST} {msg}", file=sys.stderr)
+def info(msg: str) -> None: print(f"{C.BLU}[INFO]{C.RST} {msg}")
+def ok(msg: str) -> None: print(f"{C.GRN}[ OK ]{C.RST} {msg}")
+def warn(msg: str) -> None: print(f"{C.YLW}[WARN]{C.RST} {msg}")
+def err(msg: str) -> None: print(f"{C.RED}[FAIL]{C.RST} {msg}", file=sys.stderr)
 def die(msg: str, code: int = 1) -> NoReturn:
     err(msg)
     sys.exit(code)
 
+# --- Core Paths & Constants ---
 ZRAM_CONF_DIR = Path("/etc/systemd/zram-generator.conf.d")
 ZRAM0_CONF = ZRAM_CONF_DIR / "99-elite-zram.conf"
 ZRAM1_CONF = ZRAM_CONF_DIR / "99-elite-zram1.conf"
 SWAPFILE_PATH = Path("/swap/swapfile")
 FSTAB_PATH = Path("/etc/fstab")
+MOUNT_POINT = Path("/mnt/zram1")
+BASE_MOUNT = Path("/mnt")
+TMPFILES_CONF = Path("/etc/tmpfiles.d/zram-mounts.conf")
+OVERRIDE_DIR = Path("/etc/systemd/system/systemd-zram-setup@zram1.service.d")
+OVERRIDE_CONF = OVERRIDE_DIR / "override.conf"
+TMPFS_MOUNT_UNIT = Path("/etc/systemd/system/mnt-zram1.mount")
 
-def get_real_user_info() -> tuple[str, int, Path]:
+def write_file_atomic(path: Path, content: str, mode: int = 0o644) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists() and path.read_text() == content:
+        return
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(content)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+def get_real_user_info() -> tuple[str, int, int, Path]:
     sudo_user = os.environ.get("SUDO_USER")
     sudo_uid = os.environ.get("SUDO_UID")
+    sudo_gid = os.environ.get("SUDO_GID")
     if sudo_user and sudo_uid and int(sudo_uid) != 0:
         try:
             import pwd
-            return sudo_user, int(sudo_uid), Path(pwd.getpwnam(sudo_user).pw_dir)
+            pw = pwd.getpwnam(sudo_user)
+            return sudo_user, int(sudo_uid), int(sudo_gid or pw.pw_gid), Path(pw.pw_dir)
         except Exception:
             pass
     try:
@@ -58,16 +83,16 @@ def get_real_user_info() -> tuple[str, int, Path]:
             l_uid = int(loginuid_path.read_text().strip())
             if 0 < l_uid < 65534:
                 pw = pwd.getpwuid(l_uid)
-                return pw.pw_name, pw.pw_uid, Path(pw.pw_dir)
+                return pw.pw_name, pw.pw_uid, pw.pw_gid, Path(pw.pw_dir)
         for pw in pwd.getpwall():
             if 1000 <= pw.pw_uid < 60000 and pw.pw_name != "nobody":
-                return pw.pw_name, pw.pw_uid, Path(pw.pw_dir)
+                return pw.pw_name, pw.pw_uid, pw.pw_gid, Path(pw.pw_dir)
     except Exception:
         pass
-    return "root", 0, Path.home()
+    return "root", 0, 0, Path.home()
 
 def get_script_206() -> Path:
-    _, _, home_dir = get_real_user_info()
+    _, _, _, home_dir = get_real_user_info()
     candidates = [
         home_dir / "user_scripts/arch_setup_scripts/scripts/206_zram_tmpfs_mounts.py",
         Path.home() / "user_scripts/arch_setup_scripts/scripts/206_zram_tmpfs_mounts.py",
@@ -77,11 +102,11 @@ def get_script_206() -> Path:
             return c
     return candidates[0]
 
-def notify(title: str, message: str, urgency: str = "normal"):
+def notify(title: str, message: str, urgency: str = "normal") -> None:
     """Dispatches a desktop notification dynamically to the active user."""
     if shutil.which("notify-send"):
         try:
-            user, uid, _ = get_real_user_info()
+            user, uid, _, _ = get_real_user_info()
             if user != "root" and os.geteuid() == 0:
                 runtime_dir = f"/run/user/{uid}"
                 env = os.environ.copy()
@@ -97,7 +122,7 @@ def notify(title: str, message: str, urgency: str = "normal"):
         except Exception:
             pass
 
-def escalate_root_if_needed():
+def escalate_root_if_needed() -> None:
     if os.geteuid() != 0:
         if shutil.which("sudo"):
             os.execvp("sudo", ["sudo", sys.executable, os.path.abspath(__file__)] + sys.argv[1:])
@@ -116,7 +141,70 @@ def run_cmd(cmd: list[str], check: bool = True) -> str:
         return e.stdout.strip() + e.stderr.strip()
 
 # =============================================================================
-# STATUS QUERIES & INTUITIVE FORMATTING (Non-Root)
+# PERMISSION & DIRECTORY LIFECYCLE MANAGEMENT
+# =============================================================================
+
+def fix_mount_permissions() -> None:
+    """
+    Guarantees user-writable, unrestricted access to /mnt and /mnt/zram1:
+    - Normalizes /mnt to 0755 root:root and removes any restrictive POSIX ACLs.
+    - Sets /mnt/zram1 to mode 1777 (sticky bit world-writable, like /tmp).
+    - Installs /etc/tmpfiles.d/zram-mounts.conf for systemd-tmpfiles boot enforcement.
+    - Installs /etc/systemd/system/systemd-zram-setup@zram1.service.d/override.conf.
+    """
+    # 1. Base /mnt access
+    if not BASE_MOUNT.exists():
+        try:
+            BASE_MOUNT.mkdir(parents=True, mode=0o755)
+        except Exception:
+            pass
+    try:
+        os.chmod(BASE_MOUNT, 0o755)
+        if shutil.which("setfacl"):
+            subprocess.run(["setfacl", "-b", "/mnt"], capture_output=True, check=False)
+    except Exception:
+        pass
+
+    # 2. Ephemeral RAM Disk /mnt/zram1
+    if not MOUNT_POINT.exists():
+        try:
+            MOUNT_POINT.mkdir(parents=True, mode=0o755)
+        except Exception:
+            pass
+    try:
+        os.chmod(MOUNT_POINT, 0o1777)
+        if shutil.which("setfacl"):
+            subprocess.run(["setfacl", "-b", str(MOUNT_POINT)], capture_output=True, check=False)
+    except Exception:
+        pass
+
+    # 3. Systemd tmpfiles.d declarative config
+    tmpfiles_content = """# Managed by Dusky Memory & Swap Subsystem
+d /mnt 0755 root root -
+d /mnt/zram1 1777 root root -
+z /mnt 0755 root root -
+z /mnt/zram1 1777 root root -
+"""
+    try:
+        write_file_atomic(TMPFILES_CONF, tmpfiles_content)
+        if shutil.which("systemd-tmpfiles"):
+            subprocess.run(["systemd-tmpfiles", "--create", str(TMPFILES_CONF)], capture_output=True, check=False)
+    except Exception:
+        pass
+
+    # 4. Systemd zram1 setup override (Ext4 journal annihilation + permission hook)
+    override_content = """[Service]
+ExecStartPost=/usr/sbin/tune2fs -O ^has_journal /dev/%i
+ExecStartPost=-/usr/bin/chmod 1777 /mnt/zram1
+"""
+    try:
+        OVERRIDE_DIR.mkdir(parents=True, exist_ok=True)
+        write_file_atomic(OVERRIDE_CONF, override_content)
+    except Exception:
+        pass
+
+# =============================================================================
+# STATUS QUERIES & FORMATTING (Non-Root Safe)
 # =============================================================================
 
 def get_total_ram_gb() -> float:
@@ -223,6 +311,17 @@ def get_zram1_size() -> str:
             return raw
     return "100%"
 
+def get_zram1_backend() -> str:
+    try:
+        source = run_cmd(["findmnt", "-rn", "-o", "SOURCE", "--mountpoint", "/mnt/zram1"], check=False)
+        if source in ("/dev/zram1", "zram1"):
+            return "Ext4"
+        elif source == "tmpfs":
+            return "Tmpfs"
+        return "Disabled"
+    except Exception:
+        return "Disabled"
+
 def get_disk_swap_status() -> str:
     try:
         swaps = Path("/proc/swaps").read_text() if Path("/proc/swaps").exists() else ""
@@ -248,10 +347,10 @@ def get_disk_swap_size() -> str:
             pass
     return "4 GB"
 
-def print_full_status():
+def print_full_status() -> None:
     print(f"\n{C.BOLD}=== DUSKY MEMORY & SWAP TOPOLOGY STATUS ==={C.RST}\n")
     print(f"  {C.CYN}• ZRAM0 (Compressed Swap):{C.RST}     {get_zram0_status()}")
-    print(f"  {C.CYN}• ZRAM1 (/mnt/zram1 Disk):{C.RST}     {get_zram1_status()}")
+    print(f"  {C.CYN}• ZRAM1 (/mnt/zram1 Disk):{C.RST}     {get_zram1_status()} [{get_zram1_backend()}]")
     print(f"  {C.CYN}• Disk Swap (/swap/swapfile):{C.RST}  {get_disk_swap_status()}\n")
     
     if Path("/proc/swaps").exists():
@@ -324,7 +423,7 @@ def parse_size_input(raw: str) -> str:
     val_formatted = re.sub(r"\s*([*/+-])\s*", r" \1 ", val_clean)
     return val_formatted
 
-def set_zram0_size(size_raw: str):
+def set_zram0_size(size_raw: str) -> None:
     escalate_root_if_needed()
     size_expr = parse_size_input(size_raw)
     info(f"Configuring ZRAM0 size expression: {C.BOLD}{size_expr}{C.RST}")
@@ -346,7 +445,7 @@ compression-algorithm = zstd(level=2)
 swap-priority = 32767
 options = discard
 """
-    ZRAM0_CONF.write_text(content)
+    write_file_atomic(ZRAM0_CONF, content)
     
     # 1. Stop existing swap and setup units
     run_cmd(["swapoff", "/dev/zram0"], check=False)
@@ -359,13 +458,15 @@ options = discard
     run_cmd(["systemctl", "daemon-reload"])
     
     # 3. Bring up new zram device and activate swap
-    run_cmd(["/usr/lib/systemd/system-generators/zram-generator", "--setup-device", "zram0"], check=False)
+    run_cmd(["systemctl", "restart", "systemd-zram-setup@zram0.service"], check=False)
+    run_cmd(["systemctl", "restart", "dev-zram0.swap"], check=False)
     run_cmd(["swapon", "-p", "32767", "/dev/zram0"], check=False)
     
+    fix_mount_permissions()
     ok(f"ZRAM0 configured successfully to: {size_expr} (Priority: 32767)")
     notify("ZRAM0 Updated", f"ZRAM0 swap configured to {size_expr} @ Max Priority 32767")
 
-def disable_zram0():
+def disable_zram0() -> None:
     escalate_root_if_needed()
     info("Disabling ZRAM0 compressed swap...")
     run_cmd(["swapoff", "/dev/zram0"], check=False)
@@ -378,7 +479,7 @@ def disable_zram0():
     ok("ZRAM0 compressed swap disabled completely.")
     notify("ZRAM0 Disabled", "ZRAM0 swap has been disabled (Zero RAM table overhead).")
 
-def enable_zram0():
+def enable_zram0() -> None:
     escalate_root_if_needed()
     set_zram0_size("auto")
 
@@ -386,13 +487,15 @@ def enable_zram0():
 # ZRAM1 CONFIGURATION
 # =============================================================================
 
-def set_zram1_size(size_raw: str):
+def set_zram1_size(size_raw: str) -> None:
     escalate_root_if_needed()
     size_expr = parse_size_input(size_raw)
     info(f"Configuring ZRAM1 disk size expression: {C.BOLD}{size_expr}{C.RST}")
 
-    if not ZRAM1_CONF.exists():
-        set_zram1_backend("zram")
+    # If tmpfs mount unit was enabled, disable and remove it cleanly
+    if TMPFS_MOUNT_UNIT.exists():
+        run_cmd(["systemctl", "disable", "--now", "mnt-zram1.mount"], check=False)
+        TMPFS_MOUNT_UNIT.unlink(missing_ok=True)
     
     content = f"""# Managed by Dusky Memory & Swap Manager
 [zram1]
@@ -403,40 +506,85 @@ mount-point = /mnt/zram1
 compression-algorithm = zstd(level=2)
 options = rw,nosuid,nodev,discard,noatime,lazytime,X-mount.mode=1777
 """
-    ZRAM1_CONF.write_text(content)
+    write_file_atomic(ZRAM1_CONF, content)
+    fix_mount_permissions()
+
     run_cmd(["umount", "-q", "/mnt/zram1"], check=False)
     run_cmd(["systemctl", "stop", "systemd-zram-setup@zram1.service"], check=False)
     run_cmd(["zramctl", "--reset", "/dev/zram1"], check=False)
     ensure_zram_device("zram1")
     run_cmd(["systemctl", "daemon-reload"])
     run_cmd(["systemctl", "restart", "systemd-zram-setup@zram1.service"], check=False)
-    ok(f"ZRAM1 disk size updated to: {size_expr}")
+    
+    # Wait for mount and apply live chmod 1777
+    for _ in range(10):
+        src = run_cmd(["findmnt", "-rn", "-o", "SOURCE", "--mountpoint", "/mnt/zram1"], check=False)
+        if src in ("/dev/zram1", "zram1"):
+            break
+        time.sleep(0.3)
+    
+    fix_mount_permissions()
+    ok(f"ZRAM1 disk size updated to: {size_expr} (Ext4 Compressed RAM Block)")
     notify("ZRAM1 Updated", f"/mnt/zram1 size set to {size_expr}")
 
-def set_zram1_backend(backend: str):
+def set_zram1_backend(backend: str) -> None:
     escalate_root_if_needed()
     mode = backend.lower().strip()
     script_206 = get_script_206()
-    if mode in ("zram", "ext4"):
-        info("Switching /mnt/zram1 to Ext4 ZRAM Block Device...")
-        if script_206.exists():
-            run_cmd(["python3", str(script_206), "--zram"])
-        else:
-            set_zram1_size("ram")
-        ok("/mnt/zram1 configured as Ext4 ZRAM Block device.")
-        notify("ZRAM1 Attached", "/mnt/zram1 configured as Ext4 ZRAM Block device.")
-    elif mode in ("tmpfs", "ram"):
-        info("Switching /mnt/zram1 to Pure Tmpfs RAM Mount...")
-        if script_206.exists():
-            run_cmd(["python3", str(script_206), "--tmpfs"])
-        ok("/mnt/zram1 configured as Pure Tmpfs RAM disk.")
-        notify("Tmpfs Attached", "/mnt/zram1 configured as Pure Tmpfs RAM disk.")
-    elif mode in ("disable", "none", "off"):
-        disable_zram1()
-    else:
-        die(f"Invalid backend: '{backend}'. Choose 'zram', 'tmpfs', or 'disable'.")
+    
+    match mode:
+        case "zram" | "ext4":
+            info("Switching /mnt/zram1 to Ext4 ZRAM Block Device...")
+            current_size = get_zram1_size()
+            if script_206.exists():
+                run_cmd(["python3", str(script_206), "--zram", "--size", current_size])
+            else:
+                set_zram1_size(current_size)
+            fix_mount_permissions()
+            ok("/mnt/zram1 configured as Ext4 ZRAM Block device.")
+            notify("ZRAM1 Attached", "/mnt/zram1 configured as Ext4 ZRAM Block device.")
+            
+        case "tmpfs" | "ram":
+            info("Switching /mnt/zram1 to Pure Tmpfs RAM Mount...")
+            if script_206.exists():
+                run_cmd(["python3", str(script_206), "--tmpfs"])
+            else:
+                if ZRAM1_CONF.exists():
+                    ZRAM1_CONF.unlink()
+                run_cmd(["umount", "-q", "/mnt/zram1"], check=False)
+                run_cmd(["systemctl", "stop", "systemd-zram-setup@zram1.service"], check=False)
+                run_cmd(["zramctl", "--reset", "/dev/zram1"], check=False)
+                _, uid, gid, _ = get_real_user_info()
+                tmpfs_content = f"""# Managed by Dusky Memory & Swap Manager
+[Unit]
+Description=High-Performance tmpfs for /mnt/zram1
+Before=local-fs.target
+ConditionPathExists=/mnt/zram1
 
-def disable_zram1():
+[Mount]
+What=tmpfs
+Where=/mnt/zram1
+Type=tmpfs
+Options=rw,nosuid,nodev,relatime,size=100%,mode=1777,uid={uid},gid={gid}
+
+[Install]
+WantedBy=local-fs.target
+"""
+                write_file_atomic(TMPFS_MOUNT_UNIT, tmpfs_content)
+                run_cmd(["systemctl", "daemon-reload"])
+                run_cmd(["systemctl", "enable", "--now", "mnt-zram1.mount"], check=False)
+            
+            fix_mount_permissions()
+            ok("/mnt/zram1 configured as Pure Tmpfs RAM disk.")
+            notify("Tmpfs Attached", "/mnt/zram1 configured as Pure Tmpfs RAM disk.")
+            
+        case "disable" | "none" | "off":
+            disable_zram1()
+            
+        case _:
+            die(f"Invalid backend: '{backend}'. Choose 'zram', 'tmpfs', or 'disable'.")
+
+def disable_zram1() -> None:
     escalate_root_if_needed()
     info("Dismantling /mnt/zram1 secondary RAM disk...")
     script_206 = get_script_206()
@@ -444,12 +592,17 @@ def disable_zram1():
         run_cmd(["python3", str(script_206), "--disable"])
     else:
         run_cmd(["systemctl", "stop", "systemd-zram-setup@zram1.service"], check=False)
+        run_cmd(["systemctl", "disable", "--now", "mnt-zram1.mount"], check=False)
         run_cmd(["umount", "-q", "/mnt/zram1"], check=False)
         run_cmd(["zramctl", "--reset", "/dev/zram1"], check=False)
         if ZRAM1_CONF.exists():
             ZRAM1_CONF.unlink()
+        if TMPFS_MOUNT_UNIT.exists():
+            TMPFS_MOUNT_UNIT.unlink()
+        if OVERRIDE_CONF.exists():
+            OVERRIDE_CONF.unlink()
         run_cmd(["systemctl", "daemon-reload"])
-    ok("/mnt/zram1 disabled cleanly.")
+    ok("/mnt/zram1 disabled cleanly (zero memory overhead).")
     notify("ZRAM1 Disabled", "Secondary RAM disk /mnt/zram1 has been dismantled.")
 
 # =============================================================================
@@ -458,7 +611,7 @@ def disable_zram1():
 
 def parse_disk_swap_bytes(raw: str) -> int:
     s = raw.strip().upper()
-    match = re.match(r"^([0-9.]+)\s*([KMGT]?B?)$", s)
+    match = re.match(r"^([0-9.]+)\s*([KMGT]I?B?|B)?$", s)
     if not match:
         die(f"Invalid disk swap size format: '{raw}'. Examples: '4G', '8G', '512M'.")
     
@@ -466,7 +619,7 @@ def parse_disk_swap_bytes(raw: str) -> int:
     if val <= 0:
         die(f"Invalid disk swap size: '{raw}'. Size must be greater than 0.")
         
-    unit = match.group(2)
+    unit = match.group(2) or ""
     
     if unit in ("G", "GB", "GIB"):
         return int(val * 1024 * 1024 * 1024)
@@ -479,7 +632,7 @@ def parse_disk_swap_bytes(raw: str) -> int:
     else:
         return int(val * 1024 * 1024 * 1024) if val < 128 else int(val * 1024 * 1024)
 
-def set_disk_swap_size(size_raw: str):
+def set_disk_swap_size(size_raw: str) -> None:
     escalate_root_if_needed()
     target_bytes = parse_disk_swap_bytes(size_raw)
     size_mb = int(target_bytes / (1024 * 1024))
@@ -499,9 +652,9 @@ def set_disk_swap_size(size_raw: str):
 
     if fs_type == "btrfs":
         info("BTRFS filesystem detected: Using native btrfs mkswapfile...")
-        btrfs_res = run_cmd(["btrfs", "filesystem", "mkswapfile", "-s", f"{size_mb}M", str(SWAPFILE_PATH)], check=False)
+        run_cmd(["btrfs", "filesystem", "mkswapfile", "-s", f"{size_mb}M", str(SWAPFILE_PATH)], check=False)
         if not SWAPFILE_PATH.exists() or SWAPFILE_PATH.stat().st_size == 0:
-            # Fallback for older btrfs-progs
+            # Fallback
             run_cmd(["touch", str(SWAPFILE_PATH)])
             run_cmd(["chattr", "+C", str(SWAPFILE_PATH)], check=False)
             run_cmd(["dd", "if=/dev/zero", f"of={SWAPFILE_PATH}", "bs=1M", f"count={size_mb}", "status=none"])
@@ -532,12 +685,12 @@ def set_disk_swap_size(size_raw: str):
                 new_lines.append(line)
         if not found:
             new_lines.append(f"{SWAPFILE_PATH} none swap defaults,pri=-1 0 0")
-        FSTAB_PATH.write_text("\n".join(new_lines) + "\n")
+        write_file_atomic(FSTAB_PATH, "\n".join(new_lines) + "\n")
 
     ok(f"Disk swap active at {SWAPFILE_PATH} ({size_mb} MB, Priority: -1).")
     notify("Disk Swap Allocated", f"Disk swapfile created: {size_mb} MB @ Lowest Priority (-1)")
 
-def disable_disk_swap():
+def disable_disk_swap() -> None:
     escalate_root_if_needed()
     info("Disabling disk swapfile...")
     run_cmd(["swapoff", str(SWAPFILE_PATH)], check=False)
@@ -550,12 +703,12 @@ def disable_disk_swap():
                 new_lines.append(f"# {line.strip()}")
             else:
                 new_lines.append(line)
-        FSTAB_PATH.write_text("\n".join(new_lines) + "\n")
+        write_file_atomic(FSTAB_PATH, "\n".join(new_lines) + "\n")
     
     ok("Disk swap disabled and commented out in /etc/fstab.")
     notify("Disk Swap Disabled", "Disk swap has been turned off.")
 
-def enable_disk_swap():
+def enable_disk_swap() -> None:
     escalate_root_if_needed()
     if not SWAPFILE_PATH.exists():
         set_disk_swap_size("4G")
@@ -570,7 +723,7 @@ def enable_disk_swap():
                 new_lines.append(re.sub(r"^\s*#\s*", "", line))
             else:
                 new_lines.append(line)
-        FSTAB_PATH.write_text("\n".join(new_lines) + "\n")
+        write_file_atomic(FSTAB_PATH, "\n".join(new_lines) + "\n")
     ok("Disk swap enabled @ Priority -1.")
     notify("Disk Swap Enabled", "Disk swap activated @ Lowest Priority (-1).")
 
@@ -578,7 +731,7 @@ def enable_disk_swap():
 # CLI ENTRY POINT
 # =============================================================================
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Elite ZRAM & Disk Swap Subsystem Manager")
     
     # Status Queries
@@ -587,6 +740,7 @@ def main():
     parser.add_argument("--zram0-size", action="store_true", help="Print ZRAM0 size expression")
     parser.add_argument("--zram1-status", action="store_true", help="Print ZRAM1 status string")
     parser.add_argument("--zram1-size", action="store_true", help="Print ZRAM1 size expression")
+    parser.add_argument("--zram1-backend", action="store_true", help="Print ZRAM1 backend mode (Ext4 ZRAM, Tmpfs, or Disabled)")
     parser.add_argument("--disk-swap-status", action="store_true", help="Print Disk Swap status string")
     parser.add_argument("--disk-swap-size", action="store_true", help="Print Disk Swap size string")
     
@@ -596,12 +750,13 @@ def main():
     parser.add_argument("--enable-zram0", action="store_true", help="Enable ZRAM0 compressed swap")
     
     parser.add_argument("--set-zram1-size", metavar="EXPR", help="Set ZRAM1 disk size expression (e.g. 'ram', '8G')")
-    parser.add_argument("--set-zram1-backend", choices=["zram", "tmpfs", "disable"], help="Switch /mnt/zram1 backend")
+    parser.add_argument("--set-zram1-backend", choices=["zram", "tmpfs", "disable", "ext4", "ram", "none", "off"], help="Switch /mnt/zram1 backend")
     parser.add_argument("--disable-zram1", action="store_true", help="Disable /mnt/zram1 secondary RAM disk")
     
     parser.add_argument("--set-disk-swap-size", metavar="SIZE", help="Resize/create disk swapfile (e.g. '4G', '8G')")
     parser.add_argument("--disable-disk-swap", action="store_true", help="Disable disk swapfile")
     parser.add_argument("--enable-disk-swap", action="store_true", help="Enable disk swapfile")
+    parser.add_argument("--fix-permissions", action="store_true", help="Fix /mnt and /mnt/zram1 permissions and deploy tmpfiles rule")
     
     args = parser.parse_args()
 
@@ -618,6 +773,9 @@ def main():
     if args.zram1_size:
         print(get_zram1_size())
         return
+    if args.zram1_backend:
+        print(get_zram1_backend())
+        return
     if args.disk_swap_status:
         print(get_disk_swap_status())
         return
@@ -629,7 +787,11 @@ def main():
         return
 
     # Mutation Handlers
-    if args.set_zram0_size:
+    if args.fix_permissions:
+        escalate_root_if_needed()
+        fix_mount_permissions()
+        ok("/mnt and /mnt/zram1 permissions and tmpfiles rules updated successfully.")
+    elif args.set_zram0_size:
         set_zram0_size(args.set_zram0_size)
     elif args.disable_zram0:
         disable_zram0()

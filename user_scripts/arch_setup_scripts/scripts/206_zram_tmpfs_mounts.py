@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -43,6 +44,7 @@ group = parser.add_mutually_exclusive_group()
 group.add_argument("--tmpfs", action="store_true", help="Autonomously deploy pure Tmpfs mapping")
 group.add_argument("--zram", action="store_true", help="Autonomously deploy Ext4 ZRAM block mapping")
 group.add_argument("--disable", "--none", dest="disable", action="store_true", help="Disable secondary RAM mount / clean up zram1")
+parser.add_argument("--size", "-s", type=str, default="", help="Size expression for ZRAM / Tmpfs (e.g. '100%%', '8G', 'ram')")
 parser.add_argument("--no-color", action="store_true", help="Disable ANSI color output")
 
 args = parser.parse_args()
@@ -54,18 +56,24 @@ if args.no_color or not sys.stdout.isatty() or "NO_COLOR" in os.environ:
 def escalate_privileges() -> None:
     if os.geteuid() != 0:
         info("Root privileges required. Escalating...")
-        if subprocess.call(["command", "-v", "sudo"], stdout=subprocess.DEVNULL, shell=True) != 0:
-            die("sudo is required to run this script as root.")
-        os.execvp("sudo", ["sudo", sys.executable, os.path.abspath(__file__)] + sys.argv[1:])
+        if shutil.which("sudo"):
+            os.execvp("sudo", ["sudo", sys.executable, os.path.abspath(__file__)] + sys.argv[1:])
+        elif shutil.which("pkexec"):
+            os.execvp("pkexec", ["pkexec", sys.executable, os.path.abspath(__file__)] + sys.argv[1:])
+        else:
+            die("sudo or pkexec is required to run this script as root.")
 
 escalate_privileges()
 
 # --- Core Constants ---
-MOUNT_POINT = "/mnt/zram1"
-ZRAM_SIZE_EXPR = "ram"
+MOUNT_POINT = Path("/mnt/zram1")
+BASE_MOUNT = Path("/mnt")
+ZRAM_CONF_FILE = Path("/etc/systemd/zram-generator.conf.d/99-elite-zram1.conf")
+TMPFILES_CONF = Path("/etc/tmpfiles.d/zram-mounts.conf")
+OVERRIDE_DIR = Path("/etc/systemd/system/systemd-zram-setup@zram1.service.d")
+OVERRIDE_CONF = OVERRIDE_DIR / "override.conf"
 ZRAM_RESIDENT_LIMIT_EXPR = "ram * 4 / 5"
 COMPRESSION_ALGORITHM = "zstd(level=2)"
-
 FS_OPTIONS = "rw,nosuid,nodev,discard,noatime,lazytime,X-mount.mode=1777"
 CMD_TIMEOUT = 15
 
@@ -116,9 +124,9 @@ def run_cmd(cmd: list[str], ignore_errors: bool = False) -> str:
         return ""
 
 def write_file_atomic(path: Path, content: str, mode: int = 0o644) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists() and path.read_text() == content:
         return
-    path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
     try:
         with os.fdopen(fd, "w") as fh:
@@ -128,6 +136,37 @@ def write_file_atomic(path: Path, content: str, mode: int = 0o644) -> None:
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
+
+def parse_size_expression(raw: str) -> str:
+    s = raw.strip().lower()
+    if not s or s in ("auto", "default"):
+        return "ram"
+    if s.endswith("%"):
+        try:
+            pct = float(s[:-1])
+            return "ram" if pct == 100.0 else f"ram * {pct / 100.0:.2f}".rstrip("0").rstrip(".")
+        except ValueError:
+            pass
+    try:
+        n = float(s)
+        if 0.0 < n <= 2.0:
+            return f"ram * {n:.2f}".rstrip("0").rstrip(".")
+        elif 3.0 <= n <= 100.0 and n.is_integer():
+            pct = n / 100.0
+            return "ram" if pct == 1.0 else f"ram * {pct:.2f}".rstrip("0").rstrip(".")
+    except ValueError:
+        pass
+    m = re.match(r"^([0-9.]+)\s*([gmk]b?)$", s)
+    if m:
+        val = float(m.group(1))
+        unit = m.group(2)
+        if unit.startswith("g"):
+            return str(int(val * 1024))
+        elif unit.startswith("m"):
+            return str(int(val))
+        elif unit.startswith("k"):
+            return str(int(val / 1024))
+    return re.sub(r"\s*([*/+-])\s*", r" \1 ", s)
 
 def pre_flight_checks() -> None:
     if subprocess.run(["systemd-detect-virt", "--quiet", "--container"], capture_output=True).returncode == 0:
@@ -146,18 +185,54 @@ def assert_unit_loaded(unit: str) -> None:
         die(f"Systemd failed to ingest the generated unit: {unit}")
 
 def get_mount_source() -> str:
-    return run_cmd(["findmnt", "-rn", "-o", "SOURCE", "--mountpoint", MOUNT_POINT], ignore_errors=True)
+    return run_cmd(["findmnt", "-rn", "-o", "SOURCE", "--mountpoint", str(MOUNT_POINT)], ignore_errors=True)
+
+def fix_mount_permissions() -> None:
+    """Fixes /mnt and /mnt/zram1 permissions, ACLs, and tmpfiles rules."""
+    if not BASE_MOUNT.exists():
+        BASE_MOUNT.mkdir(parents=True, mode=0o755)
+    try:
+        os.chmod(BASE_MOUNT, 0o755)
+        if shutil.which("setfacl"):
+            subprocess.run(["setfacl", "-b", "/mnt"], capture_output=True, check=False)
+    except Exception:
+        pass
+
+    if not MOUNT_POINT.exists():
+        MOUNT_POINT.mkdir(parents=True, mode=0o755)
+    try:
+        os.chmod(MOUNT_POINT, 0o1777)
+        if shutil.which("setfacl"):
+            subprocess.run(["setfacl", "-b", str(MOUNT_POINT)], capture_output=True, check=False)
+    except Exception:
+        pass
+
+    tmpfiles_content = """# Managed by Dusky Memory & Swap Subsystem
+d /mnt 0755 root root -
+d /mnt/zram1 1777 root root -
+z /mnt 0755 root root -
+z /mnt/zram1 1777 root root -
+"""
+    try:
+        write_file_atomic(TMPFILES_CONF, tmpfiles_content)
+        if shutil.which("systemd-tmpfiles"):
+            subprocess.run(["systemd-tmpfiles", "--create", str(TMPFILES_CONF)], capture_output=True, check=False)
+    except Exception:
+        pass
+
+    override_content = """[Service]
+ExecStartPost=/usr/sbin/tune2fs -O ^has_journal /dev/%i
+ExecStartPost=-/usr/bin/chmod 1777 /mnt/zram1
+"""
+    try:
+        OVERRIDE_DIR.mkdir(parents=True, exist_ok=True)
+        write_file_atomic(OVERRIDE_CONF, override_content)
+    except Exception:
+        pass
 
 def prepare_mount_directory() -> None:
-    mp_path = Path(MOUNT_POINT)
-    if mp_path.exists():
-        if not mp_path.is_dir():
-            die(f"{MOUNT_POINT} exists but is not a directory.")
-    else:
-        mp_path.mkdir(mode=0o755, parents=True)
-    
-    os.chown(MOUNT_POINT, TARGET_UID, TARGET_GID)
-    ok(f"Directory prepared with strict UID {TARGET_UID} / GID {TARGET_GID} ownership.")
+    fix_mount_permissions()
+    ok(f"Directory permissions verified: /mnt (0755), {MOUNT_POINT} (1777 sticky bit).")
 
 def resolve_live_conflicts(target_backend: str, mount_unit_name: str) -> None:
     current = get_mount_source()
@@ -167,25 +242,25 @@ def resolve_live_conflicts(target_backend: str, mount_unit_name: str) -> None:
     if target_backend == "tmpfs" and current in ("/dev/zram1", "zram1"):
         warn("Tearing down legacy ZRAM block device to free memory...")
         run_cmd(["systemctl", "stop", "systemd-zram-setup@zram1.service"], ignore_errors=True)
-        run_cmd(["umount", "-q", MOUNT_POINT], ignore_errors=True)
+        run_cmd(["umount", "-q", str(MOUNT_POINT)], ignore_errors=True)
         
     elif target_backend == "zram" and current == "tmpfs":
         warn("Unmounting live Tmpfs to prepare for ZRAM block allocation...")
         run_cmd(["systemctl", "stop", mount_unit_name], ignore_errors=True)
-        run_cmd(["umount", "-q", MOUNT_POINT], ignore_errors=True)
+        run_cmd(["umount", "-q", str(MOUNT_POINT)], ignore_errors=True)
 
 # --- Backend Configurators ---
 def configure_tmpfs(mount_unit_name: str, mount_unit_path: Path) -> None:
     if get_mount_source() == "tmpfs" and mount_unit_path.exists():
+        fix_mount_permissions()
         ok(f"Tmpfs architecture is already active and perfectly configured at {MOUNT_POINT}. No action required.")
         return
 
     info(f"Initializing Pure Tmpfs Mount for: {C.BOLD}{MOUNT_POINT}{C.RST}")
     resolve_live_conflicts("tmpfs", mount_unit_name)
 
-    zram_conf = Path("/etc/systemd/zram-generator.conf.d/99-elite-zram1.conf")
-    if zram_conf.exists():
-        zram_conf.unlink()
+    if ZRAM_CONF_FILE.exists():
+        ZRAM_CONF_FILE.unlink()
         run_cmd(["systemctl", "daemon-reload"])
 
     tmpfs_content = f"""# Managed by Elite Arch Linux Configurator
@@ -198,7 +273,7 @@ ConditionPathExists={MOUNT_POINT}
 What=tmpfs
 Where={MOUNT_POINT}
 Type=tmpfs
-Options=rw,nosuid,nodev,relatime,size=100%,mode=0755,uid={TARGET_UID},gid={TARGET_GID}
+Options=rw,nosuid,nodev,relatime,size=100%,mode=1777,uid={TARGET_UID},gid={TARGET_GID}
 
 [Install]
 WantedBy=local-fs.target
@@ -211,25 +286,31 @@ WantedBy=local-fs.target
     assert_unit_loaded(mount_unit_name)
 
     info("Enabling systemd mount unit...")
-    run_cmd(["systemctl", "enable", mount_unit_name], ignore_errors=True)
-    run_cmd(["systemctl", "start", mount_unit_name], ignore_errors=True)
+    run_cmd(["systemctl", "enable", "--now", mount_unit_name], ignore_errors=True)
     
-    for _ in range(6):
+    for _ in range(8):
         if get_mount_source() == "tmpfs": break
-        time.sleep(0.5)
+        time.sleep(0.3)
     
+    fix_mount_permissions()
     if get_mount_source() == "tmpfs":
-        ok(f"Live memory: Pure tmpfs successfully attached to {MOUNT_POINT}.")
+        ok(f"Live memory: Pure tmpfs successfully attached to {MOUNT_POINT} (Mode: 1777).")
     else:
         die(f"Failed to mount pure tmpfs. Check 'systemctl status {mount_unit_name}'.")
 
-def configure_zram(mount_unit_name: str, mount_unit_path: Path) -> None:
-    config_dir = Path("/etc/systemd/zram-generator.conf.d")
-    zram_conf = config_dir / "99-elite-zram1.conf"
+def configure_zram(mount_unit_name: str, mount_unit_path: Path, size_override: str = "") -> None:
+    # Resolve size
+    size_expr = "ram"
+    if size_override:
+        size_expr = parse_size_expression(size_override)
+    elif ZRAM_CONF_FILE.exists():
+        m = re.search(r"zram-size\s*=\s*(.+)", ZRAM_CONF_FILE.read_text())
+        if m:
+            size_expr = m.group(1).strip()
 
     zram_content = f"""# Managed by Elite Arch Linux Configurator.
 [zram1]
-zram-size = {ZRAM_SIZE_EXPR}
+zram-size = {size_expr}
 zram-resident-limit = {ZRAM_RESIDENT_LIMIT_EXPR}
 fs-type = ext4
 mount-point = {MOUNT_POINT}
@@ -237,29 +318,23 @@ compression-algorithm = {COMPRESSION_ALGORITHM}
 options = {FS_OPTIONS}
 """
 
-    if get_mount_source() in ("/dev/zram1", "zram1") and zram_conf.exists() and zram_conf.read_text() == zram_content:
-        ok(f"Ext4 ZRAM architecture is already active and perfectly configured at {MOUNT_POINT}. No action required.")
+    if get_mount_source() in ("/dev/zram1", "zram1") and ZRAM_CONF_FILE.exists() and ZRAM_CONF_FILE.read_text() == zram_content:
+        fix_mount_permissions()
+        ok(f"Ext4 ZRAM architecture is already active and configured at {MOUNT_POINT}. No action required.")
         return
 
-    info(f"Initializing Ext4 ZRAM Block Mount for: {C.BOLD}{MOUNT_POINT}{C.RST}")
+    info(f"Initializing Ext4 ZRAM Block Mount for: {C.BOLD}{MOUNT_POINT}{C.RST} (Size: {size_expr})")
     resolve_live_conflicts("zram", mount_unit_name)
 
     if mount_unit_path.exists():
-        mount_unit_path.unlink()
+        run_cmd(["systemctl", "disable", "--now", mount_unit_name], ignore_errors=True)
+        mount_unit_path.unlink(missing_ok=True)
         run_cmd(["systemctl", "daemon-reload"])
-    write_file_atomic(zram_conf, zram_content)
-    ok(f"ZRAM pool configuration written atomically to {zram_conf}")
 
-    override_dir = Path("/etc/systemd/system/systemd-zram-setup@zram1.service.d")
-    override_dir.mkdir(parents=True, exist_ok=True)
-    override_conf = override_dir / "override.conf"
-    
-    # Strip the failed ExecStartPre hook but retain the essential tune2fs hook
-    override_content = """[Service]
-ExecStartPost=/usr/sbin/tune2fs -O ^has_journal /dev/%i
-"""
-    write_file_atomic(override_conf, override_content)
-    ok(f"Journal-less Ext4 systemd override deployed to {override_conf}")
+    write_file_atomic(ZRAM_CONF_FILE, zram_content)
+    ok(f"ZRAM pool configuration written atomically to {ZRAM_CONF_FILE}")
+
+    fix_mount_permissions()
 
     info("Reloading systemd generators...")
     run_cmd(["systemctl", "daemon-reload"])
@@ -268,14 +343,16 @@ ExecStartPost=/usr/sbin/tune2fs -O ^has_journal /dev/%i
     info("Engaging ZRAM generator pipeline...")
     run_cmd(["systemctl", "restart", "systemd-zram-setup@zram1.service"], ignore_errors=True)
 
-    for _ in range(6):
+    for _ in range(10):
         if get_mount_source() in ("/dev/zram1", "zram1"): break
-        time.sleep(0.5)
+        time.sleep(0.3)
+
+    fix_mount_permissions()
 
     if get_mount_source() in ("/dev/zram1", "zram1"):
-        ok(f"Live memory: Ext4 ZRAM successfully attached to {MOUNT_POINT}.")
+        ok(f"Live memory: Ext4 ZRAM successfully attached to {MOUNT_POINT} (Mode: 1777).")
     else:
-        warn("Live ZRAM configuration delayed. Reboot the system to finalize the architecture.")
+        warn("Live ZRAM configuration staged. Systemd generator will activate on next boot.")
 
 def configure_none(mount_unit_name: str, mount_unit_path: Path) -> None:
     info(f"Disabling secondary RAM disk for {C.BOLD}{MOUNT_POINT}{C.RST} (Minimal RAM mode)...")
@@ -287,41 +364,39 @@ def configure_none(mount_unit_name: str, mount_unit_path: Path) -> None:
         run_cmd(["systemctl", "stop", mount_unit_name], ignore_errors=True)
         
     if current:
-        run_cmd(["umount", "-q", MOUNT_POINT], ignore_errors=True)
+        run_cmd(["umount", "-q", str(MOUNT_POINT)], ignore_errors=True)
 
-    zram_conf = Path("/etc/systemd/zram-generator.conf.d/99-elite-zram1.conf")
-    if zram_conf.exists():
-        zram_conf.unlink()
+    if ZRAM_CONF_FILE.exists():
+        ZRAM_CONF_FILE.unlink()
 
-    override_dir = Path("/etc/systemd/system/systemd-zram-setup@zram1.service.d")
-    if override_dir.exists():
-        for child in override_dir.glob("*"):
+    if OVERRIDE_DIR.exists():
+        for child in OVERRIDE_DIR.glob("*"):
             child.unlink()
-        override_dir.rmdir()
+        OVERRIDE_DIR.rmdir()
 
     if mount_unit_path.exists():
         run_cmd(["systemctl", "disable", mount_unit_name], ignore_errors=True)
         mount_unit_path.unlink()
 
+    run_cmd(["zramctl", "--reset", "/dev/zram1"], ignore_errors=True)
     run_cmd(["systemctl", "daemon-reload"])
     ok(f"Secondary RAM disk ({MOUNT_POINT}) disabled cleanly (zero RAM table overhead).")
 
 def ask_backend() -> str:
     current = get_mount_source()
-    zram_conf = Path("/etc/systemd/zram-generator.conf.d/99-elite-zram1.conf")
-    mount_unit_name = run_cmd(["systemd-escape", "--path", f"--suffix=mount", MOUNT_POINT], ignore_errors=True)
+    mount_unit_name = run_cmd(["systemd-escape", "--path", f"--suffix=mount", str(MOUNT_POINT)], ignore_errors=True)
     mount_unit_path = Path("/etc/systemd/system") / mount_unit_name
     
     tmpfs_tag = f"{C.GRN} [LIVE & ACTIVE]{C.RST}" if current == "tmpfs" else ""
     
     if current in ("/dev/zram1", "zram1"):
         zram_tag = f"{C.GRN} [LIVE & ACTIVE]{C.RST}"
-    elif zram_conf.exists() and current != "tmpfs":
+    elif ZRAM_CONF_FILE.exists() and current != "tmpfs":
         zram_tag = f"{C.YLW} [STAGED - PENDING REBOOT]{C.RST}"
     else:
         zram_tag = ""
 
-    none_tag = f"{C.GRN} [CURRENTLY DISABLED]{C.RST}" if (not current and not zram_conf.exists() and not mount_unit_path.exists()) else ""
+    none_tag = f"{C.GRN} [CURRENTLY DISABLED]{C.RST}" if (not current and not ZRAM_CONF_FILE.exists() and not mount_unit_path.exists()) else ""
 
     print(f"\n  {C.CYN}[ Select backend for {MOUNT_POINT} ]{C.RST}")
     print(f"   {C.BOLD}1{C.RST}) tmpfs   (Pure RAM Mapping){tmpfs_tag}")
@@ -337,9 +412,6 @@ def ask_backend() -> str:
 
 # --- Entry Point ---
 def main() -> None:
-    if sys.version_info < (3, 14):
-        die(f"Python 3.14+ required, running {sys.version.split()[0]}")
-
     pre_flight_checks()
 
     match (args.tmpfs, args.zram, args.disable):
@@ -349,10 +421,10 @@ def main() -> None:
         case _: backend = ask_backend()
 
     for cmd in ["systemctl", "systemd-escape", "findmnt", "umount"]:
-        if subprocess.call(["command", "-v", cmd], stdout=subprocess.DEVNULL, shell=True) != 0:
+        if shutil.which(cmd) is None:
             die(f"'{cmd}' is required but missing from system PATH.")
 
-    mount_unit_name = run_cmd(["systemd-escape", "--path", f"--suffix=mount", MOUNT_POINT])
+    mount_unit_name = run_cmd(["systemd-escape", "--path", f"--suffix=mount", str(MOUNT_POINT)])
     mount_unit_path = Path("/etc/systemd/system") / mount_unit_name
 
     if backend != "none":
@@ -360,10 +432,10 @@ def main() -> None:
 
     match backend:
         case "tmpfs": configure_tmpfs(mount_unit_name, mount_unit_path)
-        case "zram": configure_zram(mount_unit_name, mount_unit_path)
+        case "zram": configure_zram(mount_unit_name, mount_unit_path, args.size)
         case "none": configure_none(mount_unit_name, mount_unit_path)
             
-    ok(f"Subsystem configured successfully.")
+    ok("Subsystem configured successfully.")
 
 if __name__ == "__main__":
     try:

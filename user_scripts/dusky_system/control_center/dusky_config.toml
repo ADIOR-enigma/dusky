@@ -2096,6 +2096,32 @@ title = "ZRAM1 (/mnt/zram1 RAM Disk)"
 icon = "folder-symbolic"
 
 [[pages.layout.items.layout.items]]
+type = "selection"
+[pages.layout.items.layout.items.properties]
+title = "ZRAM1 Mode"
+description = "Ext4 (Compressed) vs Tmpfs (Pure RAM) vs Disabled"
+icon = "drive-harddisk-symbolic"
+value_command = "$HOME/user_scripts/performance/zram/zram_swap_manager.py --zram1-backend"
+interval = 3
+options = ["Ext4", "Tmpfs", "Disabled"]
+options_map = { "ext4" = "Ext4", "zram" = "Ext4", "Ext4 ZRAM" = "Ext4", "tmpfs" = "Tmpfs", "disabled" = "Disabled", "none" = "Disabled" }
+[pages.layout.items.layout.items.on_change.Ext4]
+type = "exec"
+command = "$HOME/user_scripts/performance/zram/zram_swap_manager.py --set-zram1-backend zram"
+terminal = false
+requires_root = true
+[pages.layout.items.layout.items.on_change.Tmpfs]
+type = "exec"
+command = "$HOME/user_scripts/performance/zram/zram_swap_manager.py --set-zram1-backend tmpfs"
+terminal = false
+requires_root = true
+[pages.layout.items.layout.items.on_change.Disabled]
+type = "exec"
+command = "$HOME/user_scripts/performance/zram/zram_swap_manager.py --disable-zram1"
+terminal = false
+requires_root = true
+
+[[pages.layout.items.layout.items]]
 type = "entry"
 [pages.layout.items.layout.items.properties]
 title = "ZRAM1 Disk Size"
@@ -2107,47 +2133,6 @@ toast = "ZRAM1 size updated to {value}"
 [pages.layout.items.layout.items.on_action]
 type = "exec"
 command = "$HOME/user_scripts/performance/zram/zram_swap_manager.py --set-zram1-size {value}"
-terminal = false
-requires_root = true
-
-[[pages.layout.items.layout.items]]
-type = "button"
-[pages.layout.items.layout.items.properties]
-title = "Enable Ext4 ZRAM Block"
-description = "Attach compressed Ext4 RAM drive to /mnt/zram1"
-button_text = "Enable"
-icon = "drive-harddisk-symbolic"
-style = "suggested"
-[pages.layout.items.layout.items.on_press]
-type = "exec"
-command = "$HOME/user_scripts/performance/zram/zram_swap_manager.py --set-zram1-backend zram"
-terminal = false
-requires_root = true
-
-[[pages.layout.items.layout.items]]
-type = "button"
-[pages.layout.items.layout.items.properties]
-title = "Enable Pure Tmpfs Mount"
-description = "Attach pure RAM tmpfs to /mnt/zram1"
-button_text = "Enable"
-icon = "memory-symbolic"
-[pages.layout.items.layout.items.on_press]
-type = "exec"
-command = "$HOME/user_scripts/performance/zram/zram_swap_manager.py --set-zram1-backend tmpfs"
-terminal = false
-requires_root = true
-
-[[pages.layout.items.layout.items]]
-type = "button"
-[pages.layout.items.layout.items.properties]
-title = "Disable / Dismantle ZRAM1"
-description = "Unmount and reclaim 100% of memory tables (Zero RAM overhead)"
-button_text = "Disable"
-icon = "process-stop-symbolic"
-style = "destructive"
-[pages.layout.items.layout.items.on_press]
-type = "exec"
-command = "$HOME/user_scripts/performance/zram/zram_swap_manager.py --disable-zram1"
 terminal = false
 requires_root = true
 

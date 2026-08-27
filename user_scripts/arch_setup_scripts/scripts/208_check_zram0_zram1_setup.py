@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 #d: Verify the ZRAM and mount setup
 
-import os
-import sys
-import subprocess
-import re
-import argparse
-from pathlib import Path
+from __future__ import annotations
 
-# --- Argument Parsing (Executed BEFORE Privilege Escalation) ---
+import argparse
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+from pathlib import Path
+from typing import NoReturn
+
+# --- Argument Parsing ---
 parser = argparse.ArgumentParser(description="Deep ZRAM & Memory Architecture Diagnostics")
 parser.add_argument("--strict", action="store_true", help="Exit with non-zero code on any warning/mismatch")
 parser.add_argument("--no-color", action="store_true", help="Disable ANSI color output")
@@ -24,7 +29,7 @@ class C:
     RST = "\033[0m"
 
     @classmethod
-    def strip(cls):
+    def strip(cls) -> None:
         for attr in ("RED", "GRN", "YLW", "BLU", "BOLD", "RST"):
             setattr(cls, attr, "")
 
@@ -33,14 +38,14 @@ if args.no_color or not sys.stdout.isatty() or "NO_COLOR" in os.environ:
 
 has_warnings = False
 
-def info(msg: str): print(f"{C.BLU}[INFO]{C.RST} {msg}")
-def ok(msg: str): print(f"{C.GRN}[PASS]{C.RST} {msg}")
-def warn(msg: str): 
+def info(msg: str) -> None: print(f"{C.BLU}[INFO]{C.RST} {msg}")
+def ok(msg: str) -> None: print(f"{C.GRN}[PASS]{C.RST} {msg}")
+def warn(msg: str) -> None: 
     global has_warnings
     has_warnings = True
     print(f"{C.YLW}[WARN]{C.RST} {msg}")
 
-def report_issue(msg: str):
+def report_issue(msg: str) -> None:
     global has_warnings
     has_warnings = True
     if args.strict:
@@ -49,27 +54,20 @@ def report_issue(msg: str):
     else:
         print(f"{C.YLW}[WARN]{C.RST} {msg}")
 
-# --- Privilege Check ---
-if os.geteuid() != 0:
-    if subprocess.call(["command", "-v", "sudo"], stdout=subprocess.DEVNULL, shell=True) != 0:
-        print(f"{C.RED}[!] sudo is required to run diagnostics as root.{C.RST}", file=sys.stderr)
-        sys.exit(1)
-    os.execvp("sudo", ["sudo", sys.executable, os.path.abspath(__file__)] + sys.argv[1:])
-
-def run_cmd(cmd: list) -> str:
+def run_cmd(cmd: list[str]) -> str:
     try:
         return subprocess.run(cmd, capture_output=True, text=True, check=False).stdout.strip()
-    except Exception as e:
+    except Exception:
         return ""
 
-print(f"\n{C.BOLD}=== Initiating Deep Architecture Diagnostics (Kernel 7.2+ Ready) ==={C.RST}\n")
+print(f"\n{C.BOLD}=== Initiating Deep Architecture Diagnostics (Kernel 7.x+ Ready) ==={C.RST}\n")
 
 # --- 1. Bootloader / ZSWAP Check ---
 info("Checking ZSWAP state...")
 zswap_path = Path("/sys/module/zswap/parameters/enabled")
 if zswap_path.exists():
     if zswap_path.read_text().strip() in ("Y", "1"):
-        report_issue("ZSWAP is currently ACTIVE. Kernel cmdline parameter 'zswap.enabled=0' is recommended with pure ZRAM.")
+        report_issue("ZSWAP is currently ACTIVE. Kernel parameter 'zswap.enabled=0' is recommended with pure ZRAM.")
     else:
         ok("ZSWAP is cleanly disabled at the kernel level.")
 else:
@@ -77,16 +75,16 @@ else:
 
 # --- 2. Memory Calculations (Page-Aligned) ---
 info("Calculating total physical memory maps...")
+mem_total_bytes = 0
 try:
-    with open('/proc/meminfo', 'r') as f:
-        meminfo = f.read()
-    mem_total_kb = int(re.search(r"MemTotal:\s+(\d+)\s+kB", meminfo).group(1))
-    mem_total_bytes = mem_total_kb * 1024
+    meminfo = Path("/proc/meminfo").read_text()
+    m = re.search(r"MemTotal:\s+(\d+)\s+kB", meminfo)
+    if m:
+        mem_total_bytes = int(m.group(1)) * 1024
 except Exception as e:
     report_issue(f"Could not parse /proc/meminfo: {e}")
-    mem_total_bytes = 0
 
-def verify_limit(device: str, expected_ratio: float):
+def verify_limit(device: str, expected_ratio: float) -> None:
     mm_stat_path = Path(f"/sys/block/{device}/mm_stat")
     if not mm_stat_path.exists():
         report_issue(f"Stats matrix for {device} does not exist in sysfs.")
@@ -108,7 +106,7 @@ def verify_limit(device: str, expected_ratio: float):
 
     if mem_total_bytes > 0:
         expected_bytes = int(mem_total_bytes * expected_ratio)
-        tolerance = max(expected_bytes * 0.10, 64 * 1024 * 1024)  # 10% tolerance for page shifts
+        tolerance = max(expected_bytes * 0.10, 64 * 1024 * 1024)
         
         if abs(actual_bytes - expected_bytes) <= tolerance:
             ok(f"{device} resident limit aligned correctly (~{actual_bytes / (1024**3):.2f} GB)")
@@ -126,6 +124,17 @@ else:
         report_issue("/dev/zram0 exists but is not currently mounted as swap.")
     else:
         ok("/dev/zram0 swap is fully active.")
+        # Check priority
+        for line in swapon_out.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and "/dev/zram0" in parts[0]:
+                prio = int(parts[1])
+                if prio >= 32767:
+                    ok(f"/dev/zram0 swap priority confirmed at maximum ({prio}).")
+                elif prio > 0:
+                    info(f"/dev/zram0 swap priority is {prio} (Priority 32767 is recommended).")
+                else:
+                    warn(f"/dev/zram0 swap priority is low ({prio}).")
 
     zram0_conf = Path("/etc/systemd/zram-generator.conf.d/99-elite-zram.conf")
     zram0_limit_ratio = 0.5
@@ -139,8 +148,33 @@ else:
 
     verify_limit("zram0", zram0_limit_ratio)
 
-# --- 4. Hybrid Mount Detection (zram1 / tmpfs / disabled) ---
-info("Interrogating /mnt/zram1 mount backend...")
+# --- 4. Hybrid Mount Detection & Permission Diagnostics (/mnt & /mnt/zram1) ---
+info("Interrogating /mnt and /mnt/zram1 filesystem & permissions...")
+
+# Verify /mnt accessibility
+mnt_path = Path("/mnt")
+if not mnt_path.exists():
+    report_issue("/mnt mount directory does not exist.")
+else:
+    try:
+        st = mnt_path.stat()
+        mode_oct = oct(stat.S_IMODE(st.st_mode))
+        if st.st_mode & stat.S_IROTH and st.st_mode & stat.S_IXOTH:
+            ok(f"/mnt base permissions intact ({mode_oct}).")
+        else:
+            warn(f"/mnt permissions restricted ({mode_oct}). Mode 0755 recommended.")
+    except Exception as e:
+        report_issue(f"Cannot stat /mnt: {e}")
+
+# Check POSIX ACL on /mnt
+if shutil.which("getfacl"):
+    facl_out = run_cmd(["getfacl", "-p", "/mnt"])
+    if "user:" in facl_out and "user::" not in facl_out.splitlines()[-1]:
+        # Contains named user ACLs that might override standard permissions
+        lines = [l for l in facl_out.splitlines() if l.startswith("user:") and not l.startswith("user::")]
+        if lines:
+            info(f"Custom POSIX ACL detected on /mnt: {', '.join(lines)}")
+
 mount_source = run_cmd(["findmnt", "-rn", "-o", "SOURCE", "--mountpoint", "/mnt/zram1"])
 mount_opts = run_cmd(["findmnt", "-rn", "-o", "OPTIONS", "--mountpoint", "/mnt/zram1"])
 zram1_conf = Path("/etc/systemd/zram-generator.conf.d/99-elite-zram1.conf")
@@ -152,34 +186,51 @@ if not mount_source:
         info("Secondary /mnt/zram1 configured in zram-generator (Staged / pending mount).")
 
 elif mount_source == "tmpfs":
-    ok(f"Backend dynamically resolved as: Pure Tmpfs RAM disk.")
+    ok("Backend dynamically resolved as: Pure Tmpfs RAM disk.")
     if "uid=" in mount_opts and "gid=" in mount_opts:
-         ok("Tmpfs user/group ownership mapping is intact.")
+        ok("Tmpfs user/group ownership mapping is intact.")
     else:
-         warn("Tmpfs user ownership options not explicitly set in mount flags.")
+        info("Tmpfs mounted with default system ownership options.")
 
 elif mount_source in ("/dev/zram1", "zram1"):
-    ok(f"Backend dynamically resolved as: Ext4 ZRAM Block.")
+    ok("Backend dynamically resolved as: Ext4 ZRAM Block.")
     verify_limit("zram1", 0.80)
     
-    # Verify Ext4 Journal Annihilation
+    # Verify Ext4 Journal
     dumpe2fs_out = run_cmd(["dumpe2fs", "-h", "/dev/zram1"])
     if "has_journal" in dumpe2fs_out:
         warn("Ext4 journal is present on zram1 (disable journal recommended for lower RAM write overhead).")
-    else:
+    elif dumpe2fs_out:
         ok("Ext4 filesystem confirmed as journal-less (Zero unnecessary write overhead).")
     
     # Verify Mount Options
     for opt in ["noatime", "lazytime", "discard", "rw"]:
-        if opt not in mount_opts.split(","):
+        if opt in mount_opts.split(","):
+            ok(f"Ext4 mount option '{opt}' active.")
+        else:
             warn(f"Mount option recommendation for zram block: '{opt}' not active.")
-    ok("Ext4 mount options verified.")
 else:
     info(f"Custom mount source for /mnt/zram1: {mount_source}")
 
+# Test Write Access to /mnt/zram1
+zram1_path = Path("/mnt/zram1")
+if zram1_path.exists() and mount_source:
+    try:
+        st = zram1_path.stat()
+        mode_val = stat.S_IMODE(st.st_mode)
+        # Check sticky bit or world writable
+        if mode_val == 0o1777 or (mode_val & 0o777) == 0o777:
+            ok(f"/mnt/zram1 mount permissions verified (Mode: {oct(mode_val)} - Fully User Writable).")
+        elif os.access("/mnt/zram1", os.W_OK):
+            ok(f"/mnt/zram1 is directly writable by current process UID {os.getuid()}.")
+        else:
+            report_issue(f"/mnt/zram1 lacks user write permissions (Mode: {oct(mode_val)}). Run `chmod 1777 /mnt/zram1`.")
+    except Exception as e:
+        report_issue(f"Failed to inspect /mnt/zram1 access: {e}")
+
 # --- 5. Algorithm Verification ---
 info("Testing compression algorithm setup...")
-devices_to_check = []
+devices_to_check: list[str] = []
 if Path("/sys/block/zram0").exists():
     devices_to_check.append("zram0")
 if Path("/sys/block/zram1").exists() and mount_source in ("/dev/zram1", "zram1"):

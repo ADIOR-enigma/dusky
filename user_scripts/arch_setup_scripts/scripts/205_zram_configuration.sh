@@ -47,6 +47,7 @@ ${C_BOLD}Usage:${C_RESET} ${SCRIPT_NAME} [OPTIONS]
                               • 8GB - 32GB  -> "ram * 0.5" (50%)
                               • >= 32GB RAM -> "ram * 0.2" (20%)
   --resident-limit, -r <expr> ZRAM resident limit expression (default: auto-detected)
+  --priority, -p <prio>       Swap priority (default: 32767 - Maximum priority over disk swap)
   --algorithm, -a <algo>      Compression algorithm (default: "zstd(level=2)")
   --help, -h                  Show this help menu
 EOF
@@ -89,6 +90,7 @@ fi
 # --- CLI Parsing ---
 ZRAM_SIZE_EXPR=""
 ZRAM_RESIDENT_LIMIT_EXPR=""
+SWAP_PRIORITY="32767"
 COMPRESSION_ALGORITHM="zstd(level=2)"
 
 ORIG_ARGS=("$@")
@@ -103,6 +105,11 @@ while [[ $# -gt 0 ]]; do
         --resident-limit|-r)
             [[ $# -ge 2 ]] || usage_error "Missing value for $1"
             ZRAM_RESIDENT_LIMIT_EXPR="$2"
+            shift 2
+            ;;
+        --priority|-p)
+            [[ $# -ge 2 ]] || usage_error "Missing value for $1"
+            SWAP_PRIORITY="$2"
             shift 2
             ;;
         --algorithm|-a)
@@ -146,7 +153,7 @@ readonly CONFIG_FILE="${CONFIG_DIR}/99-elite-zram.conf"
 readonly ZRAM_SWAP_DEV="/dev/zram0"
 readonly ZRAM_SIZE_EXPR
 readonly ZRAM_RESIDENT_LIMIT_EXPR
-# NATIVE RECOMPRESSION: zram-generator parses subsequent algorithms for recomp natively.
+readonly SWAP_PRIORITY
 readonly COMPRESSION_ALGORITHM
 
 readonly GENERATOR_BIN="/usr/lib/systemd/system-generators/zram-generator"
@@ -236,12 +243,30 @@ cat > "$tmp_config" <<EOF
 zram-size = ${ZRAM_SIZE_EXPR}
 zram-resident-limit = ${ZRAM_RESIDENT_LIMIT_EXPR}
 compression-algorithm = ${COMPRESSION_ALGORITHM}
-swap-priority = 100
+swap-priority = ${SWAP_PRIORITY}
 options = discard
 EOF
 
 install -Dm0644 "$tmp_config" "$CONFIG_FILE"
 log_success "ZRAM pool configuration written to ${CONFIG_FILE}"
+
+# --- Mount & tmpfiles permissions ---
+mkdir -p /mnt /etc/tmpfiles.d
+chmod 0755 /mnt 2>/dev/null || true
+if command -v setfacl >/dev/null 2>&1; then
+    setfacl -b /mnt 2>/dev/null || true
+fi
+
+cat > /etc/tmpfiles.d/zram-mounts.conf <<'EOF'
+# Managed by Dusky Memory & Swap Subsystem
+d /mnt 0755 root root -
+d /mnt/zram1 1777 root root -
+z /mnt 0755 root root -
+z /mnt/zram1 1777 root root -
+EOF
+if command -v systemd-tmpfiles >/dev/null 2>&1; then
+    systemd-tmpfiles --create /etc/tmpfiles.d/zram-mounts.conf 2>/dev/null || true
+fi
 
 log_info "Reloading systemd daemon to ingest new architecture..."
 systemctl daemon-reload
@@ -249,11 +274,8 @@ systemctl daemon-reload
 assert_unit_loaded "$SWAP_SETUP_UNIT"
 assert_unit_loaded "$SWAP_UNIT"
 
-if systemctl is-active --quiet "$SWAP_UNIT"; then
-    log_info "$SWAP_UNIT is currently active."
-fi
+systemctl restart "$SWAP_SETUP_UNIT" 2>/dev/null || true
+systemctl restart "$SWAP_UNIT" 2>/dev/null || true
 
-log_success "Platinum ZRAM (Pure Multi-Algorithm ZSTD) swap architecture installed safely."
-log_info "Reboot the system to apply the new memory topology natively."
-
+log_success "Platinum ZRAM (Pure Multi-Algorithm ZSTD @ Priority ${SWAP_PRIORITY}) swap architecture installed safely."
 exit 0
