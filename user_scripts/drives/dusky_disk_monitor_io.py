@@ -788,14 +788,6 @@ class IOMonitorApp(App):
         background: {BG};
         layout: vertical;
     }}
-    
-    #custom_header {{
-        height: 1;
-        background: {BG};
-        color: {ACCENT};
-        text-style: bold;
-        text-align: center;
-    }}
 
     #ram_bar {{
         height: 1;
@@ -945,8 +937,7 @@ class IOMonitorApp(App):
         self.mounted_drives: set[str] = set()
 
     def compose(self) -> ComposeResult:
-        self.title = "Dusky Disk I/O Monitor"
-        yield Static("Dusky Disk I/O Monitor", id="custom_header")
+        self.title = "Dusky Disk"
         with Horizontal(id="ram_bar"):
             yield Button("󰌌 F1", id="btn_help")
             yield Static(id="ram_txt")
@@ -1091,7 +1082,8 @@ class IOMonitorApp(App):
     def tick(self) -> None:
         dirty, wb = SysStatParser.get_ram_buffers()
         ram_txt = Text.from_markup(
-            f"[{LABEL_COL}]Dirty (Wait):[/] [bold {ACCENT}]{dirty:.1f} MB[/]    [{DIVIDER_COL}]│[/]    "
+            f"[{LABEL_COL}]Dirty (Wait):[/] [bold {ACCENT}]{dirty:.1f} MB[/]    "
+            f"[bold {BG} on {SUCCESS}] Dusky Disk [/]    "
             f"[{LABEL_COL}]Writeback (Active):[/] [bold {ERROR}]{wb:.1f} MB[/]"
         )
         try:
