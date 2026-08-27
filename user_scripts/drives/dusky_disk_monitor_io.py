@@ -675,8 +675,8 @@ class ShortcutsScreen(ModalScreen[None]):
 
             text = Text()
             text.append("Drive Navigation (Vim & Keys)\n", style=f"bold {ACCENT}")
-            text.append("  j / Down       Select next drive (circular)\n")
-            text.append("  k / Up         Select previous drive (circular)\n")
+            text.append("  j / Down       Select next drive\n")
+            text.append("  k / Up         Select previous drive\n")
             text.append("  g / Home       Jump to first drive\n")
             text.append("  G / End        Jump to last drive\n\n")
 
