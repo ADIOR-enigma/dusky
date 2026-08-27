@@ -439,6 +439,41 @@ class SysStatParser:
         return False
 
     @staticmethod
+    def get_basic_metadata() -> dict[str, dict]:
+        """Instantly (< 5ms) extracts block device topology from lsblk for instantaneous frame-0 UI rendering."""
+        try:
+            res = subprocess.run(
+                ["lsblk", "-J", "-d", "-o", "NAME,SIZE,TYPE,MODEL,ROTA,TRAN"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            data = json.loads(res.stdout)
+            results = {}
+            for d in data.get("blockdevices", []):
+                name = d.get("name", "")
+                if not name or name.startswith(("loop", "sr", "ram", "dm", "fd", "nbd")):
+                    continue
+                if name.startswith("zram") and not SysStatParser.is_zram_active(name):
+                    continue
+                model = d.get("model")
+                clean_model = str(model).strip() if model else ("Compressed RAM" if name.startswith("zram") else "N/A")
+                rota_val = d.get("rota")
+                is_hdd = str(rota_val).strip() in ("1", "true", "True") if rota_val is not None else False
+                tran = d.get("tran")
+                dtype = tran.upper() if tran else ("ZRAM" if name.startswith("zram") else d.get("type", "DISK").upper().strip())
+                results[name] = {
+                    "size": d.get("size", "?").strip(),
+                    "type": dtype,
+                    "model": clean_model,
+                    "rota": is_hdd,
+                    "smart": SmartInfo(),
+                }
+            return results
+        except Exception:
+            return {}
+
+    @staticmethod
     def get_device_metadata() -> dict[str, dict]:
         try:
             res = subprocess.run(
@@ -512,9 +547,6 @@ class DriveWidget(Static, can_focus=True):
         self.peak_read: float = 10.0
         self.peak_write: float = 10.0
         self.prev_stats: BlockStats | None = None
-
-    def on_mount(self) -> None:
-        self.border_title = f"[bold {FG}]/dev/{self.dev_name}[/]"
 
     def generate_sparkline(self, data: deque[float], current_peak: float, width: int = 16, color_hex: str = ACCENT) -> tuple[Text, float]:
         """Returns a hard-cropped rich Text object with stabilized peak scaling and zero ellipsis truncation."""
@@ -910,7 +942,7 @@ class IOMonitorApp(App):
 
     def __init__(self) -> None:
         super().__init__()
-        self.meta: dict[str, dict] = {}
+        self.meta: dict[str, dict] = SysStatParser.get_basic_metadata()
         self.mounted_drives: set[str] = set()
 
     def compose(self) -> ComposeResult:
