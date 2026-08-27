@@ -1052,6 +1052,7 @@ def do_unlock(drive: Drive, supplied_password: str | None = None) -> bool:
                 cmd = base_cmd + ["--tries", "1", "--key-file", "-"]
                 if run_cryptsetup_unlock(cmd, pwd):
                     pwd_valid = True
+                    clear_temp_attempts(drive.name)
                     # If this was a supplied password not in keyring, save it
                     if supplied_password and not get_keyring_password_with_timeout(KEYRING_SERVICE, drive.name, timeout=5):
                         set_keyring_password_with_timeout(KEYRING_SERVICE, drive.name, supplied_password)
