@@ -120,7 +120,7 @@ TABS = [
 # 5. DYNAMIC COMPONENT GENERATORS
 # =============================================================================
 
-def build_standard_glance(suffix, label_name, group_name="Modules"):
+def build_standard_glance(suffix, label_name, group_name="Modules", expanded=False):
     """
     Dynamically generates a Hybrid Folder containing all configuration parameters
     mapped exactly to the specified [app-name=dusky-glance-{suffix}] scope.
@@ -165,6 +165,7 @@ def build_standard_glance(suffix, label_name, group_name="Modules"):
             type_="menu",
             default=None,
             is_parent=True,
+            expanded=expanded,
             group=group_name,
             extended_help=f"**{label_name} Settings**\n\nGranular geometry and color controls exclusively scoped to the `{app_name}` service block."
         ),
@@ -225,7 +226,7 @@ def build_standard_glance(suffix, label_name, group_name="Modules"):
             extended_help="**Total Height**\n\nVertical pixel height for the widget. Keep this thin to maintain a floating text-bar illusion."
         ),
         ConfigItem(
-            label="Outer",
+            label="Outer Margin",
             key="outer-margin",
             scope=scope,
             type_="string",
@@ -438,7 +439,7 @@ def build_alert_glance():
             extended_help="**Warning Box Height**\n\nThe vertical thickness for the alert box. Slightly larger to accommodate a visible warning icon."
         ),
         ConfigItem(
-            label="Outer",
+            label="Outer Margin",
             key="outer-margin",
             scope=scope,
             type_="string",
@@ -587,7 +588,7 @@ def build_alert_glance():
 # =============================================================================
 SCHEMA = {
     # --- TAB 0: Global Fallback ---
-    0: build_standard_glance("", "Fallback", "Global"),
+    0: build_standard_glance("", "Fallback", "Global", expanded=True),
 
     # --- TAB 1: System Alerts ---
     1: build_alert_glance(),
