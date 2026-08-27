@@ -1941,10 +1941,10 @@ hl.window_rule({
     center = true
 })
 
---- 470_vesktop_matugen.sh (Vesktop Setup Script & Vesktop GUI - 80% W, 80% H Floating Dynamic) ---
+--- 470_vesktop_matugen.sh (Vesktop Setup Script ONLY - 80% W, 80% H Floating Dynamic) ---
 hl.window_rule({
     name = "470_vesktop_matugen.sh",
-    match = { class = "^(470_vesktop_matugen\\.sh|vesktop)$" },
+    match = { class = "^(470_vesktop_matugen\\.sh)$" },
     float = true,
     size = {"(monitor_w*0.80)", "(monitor_h*0.80)"},
     center = true
