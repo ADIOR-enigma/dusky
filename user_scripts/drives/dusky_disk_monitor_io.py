@@ -908,10 +908,11 @@ class IOMonitorApp(App):
 
     def tick(self) -> None:
         dirty, wb, shmem = SysStatParser.get_ram_buffers()
+        shmem_str = format_bytes(shmem * 1048576)
         ram_txt = Text.from_markup(
-            f"[{FG}]Dirty (Wait):[/] [bold {ACCENT}]{dirty:>5.1f} MB[/]  [{BG}]│[/]  "
-            f"[{FG}]Writeback (Active):[/] [bold {ERROR}]{wb:>5.1f} MB[/]  [{BG}]│[/]  "
-            f"[{FG}]Tmpfs (RAM):[/] [bold {SUCCESS}]{shmem:>6.1f} MB[/]"
+            f"[{FG}]Dirty (Wait):[/] [bold {ACCENT}]{dirty:.1f} MB[/]  [{BG}]│[/]  "
+            f"[{FG}]Writeback (Active):[/] [bold {ERROR}]{wb:.1f} MB[/]  [{BG}]│[/]  "
+            f"[{FG}]Shared Mem (IPC):[/] [bold {SUCCESS}]{shmem_str}[/]"
         )
         try:
             self.query_one("#ram_txt", Static).update(ram_txt)
