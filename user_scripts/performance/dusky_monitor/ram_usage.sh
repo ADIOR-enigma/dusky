@@ -192,6 +192,7 @@ ZSWAP=$(get_mem Zswap)
 ZSWAPPED=$(get_mem Zswapped)
 DIRTY=$(get_mem Dirty)
 WRITEBACK=$(get_mem Writeback)
+WRITEBACK_TMP=$(get_mem WritebackTmp)
 COMMITTED=$(get_mem Committed_AS)
 COMMIT_LIMIT=$(get_mem CommitLimit)
 HW_CORRUPTED=$(get_mem HardwareCorrupted)
@@ -554,6 +555,7 @@ printf "%-45s %8s MB\n" "  CommitLimit:"   "$(to_mb $COMMIT_LIMIT)"
 printf "%-45s %8s MB\n" "  Committed_AS:"  "$(to_mb $COMMITTED)"
 printf "%-45s %8s MB\n" "  Dirty pages:"   "$(to_mb $DIRTY)"
 printf "%-45s %8s MB\n" "  In writeback:"  "$(to_mb $WRITEBACK)"
+[[ $WRITEBACK_TMP -gt 0 ]] && printf "%-45s %8s MB\n" "  FUSE writeback (WritebackTmp):" "$(to_mb $WRITEBACK_TMP)"
 [[ $HW_CORRUPTED -gt 0 ]] && printf "%-45s %8s MB\n" "  *** HW CORRUPTED RAM ***:" "$(to_mb $HW_CORRUPTED)"
 echo "\`\`\`"
 OVERCOMMIT=$(( COMMITTED * 100 / (COMMIT_LIMIT > 0 ? COMMIT_LIMIT : 1) ))
