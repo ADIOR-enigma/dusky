@@ -35,6 +35,7 @@ import sys
 import time
 import fcntl
 import json
+import atexit
 import getpass
 import argparse
 import tomllib
@@ -597,7 +598,7 @@ def run_sudo_cmd(cmd: list[str], stdin_data: str | None = None) -> bool:
                 return False
             return True
         else:
-            res = subprocess.run(cmd)
+            res = subprocess.run(cmd, capture_output=True, text=True)
             return res.returncode == 0
     except Exception as e:
         err(f"Command execution failed: {e}")
@@ -763,6 +764,22 @@ class CPUAccelerator:
     """Context manager to temporarily enable offline Performance cores on hybrid systems."""
     def __init__(self):
         self.enabled_cores = []
+        atexit.register(self.cleanup)
+
+    def cleanup(self):
+        if self.enabled_cores:
+            log("Restoring CPU power-saving state (disabling P-cores)...")
+            for cpu_id in list(self.enabled_cores):
+                cmd = ["sudo", "tee", f"/sys/devices/system/cpu/cpu{cpu_id}/online"]
+                for attempt in range(5):
+                    try:
+                        res = subprocess.run(cmd, input="0", text=True, capture_output=True)
+                        if res.returncode == 0:
+                            break
+                    except Exception:
+                        pass
+                    time.sleep(0.05)
+            self.enabled_cores.clear()
 
     def __enter__(self):
         try:
@@ -792,25 +809,7 @@ class CPUAccelerator:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.enabled_cores:
-            log("Restoring CPU power-saving state (disabling P-cores)...")
-            for cpu_id in self.enabled_cores:
-                cmd = ["sudo", "tee", f"/sys/devices/system/cpu/cpu{cpu_id}/online"]
-                success_flag = False
-                last_err = ""
-                for attempt in range(5):
-                    try:
-                        res = subprocess.run(cmd, input="0", text=True, capture_output=True)
-                        if res.returncode == 0:
-                            success_flag = True
-                            break
-                        else:
-                            last_err = res.stderr.strip() if res.stderr else f"Non-zero return code ({res.returncode})"
-                    except Exception as e:
-                        last_err = str(e)
-                    time.sleep(0.1 * (attempt + 1))
-                if not success_flag:
-                    err(f"Failed to restore CPU {cpu_id} to offline state: {last_err}")
+        self.cleanup()
 
     def get_hybrid_topology(self) -> tuple[list[int], list[int]]:
         p_cores: list[int] = []
@@ -976,7 +975,6 @@ def show_status(drives: dict[str, Drive]):
     console.print()
 
 def do_unlock(drive: Drive, supplied_password: str | None = None) -> bool:
-    prime_sudo()
     log(f"Starting unlock sequence for '{drive.name}'...")
 
     target_uuid = drive.inner_uuid if drive.type == "PROTECTED" else drive.outer_uuid
@@ -1059,6 +1057,10 @@ def do_unlock(drive: Drive, supplied_password: str | None = None) -> bool:
                         set_keyring_password_with_timeout(KEYRING_SERVICE, drive.name, supplied_password)
                 else:
                     err(f"Decryption failed for '{drive.name}' with provided password.")
+                    tried_passwords = load_temp_attempts(drive.name)
+                    if pwd not in tried_passwords:
+                        tried_passwords.append(pwd)
+                        save_temp_attempts(drive.name, tried_passwords)
 
             if not pwd_valid:
                 if drive.hint:
@@ -1090,7 +1092,7 @@ def do_unlock(drive: Drive, supplied_password: str | None = None) -> bool:
                     try:
                         with print_lock:
                             pwd_attempt = Prompt.ask(
-                                f"Enter passphrase for /dev/disk/by-uuid/[bold cyan]{drive.outer_uuid}[/]", 
+                                f"Enter passphrase for {drive.name} (/dev/disk/by-uuid/[bold cyan]{drive.outer_uuid}[/])", 
                                 password=True
                             )
                     except (KeyboardInterrupt, EOFError):
@@ -1202,7 +1204,6 @@ def do_unlock(drive: Drive, supplied_password: str | None = None) -> bool:
         return False
 
 def do_lock(drive: Drive) -> bool:
-    prime_sudo()
     log(f"Starting lock sequence for '{drive.name}'...")
 
     # Step 1: Detect all mountpoints where this drive is currently mounted
@@ -1244,11 +1245,14 @@ def do_lock(drive: Drive) -> bool:
                 return True
         
         if mapper_name:
-            time.sleep(0.5)
-            subprocess.run(["udevadm", "settle", "--timeout=3"], capture_output=True)
-            subprocess.run(["sudo", "blockdev", "--flushbufs", f"/dev/mapper/{mapper_name}"], capture_output=True)
+            run_sudo_cmd(["sudo", "blockdev", "--flushbufs", f"/dev/mapper/{mapper_name}"])
 
             log(f"Locking crypt node: {mapper_name}...")
+            
+            # Fast-path: Direct kernel-level cryptsetup close (instantaneous & parallel)
+            if run_sudo_cmd(["sudo", "cryptsetup", "close", mapper_name]):
+                success(f"Encrypted container '{drive.name}' successfully locked.")
+                return True
             
             cleartext_dev = f"/dev/mapper/{mapper_name}"
             if shutil.which("udisksctl") and Path(cleartext_dev).exists():
@@ -1258,11 +1262,11 @@ def do_lock(drive: Drive) -> bool:
                     return True
             
             for attempt in range(LOCK_MAX_RETRIES):
+                time.sleep(LOCK_RETRY_DELAY)
                 if run_sudo_cmd(["sudo", "cryptsetup", "close", mapper_name]):
                     success(f"Encrypted container '{drive.name}' successfully locked.")
                     return True
                 log(f"Lock attempt {attempt+1}/{LOCK_MAX_RETRIES} for '{drive.name}' failed. Retrying...")
-                time.sleep(LOCK_RETRY_DELAY)
             
             log(f"'{drive.name}' is held by a kernel subsystem. Engaging deferred asynchronous lock...")
             if run_sudo_cmd(["sudo", "cryptsetup", "close", "--deferred", mapper_name]):
