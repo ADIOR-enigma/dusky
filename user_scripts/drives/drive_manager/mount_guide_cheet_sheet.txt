@@ -9,11 +9,11 @@ automation under Linux Kernel 7.1+ and Arch Linux.
 --------------------------------------------------------------------------------
  1. CLI USAGE & RUNTIME BEHAVIORS
 --------------------------------------------------------------------------------
-Universal Drive Manager (`drive_manager.py` / aliases: `unlock`, `lock`):
+Universal Drive Manager (`drive_manager.py` / aliases: `unlock`, `lock`, `drive_status`):
 
   $ unlock <drive1> [drive2 ...]   # Decrypt & mount target drive(s)
   $ lock <drive1> [drive2 ...]     # Unmount & securely close container(s)
-  $ drive_manager.py status        # Display live status table of all drives
+  $ drive_status                   # Display live status table of all drives
   $ drive_manager.py set-password  # Store/update drive passphrase in Keyring
 
 Key Engine Capabilities:
