@@ -404,8 +404,8 @@ class SysStatParser:
         return SysStatParser._get_smartctl_data(device)
 
     @staticmethod
-    def get_ram_buffers() -> tuple[float, float, float]:
-        dirty = writeback = shmem = 0.0
+    def get_ram_buffers() -> tuple[float, float]:
+        dirty = writeback = 0.0
         try:
             with open("/proc/meminfo", "r", encoding="utf-8") as f:
                 for line in f:
@@ -413,11 +413,9 @@ class SysStatParser:
                         dirty = float(line.split()[1]) / 1024.0
                     elif line.startswith("Writeback:"):
                         writeback = float(line.split()[1]) / 1024.0
-                    elif line.startswith("Shmem:"):
-                        shmem = float(line.split()[1]) / 1024.0
         except (OSError, IndexError, ValueError):
             pass
-        return dirty, writeback, shmem
+        return dirty, writeback
 
     @staticmethod
     def is_zram_active(dev_name: str) -> bool:
@@ -774,15 +772,21 @@ class IOMonitorApp(App):
         padding: 0 1;
     }}
 
+    #ram_spacer {{
+        width: 8;
+        height: 1;
+    }}
+
     #ram_txt {{
         width: 1fr;
         height: 1;
+        text-align: center;
     }}
 
     Button#btn_sync {{
         height: 1;
         min-width: 0;
-        width: auto;
+        width: 8;
         border: none;
         background: {ACCENT};
         color: {BG};
@@ -913,6 +917,7 @@ class IOMonitorApp(App):
         self.title = "Dusky Disk I/O Monitor"
         yield Static("Dusky Disk I/O Monitor", id="custom_header")
         with Horizontal(id="ram_bar"):
+            yield Static("", id="ram_spacer")
             yield Static(id="ram_txt")
             yield Button("󰚰 Sync", id="btn_sync")
         yield VerticalScroll(id="main_scroll")
@@ -1067,12 +1072,10 @@ class IOMonitorApp(App):
             self.push_screen(ShortcutsScreen())
 
     def tick(self) -> None:
-        dirty, wb, shmem = SysStatParser.get_ram_buffers()
-        shmem_str = format_bytes(shmem * 1048576)
+        dirty, wb = SysStatParser.get_ram_buffers()
         ram_txt = Text.from_markup(
-            f"[{LABEL_COL}]Dirty (Wait):[/] [bold {ACCENT}]{dirty:.1f} MB[/]  [{DIVIDER_COL}]│[/]  "
-            f"[{LABEL_COL}]Writeback (Active):[/] [bold {ERROR}]{wb:.1f} MB[/]  [{DIVIDER_COL}]│[/]  "
-            f"[{LABEL_COL}]Shared Mem (IPC):[/] [bold {SUCCESS}]{shmem_str}[/]"
+            f"[{LABEL_COL}]Dirty (Wait):[/] [bold {ACCENT}]{dirty:.1f} MB[/]    [{DIVIDER_COL}]│[/]    "
+            f"[{LABEL_COL}]Writeback (Active):[/] [bold {ERROR}]{wb:.1f} MB[/]"
         )
         try:
             self.query_one("#ram_txt", Static).update(ram_txt)
