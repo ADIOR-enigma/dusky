@@ -7044,7 +7044,11 @@ def parse_command_line() -> argparse.Namespace:
         epilog="Example: ./orchestrator.py --profile 01_main",
     )
 
-    parser.add_argument("--profile", help="Execute specific profile (name, stem, or number)")
+    parser.add_argument(
+        "--profile",
+        "-p",
+        help="Execute specific profile (name, stem, filename, or number)",
+    )
     parser.add_argument("--list", action="store_true", help="List all available profiles and exit")
     parser.add_argument("--list-scripts", action="store_true", help="List sequence of selected profile and exit")
     parser.add_argument("--reset", action="store_true", help="Reset state for selected profile and exit")
@@ -7234,17 +7238,37 @@ def main() -> None:
         store.close()
         sys.exit(0)
 
-    git_check_profile: ProfileConfig | None = None
-    if args.profile:
-        if args.profile.isdigit():
-            idx = int(args.profile) - 1
+    profile_query = (args.profile or os.environ.get("DUSKY_PROFILE", "")).strip()
+
+    def resolve_profile(query: str) -> ProfileConfig | None:
+        if not query:
+            return None
+        if query.isdigit():
+            idx = int(query) - 1
             if 0 <= idx < len(profiles):
-                git_check_profile = profiles[idx]
-        else:
-            for p in profiles:
-                if p.name == args.profile or p.filepath.stem == args.profile:
-                    git_check_profile = p
-                    break
+                return profiles[idx]
+        q_lower = query.lower()
+        # 1. Exact match (case-insensitive) on name, stem, or filename
+        for p in profiles:
+            if (
+                p.filepath.stem.lower() == q_lower
+                or p.name.lower() == q_lower
+                or p.filepath.name.lower() == q_lower
+            ):
+                return p
+        # 2. Substring / prefix match (e.g. 'iso' matches '02_iso' or 'ISO Setup')
+        for p in profiles:
+            if (
+                q_lower in p.filepath.stem.lower()
+                or q_lower in p.name.lower()
+                or p.filepath.stem.lower().startswith(q_lower)
+            ):
+                return p
+        return None
+
+    git_check_profile: ProfileConfig | None = None
+    if profile_query:
+        git_check_profile = resolve_profile(profile_query)
     else:
         for p in profiles:
             if p.git_enabled:
@@ -7260,7 +7284,7 @@ def main() -> None:
                 update_only=True,
                 offline=args.offline,
                 assume_yes=args.yes,
-                preserve_profile=bool(args.profile),
+                preserve_profile=bool(profile_query),
             )
         sys.exit(0)
 
@@ -7270,25 +7294,16 @@ def main() -> None:
             update_only=False,
             offline=False,
             assume_yes=args.yes,
-            preserve_profile=bool(args.profile),
+            preserve_profile=bool(profile_query),
         ):
             sys.exit(0)
 
     selected_profile: ProfileConfig | None = None
 
-    if args.profile:
-        if args.profile.isdigit():
-            idx = int(args.profile) - 1
-            if 0 <= idx < len(profiles):
-                selected_profile = profiles[idx]
-        else:
-            for p in profiles:
-                if p.name == args.profile or p.filepath.stem == args.profile:
-                    selected_profile = p
-                    break
-
+    if profile_query:
+        selected_profile = resolve_profile(profile_query)
         if selected_profile is None:
-            Console(stderr=True).print(f"[bold red]Profile '{args.profile}' not found.[/bold red]")
+            Console(stderr=True).print(f"[bold red]Profile '{profile_query}' not found.[/bold red]")
             sys.exit(1)
     else:
         selector = ProfileSelectorApp(profiles)
@@ -7435,6 +7450,11 @@ def main() -> None:
 if __name__ == "__main__":
     try:
         main()
+    except BrokenPipeError:
+        with suppress(Exception):
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull, sys.stdout.fileno())
+        sys.exit(0)
     except KeyboardInterrupt:
         Console(stderr=True).print("\n[bold red]:: Interrupted by user.[/bold red]")
         sys.exit(130)
