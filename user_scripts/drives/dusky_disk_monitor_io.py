@@ -953,7 +953,6 @@ class IOMonitorApp(App):
             os.sync()
         except Exception:
             pass
-        self.call_from_thread(self.tick)
         self.call_from_thread(self._set_sync_state, "synced")
         time.sleep(1.8)
         self.call_from_thread(self._set_sync_state, "idle")
@@ -986,11 +985,6 @@ class IOMonitorApp(App):
 
     def _update_meta(self, new_meta: dict[str, dict]) -> None:
         self.meta = new_meta
-        # Immediately re-tick widgets to display newly resolved metadata
-        for widget in self.query(DriveWidget):
-            curr = SysStatParser.get_block_stats(widget.dev_name)
-            if curr:
-                widget.tick_update(curr, self.meta.get(widget.dev_name, {}))
 
     # ========================================================================
     # CIRCULAR NAVIGATION (Loops seamlessly top-to-bottom and bottom-to-top)
