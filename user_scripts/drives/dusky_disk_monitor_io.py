@@ -804,9 +804,21 @@ class IOMonitorApp(App):
         padding: 0 1;
     }}
 
-    #ram_spacer {{
-        width: 8;
+    Button#btn_help {{
         height: 1;
+        min-width: 0;
+        width: 8;
+        border: none;
+        background: {ACCENT};
+        color: {BG};
+        text-style: bold;
+        padding: 0;
+        margin: 0;
+    }}
+
+    Button#btn_help:hover, Button#btn_help:focus {{
+        background: {SUCCESS};
+        color: {BG};
     }}
 
     #ram_txt {{
@@ -903,19 +915,6 @@ class IOMonitorApp(App):
         scrollbar-color: {MUTED};
         scrollbar-color-hover: {ACCENT};
     }}
-
-    #custom_footer {{
-        height: 1;
-        background: {BG};
-        align-horizontal: center;
-        text-align: center;
-    }}
-
-    #footer_text {{
-        width: auto;
-        height: 1;
-        text-align: center;
-    }}
     """
 
     BINDINGS = [
@@ -949,20 +948,10 @@ class IOMonitorApp(App):
         self.title = "Dusky Disk I/O Monitor"
         yield Static("Dusky Disk I/O Monitor", id="custom_header")
         with Horizontal(id="ram_bar"):
-            yield Static("", id="ram_spacer")
+            yield Button("󰌌 F1", id="btn_help")
             yield Static(id="ram_txt")
             yield Button("󰚰 Sync", id="btn_sync")
         yield VerticalScroll(id="main_scroll")
-        with Horizontal(id="custom_footer"):
-            yield Static(
-                Text.from_markup(
-                    f"[{ACCENT}]f1[/] [{FG}]Help[/]    "
-                    f"[{ACCENT}]j[/] [{FG}]Select[/]    "
-                    f"[{ACCENT}]s[/] [{FG}]Sync[/]    "
-                    f"[{ACCENT}]q[/] [{FG}]Quit[/]"
-                ),
-                id="footer_text",
-            )
 
     def on_mount(self) -> None:
         self.refresh_metadata_worker()
@@ -973,6 +962,8 @@ class IOMonitorApp(App):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn_sync":
             self.action_sync()
+        elif event.button.id == "btn_help":
+            self.action_help()
 
     def action_sync(self) -> None:
         self.do_sync()
