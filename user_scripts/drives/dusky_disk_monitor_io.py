@@ -331,14 +331,30 @@ class SysStatParser:
                         elif key == "Thermal Management T1 Total Time":
                             therm_t1 = f"{val}s" if val.isdigit() else val
 
-                    temps: list[str] = []
+                    raw_temps: list[str] = []
                     if temp_base != "N/A":
-                        temps.append(temp_base)
-                    for ts in t_sensors[:2]:
-                        if ts != temp_base and ts not in temps:
-                            temps.append(ts)
+                        raw_temps.append(temp_base)
+                    for ts in t_sensors[:3]:
+                        if ts != temp_base and ts not in raw_temps:
+                            raw_temps.append(ts)
 
-                    temp_str = " │ ".join(temps) if temps else (temp_base if temp_base != "N/A" else "N/A")
+                    if not raw_temps:
+                        temp_str = "N/A"
+                    else:
+                        clean_nums: list[str] = []
+                        unit = "°C"
+                        for t in raw_temps:
+                            num = t.replace("°C", "").replace("C", "").replace("°F", "").replace("F", "").strip()
+                            if "F" in t:
+                                unit = "°F"
+                            if num:
+                                clean_nums.append(num)
+                        if not clean_nums:
+                            temp_str = "N/A"
+                        elif len(clean_nums) <= 2:
+                            temp_str = " │ ".join(f"{n}{unit}" for n in clean_nums)
+                        else:
+                            temp_str = f"{' │ '.join(clean_nums)}{unit}"
 
                     return SmartInfo(
                         temp=temp_str,
@@ -561,7 +577,7 @@ class DriveWidget(Static, can_focus=True):
         table.add_column("F2", ratio=1)
         table.add_column("C3", justify="right", no_wrap=True, width=16)
         table.add_column("F3", ratio=1)
-        table.add_column("C4", justify="right", no_wrap=True, width=16)
+        table.add_column("C4", justify="right", no_wrap=True, width=17)
 
         r_spark, self.peak_read = self.generate_sparkline(self.history_read, self.peak_read, width=16, color_hex=SUCCESS)
         w_spark, self.peak_write = self.generate_sparkline(self.history_write, self.peak_write, width=16, color_hex=ACCENT)
@@ -609,9 +625,9 @@ class DriveWidget(Static, can_focus=True):
                 "",
                 f"[{LABEL_COL}]UTIL    [{DIVIDER_COL}]│[/][/] [bold {ERROR}]{util_pct:>5.1f}%[/]",
                 "",
-                f"[{LABEL_COL}]CRITICAL [{DIVIDER_COL}]│[/][/] [bold {crit_col}]{smart.critical_warning:>4}[/]",
+                f"[{LABEL_COL}]CRITICAL [{DIVIDER_COL}]│[/][/] [bold {crit_col}]{smart.critical_warning:>3}[/]",
                 "",
-                f"[{LABEL_COL}]PWR CYC [{DIVIDER_COL}]│[/][/] [bold {FG}]{smart.power_cycles:>6}[/]",
+                f"[{LABEL_COL}]PWR CYC [{DIVIDER_COL}]│[/][/] [bold {FG}]{smart.power_cycles:>5}[/]",
             )
 
             # ROW 4 (Health / Errors / Power Hours)
@@ -621,9 +637,9 @@ class DriveWidget(Static, can_focus=True):
                 "",
                 f"[{LABEL_COL}]HEALTH  [{DIVIDER_COL}]│[/][/] [bold {ACCENT}]{smart.health:>5}[/]",
                 "",
-                f"[{LABEL_COL}]ERRORS   [{DIVIDER_COL}]│[/][/] [bold {err_col}]{smart.media_errors:>4}[/]",
+                f"[{LABEL_COL}]ERRORS   [{DIVIDER_COL}]│[/][/] [bold {err_col}]{smart.media_errors:>3}[/]",
                 "",
-                f"[{LABEL_COL}]PWR HRS [{DIVIDER_COL}]│[/][/] [bold {FG}]{smart.power_on_hours:>6}[/]",
+                f"[{LABEL_COL}]PWR HRS [{DIVIDER_COL}]│[/][/] [bold {FG}]{smart.power_on_hours:>5}[/]",
             )
 
             # ROW 5 (Temperature / Thermal Throttle / Power Cuts)
@@ -633,9 +649,9 @@ class DriveWidget(Static, can_focus=True):
                 "",
                 f"[{LABEL_COL}]TEMP    [{DIVIDER_COL}]│[/][/] [bold {TEMP_COL}]{smart.temp:>5}[/]",
                 "",
-                f"[{LABEL_COL}]T1 TIME  [{DIVIDER_COL}]│[/][/] [bold {FG}]{smart.therm_t1:>4}[/]",
+                f"[{LABEL_COL}]T1 TIME  [{DIVIDER_COL}]│[/][/] [bold {FG}]{smart.therm_t1:>3}[/]",
                 "",
-                f"[{LABEL_COL}]PWR CUT [{DIVIDER_COL}]│[/][/] [bold {ERROR}]{smart.unsafe_shutdowns:>6}[/]",
+                f"[{LABEL_COL}]PWR CUT [{DIVIDER_COL}]│[/][/] [bold {ERROR}]{smart.unsafe_shutdowns:>5}[/]",
             )
 
         self.update(table)
