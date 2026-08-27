@@ -637,20 +637,6 @@ class DriveWidget(Static, can_focus=True):
                 "",
                 f"[{LABEL_COL}]PWR CUT [{DIVIDER_COL}]│[/][/] [bold {ERROR}]{smart.unsafe_shutdowns:>6}[/]",
             )
-        else:
-            # ROW 3 (Compact Cards: Latency, RAM Engine / Type, Health, State)
-            engine_str = "ZSTD Block" if is_zram else "Mechanical"
-            temp_or_state = f"[bold {TEMP_COL}]{smart.temp}[/]" if (smart.temp != "N/A") else f"[bold {SUCCESS}]ACTIVE[/]"
-            table.add_row(
-                f"[{WARNING}]Latency:[/]",
-                f"[bold {ERROR}]{await_ms:.2f} ms[/]",
-                "",
-                f"[{LABEL_COL}]ENGINE  [{DIVIDER_COL}]│[/][/] [bold {ACCENT}]{engine_str:>10}[/]",
-                "",
-                f"[{LABEL_COL}]HEALTH   [{DIVIDER_COL}]│[/][/] [bold {ACCENT}]100%[/]",
-                "",
-                f"[{LABEL_COL}]STATE   [{DIVIDER_COL}]│[/][/] {temp_or_state:>8}",
-            )
 
         self.update(table)
 
