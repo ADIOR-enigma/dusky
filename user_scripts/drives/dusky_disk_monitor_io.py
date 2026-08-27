@@ -239,35 +239,63 @@ class SysStatParser:
         try:
             cmd = ["sudo", "-n", "smartctl", "-j", "-a", f"/dev/{device}"]
             res = subprocess.run(cmd, capture_output=True, text=True, timeout=3)
+            temp_str = "N/A"
+            health_str = "N/A"
+            p_cycles = "N/A"
+            p_hours = "N/A"
+            realloc = "N/A"
+
             if res.stdout:
                 try:
                     data = json.loads(res.stdout)
-                    temp_str = "N/A"
                     t_curr = data.get("temperature", {}).get("current")
                     if t_curr is not None:
                         temp_str = f"{t_curr}°C"
+                    else:
+                        for attr in data.get("ata_smart_attributes", {}).get("table", []):
+                            if attr.get("name") in ("Temperature_Celsius", "Airflow_Temperature_Cel", "Temperature"):
+                                raw_v = attr.get("raw", {}).get("value")
+                                if raw_v is not None:
+                                    temp_str = f"{raw_v}°C"
+                                    break
 
                     smart_passed = data.get("smart_status", {}).get("passed")
                     health_str = "PASSED" if smart_passed is True else ("FAILED" if smart_passed is False else "N/A")
-
                     p_cycles = str(data.get("power_cycle_count", "N/A"))
                     p_hours = str(data.get("power_on_time", {}).get("hours", "N/A"))
 
-                    realloc = "N/A"
                     for attr in data.get("ata_smart_attributes", {}).get("table", []):
                         if attr.get("name") in ("Reallocated_Sector_Ct", "Reallocated_Event_Count"):
                             realloc = str(attr.get("raw", {}).get("value", attr.get("raw", {}).get("string", "N/A")))
                             break
-
-                    return SmartInfo(
-                        temp=temp_str,
-                        health=health_str,
-                        power_cycles=p_cycles,
-                        power_on_hours=p_hours,
-                        media_errors=realloc,
-                    )
                 except json.JSONDecodeError:
                     pass
+
+            if temp_str == "N/A":
+                # Fallback to plain smartctl -A /dev/{device} for legacy USB SAT bridges
+                try:
+                    res_a = subprocess.run(
+                        ["sudo", "-n", "smartctl", "-A", f"/dev/{device}"],
+                        capture_output=True,
+                        text=True,
+                        timeout=2,
+                    )
+                    for line in res_a.stdout.splitlines():
+                        if "Temperature_Celsius" in line or "Airflow_Temperature" in line:
+                            parts = line.split()
+                            if len(parts) >= 10 and parts[9].isdigit():
+                                temp_str = f"{parts[9]}°C"
+                                break
+                except Exception:
+                    pass
+
+            return SmartInfo(
+                temp=temp_str,
+                health=health_str,
+                power_cycles=p_cycles,
+                power_on_hours=p_hours,
+                media_errors=realloc,
+            )
         except Exception:
             pass
         return SmartInfo()
@@ -591,8 +619,16 @@ class DriveWidget(Static, can_focus=True):
         r_iops_str = f"{r_iops:.1f} IOPS"
         w_iops_str = f"{w_iops:.1f} IOPS"
 
-        compact_temp = f"[{WARNING}]{smart.temp}[/]" if (is_compact and smart.temp != "N/A") else ""
-        compact_lat = f"[bold {ERROR}]{await_ms:.2f} ms[/]" if is_compact else ""
+        r_c4 = (
+            f"[{SUCCESS}]{r_iops_str}[/] [{TEMP_COL}]{smart.temp}[/]"
+            if (is_compact and smart.temp != "N/A")
+            else f"[{SUCCESS}]{r_iops_str:>11}[/]"
+        )
+        w_c4 = (
+            f"[{ACCENT}]{w_iops_str}[/] [bold {ERROR}]{await_ms:.2f} ms[/]"
+            if is_compact
+            else f"[{ACCENT}]{w_iops_str:>11}[/]"
+        )
 
         # ROW 1 (Read Activity)
         table.add_row(
@@ -603,7 +639,7 @@ class DriveWidget(Static, can_focus=True):
             "",
             f"[bold {FG}]{r_spd:>10}[/]",
             "",
-            f"[{SUCCESS}]{r_iops_str:>11}[/]",
+            r_c4,
         )
 
         # ROW 2 (Write Activity)
@@ -615,7 +651,7 @@ class DriveWidget(Static, can_focus=True):
             "",
             f"[bold {FG}]{w_spd:>10}[/]",
             "",
-            f"[{ACCENT}]{w_iops_str:>11}[/]",
+            w_c4,
         )
 
         if not is_compact:
