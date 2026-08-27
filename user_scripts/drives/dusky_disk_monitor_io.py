@@ -96,10 +96,11 @@ def ensure_smart_access() -> None:
 
 from rich.table import Table
 from rich.text import Text
-from textual import work
+from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, VerticalScroll
+from textual.containers import Container, Horizontal, VerticalScroll
+from textual.screen import ModalScreen
 from textual.widgets import Button, Footer, Static
 
 # ============================================================================
@@ -657,6 +658,61 @@ class DriveWidget(Static, can_focus=True):
         self.update(table)
 
 
+# ============================================================================
+# 5. SHORTCUTS & HELP MODAL DIALOG
+# ============================================================================
+class ShortcutsScreen(ModalScreen[None]):
+    BINDINGS = [
+        Binding("escape", "dismiss", "Dismiss", priority=True),
+        Binding("f1", "dismiss", "Dismiss", priority=True),
+        Binding("question_mark", "dismiss", "Dismiss", priority=True),
+        Binding("q", "dismiss", "Dismiss", priority=True),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Container(id="help_dialog"):
+            yield Static("󰌌 Dusky Disk Monitor Shortcuts", id="modal-title")
+
+            text = Text()
+            text.append("Drive Navigation (Vim & Keys)\n", style=f"bold {ACCENT}")
+            text.append("  j / Down       Select next drive (circular)\n")
+            text.append("  k / Up         Select previous drive (circular)\n")
+            text.append("  g / Home       Jump to first drive\n")
+            text.append("  G / End        Jump to last drive\n\n")
+
+            text.append("Card Reordering\n", style=f"bold {ACCENT}")
+            text.append("  J / Shift+Down Move selected drive down\n")
+            text.append("  K / Shift+Up   Move selected drive up\n\n")
+
+            text.append("Actions & Controls\n", style=f"bold {ACCENT}")
+            text.append("  s / Sync Btn   Flush dirty page cache to disks (sync)\n")
+            text.append("  F1 / ?         Open / close this shortcuts modal\n")
+            text.append("  q / Ctrl+C     Quit monitor\n")
+
+            yield Static(text, id="modal-text")
+
+            with Horizontal(id="modal_btn_container"):
+                yield Button("Close [F1 / Esc]", id="btn_modal_close")
+
+    def on_key(self, event: events.Key) -> None:
+        key = event.key.lower()
+        if key in ("escape", "f1", "question_mark", "q", "enter", "space", "?") or event.character in ("?", "q"):
+            self.dismiss(None)
+            event.stop()
+
+    @on(Button.Pressed, "#btn_modal_close")
+    def on_close_click(self) -> None:
+        self.dismiss(None)
+
+    @on(events.Click)
+    def on_background_click(self, event: events.Click) -> None:
+        if event.control is self:
+            self.dismiss(None)
+
+    def action_dismiss(self) -> None:
+        self.dismiss(None)
+
+
 class IOMonitorApp(App):
     """Dusky Disk I/O Monitor"""
     ENABLE_COMMAND_PALETTE = False
@@ -719,6 +775,53 @@ class IOMonitorApp(App):
         color: {BG};
     }}
 
+    ShortcutsScreen {{
+        align: center middle;
+    }}
+
+    #help_dialog {{
+        width: 66;
+        height: auto;
+        max-height: 85%;
+        background: {BG};
+        border: heavy {ACCENT};
+        padding: 1 2;
+    }}
+
+    #modal-title {{
+        color: {ACCENT};
+        text-style: bold;
+        text-align: center;
+        margin-bottom: 1;
+    }}
+
+    #modal-text {{
+        color: {FG};
+        margin-bottom: 1;
+    }}
+
+    #modal_btn_container {{
+        height: 1;
+        align-horizontal: center;
+    }}
+
+    Button#btn_modal_close {{
+        height: 1;
+        width: auto;
+        min-width: 0;
+        border: none;
+        background: {ACCENT};
+        color: {BG};
+        text-style: bold;
+        padding: 0 1;
+        margin: 0;
+    }}
+
+    Button#btn_modal_close:hover, Button#btn_modal_close:focus {{
+        background: {SUCCESS};
+        color: {BG};
+    }}
+
     #main_scroll {{
         height: 1fr;
         padding: 1 1;
@@ -729,30 +832,34 @@ class IOMonitorApp(App):
         scrollbar-color-hover: {ACCENT};
     }}
 
-    Footer {{
+    #custom_footer {{
+        height: 1;
         background: {BG};
-        color: {FG};
+        align-horizontal: center;
+        text-align: center;
     }}
 
-    Footer > .footer--key {{
-        color: {ACCENT};
-    }}
-
-    Footer > .footer--highlight {{
-        background: {ACCENT};
-        color: {BG};
+    #footer_text {{
+        width: auto;
+        height: 1;
+        text-align: center;
     }}
     """
 
     BINDINGS = [
-        Binding("q", "quit", "Quit"),
-        Binding("s", "sync", "Sync Disk"),
-        Binding("j", "next_drive", "Next Drive"),
+        # Essential keyboard shortcuts
+        Binding("f1", "help", "Help", priority=True),
+        Binding("question_mark", "help", "Help", priority=True),
+        Binding("j", "next_drive", "Select"),
         Binding("k", "prev_drive", "Prev Drive"),
+        Binding("s", "sync", "Sync"),
+        Binding("q", "quit", "Quit"),
+
+        # Vim / Arrow / Navigation bindings
         Binding("down", "next_drive", "Next Drive", priority=True),
         Binding("up", "prev_drive", "Prev Drive", priority=True),
-        Binding("J", "move_down", "Move Drive Down"),
-        Binding("K", "move_up", "Move Drive Up"),
+        Binding("J", "move_down", "Move Down"),
+        Binding("K", "move_up", "Move Up"),
         Binding("shift+down", "move_down", "Move Down", priority=True),
         Binding("shift+up", "move_up", "Move Up", priority=True),
         Binding("g", "first_drive", "First Drive"),
@@ -773,7 +880,16 @@ class IOMonitorApp(App):
             yield Static(id="ram_txt")
             yield Button("󰚰 Sync", id="btn_sync")
         yield VerticalScroll(id="main_scroll")
-        yield Footer()
+        with Horizontal(id="custom_footer"):
+            yield Static(
+                Text.from_markup(
+                    f"[{ACCENT}]f1[/] [{FG}]Help[/]    "
+                    f"[{ACCENT}]j[/] [{FG}]Select[/]    "
+                    f"[{ACCENT}]s[/] [{FG}]Sync[/]    "
+                    f"[{ACCENT}]q[/] [{FG}]Quit[/]"
+                ),
+                id="footer_text",
+            )
 
     def on_mount(self) -> None:
         self.refresh_metadata_worker()
@@ -906,6 +1022,13 @@ class IOMonitorApp(App):
                 else:
                     scroll.move_child(focused, after=children[-1])
                 focused.scroll_visible()
+
+    def action_help(self) -> None:
+        """Toggles the shortcuts and help modal dialog."""
+        if isinstance(self.screen, ModalScreen):
+            self.screen.dismiss(None)
+        else:
+            self.push_screen(ShortcutsScreen())
 
     def tick(self) -> None:
         dirty, wb, shmem = SysStatParser.get_ram_buffers()
