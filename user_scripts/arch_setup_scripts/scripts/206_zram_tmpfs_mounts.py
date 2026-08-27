@@ -239,10 +239,11 @@ def resolve_live_conflicts(target_backend: str, mount_unit_name: str) -> None:
     if not current:
         return
 
-    if target_backend == "tmpfs" and current in ("/dev/zram1", "zram1"):
+    if target_backend == "tmpfs":
         warn("Tearing down legacy ZRAM block device to free memory...")
         run_cmd(["systemctl", "stop", "systemd-zram-setup@zram1.service"], ignore_errors=True)
         run_cmd(["umount", "-q", str(MOUNT_POINT)], ignore_errors=True)
+        run_cmd(["zramctl", "--reset", "/dev/zram1"], ignore_errors=True)
         
     elif target_backend == "zram" and current == "tmpfs":
         warn("Unmounting live Tmpfs to prepare for ZRAM block allocation...")
@@ -252,6 +253,7 @@ def resolve_live_conflicts(target_backend: str, mount_unit_name: str) -> None:
 # --- Backend Configurators ---
 def configure_tmpfs(mount_unit_name: str, mount_unit_path: Path) -> None:
     if get_mount_source() == "tmpfs" and mount_unit_path.exists():
+        run_cmd(["zramctl", "--reset", "/dev/zram1"], ignore_errors=True)
         fix_mount_permissions()
         ok(f"Tmpfs architecture is already active and perfectly configured at {MOUNT_POINT}. No action required.")
         return
@@ -262,6 +264,7 @@ def configure_tmpfs(mount_unit_name: str, mount_unit_path: Path) -> None:
     if ZRAM_CONF_FILE.exists():
         ZRAM_CONF_FILE.unlink()
         run_cmd(["systemctl", "daemon-reload"])
+    run_cmd(["zramctl", "--reset", "/dev/zram1"], ignore_errors=True)
 
     tmpfs_content = f"""# Managed by Elite Arch Linux Configurator
 [Unit]
@@ -342,6 +345,8 @@ options = {FS_OPTIONS}
     
     info("Engaging ZRAM generator pipeline...")
     run_cmd(["systemctl", "restart", "systemd-zram-setup@zram1.service"], ignore_errors=True)
+    run_cmd(["systemctl", "restart", "mnt-zram1.mount"], ignore_errors=True)
+    run_cmd(["mount", str(MOUNT_POINT)], ignore_errors=True)
 
     for _ in range(10):
         if get_mount_source() in ("/dev/zram1", "zram1"): break

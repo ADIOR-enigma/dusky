@@ -94,9 +94,6 @@ def ensure_smart_access() -> None:
     t.start()
 
 
-ensure_dependencies()
-ensure_smart_access()
-
 from rich.table import Table
 from rich.text import Text
 from textual import work
@@ -372,6 +369,27 @@ class SysStatParser:
         return dirty, writeback, shmem
 
     @staticmethod
+    def is_zram_active(dev_name: str) -> bool:
+        """Verifies that a ZRAM device is actively engaged in swap or mounted to a filesystem."""
+        try:
+            sz_p = Path(f"/sys/block/{dev_name}/size")
+            if not sz_p.exists() or int(sz_p.read_text().strip()) == 0:
+                return False
+            if Path("/proc/swaps").exists():
+                swaps = Path("/proc/swaps").read_text()
+                if f"/dev/{dev_name}" in swaps or dev_name in swaps:
+                    return True
+            if Path("/proc/mounts").exists():
+                with open("/proc/mounts", "r", encoding="utf-8") as f:
+                    for line in f:
+                        src = line.split()[0] if line.split() else ""
+                        if src == f"/dev/{dev_name}" or src.endswith(f"/{dev_name}"):
+                            return True
+        except Exception:
+            pass
+        return False
+
+    @staticmethod
     def get_device_metadata() -> dict[str, dict]:
         try:
             res = subprocess.run(
@@ -386,13 +404,8 @@ class SysStatParser:
                 name = d.get("name", "")
                 if not name or name.startswith(("loop", "sr", "ram", "dm", "fd", "nbd")):
                     continue
-                if name.startswith("zram"):
-                    try:
-                        sz_p = Path(f"/sys/block/{name}/size")
-                        if sz_p.exists() and int(sz_p.read_text().strip()) == 0:
-                            continue
-                    except Exception:
-                        continue
+                if name.startswith("zram") and not SysStatParser.is_zram_active(name):
+                    continue
                 devices_raw.append(d)
 
             def fetch_single_meta(dev: dict) -> tuple[str, dict]:
@@ -905,13 +918,8 @@ class IOMonitorApp(App):
             for d in os.listdir("/sys/block"):
                 if d.startswith(("loop", "sr", "ram", "dm", "fd", "nbd")):
                     continue
-                if d.startswith("zram"):
-                    try:
-                        sz_p = Path(f"/sys/block/{d}/size")
-                        if not sz_p.exists() or int(sz_p.read_text().strip()) == 0:
-                            continue
-                    except Exception:
-                        continue
+                if d.startswith("zram") and not SysStatParser.is_zram_active(d):
+                    continue
                 current_drives.append(d)
             current_drives.sort()
         except Exception:
@@ -955,5 +963,7 @@ class IOMonitorApp(App):
 
 
 if __name__ == "__main__":
+    ensure_dependencies()
+    ensure_smart_access()
     app = IOMonitorApp()
     app.run()
