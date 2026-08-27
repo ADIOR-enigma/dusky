@@ -136,6 +136,12 @@ WARNING = THEME["warning"]
 SUCCESS = THEME["success"]
 MUTED = THEME["muted"]
 
+# High-contrast readable palette for diagnostic labels and sub-grids
+LABEL_COL = "#8fa7ab"
+DIVIDER_COL = "#486368"
+SPARK_BASE_COL = "#223c40"
+TEMP_COL = "#fcd34d"
+
 
 # ============================================================================
 # 3. CORE SYSTEM METRICS & FORMATTING ENGINE
@@ -460,30 +466,37 @@ class DriveWidget(Static, can_focus=True):
         self.dev_name = dev_name
         self.history_read: deque[float] = deque([0.0] * 16, maxlen=16)
         self.history_write: deque[float] = deque([0.0] * 16, maxlen=16)
+        self.peak_read: float = 10.0
+        self.peak_write: float = 10.0
         self.prev_stats: BlockStats | None = None
 
     def on_mount(self) -> None:
         self.border_title = f"[bold {FG}]/dev/{self.dev_name}[/]"
 
-    def generate_sparkline(self, data: deque[float], width: int = 16, color_hex: str = ACCENT) -> Text:
-        """Returns a hard-cropped rich Text object with zero ellipsis truncation."""
+    def generate_sparkline(self, data: deque[float], current_peak: float, width: int = 16, color_hex: str = ACCENT) -> tuple[Text, float]:
+        """Returns a hard-cropped rich Text object with stabilized peak scaling and zero ellipsis truncation."""
         ticks = " ▂▃▄▅▆▇█"
         valid_data = list(data)
 
         if not valid_data:
-            line = f"[{MUTED}]" + "_" * width + "[/]"
-            return Text.from_markup(line, overflow="crop")
+            line = f"[{SPARK_BASE_COL}]" + " " * width + f"[/{SPARK_BASE_COL}]"
+            return Text.from_markup(line, overflow="crop"), 10.0
 
-        max_val = max(valid_data)
+        max_in_window = max(valid_data)
+        # Stabilize peak with smooth exponential decay (avoids sudden jumping when bursts expire)
+        new_peak = max(max_in_window, current_peak * 0.90, 10.0)
+
         line = ""
         for v in valid_data[-width:]:
             if v <= 0.01:
-                line += f"[{MUTED}]_[/]"
+                line += f"[{SPARK_BASE_COL}] [/{SPARK_BASE_COL}]"
             else:
-                idx = int((v / max_val) * (len(ticks) - 1)) if max_val > 0 else 0
+                # Dynamic soft power curve (v/new_peak)**0.6 enables clear distinction across wide MB/s to GB/s bandwidths
+                norm = min(max(v / new_peak, 0.0), 1.0)
+                idx = int((norm ** 0.6) * (len(ticks) - 1))
                 idx = max(0, min(idx, len(ticks) - 1))
-                line += f"[{color_hex}]{ticks[idx]}[/]"
-        return Text.from_markup(line, overflow="crop")
+                line += f"[{color_hex}]{ticks[idx]}[/{color_hex}]"
+        return Text.from_markup(line, overflow="crop"), new_peak
 
     def tick_update(self, curr: BlockStats, meta_info: dict) -> None:
         size = meta_info.get("size", "?")
@@ -537,30 +550,21 @@ class DriveWidget(Static, can_focus=True):
         write_total_str = format_bytes(curr.write_sectors * 512)
 
         # ====================================================================
-        # THE PERFECT GOLDEN FLUID GRID (Auto-scaled with zero truncation)
+        # ROCK-SOLID JITTER-FREE FLUID GRID (Fixed Column Metric Anchoring)
         # ====================================================================
         table = Table.grid(padding=(0, 1), expand=True)
 
-        table.add_column("C1_L", justify="left", no_wrap=True)
-        table.add_column("C1_V", justify="left", no_wrap=True)
+        table.add_column("C1_L", justify="left", no_wrap=True, width=10)
+        table.add_column("C1_V", justify="left", no_wrap=True, width=10)
+        table.add_column("F1", ratio=1)
+        table.add_column("C2", justify="left", no_wrap=True, width=24)
+        table.add_column("F2", ratio=1)
+        table.add_column("C3", justify="right", no_wrap=True, width=16)
+        table.add_column("F3", ratio=1)
+        table.add_column("C4", justify="right", no_wrap=True, width=16)
 
-        table.add_column("F1", ratio=1)  # Spacer 1
-
-        table.add_column("C2_L", justify="right", no_wrap=True)
-        table.add_column("C2_V", justify="left", no_wrap=True)
-
-        table.add_column("F2", ratio=1)  # Spacer 2
-
-        table.add_column("C3_L", justify="right", no_wrap=True)
-        table.add_column("C3_V", justify="left", no_wrap=True)
-
-        table.add_column("F3", ratio=1)  # Spacer 3
-
-        table.add_column("C4_L", justify="right", no_wrap=True)
-        table.add_column("C4_V", justify="left", no_wrap=True)
-
-        r_spark = self.generate_sparkline(self.history_read, width=16, color_hex=ACCENT)
-        w_spark = self.generate_sparkline(self.history_write, width=16, color_hex=SUCCESS)
+        r_spark, self.peak_read = self.generate_sparkline(self.history_read, self.peak_read, width=16, color_hex=SUCCESS)
+        w_spark, self.peak_write = self.generate_sparkline(self.history_write, self.peak_write, width=16, color_hex=ACCENT)
 
         err_col = SUCCESS if str(smart.media_errors) == "0" else ERROR
         crit_col = SUCCESS if str(smart.critical_warning) == "0" else ERROR
@@ -573,80 +577,79 @@ class DriveWidget(Static, can_focus=True):
         compact_temp = f"[{WARNING}]{smart.temp}[/]" if (is_compact and smart.temp != "N/A") else ""
         compact_lat = f"[bold {ERROR}]{await_ms:.2f} ms[/]" if is_compact else ""
 
-        # ROW 1
+        # ROW 1 (Read Activity)
         table.add_row(
             f"[{WARNING}]Read:[/]",
             f"[bold {SUCCESS}]{read_total_str}[/]",
             "",
-            f"[bold {ACCENT}]READ[/]",
-            r_spark,
+            f"[bold {SUCCESS}]READ [/] {r_spark}",
             "",
-            f"[bold {FG}]{r_spd}[/]",
+            f"[bold {FG}]{r_spd:>10}[/]",
             "",
-            "",
-            f"{r_iops_str}",
-            compact_temp,
+            f"[{SUCCESS}]{r_iops_str:>11}[/]",
         )
 
-        # ROW 2
+        # ROW 2 (Write Activity)
         table.add_row(
             f"[{WARNING}]Write:[/]",
-            f"[bold {SUCCESS}]{write_total_str}[/]",
+            f"[bold {ACCENT}]{write_total_str}[/]",
             "",
-            f"[bold {SUCCESS}]WRITE[/]",
-            w_spark,
+            f"[bold {ACCENT}]WRITE[/] {w_spark}",
             "",
-            f"[bold {FG}]{w_spd}[/]",
+            f"[bold {FG}]{w_spd:>10}[/]",
             "",
-            "",
-            f"{w_iops_str}",
-            compact_lat,
+            f"[{ACCENT}]{w_iops_str:>11}[/]",
         )
 
         if not is_compact:
-            # ROW 3
+            # ROW 3 (Utilization / Critical / Power Cycles)
             table.add_row(
                 f"[{WARNING}]Latency:[/]",
                 f"[bold {ERROR}]{await_ms:.2f} ms[/]",
                 "",
-                f"[{MUTED}]UTIL[/]",
-                f"[{MUTED}]│[/] [bold {ERROR}]{util_pct:.1f}%[/]",
+                f"[{LABEL_COL}]UTIL    [{DIVIDER_COL}]│[/][/] [bold {ERROR}]{util_pct:>5.1f}%[/]",
                 "",
-                f"[{MUTED}]CRITICAL[/]",
-                f"[{MUTED}]│[/] [bold {crit_col}]{smart.critical_warning}[/]",
+                f"[{LABEL_COL}]CRITICAL [{DIVIDER_COL}]│[/][/] [bold {crit_col}]{smart.critical_warning:>4}[/]",
                 "",
-                f"[{MUTED}]PWR CYC[/]",
-                f"[{MUTED}]│[/] [{FG}]{smart.power_cycles}[/]",
+                f"[{LABEL_COL}]PWR CYC [{DIVIDER_COL}]│[/][/] [bold {FG}]{smart.power_cycles:>6}[/]",
             )
 
-            # ROW 4
+            # ROW 4 (Health / Errors / Power Hours)
             table.add_row(
-                f"[{WARNING}]Total Rd:[/]",
-                f"[bold {ACCENT}]{smart.tbr}[/]",
+                f"[{SUCCESS}]Total Rd:[/]",
+                f"[bold {SUCCESS}]{smart.tbr}[/]",
                 "",
-                f"[{MUTED}]HEALTH[/]",
-                f"[{MUTED}]│[/] [bold {SUCCESS}]{smart.health}[/]",
+                f"[{LABEL_COL}]HEALTH  [{DIVIDER_COL}]│[/][/] [bold {ACCENT}]{smart.health:>5}[/]",
                 "",
-                f"[{MUTED}]ERRORS[/]",
-                f"[{MUTED}]│[/] [bold {err_col}]{smart.media_errors}[/]",
+                f"[{LABEL_COL}]ERRORS   [{DIVIDER_COL}]│[/][/] [bold {err_col}]{smart.media_errors:>4}[/]",
                 "",
-                f"[{MUTED}]PWR HRS[/]",
-                f"[{MUTED}]│[/] [{FG}]{smart.power_on_hours}[/]",
+                f"[{LABEL_COL}]PWR HRS [{DIVIDER_COL}]│[/][/] [bold {FG}]{smart.power_on_hours:>6}[/]",
             )
 
-            # ROW 5
+            # ROW 5 (Temperature / Thermal Throttle / Power Cuts)
             table.add_row(
-                f"[{WARNING}]Total Wr:[/]",
+                f"[{ACCENT}]Total Wr:[/]",
                 f"[bold {ACCENT}]{smart.tbw}[/]",
                 "",
-                f"[{MUTED}]TEMP[/]",
-                f"[{MUTED}]│[/] [{WARNING}]{smart.temp}[/]",
+                f"[{LABEL_COL}]TEMP    [{DIVIDER_COL}]│[/][/] [bold {TEMP_COL}]{smart.temp:>5}[/]",
                 "",
-                f"[{MUTED}]T1 TIME[/]",
-                f"[{MUTED}]│[/] [{WARNING}]{smart.therm_t1}[/]",
+                f"[{LABEL_COL}]T1 TIME  [{DIVIDER_COL}]│[/][/] [bold {FG}]{smart.therm_t1:>4}[/]",
                 "",
-                f"[{MUTED}]PWR CUT[/]",
-                f"[{MUTED}]│[/] [{ERROR}]{smart.unsafe_shutdowns}[/]",
+                f"[{LABEL_COL}]PWR CUT [{DIVIDER_COL}]│[/][/] [bold {ERROR}]{smart.unsafe_shutdowns:>6}[/]",
+            )
+        else:
+            # ROW 3 (Compact Cards: Latency, RAM Engine / Type, Health, State)
+            engine_str = "ZSTD Block" if is_zram else "Mechanical"
+            temp_or_state = f"[bold {TEMP_COL}]{smart.temp}[/]" if (smart.temp != "N/A") else f"[bold {SUCCESS}]ACTIVE[/]"
+            table.add_row(
+                f"[{WARNING}]Latency:[/]",
+                f"[bold {ERROR}]{await_ms:.2f} ms[/]",
+                "",
+                f"[{LABEL_COL}]ENGINE  [{DIVIDER_COL}]│[/][/] [bold {ACCENT}]{engine_str:>10}[/]",
+                "",
+                f"[{LABEL_COL}]HEALTH   [{DIVIDER_COL}]│[/][/] [bold {ACCENT}]100%[/]",
+                "",
+                f"[{LABEL_COL}]STATE   [{DIVIDER_COL}]│[/][/] {temp_or_state:>8}",
             )
 
         self.update(table)
