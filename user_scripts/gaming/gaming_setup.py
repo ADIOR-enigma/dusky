@@ -1128,18 +1128,8 @@ def integrate_desktop_and_icons(ctx: SetupContext):
         subprocess.run(["gtk-update-icon-cache", "-f", "-t", str(user_icons_dir)], capture_output=True)
 
 
-def configure_game_runner_and_shims(ctx: SetupContext) -> None:
-    """Idempotently builds runtime shims (e.g. Factorio Wayland EGL) and installs Master Runner desktop entries."""
-    # 1. Factorio EGL Wayland Shim
-    fix_script = Path.home() / "user_scripts/apps/factorio/use_wayland/fix_run_on_wayland.py"
-    shim_dest = Path.home() / ".factorio/wayland_fix/libEGL.so.1"
-    if not shim_dest.exists() and fix_script.exists():
-        console.print("[cyan]Compiling persistent Factorio Wayland EGL interposer shim...[/cyan]")
-        if not ctx.dry_run:
-            subprocess.run([sys.executable, str(fix_script), "--game-dir", "/mnt/zram1/factorio/Factorio_2.1.14"], capture_output=True)
-            console.print("[bold green]✔ Factorio Wayland EGL shim compiled and verified.[/bold green]")
-
-    # 2. Master Runner Desktop Shortcuts
+def integrate_game_runner_shortcuts(ctx: SetupContext) -> None:
+    """Installs Master Runner desktop entries for all discovered game profiles."""
     runner_script = Path(__file__).resolve().parent / "runner/master_runner.py"
     if not runner_script.exists():
         runner_script = Path.home() / "user_scripts/gaming/runner/master_runner.py"
@@ -1425,9 +1415,9 @@ def main():
                 integrate_desktop_and_icons(ctx)
             console.print("[bold green]✔ Application launcher and icon integration complete![/bold green]")
 
-        # Step 8: Game Runner Architecture & Wayland Shims
-        console.print("\n[bold cyan]Step 8: Master Game Runner & Runtime Shims[/bold cyan]")
-        configure_game_runner_and_shims(ctx)
+        # Step 8: Master Game Runner Integration
+        console.print("\n[bold cyan]Step 8: Master Game Runner Integration[/bold cyan]")
+        integrate_game_runner_shortcuts(ctx)
         report_text = Text()
         report_text.append("✔ Gaming Architecture Established!\n", style="bold green")
         report_text.append("Your Arch Linux installation is fully configured for native games, Steam Proton, Lutris, and modern Windows repacks.\n\n", style="white")

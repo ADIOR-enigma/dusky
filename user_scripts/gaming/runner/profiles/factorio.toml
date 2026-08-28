@@ -33,5 +33,10 @@ wayland_native = true
 [performance]
 gamemode = true
 
+[hooks]
+pre_launch = [
+    "bash -c 'if [ ! -f \"$HOME/.factorio/wayland_fix/libEGL.so.1\" ] && [ -f \"$HOME/user_scripts/apps/factorio/use_wayland/sources/eglfix.c\" ]; then mkdir -p \"$HOME/.factorio/wayland_fix\" && gcc -shared -fPIC -O2 -o \"$HOME/.factorio/wayland_fix/libEGL.so.1\" \"$HOME/user_scripts/apps/factorio/use_wayland/sources/eglfix.c\" -ldl -lpthread; fi'"
+]
+
 [env]
 LD_PRELOAD = "$HOME/.factorio/wayland_fix/libEGL.so.1"

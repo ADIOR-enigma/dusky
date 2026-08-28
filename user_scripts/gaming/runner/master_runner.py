@@ -54,7 +54,7 @@ except ImportError:
 # ==============================================================================
 
 ENGINE_NAME: Final[str] = "Master Game Runner Engine"
-ENGINE_VERSION: Final[str] = "1.4.0"
+ENGINE_VERSION: Final[str] = "1.4.1"
 SELF_DIR: Final[Path] = Path(__file__).resolve().parent
 GLOBAL_CONFIG_PATH: Final[Path] = SELF_DIR / "config.toml"
 PRESETS_DIR: Final[Path] = SELF_DIR / "presets"
@@ -830,18 +830,6 @@ class GameRunner:
         for k, v in custom_env.items():
             if k == "LD_PRELOAD":
                 expanded_preload = Path(os.path.expanduser(os.path.expandvars(str(v)))).resolve()
-                if not expanded_preload.exists():
-                    # Attempt automated just-in-time shim compilation for Factorio
-                    if "factorio" in self.profile_id or "wayland_fix" in str(expanded_preload):
-                        log_info(f"Building missing Factorio Wayland EGL shim at {expanded_preload}...")
-                        fix_script = Path.home() / "user_scripts/apps/factorio/use_wayland/fix_run_on_wayland.py"
-                        egl_src = Path.home() / "user_scripts/apps/factorio/use_wayland/sources/eglfix.c"
-                        expanded_preload.parent.mkdir(parents=True, exist_ok=True)
-                        if fix_script.exists():
-                            subprocess.run([sys.executable, str(fix_script), "--game-dir", str(self.paths["game_dir"])], capture_output=True)
-                        elif egl_src.exists() and shutil.which("gcc"):
-                            subprocess.run(["gcc", "-shared", "-fPIC", "-O2", "-o", str(expanded_preload), str(egl_src), "-ldl", "-lpthread"], capture_output=True)
-
                 if expanded_preload.exists():
                     log_info(f"Injecting Wayland runtime shim: {expanded_preload.name}")
                     if "LD_PRELOAD" in env and env["LD_PRELOAD"]:
@@ -889,8 +877,7 @@ class GameRunner:
 
         is_heavy_profile = (
             runtime_type == "wine" or
-            "unreal" in str(self.config.get("extends", "")).lower() or
-            "satisfactory" in self.profile_id
+            "unreal" in str(self.config.get("extends", "")).lower()
         )
 
         use_discrete = (gpu_choice == "discrete") or (gpu_choice == "auto" and is_heavy_profile and has_nvidia)
@@ -985,14 +972,11 @@ class GameRunner:
         exec_path = (root_dir / exec_rel).resolve()
 
         if not exec_path.exists():
-            alt_candidates = [
-                root_dir / "Stardew Valley",
-                root_dir / "bin" / "x64" / "factorio",
-                root_dir / "factorio",
-            ]
-            for cand in alt_candidates:
-                if cand.exists():
-                    log_warning(f"Executable {exec_path.name} not found; falling back to {cand.name}")
+            # Search for matching executable name in subdirectories
+            exec_name = Path(exec_rel).name
+            for cand in root_dir.glob(f"**/{exec_name}"):
+                if cand.is_file():
+                    log_warning(f"Executable {exec_rel} not found at root; found at {cand.relative_to(root_dir)}")
                     exec_path = cand
                     break
 
@@ -1140,12 +1124,12 @@ class GameRunner:
         # 3. Post-Mount Hook
         self.run_hooks("post_mount")
 
-        # 4. Build Environment & Command Pipeline
+        # 4. Pre-Launch Hook (Executed before build_environment so any just-in-time assets are built)
+        self.run_hooks("pre_launch")
+
+        # 5. Build Environment & Command Pipeline
         env = self.build_environment()
         pipeline, working_dir = self.build_command_pipeline()
-
-        # 5. Pre-Launch Hook
-        self.run_hooks("pre_launch")
 
         # Display Pipeline Details
         if console:
@@ -1235,18 +1219,13 @@ class ProfileScaffolder:
 
         # Detect DwarFS image
         dwarfs_img_rel = ""
-        for cand in ["files/game-root.dwarfs", "game-root.dwarfs", "Factorio_2.1.14/files/game-root.dwarfs"]:
-            if (target_dir / cand).exists():
-                dwarfs_img_rel = cand
-                break
-        if not dwarfs_img_rel:
-            for dw in target_dir.glob("**/*.dwarfs"):
-                dwarfs_img_rel = str(dw.relative_to(target_dir))
-                break
+        for dw in target_dir.glob("**/*.dwarfs"):
+            dwarfs_img_rel = str(dw.relative_to(target_dir))
+            break
 
         # Detect Engine & Archetype
         is_unity = False
-        is_ue5 = False
+        is_ue = False
         is_wine = False
         executable_rel = ""
         args: list[str] = []
@@ -1265,7 +1244,7 @@ class ProfileScaffolder:
                     tokens = m_cmd.group(1).split()
                     for t in tokens:
                         t = t.strip('"\'./')
-                        if t.endswith((".exe", ".x86_64", ".bin", "factorio", "Silksong", "Stardew", "SOR4", "Terraria")):
+                        if t.endswith((".exe", ".x86_64", ".bin", ".elf", ".sh", ".x86")):
                             executable_rel = t
                             break
                         if t == "-dx12":
@@ -1285,8 +1264,8 @@ class ProfileScaffolder:
 
         if "globalgamemanagers" in tree_text or "UnityPlayer.so" in tree_text or "GameAssembly.so" in tree_text:
             is_unity = True
-        if "Engine/Binaries" in tree_text or "Satisfactory" in folder_name or "FactoryGame" in tree_text:
-            is_ue5 = True
+        if "Engine/Binaries" in tree_text or "UE4" in tree_text or "UE5" in tree_text or "FactoryGame" in tree_text:
+            is_ue = True
             is_wine = True
         if "VC_redist" in tree_text or "vcredist" in tree_text:
             has_vc_redist = True
@@ -1294,7 +1273,7 @@ class ProfileScaffolder:
         # Choose base preset
         if preset:
             chosen_preset = preset
-        elif is_ue5:
+        elif is_ue:
             chosen_preset = "base_unreal_engine_5"
         elif is_unity:
             chosen_preset = "base_unity_native"
@@ -1360,7 +1339,7 @@ prefix_dir = "{prefix_loc}"
 arch = "win64"
 sync_mode = "fsync"
 dxvk = true
-vkd3d = {str(is_ue5).lower()}
+vkd3d = {str(is_ue).lower()}
 redistributables = {redist_list}
 winetricks = ["dxvk"]
 """
@@ -1678,7 +1657,7 @@ def render_interactive_menu(manager: ProfileManager) -> None:
 # ==============================================================================
 
 def main():
-    # Quality of Life: Auto-dispatch direct game invocation (e.g. `python3 master_runner.py factorio`)
+    # Quality of Life: Auto-dispatch direct game invocation (e.g. `python3 master_runner.py <game_id>`)
     known_commands = {
         "run", "menu", "list", "status", "mount", "unmount", "unmount-all",
         "validate", "init", "doctor", "install-desktop", "install-all-desktops",
@@ -1701,7 +1680,7 @@ def main():
 
     # Command: run
     run_parser = subparsers.add_parser("run", help="Launch a game by profile ID or path")
-    run_parser.add_argument("profile", help="Profile ID (e.g. factorio, satisfactory) or path to .toml")
+    run_parser.add_argument("profile", help="Profile ID or path to .toml profile")
     run_parser.add_argument("--gpu", choices=["auto", "discrete", "integrated"], help="Override GPU offload target")
     run_parser.add_argument("--gamescope", action="store_true", default=None, help="Force enable Gamescope micro-compositor")
     run_parser.add_argument("--no-gamescope", action="store_false", dest="gamescope", help="Force disable Gamescope")
