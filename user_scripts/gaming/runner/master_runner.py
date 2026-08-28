@@ -12,8 +12,7 @@ Target Architecture:
   * Declarative TOML Profiles with Preset Inheritance (Zero Hardcoded Game IDs)
   * Dynamic DwarFS FUSE & fuse-overlayfs Mount Lifecycle with Rock-Solid Teardown
   * Automated Wine/Proton Prefix Provisioning (Redistributables & Winetricks)
-  * Wine-Staging (Esync / Fsync / NTSYNC) + DXVK / VKD3D Translation
-  * Gamescope Micro-Compositor, MangoHud, Feral GameMode, PipeWire Tuning
+  * Gamescope Micro-Compositor, Mangoapp/MangoHud, Feral GameMode, PipeWire Tuning
   * Interactive Rich TUI Dashboard, System Doctor, & Deep Auto-Scaffolder
 
 Author: Dusk / AGY Team
@@ -55,7 +54,7 @@ except ImportError:
 # ==============================================================================
 
 ENGINE_NAME: Final[str] = "Master Game Runner Engine"
-ENGINE_VERSION: Final[str] = "1.3.0"
+ENGINE_VERSION: Final[str] = "1.4.0"
 SELF_DIR: Final[Path] = Path(__file__).resolve().parent
 GLOBAL_CONFIG_PATH: Final[Path] = SELF_DIR / "config.toml"
 PRESETS_DIR: Final[Path] = SELF_DIR / "presets"
@@ -854,7 +853,12 @@ class GameRunner:
             env["GDK_BACKEND"] = "x11"
             env["QT_QPA_PLATFORM"] = "xcb"
             if not env.get("DISPLAY"):
-                env["DISPLAY"] = ":0"
+                x_sockets = sorted(glob.glob("/tmp/.X11-unix/X*"))
+                if x_sockets:
+                    sock_num = Path(x_sockets[0]).name.replace("X", ":")
+                    env["DISPLAY"] = sock_num
+                else:
+                    env["DISPLAY"] = ":0"
         else:
             env["SDL_VIDEODRIVER"] = "wayland"
             env["CLUTTER_BACKEND"] = "wayland"
@@ -1005,7 +1009,10 @@ class GameRunner:
 
         # Wrap: Gamescope (Wayland native backend)
         gamescope_cfg = self.config.get("graphics", {}).get("gamescope", {})
-        if gamescope_cfg.get("enabled", False) and shutil.which("gamescope"):
+        perf_cfg = self.config.get("performance", {})
+        using_gamescope = gamescope_cfg.get("enabled", False) and shutil.which("gamescope")
+
+        if using_gamescope:
             log_info("Pipeline Layer: Gamescope Wayland Micro-Compositor")
             gs_cmd = ["gamescope", "--backend", "wayland", "--expose-wayland"]
             w = gamescope_cfg.get("width", 1920)
@@ -1036,14 +1043,16 @@ class GameRunner:
             if gamescope_cfg.get("hdr", False):
                 gs_cmd.append("--hdr-enabled")
 
+            # Gamescope Mangoapp integration
+            if perf_cfg.get("mangohud", False) and shutil.which("mangoapp"):
+                gs_cmd.append("--mangoapp")
+
             extra_gs = gamescope_cfg.get("extra_args", [])
             gs_cmd.extend(extra_gs)
             gs_cmd.append("--")
             pipeline = gs_cmd + pipeline
-
-        # Wrap: MangoHud
-        perf_cfg = self.config.get("performance", {})
-        if perf_cfg.get("mangohud", False) and shutil.which("mangohud"):
+        elif perf_cfg.get("mangohud", False) and shutil.which("mangohud"):
+            # Standalone MangoHud wrapper (when not running inside Gamescope)
             pipeline = ["mangohud"] + pipeline
 
         # Wrap: GameMode
@@ -1422,6 +1431,7 @@ def run_doctor() -> bool:
         ("winetricks", "Wine prefix configuration helper", True),
         ("gamescope", "Wayland micro-compositor", False),
         ("mangohud", "Universal OpenGL/Vulkan HUD & limiter", False),
+        ("mangoapp", "Gamescope performance overlay daemon", False),
         ("gamemoderun", "Feral GameMode performance daemon", False),
         ("bwrap", "Bubblewrap container sandbox", False),
         ("prime-run", "NVIDIA PRIME GPU offload wrapper", False),

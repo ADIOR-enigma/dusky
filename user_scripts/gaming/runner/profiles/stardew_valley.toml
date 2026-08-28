@@ -30,5 +30,15 @@ type = "native"
 gpu = "auto"
 wayland_native = true
 
+[graphics.gamescope]
+enabled = true
+mode = "embedded"
+width = 1920
+height = 1080
+output_width = 1920
+output_height = 1080
+refresh_rate = 144
+allow_tearing = true
+
 [performance]
 gamemode = true
