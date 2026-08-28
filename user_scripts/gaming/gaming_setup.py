@@ -6,13 +6,18 @@ Engineered for Bleeding-Edge Arch Linux, Pure Wayland, Hyprland, and Linux Kerne
 Design Principles:
 1. Declarative & Easily Configurable: All package lists, GPU drivers, Flatpaks, and tweaks
    are defined in clean catalogs at the top of the file for instant customization.
-2. Intelligent Hardware Auto-Detection: Automatically resolves GPU matrices (AMD, Intel, NVIDIA, Hybrid).
+2. Intelligent Hardware Auto-Detection: Automatically resolves GPU matrices (AMD, Intel, NVIDIA, Hybrid),
+   primary display adapter vs 3D render offload (boot_vga), virtualized GPUs (VirtIO/QEMU),
+   and CPU microarchitecture tiers (x86-64-v3 / v4).
 3. Flexible Packaging: Instant pre-compiled binaries (-bin) OR Native CPU Build (-march=native -O3).
-4. Pure Wayland Pipeline: Zero legacy Xorg bloat, native Wayland sandbox sockets, Gamescope CAP_SYS_NICE setcap.
+4. Pure Wayland Pipeline: Zero legacy Xorg bloat, native Wayland sandbox sockets, Gamescope CAP_SYS_NICE setcap,
+   and NVIDIA DRM modesetting verification.
 5. High Performance: Kernel 7.x sysctl tuning (vm.max_map_count=2147483642, split-lock mitigation disabled).
+6. Desktop Integration: Native desktop notifications (Wayland DBus session aware) & instant launcher icon bridging.
 """
 
 import argparse
+import glob
 import os
 import re
 import shutil
@@ -70,7 +75,20 @@ PACKAGE_CATALOG: Dict[str, Dict[str, any]] = {
     }
 }
 
-# GPU Driver Matrix
+# GPU Vendor Identification Matrix (Physical + Virtualized GPUs)
+GPU_VENDOR_MAP: Dict[str, str] = {
+    "0x8086": "Intel",
+    "0x1002": "AMD",
+    "0x10de": "NVIDIA",
+    "0x1af4": "RedHat VirtIO (VM)",
+    "0x15ad": "VMware (VM)",
+    "0x80ee": "VirtualBox (VM)",
+    "0x1234": "QEMU Bochs (VM)",
+    "0x1414": "Hyper-V (VM)",
+    "0x1b36": "RedHat QXL (VM)",
+}
+
+# GPU Driver Packages Matrix
 GPU_DRIVER_CATALOG: Dict[str, Dict[str, any]] = {
     "amd": {
         "name": "AMD (Radeon)",
@@ -110,7 +128,7 @@ GPU_DRIVER_CATALOG: Dict[str, Dict[str, any]] = {
             "nvidia-open-dkms", "nvidia-utils", "lib32-nvidia-utils",
             "libva-nvidia-driver", "nvidia-prime", "egl-wayland"
         ],
-        "description": "Intel iGPU + NVIDIA dGPU with prime-run offload for Wayland"
+        "description": "Intel iGPU (Display) + NVIDIA dGPU (3D Render) with prime-run offload"
     },
     "hybrid_nvidia_amd": {
         "name": "Hybrid (AMD iGPU + NVIDIA dGPU)",
@@ -120,7 +138,12 @@ GPU_DRIVER_CATALOG: Dict[str, Dict[str, any]] = {
             "nvidia-open-dkms", "nvidia-utils", "lib32-nvidia-utils",
             "libva-nvidia-driver", "nvidia-prime", "egl-wayland"
         ],
-        "description": "AMD iGPU + NVIDIA dGPU with prime-run offload for Wayland"
+        "description": "AMD iGPU (Display) + NVIDIA dGPU (3D Render) with prime-run offload"
+    },
+    "virtual": {
+        "name": "Virtualized GPU (VM / Container)",
+        "packages": ["mesa", "lib32-mesa", "vulkan-virtio", "vulkan-swrast"],
+        "description": "Virtualized 32/64-bit Mesa & VirtIO / Software Vulkan drivers"
     }
 }
 
@@ -190,11 +213,20 @@ console = Console()
 
 @dataclass
 class GPUInfo:
+    dev_node: str
+    pci_slot: str
     vendor_id: str
     vendor_name: str
     device_name: str
-    pci_slot: str
+    boot_vga: int  # 1 = primary boot VGA / display controller, 0 = secondary / 3D render offload
     driver: str
+
+
+@dataclass
+class CPUInfo:
+    model: str
+    cores: int
+    x86_version: int  # 1 (baseline), 2 (SSE4.2), 3 (AVX2/BMI2), 4 (AVX-512)
 
 
 @dataclass
@@ -220,6 +252,52 @@ class SetupContext:
         self.modules = modules or SelectedModules()
         self.stop_sudo_event = threading.Event()
         self.sudo_thread: Optional[threading.Thread] = None
+
+
+def send_notification(
+    title: str,
+    message: str,
+    urgency: str = "normal",
+    icon: str = "applications-games",
+    expire_time_ms: int = 10000,
+) -> None:
+    """Dispatches a desktop notification to the Wayland session even across sudo boundaries."""
+    try:
+        sys.stdout.write("\a")
+        sys.stdout.flush()
+    except Exception:
+        pass
+
+    if not shutil.which("notify-send"):
+        return
+
+    env = os.environ.copy()
+    sudo_uid = env.get("SUDO_UID")
+    if sudo_uid and "DBUS_SESSION_BUS_ADDRESS" not in env:
+        user_bus = Path(f"/run/user/{sudo_uid}/bus")
+        if user_bus.exists():
+            env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={user_bus}"
+
+    cmd = [
+        "notify-send",
+        "-a", "Arch Gaming Setup",
+        "-u", urgency,
+        "-t", str(expire_time_ms),
+        "-i", icon,
+        title,
+        message,
+    ]
+    try:
+        subprocess.run(
+            cmd,
+            env=env,
+            check=False,
+            timeout=5,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass
 
 
 def keep_sudo_alive(stop_event: threading.Event):
@@ -323,6 +401,7 @@ def run_command(
                     continue
                 if critical:
                     console.print("[bold red]A critical step failed. Aborting installer to maintain system stability.[/bold red]")
+                    send_notification("Gaming Setup Failed", f"Error executing: {description}", urgency="critical")
                     sys.exit(1)
                 return False
         except Exception as e:
@@ -331,6 +410,7 @@ def run_command(
                 time.sleep(2)
                 continue
             if critical:
+                send_notification("Gaming Setup Error", f"Fatal error: {e}", urgency="critical")
                 sys.exit(1)
             return False
     return False
@@ -439,12 +519,179 @@ def enable_multilib_and_optimizations(ctx: SetupContext) -> bool:
     return True
 
 
+def detect_cpu_info() -> CPUInfo:
+    """Detects CPU model name, logical thread count, and x86-64 microarchitecture tier (v1-v4)."""
+    cores = os.cpu_count() or 4
+    model_name = "Generic x86-64 CPU"
+    x86_ver = 3
+
+    try:
+        flags_txt = Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="replace")
+        flags: set[str] = set()
+        for line in flags_txt.splitlines():
+            if line.startswith("model name"):
+                model_name = line.split(":", 1)[1].strip()
+            elif line.startswith("flags"):
+                flags.update(line.split(":", 1)[1].split())
+
+        v4_flags = {"avx512f", "avx512bw", "avx512cd", "avx512dq", "avx512vl"}
+        v3_flags = {"avx2", "bmi1", "bmi2", "f16c", "fma", "movbe"}
+        v2_flags = {"sse4_2", "ssse3", "popcnt", "cx16"}
+
+        if v4_flags.issubset(flags):
+            x86_ver = 4
+        elif v3_flags.issubset(flags):
+            x86_ver = 3
+        elif v2_flags.issubset(flags):
+            x86_ver = 2
+        else:
+            x86_ver = 1
+    except Exception:
+        pass
+
+    return CPUInfo(model=model_name, cores=cores, x86_version=x86_ver)
+
+
+def probe_vaapi_drivers() -> Dict[str, bool]:
+    """Probes /usr/lib/dri for installed VA-API hardware video acceleration drivers."""
+    dri_dirs = [Path("/usr/lib/dri"), Path("/usr/lib64/dri")]
+    found = {}
+    for k in ["nvidia", "nouveau", "iHD", "i965", "radeonsi"]:
+        name = f"{k}_drv_video.so"
+        found[k] = any((d / name).exists() for d in dri_dirs)
+    return found
+
+
+def nvidia_modeset_confirmed(cards: Optional[List[GPUInfo]] = None) -> bool:
+    """Verifies that nvidia_drm.modeset=1 is confirmed active on the running system."""
+    p = Path("/sys/module/nvidia_drm/parameters/modeset")
+    if p.exists():
+        try:
+            val = p.read_text().strip().lower()
+            if val in ("y", "1"):
+                return True
+        except PermissionError:
+            try:
+                res = subprocess.run(["sudo", "-n", "cat", str(p)], capture_output=True, text=True)
+                if res.returncode == 0 and res.stdout.strip().lower() in ("y", "1"):
+                    return True
+            except Exception:
+                pass
+
+    try:
+        cmdline = Path("/proc/cmdline").read_text()
+        if "nvidia-drm.modeset=1" in cmdline or "nvidia_drm.modeset=1" in cmdline:
+            return True
+    except Exception:
+        pass
+
+    try:
+        ver_p = Path("/sys/module/nvidia/version")
+        if ver_p.exists():
+            ver_str = ver_p.read_text().strip()
+            m = re.match(r"^(\d+)", ver_str)
+            if m and int(m.group(1)) >= 560:
+                return True
+    except Exception:
+        pass
+
+    if cards:
+        for c in cards:
+            if "nvidia" in c.vendor_name.lower() and c.driver.lower() == "nvidia" and c.dev_node.startswith("/dev/dri/card"):
+                return True
+
+    return False
+
+
 def detect_gpus() -> List[GPUInfo]:
-    """Dynamically auto-detects all GPUs present on the system via lspci and sysfs DRM nodes."""
+    """
+    Intelligently auto-detects all GPUs present on the system via DRM card nodes and lspci.
+    Identifies vendor, PCI slot, boot_vga status (Primary Display vs 3D Offload), and active driver.
+    """
     gpus: List[GPUInfo] = []
     seen_slots: Set[str] = set()
 
-    if shutil.which("lspci"):
+    # Strategy 1: Scan /sys/class/drm/card* directly to resolve device nodes and boot_vga
+    for s in sorted(glob.glob("/sys/class/drm/card[0-9]*")):
+        p = Path(s)
+        if not re.fullmatch(r"card\d+", p.name):
+            continue
+        dev_node = f"/dev/dri/{p.name}"
+        if not Path(dev_node).exists():
+            continue
+
+        try:
+            sys_dev = Path(os.path.realpath(p / "device"))
+        except Exception:
+            continue
+
+        # Climb path up to vendor directory
+        vdir = None
+        cur = sys_dev
+        for _ in range(10):
+            if (cur / "vendor").exists():
+                vdir = cur
+                break
+            if cur == cur.parent:
+                break
+            cur = cur.parent
+
+        if not vdir:
+            continue
+
+        try:
+            vid = vdir.joinpath("vendor").read_text().strip().lower()
+        except Exception:
+            continue
+
+        pci_slot = vdir.name
+        if pci_slot in seen_slots:
+            continue
+        seen_slots.add(pci_slot)
+
+        boot_vga = 0
+        for bp in [vdir / "boot_vga", sys_dev / "boot_vga"]:
+            if bp.exists():
+                try:
+                    boot_vga = int(bp.read_text().strip())
+                    break
+                except Exception:
+                    pass
+
+        driver = "unknown"
+        for d in [vdir / "driver", sys_dev / "driver"]:
+            if d.exists():
+                try:
+                    driver = Path(os.path.realpath(d)).name
+                    break
+                except Exception:
+                    pass
+
+        vendor_name = GPU_VENDOR_MAP.get(vid, f"Unknown ({vid})")
+        device_name = f"Graphics Device [{pci_slot}]"
+
+        if shutil.which("lspci"):
+            try:
+                res = subprocess.run(["lspci", "-s", pci_slot], capture_output=True, text=True)
+                if res.stdout.strip():
+                    m = re.match(r"^[0-9a-fA-F:.]+ [^:]+: (.+)$", res.stdout.strip())
+                    if m:
+                        device_name = m.group(1)
+            except Exception:
+                pass
+
+        gpus.append(GPUInfo(
+            dev_node=dev_node,
+            pci_slot=pci_slot,
+            vendor_id=vid,
+            vendor_name=vendor_name,
+            device_name=device_name,
+            boot_vga=boot_vga,
+            driver=driver
+        ))
+
+    # Fallback to lspci if DRM nodes were not populated
+    if not gpus and shutil.which("lspci"):
         try:
             res = subprocess.run(["lspci", "-mm", "-nn"], capture_output=True, text=True, check=True)
             for line in res.stdout.splitlines():
@@ -460,66 +707,28 @@ def detect_gpus() -> List[GPUInfo]:
                     vendor_name = parts[1] if len(parts) > 1 else "Unknown Vendor"
 
                     if "[10de]" in line or "10de:" in line:
-                        vendor_id = "10de"
+                        vendor_id = "0x10de"
                         vendor_name = "NVIDIA"
                     elif "[1002]" in line or "1002:" in line:
-                        vendor_id = "1002"
+                        vendor_id = "0x1002"
                         vendor_name = "AMD"
                     elif "[8086]" in line or "8086:" in line:
-                        vendor_id = "8086"
+                        vendor_id = "0x8086"
                         vendor_name = "Intel"
 
-                    driver = ""
-                    for pci_dev in Path("/sys/bus/pci/devices").glob(f"*{slot}"):
-                        driver_path = pci_dev / "driver"
-                        if driver_path.exists():
-                            driver = driver_path.resolve().name
-                            break
-
                     gpus.append(GPUInfo(
+                        dev_node=f"/dev/dri/card{len(gpus)}",
+                        pci_slot=slot,
                         vendor_id=vendor_id,
                         vendor_name=vendor_name,
                         device_name=device_name,
-                        pci_slot=slot,
-                        driver=driver
+                        boot_vga=1 if len(gpus) == 0 else 0,
+                        driver="unknown"
                     ))
         except Exception:
             pass
 
-    if not gpus:
-        for drm_card in sorted(Path("/sys/class/drm").glob("card[0-9]*")):
-            vendor_file = drm_card / "device/vendor"
-            device_file = drm_card / "device/device"
-            if vendor_file.exists():
-                try:
-                    v_id = vendor_file.read_text().strip().lower().replace("0x", "")
-                    d_id = device_file.read_text().strip().lower().replace("0x", "") if device_file.exists() else ""
-                    slot = drm_card.name
-
-                    v_name = "Unknown"
-                    if v_id == "10de":
-                        v_name = "NVIDIA"
-                    elif v_id == "1002":
-                        v_name = "AMD"
-                    elif v_id == "8086":
-                        v_name = "Intel"
-
-                    driver = ""
-                    driver_link = drm_card / "device/driver"
-                    if driver_link.exists():
-                        driver = driver_link.resolve().name
-
-                    gpus.append(GPUInfo(
-                        vendor_id=v_id,
-                        vendor_name=v_name,
-                        device_name=f"DRM Device [{d_id}]",
-                        pci_slot=slot,
-                        driver=driver
-                    ))
-                except Exception:
-                    pass
-
-    return gpus
+    return sorted(gpus, key=lambda g: (-g.boot_vga, g.pci_slot))
 
 
 def get_gpu_packages(detected_gpus: List[GPUInfo]) -> Tuple[List[str], str]:
@@ -527,9 +736,10 @@ def get_gpu_packages(detected_gpus: List[GPUInfo]) -> Tuple[List[str], str]:
     pkgs: Set[str] = set()
     descriptions: List[str] = []
 
-    has_amd = any(g.vendor_name == "AMD" or g.vendor_id == "1002" for g in detected_gpus)
-    has_intel = any(g.vendor_name == "Intel" or g.vendor_id == "8086" for g in detected_gpus)
-    has_nvidia = any(g.vendor_name == "NVIDIA" or g.vendor_id == "10de" for g in detected_gpus)
+    has_amd = any("amd" in g.vendor_name.lower() or g.vendor_id == "0x1002" for g in detected_gpus)
+    has_intel = any("intel" in g.vendor_name.lower() or g.vendor_id == "0x8086" for g in detected_gpus)
+    has_nvidia = any("nvidia" in g.vendor_name.lower() or g.vendor_id == "0x10de" for g in detected_gpus)
+    has_vm = any("(vm)" in g.vendor_name.lower() for g in detected_gpus)
 
     if has_amd and has_nvidia:
         pkgs.update(GPU_DRIVER_CATALOG["hybrid_nvidia_amd"]["packages"])
@@ -537,6 +747,9 @@ def get_gpu_packages(detected_gpus: List[GPUInfo]) -> Tuple[List[str], str]:
     elif has_intel and has_nvidia:
         pkgs.update(GPU_DRIVER_CATALOG["hybrid_nvidia_intel"]["packages"])
         descriptions.append(GPU_DRIVER_CATALOG["hybrid_nvidia_intel"]["description"])
+    elif has_vm:
+        pkgs.update(GPU_DRIVER_CATALOG["virtual"]["packages"])
+        descriptions.append(GPU_DRIVER_CATALOG["virtual"]["description"])
     else:
         if has_amd:
             pkgs.update(GPU_DRIVER_CATALOG["amd"]["packages"])
@@ -563,15 +776,18 @@ def configure_gpu_drivers(ctx: SetupContext):
 
     detected_gpus = detect_gpus()
 
-    table = Table(title="Detected Graphics Hardware", show_header=True, header_style="bold magenta")
-    table.add_column("Slot", style="cyan")
+    table = Table(title="Detected Graphics Hardware & Roles", show_header=True, header_style="bold magenta")
+    table.add_column("Node", style="dim")
+    table.add_column("PCI Slot", style="cyan")
     table.add_column("Vendor", style="bold green")
     table.add_column("Device Model", style="white")
-    table.add_column("Active Driver", style="yellow")
+    table.add_column("Role", style="bold yellow")
+    table.add_column("Active Driver", style="dim")
 
     if detected_gpus:
         for g in detected_gpus:
-            table.add_row(g.pci_slot, g.vendor_name, g.device_name, g.driver or "Unknown")
+            role_badge = "[bold green]Primary Display (boot_vga)[/bold green]" if g.boot_vga == 1 else "[cyan]3D Render Offload[/cyan]"
+            table.add_row(g.dev_node, g.pci_slot, g.vendor_name, g.device_name[:45], role_badge, g.driver or "Unknown")
         console.print(table)
     else:
         console.print("[yellow]No discrete or integrated GPUs auto-detected via PCI/DRM.[/yellow]")
@@ -625,6 +841,16 @@ def configure_gpu_drivers(ctx: SetupContext):
     if target_pkgs:
         pkgs_str = " ".join(target_pkgs)
         run_command(ctx, f"sudo pacman -S --needed --noconfirm {pkgs_str}", target_desc, retries=3)
+
+    # Validate NVIDIA DRM Modesetting on Wayland
+    has_nvidia = any("nvidia" in g.vendor_name.lower() or g.vendor_id == "0x10de" for g in detected_gpus)
+    if has_nvidia and not nvidia_modeset_confirmed(detected_gpus):
+        console.print(Panel(
+            "[bold yellow]Notice: NVIDIA DRM Modesetting[/bold yellow]\n"
+            "Wayland compositors (Hyprland) and PRIME offload require kernel modesetting.\n"
+            "Ensure [green]nvidia_drm.modeset=1[/green] is set in your kernel parameters if on drivers < 560.",
+            border_style="yellow"
+        ))
 
 
 def apply_kernel_and_sysctl_optimizations(ctx: SetupContext):
@@ -722,6 +948,8 @@ def configure_dwarfs(ctx: SetupContext):
         console.print("[yellow]No AUR helper (paru/yay) detected. Skipping DwarFS installation.[/yellow]")
         return
 
+    cpu = detect_cpu_info()
+
     if mode == "bin":
         run_command(
             ctx,
@@ -730,16 +958,15 @@ def configure_dwarfs(ctx: SetupContext):
             critical=False
         )
     elif mode == "native":
-        cpu_cores = os.cpu_count() or 4
         march_flags = {
             "CFLAGS": "-march=native -O3 -pipe -fno-plt -fexceptions -Wp,-D_FORTIFY_SOURCE=3 -Wformat -Werror=format-security -fstack-clash-protection -fcf-protection",
             "CXXFLAGS": "-march=native -O3 -pipe -fno-plt -fexceptions -Wp,-D_FORTIFY_SOURCE=3 -Wformat -Werror=format-security -fstack-clash-protection -fcf-protection",
-            "MAKEFLAGS": f"-j{cpu_cores}"
+            "MAKEFLAGS": f"-j{cpu.cores}"
         }
         run_command(
             ctx,
             f"{aur_helper} -S --needed --noconfirm dwarfs",
-            f"Compile DwarFS with host CPU microarchitecture optimizations (-march=native -O3 on {cpu_cores} threads)",
+            f"Compile DwarFS targeting {cpu.model} (x86-64-v{cpu.x86_version}, -march=native -O3 on {cpu.cores} threads)",
             critical=False,
             extra_env=march_flags
         )
@@ -932,6 +1159,13 @@ def check_system_installed_status() -> Dict[str, bool]:
 def run_interactive_menu() -> Tuple[str, SelectedModules]:
     """Renders the main interactive selection dashboard with recommendations."""
     sys_status = check_system_installed_status()
+    cpu = detect_cpu_info()
+    vaapi = probe_vaapi_drivers()
+    active_vaapi = [k for k, v in vaapi.items() if v]
+
+    console.print(f"\n[bold cyan]Detected Processor:[/bold cyan] {cpu.model} ([bold green]{cpu.cores} threads, x86-64-v{cpu.x86_version}[/bold green])")
+    if active_vaapi:
+        console.print(f"[bold cyan]Hardware Video Acceleration (VA-API):[/bold cyan] [green]{', '.join(active_vaapi)}[/green]")
 
     console.print("\n[bold cyan]System State & Live Recommendations:[/bold cyan]")
     table = Table(show_header=True, header_style="bold magenta")
@@ -989,7 +1223,7 @@ def run_interactive_menu() -> Tuple[str, SelectedModules]:
             if Confirm.ask("Reinstall/Rebuild DwarFS?", default=False):
                 console.print("\n[bold cyan]DwarFS Packaging Mode:[/bold cyan]")
                 console.print("1. Fast Pre-compiled Binary (dwarfs-bin) - Instant download (~2 seconds)")
-                console.print("2. CPU Native Architecture Build (-march=native -O3) - Maximized performance for your CPU")
+                console.print(f"2. CPU Native Architecture Build (-march=native -O3) - Maximized performance on {cpu.cores} threads")
                 console.print("3. Standard Source Build (dwarfs)")
                 dw_choice = Prompt.ask("Choose DwarFS option", choices=["1", "2", "3"], default="1")
                 modules.dwarfs_mode = "bin" if dw_choice == "1" else ("native" if dw_choice == "2" else "source")
@@ -999,7 +1233,7 @@ def run_interactive_menu() -> Tuple[str, SelectedModules]:
             if Confirm.ask("Install DwarFS filesystem tools (used by compressed game repacks)?", default=True):
                 console.print("\n[bold cyan]DwarFS Packaging Mode:[/bold cyan]")
                 console.print("1. Fast Pre-compiled Binary (dwarfs-bin) - [bold green]Instant download (~2 seconds)[/bold green]")
-                console.print("2. CPU Native Architecture Build (-march=native -O3) - [bold yellow]Maximized CPU instructions[/bold yellow]")
+                console.print(f"2. CPU Native Architecture Build (-march=native -O3) - [bold yellow]Maximized for {cpu.model}[/bold yellow]")
                 console.print("3. Standard Source Build (dwarfs)")
                 dw_choice = Prompt.ask("Choose DwarFS option", choices=["1", "2", "3"], default="1")
                 modules.dwarfs_mode = "bin" if dw_choice == "1" else ("native" if dw_choice == "2" else "source")
@@ -1194,6 +1428,15 @@ def main():
         report_text.append("4. Native Wayland Proton: Set `PROTON_ENABLE_WAYLAND=1` in Steam launch options for native Wayland surface presentation.\n", style="white")
 
         console.print(Panel(report_text, title="[bold green]Installation Summary[/bold green]", border_style="green"))
+
+        # Send completion desktop notification to Wayland/Hyprland session
+        if not ctx.dry_run:
+            send_notification(
+                "Gaming Architecture Ready",
+                "Arch Linux gaming stack configured successfully.",
+                urgency="normal",
+                icon="applications-games"
+            )
 
     finally:
         ctx.stop_sudo_event.set()
