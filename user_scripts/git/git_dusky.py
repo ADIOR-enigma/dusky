@@ -269,7 +269,7 @@ def get_list_pathspecs() -> list[str] | None:
         if not clean or clean.startswith("#"):
             continue
         try:
-            target = Path(clean).expanduser()
+            target = Path(os.path.expandvars(clean)).expanduser()
             if not target.is_absolute():
                 target = WORK_TREE / target
 
@@ -755,17 +755,132 @@ def commit_and_push(files: list[str] | None = None, local_only: bool = False) ->
         return
 
     if ask_yesno("Execute push to remote origin?", default=True):
-        console.print("[bold blue]Establishing connection...[/bold blue]")
-        try:
-            run_git("push", capture=False, check=True)
-            console.print("[bold green]✔[/bold green] Synchronization successful.")
-        except subprocess.CalledProcessError:
-            console.print("[bold red]✖ Push failed.[/bold red]")
-            if not has_upstream():
-                console.print(
-                    "[bold yellow]⚠ Hint:[/bold yellow] this branch has no upstream — "
-                    "use Branch Management → option 4 to push with --set-upstream."
-                )
+        safe_push()
+
+
+def safe_push(branch: str | None = None) -> bool:
+    """Bulletproof push engine with upstream auto-detection, divergence resolution & rebase."""
+    if not branch:
+        _, branch_out, _ = run_git("branch", "--show-current")
+        branch = branch_out.strip()
+        if not branch:
+            console.print("[bold red]✖ Error: Detached HEAD state detected. Cannot push.[/bold red]")
+            return False
+
+    console.print("[bold blue]Establishing connection to remote origin...[/bold blue]")
+
+    # 1. Check if upstream tracking is configured
+    if not has_upstream():
+        if ask_yesno(f"No upstream configured for branch '{branch}'. Push and set upstream to origin/{branch}?", default=True):
+            try:
+                run_git("push", "-u", "origin", branch, capture=False, check=True)
+                console.print(f"[bold green]✔[/bold green] Branch '{branch}' pushed and upstream established successfully.")
+                return True
+            except subprocess.CalledProcessError:
+                console.print(f"[bold red]✖ Failed to push and establish upstream on origin/{branch}.[/bold red]")
+                return False
+        else:
+            console.print("[bold yellow]⚠ Push cancelled by user.[/bold yellow]")
+            return False
+
+    # 2. Try regular push
+    try:
+        run_git("push", capture=False, check=True)
+        console.print("[bold green]✔[/bold green] Synchronization successful.")
+        return True
+    except subprocess.CalledProcessError:
+        pass
+
+    # 3. If push failed, fetch and inspect divergence
+    console.print("[bold blue]Fetching remote origin to inspect divergence...[/bold blue]")
+    run_git("config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+    run_git("fetch", "--prune", "origin")
+
+    remote_ref = f"origin/{branch}"
+    code_rev, out_rev, _ = run_git("rev-list", "--left-right", "--count", f"{branch}...{remote_ref}")
+    ahead, behind = 0, 0
+    if code_rev == 0 and out_rev.strip():
+        parts = out_rev.split()
+        if len(parts) >= 2:
+            ahead, behind = int(parts[0]), int(parts[1])
+
+    if ahead > 0 and behind > 0:
+        c_wrn = COLORS.get("warning", "yellow")
+        console.print(Panel(
+            f"[bold {c_wrn}]⚠ DIVERGED HISTORY DETECTED[/bold {c_wrn}]\n"
+            f"GitHub has [bold cyan]{behind}[/bold cyan] newer commit(s) while your local repository has [bold cyan]{ahead}[/bold cyan] unpushed commit(s).\n\n"
+            f"[bold white]Choose how to reconcile your repository:[/bold white]\n\n"
+            f"  [bold cyan]1) Rebase Local Commits on top of GitHub (Recommended)[/bold cyan]\n"
+            f"     • Pulls GitHub's {behind} new commit(s) and replays your {ahead} local commit(s) on top\n"
+            f"     • Preserves all files and creates a clean linear history\n"
+            f"     • Automatically pushes to GitHub once rebased\n\n"
+            f"  [bold cyan]2) Safe Sync (Reset base to GitHub & commit local files)[/bold cyan]\n"
+            f"     • Keeps all current files on disk in $HOME (zero data loss)\n"
+            f"     • Aligns Git base with GitHub and creates a fresh sync commit on top\n\n"
+            f"  [bold yellow]3) Force Push (Overwrite GitHub)[/bold yellow]\n"
+            f"     • Overwrites GitHub with your {ahead} local commit(s)\n"
+            f"     • [bold red]Caution:[/bold red] Discards the {behind} newer commit(s) currently on GitHub\n\n"
+            f"  [bold red]4) Abort[/bold red]\n"
+            f"     • Cancels the push without changing anything",
+            title=f"[bold {c_wrn}]BRANCH DIVERGENCE RESOLUTION[/bold {c_wrn}]",
+            border_style=c_wrn,
+            box=box.ROUNDED
+        ))
+        choice = ask("Select option [1/2/3/4] (default: 1): ") or "1"
+        if choice == "1":
+            console.print(f"[bold blue]Rebasing local commits on top of {remote_ref}...[/bold blue]")
+            code_reb, _, _ = run_git("rebase", remote_ref)
+            if code_reb == 0:
+                console.print(f"[bold green]✔ Rebased successfully. Pushing to {remote_ref}...[/bold green]")
+                try:
+                    run_git("push", "-u", "origin", branch, capture=False, check=True)
+                    console.print("[bold green]✔ Synchronization successful.[/bold green]")
+                    return True
+                except subprocess.CalledProcessError:
+                    console.print("[bold red]✖ Push failed after rebase.[/bold red]")
+                    return False
+            else:
+                run_git("rebase", "--abort")
+                console.print("[bold red]✖ Rebase encountered unstaged changes or conflicts (rebase cleanly aborted).[/bold red]")
+                if ask_yesno("Perform Safe Sync instead (align base with GitHub and commit local disk state)?", default=True):
+                    run_git("branch", "-f", branch, remote_ref)
+                    run_git("reset", "--mixed", "--quiet", "HEAD")
+                    sync_all()
+                    return True
+                return False
+        elif choice == "2":
+            console.print(f"[bold blue]Aligning base with {remote_ref} while keeping disk files...[/bold blue]")
+            run_git("branch", "-f", branch, remote_ref)
+            run_git("reset", "--mixed", "--quiet", "HEAD")
+            sync_all()
+            return True
+        elif choice == "3":
+            if ask_yesno(f"Are you SURE you want to force push and overwrite {remote_ref}?", default=False):
+                try:
+                    run_git("push", "--force-with-lease", "-u", "origin", branch, capture=False, check=True)
+                    console.print("[bold green]✔ Force push successful.[/bold green]")
+                    return True
+                except subprocess.CalledProcessError:
+                    console.print("[bold red]✖ Force push failed.[/bold red]")
+                    return False
+            else:
+                console.print("[bold yellow]⚠ Force push cancelled.[/bold yellow]")
+                return False
+        else:
+            console.print("[bold yellow]⚠ Operation cancelled by user.[/bold yellow]")
+            return False
+
+    elif ahead == 0 and behind > 0:
+        console.print(f"[bold yellow]⚠ Local branch is {behind} commit(s) behind remote.[/bold yellow]")
+        if ask_yesno(f"Fast-forward local branch '{branch}' to {remote_ref}?", default=True):
+            run_git("branch", "-f", branch, remote_ref)
+            run_git("reset", "--mixed", "--quiet", "HEAD")
+            console.print(f"[bold green]✔ Local branch '{branch}' fast-forwarded to {remote_ref}.[/bold green]")
+            return True
+        return False
+    else:
+        console.print("[bold red]✖ Push failed due to remote connection error or branch protection.[/bold red]")
+        return False
 
 
 def discard_local_changes() -> None:
@@ -1026,9 +1141,7 @@ def safe_revert_last_commit() -> None:
             console.print("[bold green]✔[/bold green] Safe revert commit created locally.")
 
             if ask_yesno("Push the revert commit to remote?", default=True):
-                console.print("[bold blue]Pushing changes...[/bold blue]")
-                run_git("push", capture=False, check=True)
-                console.print("[bold green]✔[/bold green] Revert commit pushed successfully.")
+                safe_push()
         except subprocess.CalledProcessError:
             console.print("[bold red]✖ Safe revert operation aborted or failed.[/bold red]")
 
@@ -1239,12 +1352,7 @@ def push_branch_to_remote() -> None:
         return
 
     if ask_yesno(f"Push current branch '{current_branch}' to origin remote (set-upstream)?", default=True):
-        console.print(f"[bold blue]Pushing '{current_branch}' to origin...[/bold blue]")
-        try:
-            run_git("push", "-u", "origin", current_branch, capture=False, check=True)
-            console.print(f"[bold green]✔ Branch '{current_branch}' pushed to origin successfully.[/bold green]")
-        except subprocess.CalledProcessError:
-            console.print(f"[bold red]✖ Push failed for branch '{current_branch}'.[/bold red]")
+        safe_push(current_branch)
 
 
 def delete_local_branch() -> None:
@@ -1355,18 +1463,8 @@ def manage_branches() -> None:
 
 
 def push_existing() -> None:
-    """Option 4: pushes existing local commits on the current upstream branch."""
-    console.print("[bold blue]Establishing connection...[/bold blue]")
-    try:
-        run_git("push", capture=False, check=True)
-        console.print("[bold green]✔[/bold green] Push successful.")
-    except subprocess.CalledProcessError:
-        console.print("[bold red]✖ Push failed.[/bold red]")
-        if not has_upstream():
-            console.print(
-                "[bold yellow]⚠ Hint:[/bold yellow] this branch has no upstream — "
-                "use Branch Management → option 4 to push with --set-upstream."
-            )
+    """Option 4: pushes existing local commits on the current branch safely."""
+    safe_push()
 
 
 # --- 6. STASH MANAGEMENT ---
