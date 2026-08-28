@@ -1,6 +1,14 @@
 # ==============================================================================
 # Portal 2 Profile
 # ==============================================================================
+# Technical Architecture:
+# 1. Native Linux Source 1 Engine (32-bit ELF via steam-runtime).
+# 2. Memory Virtualization: Valve's 32-bit memory budget query overflows on 64GB
+#    RAM kernels (attempted allocation > 4GB). The pre_launch hook builds a tiny
+#    32-bit glibc memory virtualization shim (~/.local/lib32/libmeminfo_fix32.so)
+#    that reports 4GB physical RAM, allowing pure native Linux execution.
+# 3. Gamescope embedded micro-compositor provides Wayland 144Hz presentation.
+# ==============================================================================
 
 extends = "base_native"
 
@@ -20,8 +28,9 @@ dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"
 overlay_storage = "files/overlay-storage"
 overlay_work = "files/.game-root-work"
-executable = "Portal.2/portal2.sh"
-arguments = ["-game", "portal2", "-steam"]
+executable = "Portal.2/steam-runtime/run.sh"
+working_dir = "Portal.2"
+arguments = ["./portal2.sh", "-game", "portal2", "-steam", "-windowed", "-w", "1920", "-h", "1080", "-novid"]
 
 [runtime]
 type = "native"
@@ -30,6 +39,24 @@ type = "native"
 gpu = "auto"
 wayland_native = true
 
+[graphics.gamescope]
+enabled = true
+mode = "embedded"
+width = 1920
+height = 1080
+output_width = 1920
+output_height = 1080
+refresh_rate = 144
+allow_tearing = true
+
 [performance]
 gamemode = true
 fps_limit = 144
+
+[hooks]
+pre_launch = [
+    "bash -c 'if [ ! -f \"$HOME/.local/lib32/libmeminfo_fix32.so\" ]; then mkdir -p \"$HOME/.local/lib32\" && gcc -m32 -shared -fPIC -O2 -o \"$HOME/.local/lib32/libmeminfo_fix32.so\" -x c - -ldl << \"EOF\"\n#define _GNU_SOURCE\n#include <stdio.h>\n#include <string.h>\n#include <dlfcn.h>\n#include <unistd.h>\nFILE *fopen(const char *path, const char *mode) {\n    static FILE *(*real_fopen)(const char *, const char *) = NULL;\n    if (!real_fopen) real_fopen = dlsym(RTLD_NEXT, \"fopen\");\n    if (path && strcmp(path, \"/proc/meminfo\") == 0) {\n        const char *data = \"MemTotal:        4194304 kB\\nMemFree:         2097152 kB\\nMemAvailable:    3000000 kB\\nBuffers:          100000 kB\\nCached:          1000000 kB\\n\";\n        return fmemopen((void*)data, strlen(data), \"r\");\n    }\n    return real_fopen(path, mode);\n}\nFILE *fopen64(const char *path, const char *mode) {\n    return fopen(path, mode);\n}\nlong sysconf(int name) {\n    static long (*real_sysconf)(int) = NULL;\n    if (!real_sysconf) real_sysconf = dlsym(RTLD_NEXT, \"sysconf\");\n    if (name == _SC_PHYS_PAGES || name == _SC_AVPHYS_PAGES) {\n        return 1048576;\n    }\n    return real_sysconf(name);\n}\nEOF\nfi'"
+]
+
+[env]
+LD_PRELOAD = "$HOME/.local/lib32/libmeminfo_fix32.so"

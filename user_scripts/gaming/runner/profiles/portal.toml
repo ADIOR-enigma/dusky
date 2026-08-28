@@ -20,8 +20,9 @@ dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"
 overlay_storage = "files/overlay-storage"
 overlay_work = "files/.game-root-work"
-executable = "Portal/hl2.sh"
-arguments = ["-game", "portal", "-steam"]
+executable = "Portal/steam-runtime/run.sh"
+working_dir = "Portal"
+arguments = ["./hl2.sh", "-game", "portal", "-steam", "-novid"]
 
 [runtime]
 type = "native"
@@ -29,6 +30,16 @@ type = "native"
 [graphics]
 gpu = "auto"
 wayland_native = true
+
+[graphics.gamescope]
+enabled = true
+mode = "embedded"
+width = 1920
+height = 1080
+output_width = 1920
+output_height = 1080
+refresh_rate = 144
+allow_tearing = true
 
 [performance]
 gamemode = true

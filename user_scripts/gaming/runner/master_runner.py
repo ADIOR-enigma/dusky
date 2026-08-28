@@ -536,7 +536,6 @@ class MountManager:
                 "-o", f"tidy_max_age={tidy_max_age}",
                 "-o", f"cachesize={cache_kb}k",
                 "-o", "clone_fd",
-                "-o", "cache_image"
             ]
         elif shutil.which("dwarfs"):
             dwarfs_cmd = [
@@ -546,7 +545,6 @@ class MountManager:
                 "-o", f"tidy_max_age={tidy_max_age}",
                 "-o", f"cachesize={cache_kb}k",
                 "-o", "clone_fd",
-                "-o", "cache_image"
             ]
         else:
             log_error("DwarFS executable not found (neither bundled repack nor system 'dwarfs').")
@@ -892,8 +890,8 @@ class GameRunner:
                     env["VK_ICD_FILENAMES"] = "/usr/share/vulkan/icd.d/nvidia_icd.json"
         elif gpu_choice == "integrated" or (not use_discrete and has_intel):
             log_info("GPU Pipeline: Intel Iris Xe Integrated GPU")
-            env["__NV_PRIME_RENDER_OFFLOAD"] = "0"
-            env["DRI_PRIME"] = "0"
+            env.pop("__NV_PRIME_RENDER_OFFLOAD", None)
+            env.pop("DRI_PRIME", None)
             env["MESA_LOADER_DRIVER_OVERRIDE"] = "iris"
             if Path("/usr/share/vulkan/icd.d/intel_icd.x86_64.json").exists():
                 env["VK_ICD_FILENAMES"] = "/usr/share/vulkan/icd.d/intel_icd.x86_64.json"

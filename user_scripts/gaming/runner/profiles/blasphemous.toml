@@ -1,6 +1,16 @@
 # ==============================================================================
 # Blasphemous Profile
 # ==============================================================================
+# Architecture & Technical Notes:
+# 1. Engine: Unity 2017.4.40f1 (Legacy Unity Linux Player).
+# 2. Wayland Compatibility: Unity 2017 queries legacy X11 / XRandR root window
+#    screen geometry. On pure Wayland (Hyprland), rootless XWayland reports
+#    0x0@0Hz, causing Unity's ScreenSelector to hang indefinitely.
+#    Encapsulating the game in Gamescope embedded mode provides a full virtual
+#    X11 display server at 144Hz while rendering natively on Wayland.
+# 3. Gamepad/Controller Support: Rewired input queries libudev.so.0. The pre_launch
+#    hook links ~/.local/lib/libudev.so.0 to system libudev.so.1 seamlessly.
+# ==============================================================================
 
 extends = "base_unity_native"
 
@@ -30,5 +40,23 @@ type = "native"
 gpu = "auto"
 wayland_native = true
 
+[graphics.gamescope]
+enabled = true
+mode = "embedded"
+width = 1920
+height = 1080
+output_width = 1920
+output_height = 1080
+refresh_rate = 144
+allow_tearing = true
+
 [performance]
 gamemode = true
+
+[hooks]
+pre_launch = [
+    "bash -c 'mkdir -p \"$HOME/.local/lib\" && ln -sf /usr/lib/libudev.so.1 \"$HOME/.local/lib/libudev.so.0\"'"
+]
+
+[env]
+LD_LIBRARY_PATH = "$HOME/.local/lib"
