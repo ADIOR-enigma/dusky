@@ -3,17 +3,13 @@
 Arch Linux Universal Gaming Architecture Installer.
 Engineered for Bleeding-Edge Arch Linux, Pure Wayland, Hyprland, and Linux Kernel 7.x+.
 
-Features:
-- Pure Wayland Gaming Pipeline (zero legacy Xorg dependencies)
-- Multi-GPU Dynamic Hardware Auto-Detection (Intel, AMD, NVIDIA, & Hybrid Prime Offload)
-- Safe, Idempotent Pacman & [multilib] Configuration with Parallel Downloads
-- Bleeding-Edge Native Gaming Stack (Steam, Lutris, Wine-Staging, Winetricks, GameMode, MangoHud, Gamescope)
-- Complete 32-bit & 64-bit Audio/Video/Vulkan Compatibility Layer
-- Kernel 7.x / Sysctl Gaming Performance Tweaks (vm.max_map_count, split-lock mitigation, nofile limits)
-- Real-time Frame Pacing (Gamescope CAP_SYS_NICE capability & GameMode daemon)
-- Flatpak Ecosystem & Runtime Vulkan Layers (Bottles, Flatseal, ProtonPlus, Heroic, MangoHud runtime)
-- Native Wayland Flatpak Overrides & Host Filesystem Permissions
-- Seamless Application Launcher & Hicolor Icon Bridging for Wayland/Hyprland
+Design Principles:
+1. Declarative & Easily Configurable: All package lists, GPU drivers, Flatpaks, and tweaks
+   are defined in clean catalogs at the top of the file for instant customization.
+2. Intelligent Hardware Auto-Detection: Automatically resolves GPU matrices (AMD, Intel, NVIDIA, Hybrid).
+3. Flexible Packaging: Instant pre-compiled binaries (-bin) OR Native CPU Build (-march=native -O3).
+4. Pure Wayland Pipeline: Zero legacy Xorg bloat, native Wayland sandbox sockets, Gamescope CAP_SYS_NICE setcap.
+5. High Performance: Kernel 7.x sysctl tuning (vm.max_map_count=2147483642, split-lock mitigation disabled).
 """
 
 import argparse
@@ -23,12 +19,146 @@ import shutil
 import subprocess
 import sys
 import threading
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
-# Pre-flight check and graceful bootstrap for rich library
+# ==============================================================================
+# 1. DECLARATIVE CONFIGURATION CATALOGS (Easily add / remove packages here)
+# ==============================================================================
+
+# Core Native Package Categories
+PACKAGE_CATALOG: Dict[str, Dict[str, any]] = {
+    "core_clients": {
+        "title": "Core Gaming Clients",
+        "description": "Native Steam, Lutris, and Flatpak package manager",
+        "packages": ["steam", "lutris", "flatpak"]
+    },
+    "wine_stack": {
+        "title": "Wine-Staging & Windows Compatibility",
+        "description": "Wine-Staging with Esync/Fsync and native Wayland staging driver",
+        "packages": [
+            "wine-staging", "wine-gecko", "wine-mono", "winetricks",
+            "cabextract", "samba", "zenity"
+        ]
+    },
+    "runtime_32bit": {
+        "title": "32-Bit Audio, Video, & Vulkan Compatibility Layer",
+        "description": "Essential 32-bit runtimes preventing missing-symbol crashes in Wine/Proton",
+        "packages": [
+            "lib32-gnutls", "lib32-gtk3", "lib32-libpulse", "lib32-alsa-plugins",
+            "lib32-vulkan-icd-loader", "vulkan-icd-loader", "vulkan-tools",
+            "lib32-libxcomposite", "lib32-libxinerama", "lib32-libxrandr",
+            "lib32-libxcursor", "lib32-libxi", "ttf-liberation", "noto-fonts"
+        ]
+    },
+    "performance_tools": {
+        "title": "Performance & Overlay Stack (Pure Wayland)",
+        "description": "Gamescope micro-compositor, GameMode daemon, MangoHud HUD, Goverlay GUI",
+        "packages": [
+            "gamescope", "gamemode", "lib32-gamemode",
+            "mangohud", "lib32-mangohud", "goverlay",
+            "qt5-wayland", "qt6-wayland"
+        ]
+    },
+    "repack_tools": {
+        "title": "Container, Sandboxing, & Mount Utilities",
+        "description": "Filesystem utilities required for compressed game repacks and containers",
+        "packages": ["desktop-file-utils", "fuse-overlayfs", "bubblewrap", "psmisc"]
+    }
+}
+
+# GPU Driver Matrix
+GPU_DRIVER_CATALOG: Dict[str, Dict[str, any]] = {
+    "amd": {
+        "name": "AMD (Radeon)",
+        "packages": [
+            "mesa", "lib32-mesa",
+            "vulkan-radeon", "lib32-vulkan-radeon",
+            "vulkan-mesa-layers", "lib32-vulkan-mesa-layers"
+        ],
+        "description": "AMD Radeon Vulkan (RADV) & 32/64-bit Mesa"
+    },
+    "intel": {
+        "name": "Intel (Arc / Iris Xe)",
+        "packages": [
+            "mesa", "lib32-mesa",
+            "vulkan-intel", "lib32-vulkan-intel",
+            "intel-media-driver",
+            "vulkan-mesa-layers", "lib32-vulkan-mesa-layers"
+        ],
+        "description": "Intel Vulkan (ANV), VA-API Media Driver, & 32/64-bit Mesa"
+    },
+    "nvidia": {
+        "name": "NVIDIA (GeForce)",
+        "packages": [
+            "nvidia-open-dkms",
+            "nvidia-utils", "lib32-nvidia-utils",
+            "libva-nvidia-driver", "nvidia-settings",
+            "opencl-nvidia", "lib32-opencl-nvidia",
+            "egl-wayland"
+        ],
+        "description": "NVIDIA Open DKMS, 32/64-bit Vulkan/OpenGL, VA-API, & Wayland EGL"
+    },
+    "hybrid_nvidia_intel": {
+        "name": "Hybrid (Intel iGPU + NVIDIA dGPU)",
+        "packages": [
+            "mesa", "lib32-mesa",
+            "vulkan-intel", "lib32-vulkan-intel", "intel-media-driver",
+            "nvidia-open-dkms", "nvidia-utils", "lib32-nvidia-utils",
+            "libva-nvidia-driver", "nvidia-prime", "egl-wayland"
+        ],
+        "description": "Intel iGPU + NVIDIA dGPU with prime-run offload for Wayland"
+    },
+    "hybrid_nvidia_amd": {
+        "name": "Hybrid (AMD iGPU + NVIDIA dGPU)",
+        "packages": [
+            "mesa", "lib32-mesa",
+            "vulkan-radeon", "lib32-vulkan-radeon",
+            "nvidia-open-dkms", "nvidia-utils", "lib32-nvidia-utils",
+            "libva-nvidia-driver", "nvidia-prime", "egl-wayland"
+        ],
+        "description": "AMD iGPU + NVIDIA dGPU with prime-run offload for Wayland"
+    }
+}
+
+# Flatpak Applications Catalog
+FLATPAK_APP_CATALOG: List[Dict[str, any]] = [
+    {"name": "Bottles", "id": "com.usebottles.bottles", "wayland": True, "host_fs": True},
+    {"name": "Flatseal", "id": "com.github.tchx84.Flatseal", "wayland": False, "host_fs": False},
+    {"name": "ProtonPlus", "id": "com.vysp3r.ProtonPlus", "wayland": False, "host_fs": False},
+    {"name": "Heroic Games Launcher", "id": "com.heroicgameslauncher.hgl", "wayland": True, "host_fs": True}
+]
+
+# Flatpak Vulkan Runtime Layers
+FLATPAK_LAYER_CATALOG: List[str] = [
+    "org.freedesktop.Platform.VulkanLayer.MangoHud//25.08",
+    "org.freedesktop.Platform.VulkanLayer.MangoHud//24.08",
+    "org.freedesktop.Platform.VulkanLayer.gamescope//25.08",
+    "org.freedesktop.Platform.VulkanLayer.gamescope//24.08"
+]
+
+# Kernel & System Tuning Configuration
+SYSCTL_GAMING_CONF = """# Gaming performance & stability optimizations for Arch Linux / Kernel 7.x+
+# Memory mapping limit for 64-bit Wine/Proton games (prevents crashes in Star Citizen, UE5, Hogwarts Legacy)
+vm.max_map_count = 2147483642
+
+# Prevent micro-stuttering caused by kernel split-lock penalty mitigation in modern games
+kernel.split_lock_mitigate = 0
+"""
+
+LIMITS_GAMING_CONF = """# File descriptor limits for Wine/Proton ESYNC & FSYNC
+* soft nofile 524288
+* hard nofile 1048576
+"""
+
+
+# ==============================================================================
+# 2. RUNTIME CONTEXT & PRE-FLIGHT INITIALIZATION
+# ==============================================================================
+
 try:
     from rich.console import Console
     from rich.panel import Panel
@@ -57,20 +187,6 @@ except ImportError:
 
 console = Console()
 
-# Configuration Constants
-SYSCTL_GAMING_CONF = """# Gaming performance & stability optimizations for Arch Linux / Kernel 7.x+
-# Memory mapping limit for 64-bit Wine/Proton games (prevents crashes in Star Citizen, UE5, Hogwarts Legacy)
-vm.max_map_count = 2147483642
-
-# Prevent micro-stuttering caused by kernel split-lock penalty mitigation in modern games
-kernel.split_lock_mitigate = 0
-"""
-
-LIMITS_GAMING_CONF = """# File descriptor limits for Wine/Proton ESYNC & FSYNC
-* soft nofile 524288
-* hard nofile 1048576
-"""
-
 
 @dataclass
 class GPUInfo:
@@ -81,28 +197,36 @@ class GPUInfo:
     driver: str
 
 
+@dataclass
+class SelectedModules:
+    categories: Set[str] = field(default_factory=lambda: set(PACKAGE_CATALOG.keys()))
+    gpu_drivers: bool = True
+    sysctl_tuning: bool = True
+    dwarfs_mode: str = "bin"  # "bin", "native", "source", or "skip"
+    flatpak_apps: bool = True
+    launcher_bridge: bool = True
+    extra_packages: List[str] = field(default_factory=list)
+
+
 class SetupContext:
-    def __init__(self, dry_run: bool = False, auto_yes: bool = False, skip_gpu: bool = False):
+    def __init__(
+        self,
+        dry_run: bool = False,
+        auto_yes: bool = False,
+        modules: Optional[SelectedModules] = None
+    ):
         self.dry_run = dry_run
         self.auto_yes = auto_yes
-        self.skip_gpu = skip_gpu
+        self.modules = modules or SelectedModules()
         self.stop_sudo_event = threading.Event()
         self.sudo_thread: Optional[threading.Thread] = None
 
 
 def keep_sudo_alive(stop_event: threading.Event):
-    """
-    Background daemon thread to refresh the 'sudo' timestamp cache.
-    Refreshes every 90 seconds to prevent credential expiration during long downloads.
-    """
+    """Refreshes sudo credential timestamp cache in the background every 90 seconds."""
     while not stop_event.is_set():
         try:
-            subprocess.run(
-                ["sudo", "-v"],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
+            subprocess.run(["sudo", "-v"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception:
             pass
         stop_event.wait(90)
@@ -118,8 +242,6 @@ def check_root_and_locks(ctx: SetupContext):
     db_lck = Path("/var/lib/pacman/db.lck")
     if db_lck.exists():
         console.print(f"[bold yellow]Notice: Pacman lock file exists at {db_lck}[/bold yellow]")
-
-        # Check if an active process is actually holding or using the lock
         lock_holder = None
         if shutil.which("fuser"):
             try:
@@ -129,7 +251,6 @@ def check_root_and_locks(ctx: SetupContext):
             except Exception:
                 pass
 
-        # Check running processes for package managers
         active_mgrs = []
         try:
             res = subprocess.run(["pgrep", "-a", "pacman|yay|paru|pamac"], capture_output=True, text=True)
@@ -145,7 +266,7 @@ def check_root_and_locks(ctx: SetupContext):
             console.print("Please wait for ongoing package operations to finish before running this installer.")
             sys.exit(1)
         else:
-            console.print("[yellow]No active package manager detected. The lock appears to be stale (from an interrupted process or reboot).[/yellow]")
+            console.print("[yellow]No active package manager detected. The lock appears to be stale.[/yellow]")
             if ctx.auto_yes or Confirm.ask("[bold cyan]Remove stale pacman lock file and continue?[/bold cyan]", default=True):
                 if ctx.dry_run:
                     console.print("[dim][DRY RUN] Would execute: sudo rm -f /var/lib/pacman/db.lck[/dim]")
@@ -157,11 +278,16 @@ def check_root_and_locks(ctx: SetupContext):
                 sys.exit(1)
 
 
-def run_command(ctx: SetupContext, command: str, description: str, critical: bool = True, show_command: bool = True, retries: int = 1) -> bool:
-    """
-    Executes a shell command natively and interactively.
-    Supports retry attempts for network-sensitive operations (pacman, flatpak, aur).
-    """
+def run_command(
+    ctx: SetupContext,
+    command: str,
+    description: str,
+    critical: bool = True,
+    show_command: bool = True,
+    retries: int = 1,
+    extra_env: Optional[Dict[str, str]] = None
+) -> bool:
+    """Executes a shell command natively with rich output, dry-run simulation, and retry support."""
     console.print(f"\n[bold cyan]Task:[/bold cyan] {description}")
     if show_command:
         console.print(f"[dim]{command}[/dim]")
@@ -176,11 +302,15 @@ def run_command(ctx: SetupContext, command: str, description: str, critical: boo
             return True
 
     console.print("[dim]" + "─" * 60 + "[/dim]")
+    env = os.environ.copy()
+    if extra_env:
+        env.update(extra_env)
+
     for attempt in range(1, retries + 1):
         try:
             if attempt > 1:
                 console.print(f"[yellow]Retrying task (attempt {attempt}/{retries})...[/yellow]")
-            result = subprocess.run(command, shell=True)
+            result = subprocess.run(command, shell=True, env=env)
             console.print("[dim]" + "─" * 60 + "[/dim]")
 
             if result.returncode == 0:
@@ -206,11 +336,12 @@ def run_command(ctx: SetupContext, command: str, description: str, critical: boo
     return False
 
 
+# ==============================================================================
+# 3. PACMAN & HARDWARE DETECTION ENGINES
+# ==============================================================================
+
 def enable_multilib_and_optimizations(ctx: SetupContext) -> bool:
-    """
-    Idempotently enables [multilib] and modern pacman features (Color, ParallelDownloads, DisableDownloadTimeout).
-    Creates an atomic backup before applying changes.
-    """
+    """Idempotently configures /etc/pacman.conf with multilib, ParallelDownloads, and timeout protection."""
     pacman_conf = Path("/etc/pacman.conf")
     if not pacman_conf.exists():
         console.print("[bold red]Critical system file /etc/pacman.conf not found![/bold red]")
@@ -223,7 +354,6 @@ def enable_multilib_and_optimizations(ctx: SetupContext) -> bool:
         console.print(f"[bold red]Failed to read pacman.conf: {e}[/bold red]")
         sys.exit(1)
 
-    # Check if multilib is already fully enabled
     multilib_active = False
     include_active = False
     in_multilib_check = False
@@ -251,19 +381,16 @@ def enable_multilib_and_optimizations(ctx: SetupContext) -> bool:
     for line in lines:
         stripped = line.strip()
 
-        # Enable Color if commented
         if re.match(r"^#\s*Color\b", stripped):
             new_lines.append("Color")
             modified = True
             continue
 
-        # Enable ParallelDownloads if commented
         if re.match(r"^#\s*ParallelDownloads\b", stripped):
             new_lines.append("ParallelDownloads = 5")
             modified = True
             continue
 
-        # Enable DisableDownloadTimeout in [options]
         if stripped == "[options]":
             options_passed = True
 
@@ -272,7 +399,6 @@ def enable_multilib_and_optimizations(ctx: SetupContext) -> bool:
             has_disable_timeout = True
             modified = True
 
-        # Handle [multilib] uncommenting
         if not multilib_ready:
             if re.match(r"^\s*#\s*\[multilib\]\s*$", line):
                 new_lines.append("[multilib]")
@@ -295,7 +421,6 @@ def enable_multilib_and_optimizations(ctx: SetupContext) -> bool:
         new_lines.insert(3, "DisableDownloadTimeout")
         modified = True
 
-    # If multilib was completely absent, append it
     if not multilib_ready and not found_multilib_comment and not multilib_active:
         new_lines.extend(["", "[multilib]", "Include = /etc/pacman.d/mirrorlist"])
         modified = True
@@ -315,14 +440,10 @@ def enable_multilib_and_optimizations(ctx: SetupContext) -> bool:
 
 
 def detect_gpus() -> List[GPUInfo]:
-    """
-    Intelligently auto-detects all GPUs present on the system via lspci and sysfs DRM nodes.
-    Accurately detects AMD, Intel, NVIDIA, and Multi-GPU / Hybrid laptop setups.
-    """
+    """Dynamically auto-detects all GPUs present on the system via lspci and sysfs DRM nodes."""
     gpus: List[GPUInfo] = []
     seen_slots: Set[str] = set()
 
-    # Strategy 1: lspci query
     if shutil.which("lspci"):
         try:
             res = subprocess.run(["lspci", "-mm", "-nn"], capture_output=True, text=True, check=True)
@@ -365,7 +486,6 @@ def detect_gpus() -> List[GPUInfo]:
         except Exception:
             pass
 
-    # Strategy 2: Fallback to sysfs DRM devices
     if not gpus:
         for drm_card in sorted(Path("/sys/class/drm").glob("card[0-9]*")):
             vendor_file = drm_card / "device/vendor"
@@ -403,7 +523,7 @@ def detect_gpus() -> List[GPUInfo]:
 
 
 def get_gpu_packages(detected_gpus: List[GPUInfo]) -> Tuple[List[str], str]:
-    """Determines the required driver packages based on detected GPU hardware."""
+    """Determines required GPU driver packages based on GPU_DRIVER_CATALOG."""
     pkgs: Set[str] = set()
     descriptions: List[str] = []
 
@@ -411,46 +531,34 @@ def get_gpu_packages(detected_gpus: List[GPUInfo]) -> Tuple[List[str], str]:
     has_intel = any(g.vendor_name == "Intel" or g.vendor_id == "8086" for g in detected_gpus)
     has_nvidia = any(g.vendor_name == "NVIDIA" or g.vendor_id == "10de" for g in detected_gpus)
 
-    if has_amd:
-        pkgs.update([
-            "mesa", "lib32-mesa",
-            "vulkan-radeon", "lib32-vulkan-radeon",
-            "vulkan-mesa-layers", "lib32-vulkan-mesa-layers"
-        ])
-        descriptions.append("AMD Radeon Vulkan (RADV) & 32/64-bit Mesa")
-
-    if has_intel:
-        pkgs.update([
-            "mesa", "lib32-mesa",
-            "vulkan-intel", "lib32-vulkan-intel",
-            "intel-media-driver",
-            "vulkan-mesa-layers", "lib32-vulkan-mesa-layers"
-        ])
-        descriptions.append("Intel Vulkan (ANV), VA-API Media Driver, & 32/64-bit Mesa")
-
-    if has_nvidia:
-        pkgs.update([
-            "nvidia-open-dkms",
-            "nvidia-utils", "lib32-nvidia-utils",
-            "libva-nvidia-driver",
-            "nvidia-settings",
-            "opencl-nvidia", "lib32-opencl-nvidia",
-            "egl-wayland"
-        ])
-        descriptions.append("NVIDIA Open Kernel Modules (DKMS), 32/64-bit Vulkan/OpenGL, VA-API, & Wayland EGL")
-
-    # If Hybrid GPU setup detected (NVIDIA dGPU + Intel/AMD iGPU), include nvidia-prime for prime-run
-    if has_nvidia and (has_intel or has_amd):
-        pkgs.add("nvidia-prime")
-        descriptions.append("NVIDIA Prime Render Offload utilities (prime-run)")
+    if has_amd and has_nvidia:
+        pkgs.update(GPU_DRIVER_CATALOG["hybrid_nvidia_amd"]["packages"])
+        descriptions.append(GPU_DRIVER_CATALOG["hybrid_nvidia_amd"]["description"])
+    elif has_intel and has_nvidia:
+        pkgs.update(GPU_DRIVER_CATALOG["hybrid_nvidia_intel"]["packages"])
+        descriptions.append(GPU_DRIVER_CATALOG["hybrid_nvidia_intel"]["description"])
+    else:
+        if has_amd:
+            pkgs.update(GPU_DRIVER_CATALOG["amd"]["packages"])
+            descriptions.append(GPU_DRIVER_CATALOG["amd"]["description"])
+        if has_intel:
+            pkgs.update(GPU_DRIVER_CATALOG["intel"]["packages"])
+            descriptions.append(GPU_DRIVER_CATALOG["intel"]["description"])
+        if has_nvidia:
+            pkgs.update(GPU_DRIVER_CATALOG["nvidia"]["packages"])
+            descriptions.append(GPU_DRIVER_CATALOG["nvidia"]["description"])
 
     return sorted(list(pkgs)), ", ".join(descriptions)
 
 
+# ==============================================================================
+# 4. MODULE EXECUTION HANDLERS
+# ==============================================================================
+
 def configure_gpu_drivers(ctx: SetupContext):
     """Presents detected GPUs and installs required Vulkan & OpenGL drivers."""
-    if ctx.skip_gpu:
-        console.print("[dim]Skipping GPU driver installation as requested.[/dim]")
+    if not ctx.modules.gpu_drivers:
+        console.print("[dim]Skipping GPU driver installation as configured.[/dim]")
         return
 
     detected_gpus = detect_gpus()
@@ -499,16 +607,16 @@ def configure_gpu_drivers(ctx: SetupContext):
         target_pkgs = auto_pkgs
         target_desc = f"Install auto-detected GPU drivers: {auto_desc}"
     elif gpu_choice == ("2" if (detected_gpus and auto_pkgs) else "1"):
-        target_pkgs = ["mesa", "lib32-mesa", "vulkan-radeon", "lib32-vulkan-radeon", "vulkan-mesa-layers", "lib32-vulkan-mesa-layers"]
-        target_desc = "Install native AMD 32/64-bit Vulkan (RADV) & Mesa drivers"
+        target_pkgs = GPU_DRIVER_CATALOG["amd"]["packages"]
+        target_desc = GPU_DRIVER_CATALOG["amd"]["description"]
     elif gpu_choice == ("3" if (detected_gpus and auto_pkgs) else "2"):
-        target_pkgs = ["nvidia-open-dkms", "nvidia-utils", "lib32-nvidia-utils", "libva-nvidia-driver", "nvidia-settings", "opencl-nvidia", "lib32-opencl-nvidia", "egl-wayland"]
-        target_desc = "Install NVIDIA Open DKMS, 32/64-bit Vulkan/OpenGL utilities, VA-API, and Wayland bridge"
+        target_pkgs = GPU_DRIVER_CATALOG["nvidia"]["packages"]
+        target_desc = GPU_DRIVER_CATALOG["nvidia"]["description"]
     elif gpu_choice == ("4" if (detected_gpus and auto_pkgs) else "3"):
-        target_pkgs = ["mesa", "lib32-mesa", "vulkan-intel", "lib32-vulkan-intel", "intel-media-driver", "vulkan-mesa-layers", "lib32-vulkan-mesa-layers"]
-        target_desc = "Install native Intel 32/64-bit Vulkan (ANV), VA-API Media Driver, and Mesa"
+        target_pkgs = GPU_DRIVER_CATALOG["intel"]["packages"]
+        target_desc = GPU_DRIVER_CATALOG["intel"]["description"]
     elif gpu_choice == ("5" if (detected_gpus and auto_pkgs) else "4"):
-        target_pkgs = ["mesa", "lib32-mesa", "vulkan-intel", "lib32-vulkan-intel", "intel-media-driver", "vulkan-radeon", "lib32-vulkan-radeon", "nvidia-open-dkms", "nvidia-utils", "lib32-nvidia-utils", "libva-nvidia-driver", "nvidia-prime", "egl-wayland"]
+        target_pkgs = GPU_DRIVER_CATALOG["hybrid_nvidia_intel"]["packages"]
         target_desc = "Install Hybrid Multi-GPU drivers (Intel/AMD + NVIDIA + prime-run offload)"
     else:
         console.print("[dim]Skipping GPU driver installation.[/dim]")
@@ -520,12 +628,11 @@ def configure_gpu_drivers(ctx: SetupContext):
 
 
 def apply_kernel_and_sysctl_optimizations(ctx: SetupContext):
-    """
-    Applies kernel 7.x / modern gaming sysctl parameters and file descriptor limits.
-    - vm.max_map_count: Prevents memory mapping crashes in heavy 64-bit games & Proton (UE5, Star Citizen, Hogwarts Legacy)
-    - split_lock_mitigate=0: Prevents stutter from unaligned memory access throttling
-    - nofile limits: Prevents Esync/Fsync file descriptor exhaustion
-    """
+    """Applies kernel 7.x gaming sysctl parameters (vm.max_map_count, split_lock_mitigate) and nofile limits."""
+    if not ctx.modules.sysctl_tuning:
+        console.print("[dim]Skipping kernel sysctl tweaks as configured.[/dim]")
+        return
+
     console.print("\n[bold cyan]Configuring Kernel & System Gaming Optimizations...[/bold cyan]")
 
     sysctl_file = Path("/etc/sysctl.d/99-gaming.conf")
@@ -555,96 +662,102 @@ def apply_kernel_and_sysctl_optimizations(ctx: SetupContext):
 
 
 def install_native_gaming_stack(ctx: SetupContext):
-    """Installs the complete native gaming architecture and 32/64-bit runtime libraries for Wayland."""
-    native_packages = [
-        # Core Gaming Clients & Compatibility
-        "steam",
-        "lutris",
-        "wine-staging",
-        "wine-gecko",
-        "wine-mono",
-        "winetricks",
-        "flatpak",
+    """Installs native gaming packages and 32/64-bit runtime libraries from PACKAGE_CATALOG."""
+    native_packages: Set[str] = set()
 
-        # Pure Wayland Toolkits & Scanning
-        "qt5-wayland",
-        "qt6-wayland",
+    for category_key in ctx.modules.categories:
+        if category_key in PACKAGE_CATALOG:
+            native_packages.update(PACKAGE_CATALOG[category_key]["packages"])
 
-        # Performance & Overlay Stack
-        "gamescope",
-        "gamemode",
-        "lib32-gamemode",
-        "mangohud",
-        "lib32-mangohud",
-        "goverlay",
+    if ctx.modules.extra_packages:
+        native_packages.update(ctx.modules.extra_packages)
 
-        # 32-bit Runtime Dependencies for Wine & Proton
-        "lib32-gnutls",
-        "lib32-gtk3",
-        "lib32-libpulse",
-        "lib32-alsa-plugins",
-        "lib32-vulkan-icd-loader",
-        "vulkan-icd-loader",
-        "vulkan-tools",
-        "lib32-libxcomposite",
-        "lib32-libxinerama",
-        "lib32-libxrandr",
-        "lib32-libxcursor",
-        "lib32-libxi",
-
-        # Compatibility, Fonts, and Tools
-        "ttf-liberation",
-        "noto-fonts",
-        "cabextract",
-        "samba",
-        "zenity",
-        "desktop-file-utils",
-        "fuse-overlayfs",
-        "bubblewrap",
-        "psmisc"
-    ]
-
-    pkgs_str = " ".join(native_packages)
-    run_command(
-        ctx,
-        f"sudo pacman -S --needed --noconfirm {pkgs_str}",
-        "Install Steam, Lutris, Wine-Staging, Gamescope, GameMode, MangoHud, Goverlay, & 32-bit runtimes.",
-        retries=3
-    )
-
-    # Enable Gamescope real-time scheduling capability (CAP_SYS_NICE) for low-latency Wayland frame pacing
-    if shutil.which("setcap") and Path("/usr/bin/gamescope").exists():
+    if native_packages:
+        pkgs_str = " ".join(sorted(list(native_packages)))
         run_command(
             ctx,
-            "sudo setcap 'CAP_SYS_NICE=eip' /usr/bin/gamescope",
-            "Grant Gamescope CAP_SYS_NICE capability for real-time frame pacing under Wayland",
+            f"sudo pacman -S --needed --noconfirm {pkgs_str}",
+            "Install selected native gaming packages and runtime libraries.",
+            retries=3
+        )
+
+    if "performance_tools" in ctx.modules.categories:
+        # Enable Gamescope real-time scheduling capability (CAP_SYS_NICE) for low-latency Wayland frame pacing
+        if shutil.which("setcap") and Path("/usr/bin/gamescope").exists():
+            run_command(
+                ctx,
+                "sudo setcap 'CAP_SYS_NICE=eip' /usr/bin/gamescope",
+                "Grant Gamescope CAP_SYS_NICE capability for real-time frame pacing under Wayland",
+                critical=False
+            )
+
+        # Enable GameMode daemon service for the current user session
+        run_command(
+            ctx,
+            "systemctl --user enable --now gamemoded.service",
+            "Enable and start Feral GameMode user daemon",
             critical=False
         )
 
-    # Enable GameMode daemon service for the current user session
-    run_command(
-        ctx,
-        "systemctl --user enable --now gamemoded.service",
-        "Enable and start Feral GameMode user daemon",
-        critical=False
-    )
 
-    # DwarFS AUR support for compressed repacks
+def configure_dwarfs(ctx: SetupContext):
+    """
+    Installs DwarFS compression tools via AUR with user-selected packaging strategy:
+    - 'bin': Fast pre-compiled binary (dwarfs-bin) - instant 2-second install.
+    - 'native': CPU native architecture build (-march=native -O3) targeting host microarchitecture.
+    - 'source': Standard AUR source build.
+    - 'skip': Do not install.
+    """
+    mode = ctx.modules.dwarfs_mode
+    if mode == "skip":
+        console.print("[dim]Skipping DwarFS installation.[/dim]")
+        return
+
+    if shutil.which("dwarfs"):
+        console.print("[bold green]✔ DwarFS is already installed on the system.[/bold green]")
+        return
+
     aur_helper = next((h for h in ("paru", "yay") if shutil.which(h)), None)
-    if not shutil.which("dwarfs") and aur_helper:
+    if not aur_helper:
+        console.print("[yellow]No AUR helper (paru/yay) detected. Skipping DwarFS installation.[/yellow]")
+        return
+
+    if mode == "bin":
+        run_command(
+            ctx,
+            f"{aur_helper} -S --needed --noconfirm dwarfs-bin || {aur_helper} -S --needed --noconfirm dwarfs",
+            "Install pre-compiled DwarFS binary package (instant download, zero compile time)",
+            critical=False
+        )
+    elif mode == "native":
+        cpu_cores = os.cpu_count() or 4
+        march_flags = {
+            "CFLAGS": "-march=native -O3 -pipe -fno-plt -fexceptions -Wp,-D_FORTIFY_SOURCE=3 -Wformat -Werror=format-security -fstack-clash-protection -fcf-protection",
+            "CXXFLAGS": "-march=native -O3 -pipe -fno-plt -fexceptions -Wp,-D_FORTIFY_SOURCE=3 -Wformat -Werror=format-security -fstack-clash-protection -fcf-protection",
+            "MAKEFLAGS": f"-j{cpu_cores}"
+        }
         run_command(
             ctx,
             f"{aur_helper} -S --needed --noconfirm dwarfs",
-            "Install DwarFS filesystem tools from AUR (required for high-efficiency compressed repacks).",
+            f"Compile DwarFS with host CPU microarchitecture optimizations (-march=native -O3 on {cpu_cores} threads)",
+            critical=False,
+            extra_env=march_flags
+        )
+    else:
+        run_command(
+            ctx,
+            f"{aur_helper} -S --needed --noconfirm dwarfs",
+            "Compile DwarFS tools from AUR",
             critical=False
         )
 
 
 def configure_flatpak_ecosystem(ctx: SetupContext):
-    """
-    Idempotently configures Flathub remotes, installs essential Flatpak gaming apps,
-    installs Vulkan runtime layers for MangoHud/Gamescope, and configures sandbox overrides.
-    """
+    """Configures Flathub remotes, installs gaming Flatpaks, Vulkan layers, and native Wayland sandbox overrides."""
+    if not ctx.modules.flatpak_apps:
+        console.print("[dim]Skipping Flatpak applications as configured.[/dim]")
+        return
+
     # 1. Add Flathub remotes for both user and system scope
     run_command(
         ctx,
@@ -653,45 +766,37 @@ def configure_flatpak_ecosystem(ctx: SetupContext):
         "Initialize Flathub remote repositories (User & System scope)."
     )
 
-    # 2. Install Flatpak apps
-    flatpak_apps = [
-        ("Bottles", "com.usebottles.bottles"),
-        ("Flatseal", "com.github.tchx84.Flatseal"),
-        ("ProtonPlus", "com.vysp3r.ProtonPlus"),
-        ("Heroic Games Launcher", "com.heroicgameslauncher.hgl")
-    ]
-
-    for app_name, app_id in flatpak_apps:
+    # 2. Install Flatpak apps from FLATPAK_APP_CATALOG
+    for app in FLATPAK_APP_CATALOG:
         run_command(
             ctx,
-            f"sudo flatpak install --system -y --noninteractive --or-update flathub {app_id}",
-            f"Install {app_name} via Flatpak sandbox.",
+            f"sudo flatpak install --system -y --noninteractive --or-update flathub {app['id']}",
+            f"Install {app['name']} via Flatpak sandbox.",
             critical=False
         )
 
-    # 3. Install Flatpak MangoHud & Gamescope runtime layers (25.08 & 24.08 branches)
-    flatpak_layers = [
-        ("MangoHud Flatpak Vulkan Layer (25.08)", "org.freedesktop.Platform.VulkanLayer.MangoHud//25.08"),
-        ("MangoHud Flatpak Vulkan Layer (24.08)", "org.freedesktop.Platform.VulkanLayer.MangoHud//24.08"),
-        ("Gamescope Flatpak Vulkan Layer (25.08)", "org.freedesktop.Platform.VulkanLayer.gamescope//25.08"),
-        ("Gamescope Flatpak Vulkan Layer (24.08)", "org.freedesktop.Platform.VulkanLayer.gamescope//24.08")
-    ]
-    for layer_name, layer_id in flatpak_layers:
+    # 3. Install Flatpak MangoHud & Gamescope runtime layers
+    for layer_id in FLATPAK_LAYER_CATALOG:
         run_command(
             ctx,
             f"sudo flatpak install --system -y --noninteractive --or-update flathub {layer_id}",
-            f"Install {layer_name} for seamless overlay support inside Flatpaks.",
+            f"Install Flatpak Vulkan Layer {layer_id}.",
             critical=False
         )
 
-    # 4. Bottles & Heroic native Wayland socket + global filesystem overrides
-    run_command(
-        ctx,
-        "sudo flatpak override --system --socket=wayland --socket=fallback-x11 --filesystem=host com.usebottles.bottles && "
-        "sudo flatpak override --system --socket=wayland --socket=fallback-x11 --filesystem=host com.heroicgameslauncher.hgl",
-        "Grant Bottles and Heroic native Wayland sockets and host filesystem permissions.",
-        critical=False
-    )
+    # 4. Configure native Wayland sockets and host filesystem overrides for gaming Flatpaks
+    wayland_overrides = []
+    for app in FLATPAK_APP_CATALOG:
+        if app.get("wayland"):
+            wayland_overrides.append(f"sudo flatpak override --system --socket=wayland --socket=fallback-x11 --filesystem=host {app['id']}")
+
+    if wayland_overrides:
+        run_command(
+            ctx,
+            " && ".join(wayland_overrides),
+            "Grant Flatpak games native Wayland sockets and host filesystem permissions.",
+            critical=False
+        )
 
 
 def get_installed_flatpaks() -> List[str]:
@@ -712,12 +817,11 @@ def get_installed_flatpaks() -> List[str]:
 
 
 def integrate_desktop_and_icons(ctx: SetupContext):
-    """
-    Idempotently bridges Flatpak .desktop files and hicolor application icons into
-    the user's local XDG directories (~/.local/share/applications and ~/.local/share/icons).
-    Ensures Wayland/Hyprland launchers (Rofi, Wofi, Fuzzel, Anyrun) instantly display
-    apps and crisp icons without requiring a logout/reboot.
-    """
+    """Bridges Flatpak .desktop files and hicolor application icons into user XDG directories for Wayland launchers."""
+    if not ctx.modules.launcher_bridge:
+        console.print("[dim]Skipping launcher icon integration as configured.[/dim]")
+        return
+
     user_apps_dir = Path.home() / ".local/share/applications"
     user_icons_dir = Path.home() / ".local/share/icons/hicolor"
 
@@ -727,7 +831,7 @@ def integrate_desktop_and_icons(ctx: SetupContext):
     system_export_dir = Path("/var/lib/flatpak/exports/share")
     user_export_dir = Path.home() / ".local/share/flatpak/exports/share"
 
-    # 1. Clean broken symlinks safely
+    # Clean broken symlinks safely
     try:
         for f in user_apps_dir.iterdir():
             if f.is_symlink() and not f.exists():
@@ -735,7 +839,7 @@ def integrate_desktop_and_icons(ctx: SetupContext):
     except Exception as e:
         console.print(f"[yellow]Warning during symlink cleanup: {e}[/yellow]")
 
-    # 2. Bridge .desktop entries
+    # Bridge .desktop entries
     installed_apps = get_installed_flatpaks()
     for app_id in installed_apps:
         desktop_file = f"{app_id}.desktop"
@@ -760,7 +864,7 @@ def integrate_desktop_and_icons(ctx: SetupContext):
 
             symlink_path.symlink_to(target_path)
 
-    # 3. Bridge application icons across all hicolor resolutions
+    # Bridge application icons across all hicolor resolutions
     for base_export in [system_export_dir / "icons/hicolor", user_export_dir / "icons/hicolor"]:
         if not base_export.exists():
             continue
@@ -791,33 +895,204 @@ def integrate_desktop_and_icons(ctx: SetupContext):
         except Exception:
             pass
 
-    # 4. Trigger desktop and icon cache updates
     if shutil.which("update-desktop-database"):
         subprocess.run(["update-desktop-database", str(user_apps_dir)], capture_output=True)
     if shutil.which("gtk-update-icon-cache"):
         subprocess.run(["gtk-update-icon-cache", "-f", "-t", str(user_icons_dir)], capture_output=True)
 
 
-def parse_arguments() -> argparse.Namespace:
+# ==============================================================================
+# 5. INTERACTIVE DASHBOARD & SELECTION MENUS
+# ==============================================================================
+
+def check_system_installed_status() -> Dict[str, bool]:
+    """Inspects the current system state to identify which components are already active."""
+    status = {}
+    status["steam"] = shutil.which("steam") is not None
+    status["lutris"] = shutil.which("lutris") is not None
+    status["wine"] = shutil.which("wine") is not None
+    status["gamescope"] = shutil.which("gamescope") is not None
+    status["gamemode"] = shutil.which("gamemoded") is not None
+    status["mangohud"] = shutil.which("mangohud") is not None
+    status["dwarfs"] = shutil.which("dwarfs") is not None
+
+    try:
+        res = subprocess.run(["sysctl", "-n", "vm.max_map_count"], capture_output=True, text=True)
+        status["sysctl"] = int(res.stdout.strip()) >= 2147483642
+    except Exception:
+        status["sysctl"] = False
+
+    flatpaks = get_installed_flatpaks()
+    status["flatpak_bottles"] = "com.usebottles.bottles" in flatpaks
+    status["flatpak_heroic"] = "com.heroicgameslauncher.hgl" in flatpaks
+
+    return status
+
+
+def run_interactive_menu() -> Tuple[str, SelectedModules]:
+    """Renders the main interactive selection dashboard with recommendations."""
+    sys_status = check_system_installed_status()
+
+    console.print("\n[bold cyan]System State & Live Recommendations:[/bold cyan]")
+    table = Table(show_header=True, header_style="bold magenta")
+    table.add_column("Component", style="white")
+    table.add_column("Status", style="bold")
+    table.add_column("Recommendation", style="dim")
+
+    table.add_row("Core Clients (Steam / Lutris)", "[green]✓ Installed[/green]" if (sys_status["steam"] and sys_status["lutris"]) else "[yellow]✗ Missing[/yellow]", "Essential")
+    table.add_row("Wine-Staging & 32-bit Runtimes", "[green]✓ Installed[/green]" if sys_status["wine"] else "[yellow]✗ Missing[/yellow]", "Essential for Windows games")
+    table.add_row("Performance Tools (Gamescope/MangoHud)", "[green]✓ Installed[/green]" if sys_status["mangohud"] else "[yellow]✗ Missing[/yellow]", "Recommended for Wayland")
+    table.add_row("Kernel 7.x Sysctl Optimizations", "[green]✓ Active[/green]" if sys_status["sysctl"] else "[yellow]✗ Inactive[/yellow]", "Crucial (prevents UE5 crashes)")
+    table.add_row("DwarFS Compression Tools", "[green]✓ Installed[/green]" if sys_status["dwarfs"] else "[dim]Optional[/dim]", "Required for repack mounts")
+    table.add_row("Flatpak Sandbox Gaming (Bottles/Heroic)", "[green]✓ Installed[/green]" if sys_status["flatpak_bottles"] else "[dim]Optional[/dim]", "Recommended prefix manager")
+
+    console.print(table)
+
+    console.print("\n[bold cyan]Choose Setup Profile:[/bold cyan]")
+    console.print("1. [bold green]Recommended Full Setup[/bold green] (Auto-detects GPU + all gaming tools + fast binary packages)")
+    console.print("2. [bold yellow]Custom Component Checklist[/bold yellow] (Select exactly what to install/skip via interactive toggles)")
+    console.print("3. [bold cyan]Minimal Core[/bold cyan] (GPU Drivers + Steam + Wine + Kernel Sysctl only)")
+    console.print("4. [bold magenta]Performance Tuning Only[/bold magenta] (Sysctl vm.max_map_count, split-lock mitigate, & GameMode)")
+    console.print("5. [bold blue]Maintenance / Icon Refresh[/bold blue] (Sync Flatpak desktop shortcuts, fix symlinks, update caches)")
+    console.print("6. [red]Exit[/red]")
+
+    choice = Prompt.ask("Enter selection", choices=["1", "2", "3", "4", "5", "6"], default="1")
+
+    modules = SelectedModules()
+
+    if choice == "1":
+        modules.dwarfs_mode = "skip" if sys_status["dwarfs"] else "bin"
+        return "full", modules
+
+    elif choice == "2":
+        console.print("\n[bold cyan]── Custom Component Selection ──[/bold cyan]")
+        modules.gpu_drivers = Confirm.ask("Install/Update GPU & Vulkan Drivers?", default=True)
+
+        selected_cats: Set[str] = set()
+        for cat_key, cat_data in PACKAGE_CATALOG.items():
+            default_val = True
+            if cat_key == "core_clients" and (sys_status["steam"] and sys_status["lutris"]):
+                default_val = False
+            elif cat_key == "wine_stack" and sys_status["wine"]:
+                default_val = False
+            elif cat_key == "performance_tools" and sys_status["mangohud"]:
+                default_val = False
+
+            if Confirm.ask(f"Install {cat_data['title']} ({len(cat_data['packages'])} packages)?", default=default_val):
+                selected_cats.add(cat_key)
+
+        modules.categories = selected_cats
+        modules.sysctl_tuning = Confirm.ask("Apply Kernel 7.x Sysctl Tweaks (vm.max_map_count & split_lock_mitigate)?", default=not sys_status["sysctl"])
+
+        if sys_status["dwarfs"]:
+            console.print("[dim]DwarFS is already installed.[/dim]")
+            if Confirm.ask("Reinstall/Rebuild DwarFS?", default=False):
+                console.print("\n[bold cyan]DwarFS Packaging Mode:[/bold cyan]")
+                console.print("1. Fast Pre-compiled Binary (dwarfs-bin) - Instant download (~2 seconds)")
+                console.print("2. CPU Native Architecture Build (-march=native -O3) - Maximized performance for your CPU")
+                console.print("3. Standard Source Build (dwarfs)")
+                dw_choice = Prompt.ask("Choose DwarFS option", choices=["1", "2", "3"], default="1")
+                modules.dwarfs_mode = "bin" if dw_choice == "1" else ("native" if dw_choice == "2" else "source")
+            else:
+                modules.dwarfs_mode = "skip"
+        else:
+            if Confirm.ask("Install DwarFS filesystem tools (used by compressed game repacks)?", default=True):
+                console.print("\n[bold cyan]DwarFS Packaging Mode:[/bold cyan]")
+                console.print("1. Fast Pre-compiled Binary (dwarfs-bin) - [bold green]Instant download (~2 seconds)[/bold green]")
+                console.print("2. CPU Native Architecture Build (-march=native -O3) - [bold yellow]Maximized CPU instructions[/bold yellow]")
+                console.print("3. Standard Source Build (dwarfs)")
+                dw_choice = Prompt.ask("Choose DwarFS option", choices=["1", "2", "3"], default="1")
+                modules.dwarfs_mode = "bin" if dw_choice == "1" else ("native" if dw_choice == "2" else "source")
+            else:
+                modules.dwarfs_mode = "skip"
+
+        modules.flatpak_apps = Confirm.ask("Install Flatpak Gaming Apps (Bottles, Flatseal, ProtonPlus, Heroic)?", default=not sys_status["flatpak_bottles"])
+        modules.launcher_bridge = Confirm.ask("Bridge Flatpak Desktop Shortcuts & Hicolor Icons into ~/.local/share/?", default=True)
+        return "custom", modules
+
+    elif choice == "3":
+        modules.gpu_drivers = True
+        modules.categories = {"core_clients", "wine_stack", "runtime_32bit"}
+        modules.sysctl_tuning = True
+        modules.dwarfs_mode = "skip"
+        modules.flatpak_apps = False
+        modules.launcher_bridge = False
+        return "minimal", modules
+
+    elif choice == "4":
+        modules.gpu_drivers = False
+        modules.categories = set()
+        modules.sysctl_tuning = True
+        modules.dwarfs_mode = "skip"
+        modules.flatpak_apps = False
+        modules.launcher_bridge = False
+        return "perf_only", modules
+
+    elif choice == "5":
+        modules.gpu_drivers = False
+        modules.categories = set()
+        modules.sysctl_tuning = False
+        modules.dwarfs_mode = "skip"
+        modules.flatpak_apps = False
+        modules.launcher_bridge = True
+        return "maintenance", modules
+
+    else:
+        console.print("[dim]Exiting installer.[/dim]")
+        sys.exit(0)
+
+
+def parse_arguments() -> Tuple[argparse.Namespace, SelectedModules]:
     parser = argparse.ArgumentParser(
         description="Arch Linux Universal Gaming Architecture - Bleeding-Edge Native Installer for Hyprland / Pure Wayland.",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("-y", "--yes", action="store_true", help="Non-interactive mode (automatically confirm all steps).")
+    parser.add_argument("-y", "--yes", action="store_true", help="Non-interactive mode (automatically confirm all recommended steps with fast binary packages).")
+    parser.add_argument("-i", "--interactive", action="store_true", help="Open interactive custom component checklist directly.")
     parser.add_argument("-n", "--dry-run", action="store_true", help="Dry run mode (simulate operations without modifying system).")
+    parser.add_argument("--bin", action="store_true", help="Prefer pre-compiled binary packages for AUR tools (e.g. dwarfs-bin).")
+    parser.add_argument("--native", action="store_true", help="Compile AUR packages from source with host CPU microarchitecture optimizations (-march=native -O3).")
+    parser.add_argument("--extra-pkgs", nargs="*", default=[], help="Specify additional pacman packages to install.")
     parser.add_argument("--skip-gpu", action="store_true", help="Skip GPU driver detection and installation.")
+    parser.add_argument("--skip-wine", action="store_true", help="Skip Wine-staging and 32-bit compatibility runtimes.")
+    parser.add_argument("--skip-perf", action="store_true", help="Skip performance tools (Gamescope, GameMode, MangoHud).")
     parser.add_argument("--skip-flatpak", action="store_true", help="Skip Flatpak applications and runtime layers.")
     parser.add_argument("--skip-sysctl", action="store_true", help="Skip kernel sysctl and limits optimizations.")
-    return parser.parse_args()
+    parser.add_argument("--skip-dwarfs", action="store_true", help="Skip DwarFS compression tools.")
 
+    args = parser.parse_args()
+
+    modules = SelectedModules()
+    if args.extra_pkgs:
+        modules.extra_packages = args.extra_pkgs
+
+    if args.skip_gpu:
+        modules.gpu_drivers = False
+    if args.skip_wine:
+        modules.categories.discard("wine_stack")
+        modules.categories.discard("runtime_32bit")
+    if args.skip_perf:
+        modules.categories.discard("performance_tools")
+    if args.skip_flatpak:
+        modules.flatpak_apps = False
+    if args.skip_sysctl:
+        modules.sysctl_tuning = False
+    if args.skip_dwarfs:
+        modules.dwarfs_mode = "skip"
+    elif args.native:
+        modules.dwarfs_mode = "native"
+    elif args.bin:
+        modules.dwarfs_mode = "bin"
+
+    return args, modules
+
+
+# ==============================================================================
+# 6. MAIN EXECUTION PIPELINE
+# ==============================================================================
 
 def main():
-    args = parse_arguments()
-    ctx = SetupContext(
-        dry_run=args.dry_run,
-        auto_yes=args.yes,
-        skip_gpu=args.skip_gpu
-    )
+    args, cli_modules = parse_arguments()
 
     console.clear()
     console.print(Panel.fit(
@@ -826,7 +1101,17 @@ def main():
         border_style="magenta"
     ))
 
-    # 1. Pre-flight verification
+    if not args.yes and not (args.skip_gpu and args.skip_flatpak and args.skip_sysctl and args.skip_dwarfs):
+        preset_name, modules = run_interactive_menu()
+    else:
+        modules = cli_modules
+
+    ctx = SetupContext(
+        dry_run=args.dry_run,
+        auto_yes=args.yes,
+        modules=modules
+    )
+
     check_root_and_locks(ctx)
 
     if not ctx.dry_run:
@@ -837,56 +1122,72 @@ def main():
             console.print("[bold red]Failed to authenticate with sudo. Exiting.[/bold red]")
             sys.exit(1)
 
-        # Start non-blocking background sudo keep-alive daemon
         ctx.sudo_thread = threading.Thread(target=keep_sudo_alive, args=(ctx.stop_sudo_event,), daemon=True)
         ctx.sudo_thread.start()
 
     try:
-        # 2. Pacman configuration & [multilib] activation
-        console.print("\n[bold cyan]Step 1: Synchronizing Pacman Repositories & [multilib][/bold cyan]")
-        enable_multilib_and_optimizations(ctx)
+        # Step 1: Pacman configuration & [multilib] activation
+        if modules.gpu_drivers or len(modules.categories) > 0 or modules.extra_packages:
+            console.print("\n[bold cyan]Step 1: Synchronizing Pacman Repositories & [multilib][/bold cyan]")
+            enable_multilib_and_optimizations(ctx)
 
-        # 3. Synchronize package databases with multilib enabled
-        run_command(
-            ctx,
-            "sudo pacman -Syu --needed --noconfirm",
-            "Synchronize package databases and apply core system upgrades.",
-            retries=3
-        )
+            run_command(
+                ctx,
+                "sudo pacman -Syu --needed --noconfirm",
+                "Synchronize package databases and apply core system upgrades.",
+                retries=3
+            )
 
-        # 4. GPU Detection and Driver Installation
-        console.print("\n[bold cyan]Step 2: Graphics Architecture & Vulkan Drivers[/bold cyan]")
-        configure_gpu_drivers(ctx)
+        # Step 2: GPU Detection and Driver Installation
+        if modules.gpu_drivers:
+            console.print("\n[bold cyan]Step 2: Graphics Architecture & Vulkan Drivers[/bold cyan]")
+            configure_gpu_drivers(ctx)
 
-        # 5. Kernel 7.x & Sysctl Gaming Optimizations
-        if not args.skip_sysctl:
+        # Step 3: Kernel 7.x & Sysctl Gaming Optimizations
+        if modules.sysctl_tuning:
             console.print("\n[bold cyan]Step 3: Kernel 7.x & Sysctl Performance Tuning[/bold cyan]")
             apply_kernel_and_sysctl_optimizations(ctx)
 
-        # 6. Complete Native Gaming Stack
-        console.print("\n[bold cyan]Step 4: Native Gaming Stack & 32-bit Runtimes (Pure Wayland)[/bold cyan]")
-        install_native_gaming_stack(ctx)
+        # Step 4: Native Gaming Stack
+        if len(modules.categories) > 0 or modules.extra_packages:
+            console.print("\n[bold cyan]Step 4: Native Gaming Stack & 32-bit Runtimes (Pure Wayland)[/bold cyan]")
+            install_native_gaming_stack(ctx)
 
-        # 7. Flatpak Ecosystem & Runtime Layers
-        if not args.skip_flatpak:
-            console.print("\n[bold cyan]Step 5: Flatpak Sandbox & Runtime Layers[/bold cyan]")
+        # Step 5: DwarFS filesystem tools (Binary or Native CPU build)
+        if modules.dwarfs_mode != "skip":
+            console.print("\n[bold cyan]Step 5: DwarFS Compression Tools[/bold cyan]")
+            configure_dwarfs(ctx)
+
+        # Step 6: Flatpak Ecosystem & Runtime Layers
+        if modules.flatpak_apps:
+            console.print("\n[bold cyan]Step 6: Flatpak Sandbox & Runtime Layers[/bold cyan]")
             configure_flatpak_ecosystem(ctx)
 
+        # Step 7: Application launcher and icon integration
+        if modules.launcher_bridge:
             with console.status("[bold green]Bridging Flatpak desktop entries and application icons...[/bold green]", spinner="dots"):
                 integrate_desktop_and_icons(ctx)
             console.print("[bold green]✔ Application launcher and icon integration complete![/bold green]")
 
-        # 8. Post-Install Report & Hyprland Guidance
+        # Step 8: Post-Install Report & Hyprland Guidance
         report_text = Text()
         report_text.append("✔ Gaming Architecture Established!\n", style="bold green")
-        report_text.append("Your Arch Linux installation is fully armed for native games, Steam Proton, Lutris, and modern Windows repacks.\n\n", style="white")
-        report_text.append("Key Features Configured:\n", style="bold cyan")
-        report_text.append("• Pure Wayland Graphics Pipeline: Vulkan 32/64-bit with Hybrid GPU support (prime-run)\n", style="white")
-        report_text.append("• Wine-Staging with Esync/Fsync and native Wayland staging driver\n", style="white")
-        report_text.append("• Gamescope micro-compositor with CAP_SYS_NICE real-time frame pacing & Feral GameMode daemon\n", style="white")
-        report_text.append("• vm.max_map_count=2147483642 & kernel.split_lock_mitigate=0 tuned in /etc/sysctl.d/99-gaming.conf\n", style="white")
-        report_text.append("• Flatpak native Wayland sockets & crisp icons bridged directly into ~/.local/share/\n\n", style="white")
-        report_text.append("Hyprland & Wayland Pro-Tips:\n", style="bold yellow")
+        report_text.append("Your Arch Linux installation is fully configured for native games, Steam Proton, Lutris, and modern Windows repacks.\n\n", style="white")
+        report_text.append("Configured Modules:\n", style="bold cyan")
+        if modules.gpu_drivers:
+            report_text.append("• Pure Wayland Graphics Pipeline: Vulkan 32/64-bit with Hybrid GPU support (prime-run)\n", style="white")
+        if "wine_stack" in modules.categories:
+            report_text.append("• Wine-Staging with Esync/Fsync and native Wayland staging driver\n", style="white")
+        if "performance_tools" in modules.categories:
+            report_text.append("• Gamescope micro-compositor with CAP_SYS_NICE real-time frame pacing & Feral GameMode daemon\n", style="white")
+        if modules.sysctl_tuning:
+            report_text.append("• vm.max_map_count=2147483642 & kernel.split_lock_mitigate=0 tuned in /etc/sysctl.d/99-gaming.conf\n", style="white")
+        if modules.flatpak_apps:
+            report_text.append("• Flatpak native Wayland sockets & crisp icons bridged directly into ~/.local/share/\n", style="white")
+        if modules.dwarfs_mode != "skip":
+            report_text.append(f"• DwarFS Repack Tools ({'Fast Binary' if modules.dwarfs_mode == 'bin' else 'Native CPU -march=native build'})\n", style="white")
+
+        report_text.append("\nHyprland & Wayland Pro-Tips:\n", style="bold yellow")
         report_text.append("1. Zero-Latency Tearing: Add `windowrulev2 = immediate, class:^(steam_app_.*)$` to your Hyprland window rules.\n", style="white")
         report_text.append("2. Hybrid GPUs: Run games on discrete GPU using `prime-run <command>` or gamescope.\n", style="white")
         report_text.append("3. FPS Limiting: Use `fps_limiter.py <fps> <command>` for universal low-latency frame capping.\n", style="white")
