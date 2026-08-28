@@ -111,12 +111,12 @@ vulkan_icd = "auto"                         # "auto", "nvidia", "intel", or "rad
 # Recommended for legacy X11 games (Unity 2017, Source 1, FNA/MonoGame) on pure Wayland desktops.
 # Provides isolated Xwayland nested presentation without requiring global XWayland or system reboots.
 [graphics.gamescope]
-enabled = false                             # Wrap execution inside Gamescope
+enabled = false                             # Enable Gamescope Wayland micro-compositor
 mode = "embedded"                           # "embedded" (borderless window) or "fullscreen"
-width = 1920                                # Internal render resolution width (-w)
-height = 1080                               # Internal render resolution height (-h)
-output_width = 1920                         # Monitor output width (-W)
-output_height = 1080                        # Monitor output height (-H)
+width = 0                                   # Internal render resolution width (-w, 0 = auto-detect monitor width)
+height = 0                                  # Internal render resolution height (-h, 0 = auto-detect monitor height)
+output_width = 0                            # Monitor output width (-W, 0 = auto-detect native display)
+output_height = 0                           # Monitor output height (-H, 0 = auto-detect native display)
 refresh_rate = 0                            # Frame rate cap / refresh rate (-r, 0 = auto-detect display, fallback: 60Hz)
 fsr_upscaling = false                       # Enable AMD FidelityFX Super Resolution (-F fsr)
 fsr_sharpness = 2                           # FSR sharpness (0 to 20)

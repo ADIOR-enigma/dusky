@@ -324,6 +324,80 @@ def detect_display_refresh_rate() -> int:
     return 60
 
 
+def detect_display_resolution() -> tuple[int, int]:
+    """Auto-detects the active display's native resolution (width, height), falling back to (1920, 1080)."""
+    # 1. Try Hyprland IPC
+    if shutil.which("hyprctl"):
+        try:
+            res = subprocess.run(["hyprctl", "monitors", "-j"], capture_output=True, text=True, timeout=1.5)
+            if res.returncode == 0:
+                monitors = json.loads(res.stdout)
+                for mon in monitors:
+                    if mon.get("focused", False):
+                        w = int(mon.get("width", 0))
+                        h = int(mon.get("height", 0))
+                        if w > 0 and h > 0:
+                            return w, h
+                if monitors:
+                    w = int(monitors[0].get("width", 0))
+                    h = int(monitors[0].get("height", 0))
+                    if w > 0 and h > 0:
+                        return w, h
+        except Exception:
+            pass
+
+    # 2. Try wlr-randr (wlroots Wayland compositors)
+    if shutil.which("wlr-randr"):
+        try:
+            res = subprocess.run(["wlr-randr", "--json"], capture_output=True, text=True, timeout=1.5)
+            if res.returncode == 0:
+                monitors = json.loads(res.stdout)
+                for mon in monitors:
+                    for mode in mon.get("modes", []):
+                        if mode.get("current", False):
+                            w = int(mode.get("width", 0))
+                            h = int(mode.get("height", 0))
+                            if w > 0 and h > 0:
+                                return w, h
+        except Exception:
+            pass
+
+    # 3. Try kscreen-doctor (KDE Plasma Wayland)
+    if shutil.which("kscreen-doctor"):
+        try:
+            res = subprocess.run(["kscreen-doctor", "-j"], capture_output=True, text=True, timeout=1.5)
+            if res.returncode == 0:
+                data = json.loads(res.stdout)
+                for out in data.get("outputs", []):
+                    if out.get("connected", False) and out.get("enabled", False):
+                        for mode in out.get("modes", []):
+                            if mode.get("id") == out.get("currentModeId"):
+                                size = mode.get("size", {})
+                                w = int(size.get("width", 0))
+                                h = int(size.get("height", 0))
+                                if w > 0 and h > 0:
+                                    return w, h
+        except Exception:
+            pass
+
+    # 4. Try DRM sysfs connector modes
+    try:
+        for mode_file in sorted(glob.glob("/sys/class/drm/card*-*/modes")):
+            modes = Path(mode_file).read_text(encoding="utf-8").strip().splitlines()
+            for m in modes:
+                match = re.search(r"(\d+)x(\d+)", m)
+                if match:
+                    w = int(match.group(1))
+                    h = int(match.group(2))
+                    if w > 0 and h > 0:
+                        return w, h
+    except Exception:
+        pass
+
+    # 5. Standard universal baseline fallback
+    return 1920, 1080
+
+
 # ==============================================================================
 # 3. CONFIGURATION PARSER & CASCADING INHERITANCE
 # ==============================================================================
@@ -1002,7 +1076,7 @@ class GameRunner:
             if wine_cfg.get("dxvk_nvapi", False):
                 env["DXVK_ENABLE_NVAPI"] = "1"
 
-        # 6. MangoHud Environment
+        # 6. MangoHud & Frame Rate Limiter Environment
         perf_cfg = self.config.get("performance", {})
         fps_limit = perf_cfg.get("fps_limit", 0)
 
@@ -1016,7 +1090,8 @@ class GameRunner:
                 cfg_parts.append(f"fps_limit={fps_limit}")
             if cfg_parts:
                 env["MANGOHUD_CONFIG"] = ",".join(cfg_parts)
-        elif fps_limit > 0 and not self.config.get("graphics", {}).get("gamescope", {}).get("enabled", False):
+
+        if fps_limit > 0 and not self.config.get("graphics", {}).get("gamescope", {}).get("enabled", False):
             env["DXVK_FRAME_RATE"] = str(fps_limit)
 
         return env
@@ -1074,18 +1149,19 @@ class GameRunner:
         # Wrap: Gamescope (Wayland native backend)
         gamescope_cfg = self.config.get("graphics", {}).get("gamescope", {})
         perf_cfg = self.config.get("performance", {})
+        fps_limit = perf_cfg.get("fps_limit", 0)
         using_gamescope = gamescope_cfg.get("enabled", False) and shutil.which("gamescope")
 
         if using_gamescope:
             log_info("Pipeline Layer: Gamescope Wayland Micro-Compositor")
-            gs_cmd = ["gamescope", "--backend", "wayland", "--expose-wayland"]
-            w = gamescope_cfg.get("width", 1920)
-            h = gamescope_cfg.get("height", 1080)
-            W = gamescope_cfg.get("output_width", 1920)
-            H = gamescope_cfg.get("output_height", 1080)
+            # Resolve display resolution: explicit config > auto-detected display resolution (fallback: 1920x1080)
+            det_w, det_h = detect_display_resolution()
+            W = gamescope_cfg.get("output_width", 0) or det_w
+            H = gamescope_cfg.get("output_height", 0) or det_h
+            w = gamescope_cfg.get("width", 0) or W
+            h = gamescope_cfg.get("height", 0) or H
 
             # Resolve refresh rate: explicit gamescope config > fps_limit > auto-detected display rate (fallback: 60Hz)
-            fps_limit = perf_cfg.get("fps_limit", 0)
             configured_rate = gamescope_cfg.get("refresh_rate", 0)
             if configured_rate > 0:
                 r = configured_rate
@@ -1094,7 +1170,10 @@ class GameRunner:
             else:
                 r = detect_display_refresh_rate()
 
+            gs_cmd = ["gamescope", "--backend", "wayland", "--expose-wayland"]
             gs_cmd.extend(["-w", str(w), "-h", str(h), "-W", str(W), "-H", str(H), "-r", str(r)])
+            if fps_limit > 0:
+                gs_cmd.extend(["--framerate-limit", str(fps_limit)])
 
             match gamescope_cfg.get("mode", "embedded"):
                 case "embedded" | "borderless":
@@ -1125,7 +1204,7 @@ class GameRunner:
             gs_cmd.append("--")
             pipeline = gs_cmd + pipeline
         elif perf_cfg.get("mangohud", False) and shutil.which("mangohud"):
-            # Standalone MangoHud wrapper (when not running inside Gamescope)
+            log_info("Pipeline Layer: MangoHud Performance Telemetry Overlay")
             pipeline = ["mangohud"] + pipeline
 
         # Wrap: GameMode
