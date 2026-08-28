@@ -1,0 +1,75 @@
+# ==============================================================================
+# Master Game Runner Engine - Global Configuration
+# /home/dusk/user_scripts/gaming/runner/config.toml
+# ==============================================================================
+
+[runner]
+profiles_dir = "profiles"
+presets_dir = "presets"
+default_gpu = "auto"
+desktop_notifications = true
+auto_unmount_on_exit = true
+clean_stale_workdirs = true
+
+[paths]
+sandbox_base = "~/.local/share/game_sandboxes"
+wine_prefix_base = "~/.local/share/wineprefixes"
+desktop_entry_dir = "~/.local/share/applications"
+
+[storage]
+dwarfs_cache_percent = 25
+dwarfs_tidy_interval = "15m"
+dwarfs_tidy_max_age = "30m"
+persistent_overlay = true
+auto_clean_workdir = true
+
+[performance]
+gamemode = true
+mangohud = false
+mangohud_preset = ""
+fps_limit = 0
+cpu_governor = "performance"
+process_priority = 0
+
+[audio]
+driver = "pipewire"
+pipewire_latency = "128/48000"
+
+[graphics]
+wayland_native = true
+prefer_xwayland = false
+vulkan_icd = "auto"
+
+[graphics.gamescope]
+enabled = false
+mode = "embedded"
+width = 1920
+height = 1080
+output_width = 1920
+output_height = 1080
+refresh_rate = 144
+fsr_upscaling = false
+fsr_sharpness = 2
+allow_tearing = true
+force_grab_cursor = false
+hdr = false
+extra_args = []
+
+[runtime.wine]
+wine_binary = "wine"
+arch = "win64"
+sync_mode = "fsync"
+large_address_aware = true
+dxvk = true
+vkd3d = true
+dxvk_nvapi = false
+debug = "fixme-all"
+dll_overrides = { "winemenubuilder.exe" = "d", "mshtml" = "d", "dxgi" = "n", "d3d11" = "n", "d3d12" = "n", "d3d9" = "n" }
+
+[sandbox]
+enabled = false
+isolate_home = true
+bind_gpu = true
+bind_sound = true
+bind_wayland = true
+bind_network = false

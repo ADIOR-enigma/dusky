@@ -1,0 +1,145 @@
+# ==============================================================================
+# Game Profile Specification Reference Template
+# /home/dusk/user_scripts/gaming/runner/profiles/_template.toml
+# ==============================================================================
+
+# [extends]: Inherit from a preset in presets/ (optional)
+# Available defaults: "base_native", "base_unity_native", "base_wine_dxvk", "base_unreal_engine_5"
+extends = "base_native"
+
+[meta]
+id = "example_game"
+name = "Example Game Title"
+version = "1.0.0"
+icon = "applications-games"         # Icon name in hicolor theme or absolute /path/to/icon.png
+developer = "Example Developer"
+genre = "Action / Adventure"
+description = "A comprehensive description of the game profile."
+
+[paths]
+# Supports variable expansion: $HOME, ~, $ZRAM, and relative paths
+game_dir = "/mnt/zram1/ExampleGame"
+
+# DwarFS & OverlayFS Configuration
+# If dwarfs_image exists, the engine mounts DwarFS FUSE + fuse-overlayfs automatically
+dwarfs_image = "files/game-root.dwarfs"     # Relative to game_dir or absolute
+dwarfs_mount = "files/.game-root-mnt"       # Mount point for read-only compressed layer
+overlay_dir = "files/game-root"             # Final merged playable game root directory
+overlay_storage = "files/overlay-storage"   # Persistent write layer (saves, mods, configs)
+overlay_work = "files/.game-root-work"      # OverlayFS scratch work directory
+
+# Executable binary relative to overlay_dir (or game_dir if not using DwarFS)
+executable = "bin/example_binary"
+working_dir = ""                            # Leave empty to default to executable's parent directory
+arguments = []                              # Default command line arguments
+
+[runtime]
+# Runtime type: "native" (Linux ELF), "wine" (Wine-Staging/Proton), or "custom"
+type = "native"
+
+# ------------------------------------------------------------------------------
+# Wine / Proton Sub-Section (Evaluated only when type = "wine")
+# ------------------------------------------------------------------------------
+[runtime.wine]
+wine_binary = "wine"                        # "wine", "wine64", custom path, or "proton"
+prefix_dir = "files/wine-prefix"            # Relative to game_dir or in ~/.local/share/wineprefixes/
+arch = "win64"                              # "win64" or "win32"
+sync_mode = "fsync"                         # "fsync", "esync", "ntsync", or "server"
+large_address_aware = true
+
+# Windows DLL Overrides (WINEDLLOVERRIDES)
+dll_overrides = { "winemenubuilder.exe" = "d", "mshtml" = "d", "dxgi" = "n", "d3d11" = "n", "d3d12" = "n", "d3d9" = "n" }
+
+# Graphics API Translation Layers
+dxvk = true                                 # Enable DXVK (Direct3D 9/10/11 -> Vulkan)
+vkd3d = true                                # Enable VKD3D-Proton (Direct3D 12 -> Vulkan)
+dxvk_nvapi = false                          # Enable DXVK-NVAPI for NVIDIA DLSS/Reflex
+debug = "fixme-all"                         # WINEDEBUG logging level
+
+# ------------------------------------------------------------------------------
+# Graphics & Compositor Pipeline
+# ------------------------------------------------------------------------------
+[graphics]
+# GPU Selection:
+# "auto": Auto-selects based on hardware capabilities and game type
+# "discrete": NVIDIA dGPU via prime-run offload
+# "integrated": Intel Iris Xe iGPU (power-efficient)
+gpu = "auto"
+
+# Wayland & Presentation
+wayland_native = true                       # Injects SDL_VIDEODRIVER=wayland / PROTON_ENABLE_WAYLAND=1
+prefer_xwayland = false                     # Forces DISPLAY=:0 / XWayland if game engine lacks Wayland support
+vulkan_icd = "auto"                         # "auto", "nvidia", "intel", "radv"
+
+# Gamescope Micro-Compositor
+[graphics.gamescope]
+enabled = false                             # Launch game inside Gamescope sandbox
+mode = "embedded"                           # "embedded" (borderless seamless) or "nested" (virtual window)
+width = 1920                                # Internal render resolution width (-w)
+height = 1080                               # Internal render resolution height (-h)
+output_width = 1920                         # Display output width (-W)
+output_height = 1080                        # Display output height (-H)
+refresh_rate = 144                          # Frame rate cap / refresh rate (-r)
+fsr_upscaling = false                       # Enable AMD FidelityFX Super Resolution (-F fsr)
+fsr_sharpness = 2                           # FSR sharpness level (0 to 20)
+allow_tearing = true                        # Low-latency immediate presentation (--immediate-flips)
+force_grab_cursor = false                   # Grab mouse cursor inside Gamescope (--force-grab-cursor)
+hdr = false                                 # Enable HDR surface presentation (--hdr-enabled)
+extra_args = []                             # Arbitrary additional Gamescope CLI flags
+
+# ------------------------------------------------------------------------------
+# Performance, HUD, & Scheduling
+# ------------------------------------------------------------------------------
+[performance]
+gamemode = true                             # Injects Feral GameMode (`gamemoderun`)
+mangohud = false                            # Injects MangoHud FPS/Hardware HUD (`MANGOHUD=1`)
+mangohud_preset = ""                        # Optional MangoHud config preset (e.g. "minimal", "full")
+fps_limit = 0                               # Universal FPS cap (0 = uncapped, 60, 144, etc.)
+cpu_governor = "performance"                # "performance", "schedutil", or "none"
+process_priority = 0                        # Nice priority (-20 to 19, requires permissions)
+
+# ------------------------------------------------------------------------------
+# Audio & PipeWire
+# ------------------------------------------------------------------------------
+[audio]
+driver = "pipewire"                         # "pipewire", "pulseaudio", or "alsa"
+pipewire_latency = "128/48000"              # Low-latency buffer quantum (PIPEWIRE_LATENCY)
+
+# ------------------------------------------------------------------------------
+# Storage & DwarFS Tuning
+# ------------------------------------------------------------------------------
+[storage]
+dwarfs_cache_percent = 25                   # Allocate 25% of total system RAM to DwarFS cache
+dwarfs_tidy_interval = "15m"                # DwarFS memory tidy interval
+dwarfs_tidy_max_age = "30m"                 # DwarFS cache max age
+persistent_overlay = true                   # Keep overlay-storage intact across game runs
+auto_clean_workdir = true                   # Wipe .game-root-work before mounting
+
+# ------------------------------------------------------------------------------
+# Sandbox & Isolation (Bubblewrap)
+# ------------------------------------------------------------------------------
+[sandbox]
+enabled = false                             # Isolate game execution using Bubblewrap (bwrap)
+isolate_home = true                         # Restrict $HOME access to a virtual sandbox home
+sandbox_home = "~/.local/share/game_sandboxes/example_game"
+bind_gpu = true                             # Pass /dev/dri and NVIDIA device nodes
+bind_sound = true                           # Pass PipeWire / PulseAudio sockets
+bind_wayland = true                         # Pass $WAYLAND_DISPLAY socket
+bind_network = false                        # Restrict internet access
+
+# ------------------------------------------------------------------------------
+# Pre/Post Execution Lifecycle Hooks
+# ------------------------------------------------------------------------------
+[hooks]
+pre_mount = []                              # Shell commands before DwarFS mounting
+post_mount = []                             # Shell commands after FUSE mount established
+pre_launch = []                             # Shell commands right before game binary exec
+post_launch = []                            # Shell commands immediately after game exits
+post_unmount = []                           # Shell commands after FUSE unmounted
+
+# ------------------------------------------------------------------------------
+# Environment Variables & Runtime Shims
+# ------------------------------------------------------------------------------
+[env]
+# Dynamic variable expansion supported
+# LD_PRELOAD = "$HOME/.factorio/wayland_fix/libEGL.so.1"

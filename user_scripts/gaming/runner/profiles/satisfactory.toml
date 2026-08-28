@@ -1,0 +1,48 @@
+# ==============================================================================
+# Satisfactory Profile
+# ==============================================================================
+
+extends = "base_unreal_engine_5"
+
+[meta]
+id = "satisfactory"
+name = "Satisfactory"
+version = "1.0"
+icon = "applications-games"
+developer = "Coffee Stain Studios"
+genre = "Factory Simulation / Open World"
+description = "First-person open-world factory building game with exploration and combat."
+
+[paths]
+game_dir = "/mnt/zram1/Satisfactory-jc141"
+dwarfs_image = "files/game-root.dwarfs"
+dwarfs_mount = "files/.game-root-mnt"
+overlay_dir = "files/game-root"
+overlay_storage = "files/overlay-storage"
+overlay_work = "files/.game-root-work"
+executable = "steamclient_loader_x64.exe"
+arguments = ["-dx12"]
+
+[runtime]
+type = "wine"
+
+[runtime.wine]
+prefix_dir = "files/prefix"
+arch = "win64"
+sync_mode = "fsync"
+large_address_aware = true
+dxvk = true
+vkd3d = true
+debug = "fixme-all"
+
+[graphics]
+gpu = "discrete"
+wayland_native = true
+
+[performance]
+gamemode = true
+cpu_governor = "performance"
+
+[env]
+VKD3D_DEBUG = "info"
+WINE_LARGE_ADDRESS_AWARE = "1"

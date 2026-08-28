@@ -1,0 +1,35 @@
+# ==============================================================================
+# Terraria Profile
+# ==============================================================================
+
+extends = "base_native"
+
+[meta]
+id = "terraria"
+name = "Terraria"
+version = "1.4.4.9"
+icon = "applications-games"
+developer = "Re-Logic"
+genre = "Sandbox / Adventure"
+description = "Dig, fight, explore, build: the world is at your fingertips as you fight for survival, fortune, and glory."
+
+[paths]
+game_dir = "/mnt/zram1/Terraria-jc141"
+dwarfs_image = "files/game-root.dwarfs"
+dwarfs_mount = "files/.game-root-mnt"
+overlay_dir = "files/game-root"
+overlay_storage = "files/overlay-storage"
+overlay_work = "files/.game-root-work"
+executable = "Terraria/Terraria.bin.x86_64"
+arguments = []
+
+[runtime]
+type = "native"
+
+[graphics]
+gpu = "auto"
+wayland_native = true
+
+[performance]
+fps_limit = 144
+gamemode = true

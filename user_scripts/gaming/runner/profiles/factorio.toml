@@ -1,0 +1,37 @@
+# ==============================================================================
+# Factorio Profile
+# ==============================================================================
+
+extends = "base_native"
+
+[meta]
+id = "factorio"
+name = "Factorio"
+version = "2.1.14"
+icon = "applications-games"
+developer = "Wube Software"
+genre = "Automation / Strategy"
+description = "Build and maintain automated factories on an alien planet."
+
+[paths]
+game_dir = "/mnt/zram1/factorio/Factorio_2.1.14"
+dwarfs_image = "files/game-root.dwarfs"
+dwarfs_mount = "files/.game-root-mnt"
+overlay_dir = "files/game-root"
+overlay_storage = "files/overlay-storage"
+overlay_work = "files/.game-root-work"
+executable = "bin/x64/factorio"
+arguments = []
+
+[runtime]
+type = "native"
+
+[graphics]
+gpu = "auto"
+wayland_native = true
+
+[performance]
+gamemode = true
+
+[env]
+LD_PRELOAD = "$HOME/.factorio/wayland_fix/libEGL.so.1"
