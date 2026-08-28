@@ -829,12 +829,25 @@ class GameRunner:
         custom_env = self.config.get("env", {})
         for k, v in custom_env.items():
             if k == "LD_PRELOAD":
-                expanded_preload = os.path.expanduser(os.path.expandvars(str(v)))
-                if Path(expanded_preload).exists():
+                expanded_preload = Path(os.path.expanduser(os.path.expandvars(str(v)))).resolve()
+                if not expanded_preload.exists():
+                    # Attempt automated just-in-time shim compilation for Factorio
+                    if "factorio" in self.profile_id or "wayland_fix" in str(expanded_preload):
+                        log_info(f"Building missing Factorio Wayland EGL shim at {expanded_preload}...")
+                        fix_script = Path.home() / "user_scripts/apps/factorio/use_wayland/fix_run_on_wayland.py"
+                        egl_src = Path.home() / "user_scripts/apps/factorio/use_wayland/sources/eglfix.c"
+                        expanded_preload.parent.mkdir(parents=True, exist_ok=True)
+                        if fix_script.exists():
+                            subprocess.run([sys.executable, str(fix_script), "--game-dir", str(self.paths["game_dir"])], capture_output=True)
+                        elif egl_src.exists() and shutil.which("gcc"):
+                            subprocess.run(["gcc", "-shared", "-fPIC", "-O2", "-o", str(expanded_preload), str(egl_src), "-ldl", "-lpthread"], capture_output=True)
+
+                if expanded_preload.exists():
+                    log_info(f"Injecting Wayland runtime shim: {expanded_preload.name}")
                     if "LD_PRELOAD" in env and env["LD_PRELOAD"]:
                         env["LD_PRELOAD"] = f"{expanded_preload}:{env['LD_PRELOAD']}"
                     else:
-                        env["LD_PRELOAD"] = expanded_preload
+                        env["LD_PRELOAD"] = str(expanded_preload)
                 else:
                     log_warning(f"LD_PRELOAD shim not found at {expanded_preload}; skipping injection.")
             else:

@@ -1,6 +1,5 @@
 # ==============================================================================
 # Game Profile Specification Reference Template
-# /home/dusk/user_scripts/gaming/runner/profiles/_template.toml
 # ==============================================================================
 
 # [extends]: Inherit from a preset in presets/ (optional)
