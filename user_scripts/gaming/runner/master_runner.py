@@ -1714,11 +1714,222 @@ StartupNotify=true
 # 11. INTERACTIVE RICH TUI DASHBOARD (`master_runner.py menu`)
 # ==============================================================================
 
+def parse_profile_targets(target_str: str, profile_list: list[tuple[str, Path]], manager: ProfileManager) -> list[str]:
+    """
+    Parses flexible profile target strings:
+      - 'all', '*', 'a' -> all profile IDs
+      - '11,13', '11 13', '1-3', '11, 13' -> numeric indexes and ranges
+      - 'stardew_valley terraria', 'stardew_valley,terraria' -> profile IDs
+      - Mixed: '1, terraria, 3-5'
+    """
+    target_str = target_str.strip()
+    if not target_str:
+        return []
+
+    if target_str.lower() in ("all", "*", "a"):
+        return [pid for pid, _ in profile_list]
+
+    raw_tokens = re.split(r"[\s,]+", target_str)
+    resolved_pids: list[str] = []
+    pid_map = {pid.lower(): pid for pid, _ in profile_list}
+    name_map = {}
+    for pid, _ in profile_list:
+        try:
+            _, cfg = manager.load_profile(pid)
+            name_map[cfg.get("meta", {}).get("name", "").lower()] = pid
+        except Exception:
+            pass
+
+    for token in raw_tokens:
+        token = token.strip()
+        if not token:
+            continue
+
+        # Range format: e.g. "1-3" or "1..3"
+        range_match = re.fullmatch(r"(\d+)[-..]+(\d+)", token)
+        if range_match:
+            start, end = int(range_match.group(1)), int(range_match.group(2))
+            for i in range(min(start, end), max(start, end) + 1):
+                idx = i - 1
+                if 0 <= idx < len(profile_list):
+                    pid = profile_list[idx][0]
+                    if pid not in resolved_pids:
+                        resolved_pids.append(pid)
+            continue
+
+        # Single numeric index
+        if token.isdigit():
+            idx = int(token) - 1
+            if 0 <= idx < len(profile_list):
+                pid = profile_list[idx][0]
+                if pid not in resolved_pids:
+                    resolved_pids.append(pid)
+            continue
+
+        # Direct profile ID or Name match
+        lowered = token.lower()
+        if lowered in pid_map:
+            pid = pid_map[lowered]
+            if pid not in resolved_pids:
+                resolved_pids.append(pid)
+        elif lowered in name_map:
+            pid = name_map[lowered]
+            if pid not in resolved_pids:
+                resolved_pids.append(pid)
+
+    return resolved_pids
+
+
+def get_fzf_theme_args() -> list[str]:
+    """Generates FZF color arguments dynamically synced with system Matugen theme."""
+    theme_file = Path.home() / ".config/matugen/generated/dusky_tui.json"
+    if theme_file.is_file():
+        try:
+            data = json.loads(theme_file.read_text(encoding="utf-8"))
+            bg = data.get("bg", "#0e1416")
+            fg = data.get("fg", "#dee3e5")
+            accent = data.get("accent", "#82d3e2")
+            error = data.get("error", "#ffb4ab")
+            warning = data.get("warning", "#b1cbd0")
+            success = data.get("success", "#bbc5ea")
+            muted = data.get("muted", "#3f484a")
+            colors = f"bg+:{muted},bg:{bg},spinner:{accent},fg:{fg},fg+:{fg},header:{accent},info:{warning},pointer:{success},marker:{success},prompt:{accent},hl:{error},hl+:{error},border:{muted},label:{accent}"
+            return ["--color", colors]
+        except Exception:
+            pass
+    return []
+
+
+def fzf_select_game(manager: ProfileManager, profile_list: list[tuple[str, Path]]) -> str | None:
+    """Launches clean, fast full-width interactive FZF fuzzy finder to search, select, and launch a game."""
+    if not shutil.which("fzf"):
+        log_warning("FZF is not installed. Use direct numeric or ID selection.")
+        return None
+
+    lines = []
+    for idx, (pid, _) in enumerate(profile_list, 1):
+        try:
+            _, cfg = manager.load_profile(pid)
+            name = cfg.get("meta", {}).get("name", pid)
+            genre = cfg.get("meta", {}).get("genre", "Game")
+            rtype = cfg.get("runtime", {}).get("type", "native")
+            dw_m, ov_m = MountManager.get_mount_status(cfg)
+            status = "MOUNTED" if (dw_m and ov_m) else ("PARTIAL" if (dw_m or ov_m) else "UNMOUNTED")
+            lines.append(f"{pid}\t{idx:2d} │ {pid:<22} │ {name:<26} │ {rtype:<6} │ {status:<9} │ {genre}")
+        except Exception:
+            lines.append(f"{pid}\t{idx:2d} │ {pid:<22} │ {pid:<26} │ {'native':<6} │ {'UNKNOWN':<9} │ -")
+
+    header = "🎮 SELECT GAME (ENTER: Launch | ESC: Cancel | Type to Fuzzy Search)"
+    prompt = "Launch > "
+    border_label = " 🎮 ENTER Launch · ESC Cancel "
+
+    fzf_cmd = [
+        "fzf",
+        "--ansi",
+        "--delimiter=\t",
+        "--with-nth=2",
+        "--header", header,
+        "--prompt", prompt,
+        "--height", "50%",
+        "--layout=reverse",
+        "--border=rounded",
+        "--border-label", border_label,
+        "--border-label-pos=bottom:3",
+        "--highlight-line",
+        "--pointer=▌",
+        "--marker=┃",
+        *get_fzf_theme_args()
+    ]
+
+    try:
+        proc = subprocess.run(
+            fzf_cmd,
+            input="\n".join(lines),
+            text=True,
+            capture_output=True
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            selected_line = proc.stdout.strip().splitlines()[0]
+            parts = selected_line.split("\t")
+            if parts:
+                return parts[0].strip()
+    except Exception as e:
+        log_error(f"FZF error: {e}")
+    return None
+
+
+def fzf_select_mounts(manager: ProfileManager, profile_list: list[tuple[str, Path]], action: str = "mount") -> list[str]:
+    """Launches multi-select FZF to batch mount or unmount profiles."""
+    if not shutil.which("fzf"):
+        log_warning("FZF is not installed.")
+        return []
+
+    lines = []
+    for idx, (pid, _) in enumerate(profile_list, 1):
+        try:
+            _, cfg = manager.load_profile(pid)
+            name = cfg.get("meta", {}).get("name", pid)
+            genre = cfg.get("meta", {}).get("genre", "Game")
+            rtype = cfg.get("runtime", {}).get("type", "native")
+            dw_m, ov_m = MountManager.get_mount_status(cfg)
+            status = "MOUNTED" if (dw_m and ov_m) else ("PARTIAL" if (dw_m or ov_m) else "UNMOUNTED")
+            lines.append(f"{pid}\t{idx:2d} │ {pid:<22} │ {name:<26} │ {rtype:<6} │ {status:<9} │ {genre}")
+        except Exception:
+            lines.append(f"{pid}\t{idx:2d} │ {pid:<22} │ {pid:<26} │ {'native':<6} │ {'UNKNOWN':<9} │ -")
+
+    act_verb = action.upper()
+    header = f"📦 TAB/SPACE: Select Multiple | ENTER: Confirm {act_verb} | ESC: Cancel"
+    prompt = f"{act_verb} > "
+    border_label = f" 📦 TAB/SPACE Multi-Select · ENTER Confirm {act_verb} · ESC Cancel "
+
+    fzf_cmd = [
+        "fzf",
+        "-m",
+        "--ansi",
+        "--delimiter=\t",
+        "--with-nth=2",
+        "--header", header,
+        "--prompt", prompt,
+        "--height", "50%",
+        "--layout=reverse",
+        "--border=rounded",
+        "--border-label", border_label,
+        "--border-label-pos=bottom:3",
+        "--highlight-line",
+        "--pointer=▌",
+        "--marker=┃",
+        "--bind=tab:toggle+down",
+        "--bind=btab:toggle+up",
+        "--bind=ctrl-a:select-all",
+        *get_fzf_theme_args()
+    ]
+
+    try:
+        proc = subprocess.run(
+            fzf_cmd,
+            input="\n".join(lines),
+            text=True,
+            capture_output=True
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            selected_pids = []
+            for line in proc.stdout.strip().splitlines():
+                parts = line.split("\t")
+                if parts:
+                    selected_pids.append(parts[0].strip())
+            return selected_pids
+    except Exception as e:
+        log_error(f"FZF error: {e}")
+    return []
+
+
 def render_interactive_menu(manager: ProfileManager) -> None:
     """Renders the Rich TUI Dashboard for instant keyboard launching and management."""
     if not console:
         print("Interactive menu requires rich console.")
         return
+
+    has_fzf = bool(shutil.which("fzf"))
 
     while True:
         console.clear()
@@ -1765,37 +1976,68 @@ def render_interactive_menu(manager: ProfileManager) -> None:
                 table.add_row(str(idx), pid, "[red]Error loading[/red]", "-", "-", "[red]ERR[/red]", str(e))
 
         console.print(table)
-        console.print("\n[bold]Commands:[/bold] [cyan]1-{}[/cyan] Launch Game | [yellow]m <#>[/yellow] Mount | [yellow]u <#>[/yellow] Unmount | [magenta]d[/magenta] Doctor | [magenta]v[/magenta] Validate | [red]q[/red] Quit".format(len(profile_list)))
+        fzf_hint = " | [bold blue]f[/bold blue] Fuzzy Search (FZF)" if has_fzf else ""
+        console.print(f"\n[bold]Commands:[/bold] [cyan]1-{len(profile_list)}[/cyan] Launch | [yellow]m <targets|all>[/yellow] Mount | [yellow]u <targets|all>[/yellow] Unmount{fzf_hint} | [magenta]d[/magenta] Doctor | [magenta]v[/magenta] Validate | [red]q[/red] Quit")
 
         choice = Prompt.ask("\n[bold green]Selection[/bold green]", default="q").strip()
 
         if choice.lower() in ("q", "quit", "exit"):
             break
+        elif choice.lower() in ("f", "s", "search", "fzf", "/"):
+            selected_pid = fzf_select_game(manager, profile_list)
+            if selected_pid:
+                try:
+                    _, cfg = manager.load_profile(selected_pid)
+                    runner = GameRunner(selected_pid, cfg)
+                    runner.execute()
+                except Exception as e:
+                    log_error(f"Execution failed for {selected_pid}: {e}")
+                Prompt.ask("\nPress Enter to return to menu...")
         elif choice.lower() == "d":
             run_doctor()
             Prompt.ask("\nPress Enter to return to menu...")
         elif choice.lower() == "v":
             validate_profiles(manager)
             Prompt.ask("\nPress Enter to return to menu...")
-        elif choice.lower().startswith("m "):
-            target = choice[2:].strip()
-            try:
-                idx = int(target) - 1
-                pid = profile_list[idx][0]
-                _, cfg = manager.load_profile(pid)
-                MountManager.mount(cfg)
-            except Exception as e:
-                log_error(f"Failed to mount: {e}")
+        elif choice.lower() == "u" or choice.lower().startswith("u "):
+            target_str = choice[2:].strip() if len(choice) > 1 else ""
+            if not target_str and has_fzf:
+                target_pids = fzf_select_mounts(manager, profile_list, action="unmount")
+            elif not target_str:
+                target_str = Prompt.ask("Enter profile numbers, IDs, ranges, or 'all' to unmount").strip()
+                target_pids = parse_profile_targets(target_str, profile_list, manager)
+            else:
+                target_pids = parse_profile_targets(target_str, profile_list, manager)
+
+            if not target_pids:
+                log_warning("No profiles selected for unmount.")
+            else:
+                for pid in target_pids:
+                    try:
+                        _, cfg = manager.load_profile(pid)
+                        MountManager.unmount(cfg)
+                    except Exception as e:
+                        log_error(f"Failed to unmount {pid}: {e}")
             Prompt.ask("\nPress Enter to continue...")
-        elif choice.lower().startswith("u "):
-            target = choice[2:].strip()
-            try:
-                idx = int(target) - 1
-                pid = profile_list[idx][0]
-                _, cfg = manager.load_profile(pid)
-                MountManager.unmount(cfg)
-            except Exception as e:
-                log_error(f"Failed to unmount: {e}")
+        elif choice.lower() == "m" or choice.lower().startswith("m "):
+            target_str = choice[2:].strip() if len(choice) > 1 else ""
+            if not target_str and has_fzf:
+                target_pids = fzf_select_mounts(manager, profile_list, action="mount")
+            elif not target_str:
+                target_str = Prompt.ask("Enter profile numbers, IDs, ranges, or 'all' to mount").strip()
+                target_pids = parse_profile_targets(target_str, profile_list, manager)
+            else:
+                target_pids = parse_profile_targets(target_str, profile_list, manager)
+
+            if not target_pids:
+                log_warning("No profiles selected for mount.")
+            else:
+                for pid in target_pids:
+                    try:
+                        _, cfg = manager.load_profile(pid)
+                        MountManager.mount(cfg)
+                    except Exception as e:
+                        log_error(f"Failed to mount {pid}: {e}")
             Prompt.ask("\nPress Enter to continue...")
         elif choice.isdigit():
             idx = int(choice) - 1
@@ -1816,7 +2058,7 @@ def main():
     known_commands = {
         "run", "menu", "list", "status", "mount", "unmount", "unmount-all",
         "validate", "init", "doctor", "install-desktop", "install-all-desktops",
-        "-h", "--help"
+        "fzf", "select", "-h", "--help"
     }
 
     if len(sys.argv) > 1 and sys.argv[1] not in known_commands:
@@ -1867,6 +2109,10 @@ def main():
     # Command: menu
     subparsers.add_parser("menu", help="Launch interactive Rich TUI Dashboard")
 
+    # Command: fzf / select
+    subparsers.add_parser("fzf", help="Interactive FZF game selector and launcher")
+    subparsers.add_parser("select", help="Interactive FZF game selector and launcher")
+
     # Command: list
     subparsers.add_parser("list", help="List all discovered game profiles and base presets")
 
@@ -1874,13 +2120,13 @@ def main():
     subparsers.add_parser("status", help="Show active DwarFS and fuse-overlayfs mount statuses")
 
     # Command: mount
-    mount_parser = subparsers.add_parser("mount", help="Mount DwarFS & OverlayFS for a game profile without launching")
-    mount_parser.add_argument("profile", help="Profile ID to mount")
+    mount_parser = subparsers.add_parser("mount", help="Mount DwarFS & OverlayFS for one or more game profiles without launching")
+    mount_parser.add_argument("profiles", nargs="*", help="Profile ID(s), numbers, ranges (e.g. 1-3), or 'all' to mount")
     mount_parser.add_argument("--dry-run", action="store_true", help="Simulate mount operation")
 
     # Command: unmount
-    unmount_parser = subparsers.add_parser("unmount", help="Unmount DwarFS & OverlayFS for a game profile")
-    unmount_parser.add_argument("profile", help="Profile ID to unmount")
+    unmount_parser = subparsers.add_parser("unmount", help="Unmount DwarFS & OverlayFS for one or more game profiles")
+    unmount_parser.add_argument("profiles", nargs="*", help="Profile ID(s), numbers, ranges (e.g. 1-3), or 'all' to unmount")
     unmount_parser.add_argument("--dry-run", action="store_true", help="Simulate unmount operation")
 
     # Command: unmount-all
@@ -1924,6 +2170,18 @@ def main():
     match args.command:
         case "menu":
             render_interactive_menu(manager)
+
+        case "fzf" | "select":
+            profile_list = list(manager.discover_profiles().items())
+            selected_pid = fzf_select_game(manager, profile_list)
+            if selected_pid:
+                try:
+                    _, cfg = manager.load_profile(selected_pid)
+                    runner = GameRunner(selected_pid, cfg)
+                    runner.execute()
+                except Exception as e:
+                    log_error(f"Execution failed for {selected_pid}: {e}")
+                    sys.exit(1)
 
         case "list":
             profiles = manager.discover_profiles()
@@ -1983,20 +2241,40 @@ def main():
                 console.print(table)
 
         case "mount":
-            try:
-                pid, cfg = manager.load_profile(args.profile)
-                MountManager.mount(cfg, dry_run=args.dry_run)
-            except Exception as e:
-                log_error(f"Mount failed: {e}")
-                sys.exit(1)
+            profile_list = list(manager.discover_profiles().items())
+            if not args.profiles:
+                target_pids = fzf_select_mounts(manager, profile_list, action="mount")
+            else:
+                combined_targets = " ".join(args.profiles)
+                target_pids = parse_profile_targets(combined_targets, profile_list, manager)
+
+            if not target_pids:
+                log_warning("No game profiles specified or selected for mount.")
+            else:
+                for pid in target_pids:
+                    try:
+                        _, cfg = manager.load_profile(pid)
+                        MountManager.mount(cfg, dry_run=args.dry_run)
+                    except Exception as e:
+                        log_error(f"Mount failed for {pid}: {e}")
 
         case "unmount":
-            try:
-                pid, cfg = manager.load_profile(args.profile)
-                MountManager.unmount(cfg, dry_run=args.dry_run)
-            except Exception as e:
-                log_error(f"Unmount failed: {e}")
-                sys.exit(1)
+            profile_list = list(manager.discover_profiles().items())
+            if not args.profiles:
+                target_pids = fzf_select_mounts(manager, profile_list, action="unmount")
+            else:
+                combined_targets = " ".join(args.profiles)
+                target_pids = parse_profile_targets(combined_targets, profile_list, manager)
+
+            if not target_pids:
+                log_warning("No game profiles specified or selected for unmount.")
+            else:
+                for pid in target_pids:
+                    try:
+                        _, cfg = manager.load_profile(pid)
+                        MountManager.unmount(cfg, dry_run=args.dry_run)
+                    except Exception as e:
+                        log_error(f"Unmount failed for {pid}: {e}")
 
         case "unmount-all":
             count = MountManager.unmount_all(manager, dry_run=args.dry_run)
