@@ -1045,7 +1045,7 @@ type = "button"
 title = "Setup Permissions"
 button_text = "Setup"
 description = "Run once: sets /etc/wireguard to 750 root:wheel and adds sudoers rules"
-icon = "security-medium-symbolic"
+icon = "security-high-symbolic"
 style = "suggested"
 [pages.layout.items.layout.items.on_press]
 type = "exec"
@@ -2369,7 +2369,7 @@ center_title = true
 type = "service_card"
 [pages.layout.items.properties]
 title = "Firewall (UFW)"
-icon = "security-low-symbolic"
+icon = "security-high-symbolic"
 service = "ufw.service"
 scope = "system"
 
