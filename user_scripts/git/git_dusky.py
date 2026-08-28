@@ -758,6 +758,84 @@ def commit_and_push(files: list[str] | None = None, local_only: bool = False) ->
         safe_push()
 
 
+def reconcile_upstream_changes(branch: str, remote_ref: str) -> None:
+    """Updates local disk files from upstream for files modified, added, or deleted in upstream PRs
+
+    that were NOT modified locally. Prevents upstream PR changes from being reverted during sync.
+    """
+    code_mb, mb_out, _ = run_git("merge-base", branch, remote_ref)
+    mb = mb_out.strip()
+    if code_mb != 0 or not mb:
+        return
+
+    # List files and OIDs in remote_ref
+    _, ls_remote, _ = run_git("ls-tree", "-r", "-z", remote_ref)
+    remote_files: dict[str, str] = {}
+    for entry in ls_remote.split('\0'):
+        if not entry or '\t' not in entry:
+            continue
+        meta, path = entry.split('\t', 1)
+        parts = meta.split()
+        if len(parts) >= 3:
+            remote_files[path] = parts[2]
+
+    # List files and OIDs in common merge base
+    _, ls_base, _ = run_git("ls-tree", "-r", "-z", mb)
+    base_files: dict[str, str] = {}
+    for entry in ls_base.split('\0'):
+        if not entry or '\t' not in entry:
+            continue
+        meta, path = entry.split('\t', 1)
+        parts = meta.split()
+        if len(parts) >= 3:
+            base_files[path] = parts[2]
+
+    files_to_checkout: list[str] = []
+    files_to_delete: list[str] = []
+
+    # 1. Handle updated or newly added files from remote PRs
+    for path, r_oid in remote_files.items():
+        b_oid = base_files.get(path, "")
+        if r_oid == b_oid:
+            continue  # Remote didn't touch this file
+
+        disk_path = WORK_TREE / path
+        if not (disk_path.exists() or disk_path.is_symlink()):
+            if b_oid == "":
+                # Brand new file added upstream in PR -> check it out
+                files_to_checkout.append(path)
+            continue
+
+        code_h, disk_oid, _ = run_git("hash-object", str(disk_path))
+        if code_h == 0 and disk_oid.strip() == b_oid:
+            # User never modified this file locally -> update from remote PR
+            files_to_checkout.append(path)
+
+    # 2. Handle files deleted upstream in PRs
+    for path, b_oid in base_files.items():
+        if path not in remote_files:
+            disk_path = WORK_TREE / path
+            if disk_path.exists() or disk_path.is_symlink():
+                code_h, disk_oid, _ = run_git("hash-object", str(disk_path))
+                if code_h == 0 and disk_oid.strip() == b_oid:
+                    files_to_delete.append(path)
+
+    if files_to_delete:
+        console.print(f"[bold yellow]Removing {len(files_to_delete)} file(s) deleted in upstream PRs...[/bold yellow]")
+        for p in files_to_delete:
+            dp = WORK_TREE / p
+            if dp.is_file() or dp.is_symlink():
+                dp.unlink(missing_ok=True)
+            elif dp.is_dir():
+                shutil.rmtree(dp, ignore_errors=True)
+
+    if files_to_checkout:
+        console.print(f"[bold blue]Applying {len(files_to_checkout)} upstream update(s) to local files (from merged PRs)...[/bold blue]")
+        payload = "\0".join(files_to_checkout) + "\0"
+        run_git("checkout", remote_ref, "--pathspec-from-file=-", "--pathspec-file-nul",
+                input_data=payload.encode("utf-8"), literal_pathspecs=True)
+
+
 def safe_push(branch: str | None = None) -> bool:
     """Bulletproof push engine with upstream auto-detection, divergence resolution & rebase."""
     if not branch:
@@ -842,7 +920,8 @@ def safe_push(branch: str | None = None) -> bool:
             else:
                 run_git("rebase", "--abort")
                 console.print("[bold red]✖ Rebase encountered unstaged changes or conflicts (rebase cleanly aborted).[/bold red]")
-                if ask_yesno("Perform Safe Sync instead (align base with GitHub and commit local disk state)?", default=True):
+                if ask_yesno("Perform Safe Sync instead (apply clean upstream changes and commit local disk state)?", default=True):
+                    reconcile_upstream_changes(branch, remote_ref)
                     run_git("branch", "-f", branch, remote_ref)
                     run_git("reset", "--mixed", "--quiet", "HEAD")
                     sync_all()
@@ -850,6 +929,7 @@ def safe_push(branch: str | None = None) -> bool:
                 return False
         elif choice == "2":
             console.print(f"[bold blue]Aligning base with {remote_ref} while keeping disk files...[/bold blue]")
+            reconcile_upstream_changes(branch, remote_ref)
             run_git("branch", "-f", branch, remote_ref)
             run_git("reset", "--mixed", "--quiet", "HEAD")
             sync_all()
@@ -873,6 +953,7 @@ def safe_push(branch: str | None = None) -> bool:
     elif ahead == 0 and behind > 0:
         console.print(f"[bold yellow]⚠ Local branch is {behind} commit(s) behind remote.[/bold yellow]")
         if ask_yesno(f"Fast-forward local branch '{branch}' to {remote_ref}?", default=True):
+            reconcile_upstream_changes(branch, remote_ref)
             run_git("branch", "-f", branch, remote_ref)
             run_git("reset", "--mixed", "--quiet", "HEAD")
             console.print(f"[bold green]✔ Local branch '{branch}' fast-forwarded to {remote_ref}.[/bold green]")

@@ -74,6 +74,83 @@ def _ask(prompt: str = " ❯ ") -> str:
 
 ssh_agent_pid: str | None = None
 
+def reconcile_upstream_changes(branch: str, remote_ref: str) -> None:
+    """Updates local disk files from upstream for files modified, added, or deleted in upstream PRs
+
+    that were NOT modified locally. Prevents upstream PR changes from being reverted during sync.
+    """
+    code_mb, mb_out, _ = dotgit("merge-base", branch, remote_ref)
+    mb = mb_out.strip()
+    if code_mb != 0 or not mb:
+        return
+
+    # List files and OIDs in remote_ref
+    _, ls_remote, _ = dotgit("ls-tree", "-r", "-z", remote_ref)
+    remote_files: dict[str, str] = {}
+    for entry in ls_remote.split('\0'):
+        if not entry or '\t' not in entry:
+            continue
+        meta, path = entry.split('\t', 1)
+        parts = meta.split()
+        if len(parts) >= 3:
+            remote_files[path] = parts[2]
+
+    # List files and OIDs in common merge base
+    _, ls_base, _ = dotgit("ls-tree", "-r", "-z", mb)
+    base_files: dict[str, str] = {}
+    for entry in ls_base.split('\0'):
+        if not entry or '\t' not in entry:
+            continue
+        meta, path = entry.split('\t', 1)
+        parts = meta.split()
+        if len(parts) >= 3:
+            base_files[path] = parts[2]
+
+    files_to_checkout: list[str] = []
+    files_to_delete: list[str] = []
+
+    # 1. Handle updated or newly added files from remote PRs
+    for path, r_oid in remote_files.items():
+        b_oid = base_files.get(path, "")
+        if r_oid == b_oid:
+            continue  # Remote didn't touch this file
+
+        disk_path = HOME / path
+        if not (disk_path.exists() or disk_path.is_symlink()):
+            if b_oid == "":
+                # Brand new file added upstream in PR -> check it out
+                files_to_checkout.append(path)
+            continue
+
+        code_h, disk_oid, _ = dotgit("hash-object", str(disk_path))
+        if code_h == 0 and disk_oid.strip() == b_oid:
+            # User never modified this file locally -> update from remote PR
+            files_to_checkout.append(path)
+
+    # 2. Handle files deleted upstream in PRs
+    for path, b_oid in base_files.items():
+        if path not in remote_files:
+            disk_path = HOME / path
+            if disk_path.exists() or disk_path.is_symlink():
+                code_h, disk_oid, _ = dotgit("hash-object", str(disk_path))
+                if code_h == 0 and disk_oid.strip() == b_oid:
+                    files_to_delete.append(path)
+
+    if files_to_delete:
+        console.print(f"[info]Removing {len(files_to_delete)} file(s) deleted in upstream PRs...[/info]")
+        for p in files_to_delete:
+            dp = HOME / p
+            if dp.is_file() or dp.is_symlink():
+                dp.unlink(missing_ok=True)
+            elif dp.is_dir():
+                shutil.rmtree(dp, ignore_errors=True)
+
+    if files_to_checkout:
+        console.print(f"[info]Applying {len(files_to_checkout)} upstream update(s) to local files (from merged PRs)...[/info]")
+        payload = "\0".join(files_to_checkout) + "\0"
+        dotgit("checkout", remote_ref, "--pathspec-from-file=-", "--pathspec-file-nul",
+               input_data=payload.encode("utf-8"), literal_pathspecs=True)
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class AppConfig:
     username: str
@@ -613,6 +690,7 @@ def execute_sync(config: AppConfig, mode: str) -> None:
                 if ahead == 0 and behind > 0:
                     # Local is purely behind remote -> Fast-forward directly
                     console.print(f"[info]Fast-forwarding local '{current_branch}' ({behind} commit(s) behind {remote_ref})...[/info]")
+                    reconcile_upstream_changes(current_branch, remote_ref)
                     dotgit("branch", "-f", current_branch, remote_ref)
                 elif ahead > 0 and behind > 0:
                     # Branches have diverged -> Rebase local commits onto remote
@@ -644,6 +722,7 @@ def execute_sync(config: AppConfig, mode: str) -> None:
                         choice = _ask("Select option [1/2/3] (default: 1): ") or "1"
                         if choice == "1":
                             console.print(f"[info]Aligning local branch '{current_branch}' with {remote_ref}...[/info]")
+                            reconcile_upstream_changes(current_branch, remote_ref)
                             dotgit("branch", "-f", current_branch, remote_ref)
                         elif choice == "2":
                             console.print(f"[warning]⚠ Overwriting {remote_ref} with local commits...[/warning]")
