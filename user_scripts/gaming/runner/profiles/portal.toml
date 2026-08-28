@@ -1,0 +1,35 @@
+# ==============================================================================
+# Portal Profile
+# ==============================================================================
+
+extends = "base_native"
+
+[meta]
+id = "portal"
+name = "Portal"
+version = "1.0"
+icon = "applications-games"
+developer = "Valve"
+genre = "Puzzle / FPS"
+description = "Set in the mysterious Aperture Science Laboratories, Portal is one of the most innovative new games on the horizon and offers gamers hours of unique gameplay."
+
+[paths]
+game_dir = "/mnt/zram1/portal/Portal.Collection-jc141"
+dwarfs_image = "files/game-root.dwarfs"
+dwarfs_mount = "files/.game-root-mnt"
+overlay_dir = "files/game-root"
+overlay_storage = "files/overlay-storage"
+overlay_work = "files/.game-root-work"
+executable = "Portal/hl2.sh"
+arguments = ["-game", "portal", "-steam"]
+
+[runtime]
+type = "native"
+
+[graphics]
+gpu = "auto"
+wayland_native = true
+
+[performance]
+gamemode = true
+fps_limit = 144

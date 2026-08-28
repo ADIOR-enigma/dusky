@@ -1,0 +1,35 @@
+# ==============================================================================
+# Portal 2 Profile
+# ==============================================================================
+
+extends = "base_native"
+
+[meta]
+id = "portal_2"
+name = "Portal 2"
+version = "1.0"
+icon = "applications-games"
+developer = "Valve"
+genre = "Puzzle / FPS / Co-op"
+description = "The sequel to the acclaimed original expands with new puzzles, chambers, and dynamic co-op multiplayer."
+
+[paths]
+game_dir = "/mnt/zram1/portal/Portal.Collection-jc141"
+dwarfs_image = "files/game-root.dwarfs"
+dwarfs_mount = "files/.game-root-mnt"
+overlay_dir = "files/game-root"
+overlay_storage = "files/overlay-storage"
+overlay_work = "files/.game-root-work"
+executable = "Portal.2/portal2.sh"
+arguments = ["-game", "portal2", "-steam"]
+
+[runtime]
+type = "native"
+
+[graphics]
+gpu = "auto"
+wayland_native = true
+
+[performance]
+gamemode = true
+fps_limit = 144

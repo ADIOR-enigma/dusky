@@ -1,0 +1,34 @@
+# ==============================================================================
+# Blasphemous Profile
+# ==============================================================================
+
+extends = "base_unity_native"
+
+[meta]
+id = "blasphemous"
+name = "Blasphemous"
+version = "1.0"
+icon = "applications-games"
+developer = "The Game Kitchen"
+genre = "Metroidvania / Action"
+description = "A punishing action-platformer that combines the fast-paced, skillful combat of a hack-n-slash game with a deep and evocative narrative core."
+
+[paths]
+game_dir = "/mnt/zram1/Blasphemous.Collection-jc141"
+dwarfs_image = "files/game-root.dwarfs"
+dwarfs_mount = "files/.game-root-mnt"
+overlay_dir = "files/game-root"
+overlay_storage = "files/overlay-storage"
+overlay_work = "files/.game-root-work"
+executable = "Blashphemous/Blasphemous.x86_64"
+arguments = []
+
+[runtime]
+type = "native"
+
+[graphics]
+gpu = "auto"
+wayland_native = true
+
+[performance]
+gamemode = true
