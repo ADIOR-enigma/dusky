@@ -1,0 +1,35 @@
+# ==============================================================================
+# Bloodthief Profile
+# ==============================================================================
+
+extends = "base_native"
+
+[meta]
+id = "bloodthief"
+name = "Bloodthief"
+version = "1.0"
+icon = "applications-games"
+developer = "Blargis"
+genre = "Action / Indie, Parkour Dungeon-Runner"
+description = "Ultra-fast melee dungeon-runner where you parkour through haunted crypts and castles, slashing undead foes with momentum-driven combat as a vampire."
+
+[paths]
+game_dir = "/mnt/zram1/Bloodthief-jc141"
+dwarfs_image = "files/game-root.dwarfs"
+dwarfs_mount = "files/.game-root-mnt"
+overlay_dir = "files/game-root"
+overlay_storage = "files/overlay-storage"
+overlay_work = "files/.game-root-work"
+executable = "bloodthief.sh"
+arguments = []
+
+[runtime]
+type = "native"
+
+[graphics]
+gpu = "auto"
+wayland_native = true
+
+[performance]
+gamemode = true
+fps_limit = 60

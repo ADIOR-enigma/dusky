@@ -1,0 +1,43 @@
+# ==============================================================================
+# Symphonia Profile
+# ==============================================================================
+
+extends = "base_wine_dxvk"
+
+[meta]
+id = "symphonia"
+name = "Symphonia"
+version = "1.0"
+icon = "applications-games"
+developer = "Sunny Peak"
+genre = "Platformer / Music"
+description = "Musical platformer where you awaken a vast mechanical world as a violinist, using the power of music to restore harmony."
+
+[paths]
+game_dir = "/mnt/zram1/Symphonia-jc141"
+dwarfs_image = "files/game-root.dwarfs"
+dwarfs_mount = "files/.game-root-mnt"
+overlay_dir = "files/game-root"
+overlay_storage = "files/overlay-storage"
+overlay_work = "files/.game-root-work"
+executable = "steamclient_loader_x64.exe"
+arguments = []
+
+[runtime]
+type = "wine"
+
+[runtime.wine]
+prefix_dir = "files/wine-prefix-ew"
+arch = "win64"
+sync_mode = "fsync"
+dxvk = true
+vkd3d = true
+dll_overrides = { "winemenubuilder.exe" = "d", "mshtml" = "d", "d3d9" = "n", "dxgi" = "n", "d3d11" = "n", "d3d12" = "n" }
+
+[graphics]
+gpu = "auto"
+wayland_native = true
+
+[performance]
+gamemode = true
+fps_limit = 60
