@@ -7,11 +7,11 @@ Master Game Runner Engine (AGY Gaming Architecture)
 
 Target Architecture:
   * Arch Linux (Bleeding Edge, Linux Kernel 7.2+)
-  * Pure Wayland & Hyprland Session
+  * Pure Wayland & Hyprland Session (Wayland native / XWayland bridge)
   * Dual-GPU Matrix: Intel Iris Xe (iGPU) + NVIDIA GeForce RTX 3050 Ti (dGPU)
   * Declarative TOML Profiles with Preset Inheritance (Zero Hardcoded Game IDs)
   * Dynamic DwarFS FUSE & fuse-overlayfs Mount Lifecycle with Rock-Solid Teardown
-  * Wine-Staging (Esync / Fsync / NTSYNC) + DXVK / VKD3D Graphics Translation
+  * Wine-Staging (Esync / Fsync / NTSYNC) + DXVK / VKD3D Translation
   * Gamescope Micro-Compositor, MangoHud, Feral GameMode, PipeWire Tuning
   * Interactive Rich TUI Dashboard, System Doctor, & Auto-Scaffolder
 
@@ -34,7 +34,7 @@ import time
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Final
 
 # Rich Console Integration
 try:
@@ -43,25 +43,24 @@ try:
     from rich.table import Table
     from rich.prompt import Prompt, Confirm
     from rich.text import Text
-    from rich.syntax import Syntax
     from rich import box
-    RICH_AVAILABLE = True
+    RICH_AVAILABLE: Final[bool] = True
 except ImportError:
-    RICH_AVAILABLE = False
+    RICH_AVAILABLE: Final[bool] = False
 
 
 # ==============================================================================
 # 1. CONSTANTS & SYSTEM PATHS
 # ==============================================================================
 
-ENGINE_NAME = "Master Game Runner Engine"
-ENGINE_VERSION = "1.0.0"
-SELF_DIR = Path(__file__).resolve().parent
-GLOBAL_CONFIG_PATH = SELF_DIR / "config.toml"
-PRESETS_DIR = SELF_DIR / "presets"
-PROFILES_DIR = SELF_DIR / "profiles"
+ENGINE_NAME: Final[str] = "Master Game Runner Engine"
+ENGINE_VERSION: Final[str] = "1.1.0"
+SELF_DIR: Final[Path] = Path(__file__).resolve().parent
+GLOBAL_CONFIG_PATH: Final[Path] = SELF_DIR / "config.toml"
+PRESETS_DIR: Final[Path] = SELF_DIR / "presets"
+PROFILES_DIR: Final[Path] = SELF_DIR / "profiles"
 
-console = Console() if RICH_AVAILABLE else None
+console: Console | None = Console() if RICH_AVAILABLE else None
 
 
 def log_info(msg: str) -> None:
@@ -110,7 +109,7 @@ def send_notification(title: str, message: str, urgency: str = "normal", icon: s
 # 2. HARDWARE & GPU DETECTION ENGINE
 # ==============================================================================
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class GPUInfo:
     dev_node: str
     pci_slot: str
@@ -137,7 +136,7 @@ class GPUInfo:
         return "1002" in self.vendor_id.lower() or "amd" in self.vendor_name.lower()
 
 
-GPU_VENDOR_MAP = {
+GPU_VENDOR_MAP: Final[dict[str, str]] = {
     "0x8086": "Intel",
     "0x1002": "AMD",
     "0x10de": "NVIDIA",
@@ -145,10 +144,10 @@ GPU_VENDOR_MAP = {
 }
 
 
-def detect_gpus() -> List[GPUInfo]:
+def detect_gpus() -> list[GPUInfo]:
     """Auto-detects all GPUs present via DRM card nodes and lspci."""
-    gpus: List[GPUInfo] = []
-    seen_slots: Set[str] = set()
+    gpus: list[GPUInfo] = []
+    seen_slots: set[str] = set()
 
     for s in sorted(glob.glob("/sys/class/drm/card[0-9]*")):
         p = Path(s)
@@ -177,7 +176,7 @@ def detect_gpus() -> List[GPUInfo]:
             continue
 
         try:
-            vid = vdir.joinpath("vendor").read_text().strip().lower()
+            vid = vdir.joinpath("vendor").read_text(encoding="utf-8").strip().lower()
         except Exception:
             continue
 
@@ -190,7 +189,7 @@ def detect_gpus() -> List[GPUInfo]:
         for bp in [vdir / "boot_vga", sys_dev / "boot_vga"]:
             if bp.exists():
                 try:
-                    boot_vga = int(bp.read_text().strip())
+                    boot_vga = int(bp.read_text(encoding="utf-8").strip())
                     break
                 except Exception:
                     pass
@@ -227,7 +226,7 @@ def detect_gpus() -> List[GPUInfo]:
             driver=driver
         ))
 
-    # Fallback to lspci
+    # Fallback to lspci if DRM nodes not populated
     if not gpus and shutil.which("lspci"):
         try:
             res = subprocess.run(["lspci", "-mm", "-nn"], capture_output=True, text=True, timeout=2)
@@ -260,21 +259,20 @@ def detect_gpus() -> List[GPUInfo]:
 # 3. CONFIGURATION PARSER & CASCADING INHERITANCE
 # ==============================================================================
 
-def deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     """Recursively deep merges override dict into base dict."""
     result = copy.deepcopy(base)
     for key, value in override.items():
         if key in result and isinstance(result[key], dict) and isinstance(value, dict):
             result[key] = deep_merge(result[key], value)
         elif key in result and isinstance(result[key], list) and isinstance(value, list):
-            # For lists, if override is not empty, use override (or combine if needed)
             result[key] = copy.deepcopy(value)
         else:
             result[key] = copy.deepcopy(value)
     return result
 
 
-def expand_variables(val: Any, context: Dict[str, str]) -> Any:
+def expand_variables(val: Any, context: dict[str, str]) -> Any:
     """Recursively expands shell and context variables ($HOME, ~, $GAME_DIR, etc.)."""
     if isinstance(val, str):
         expanded = os.path.expanduser(os.path.expandvars(val))
@@ -297,7 +295,7 @@ class ProfileManager:
         self.global_config_path = global_config_path
         self.global_config = self._load_toml(global_config_path)
 
-    def _load_toml(self, path: Path) -> Dict[str, Any]:
+    def _load_toml(self, path: Path) -> dict[str, Any]:
         if not path.exists():
             return {}
         try:
@@ -307,8 +305,8 @@ class ProfileManager:
             log_error(f"Failed to parse TOML at {path}: {e}")
             return {}
 
-    def discover_profiles(self) -> Dict[str, Path]:
-        """Discovers all .toml game profiles in profiles/ excluding _template.toml."""
+    def discover_profiles(self) -> dict[str, Path]:
+        """Discovers all .toml game profiles in profiles/ excluding templates."""
         profiles = {}
         if not self.profiles_dir.exists():
             return profiles
@@ -319,7 +317,7 @@ class ProfileManager:
             profiles[profile_id] = p
         return profiles
 
-    def discover_presets(self) -> Dict[str, Path]:
+    def discover_presets(self) -> dict[str, Path]:
         """Discovers all .toml base presets in presets/."""
         presets = {}
         if not self.presets_dir.exists():
@@ -329,7 +327,7 @@ class ProfileManager:
             presets[preset_id] = p
         return presets
 
-    def load_preset_chain(self, preset_name: str, visited: Optional[Set[str]] = None) -> Dict[str, Any]:
+    def load_preset_chain(self, preset_name: str, visited: set[str] | None = None) -> dict[str, Any]:
         """Recursively loads preset inheritance hierarchy."""
         if visited is None:
             visited = set()
@@ -350,12 +348,11 @@ class ProfileManager:
             return deep_merge(parent_data, data)
         return data
 
-    def load_profile(self, profile_id_or_path: str, cli_overrides: Optional[Dict[str, Any]] = None) -> Tuple[str, Dict[str, Any]]:
+    def load_profile(self, profile_id_or_path: str, cli_overrides: dict[str, Any] | None = None) -> tuple[str, dict[str, Any]]:
         """
         Loads a game profile by ID or path, resolves inheritance, and applies CLI overrides.
-        Resolution Order: Global Defaults -> Presets -> Profile -> CLI Overrides
+        Precedence: Global Defaults -> Presets -> Profile -> CLI Overrides
         """
-        # Determine path
         candidate_path = Path(profile_id_or_path).resolve()
         if candidate_path.is_file():
             profile_path = candidate_path
@@ -417,12 +414,11 @@ class MountManager:
         if not path.exists():
             return False
         try:
-            res = subprocess.run(["mountpoint", "-q", str(path)], capture_output=True)
+            res = subprocess.run(["mountpoint", "-q", str(path)], capture_output=True, timeout=2)
             return res.returncode == 0
         except Exception:
-            # Fallback to reading /proc/mounts
             try:
-                mounts = Path("/proc/mounts").read_text()
+                mounts = Path("/proc/mounts").read_text(encoding="utf-8")
                 resolved = str(path.resolve())
                 for line in mounts.splitlines():
                     parts = line.split()
@@ -433,7 +429,7 @@ class MountManager:
             return False
 
     @staticmethod
-    def get_profile_paths(config: Dict[str, Any]) -> Dict[str, Path]:
+    def get_profile_paths(config: dict[str, Any]) -> dict[str, Path]:
         """Resolves absolute paths for DwarFS and OverlayFS layers."""
         paths_cfg = config.get("paths", {})
         game_dir = Path(paths_cfg.get("game_dir", "")).resolve()
@@ -467,7 +463,7 @@ class MountManager:
         }
 
     @classmethod
-    def get_mount_status(cls, config: Dict[str, Any]) -> Tuple[bool, bool]:
+    def get_mount_status(cls, config: dict[str, Any]) -> tuple[bool, bool]:
         """Returns (dwarfs_mounted, overlay_mounted)."""
         paths = cls.get_profile_paths(config)
         dwarfs_mounted = cls.is_mounted(paths["dwarfs_mount"])
@@ -475,7 +471,7 @@ class MountManager:
         return dwarfs_mounted, overlay_mounted
 
     @classmethod
-    def mount(cls, config: Dict[str, Any], dry_run: bool = False) -> bool:
+    def mount(cls, config: dict[str, Any], dry_run: bool = False) -> bool:
         """Mounts DwarFS FUSE image and fuse-overlayfs union layer."""
         paths = cls.get_profile_paths(config)
         dwarfs_img = paths["dwarfs_image"]
@@ -486,7 +482,6 @@ class MountManager:
         game_dir = paths["game_dir"]
 
         if not dwarfs_img or not dwarfs_img.exists():
-            # Not a DwarFS game or image missing; no mount needed
             return True
 
         dwarfs_mounted = cls.is_mounted(dwarfs_mnt)
@@ -503,7 +498,7 @@ class MountManager:
         storage_cfg = config.get("storage", {})
         cache_percent = storage_cfg.get("dwarfs_cache_percent", 25)
         try:
-            meminfo = Path("/proc/meminfo").read_text()
+            meminfo = Path("/proc/meminfo").read_text(encoding="utf-8")
             m = re.search(r"MemTotal:\s+(\d+)\s+kB", meminfo)
             total_kb = int(m.group(1)) if m else 16777216
         except Exception:
@@ -519,7 +514,7 @@ class MountManager:
             log_info(f"[DRY RUN] Would mount fuse-overlayfs: {overlay_dir}")
             return True
 
-        # Ensure workdir is clean
+        # Ensure workdir is clean (fuse-overlayfs requirement)
         if overlay_work.exists():
             shutil.rmtree(overlay_work, ignore_errors=True)
 
@@ -571,7 +566,6 @@ class MountManager:
         res = subprocess.run(overlay_cmd, capture_output=True, text=True)
         if res.returncode != 0:
             log_error(f"fuse-overlayfs mount failed: {res.stderr.strip() or res.stdout.strip()}")
-            # Rollback DwarFS
             subprocess.run(["fusermount3", "-u", "-z", str(dwarfs_mnt)], capture_output=True)
             return False
 
@@ -579,7 +573,7 @@ class MountManager:
         return True
 
     @classmethod
-    def unmount(cls, config: Dict[str, Any], dry_run: bool = False, silent: bool = False) -> bool:
+    def unmount(cls, config: dict[str, Any], dry_run: bool = False, silent: bool = False) -> bool:
         """Safely unmounts fuse-overlayfs and DwarFS FUSE."""
         paths = cls.get_profile_paths(config)
         dwarfs_mnt = paths["dwarfs_mount"]
@@ -592,7 +586,6 @@ class MountManager:
             return True
 
         success = True
-        # Terminate any hung FUSE consumers
         try:
             subprocess.run(["fuser", "-k", str(dwarfs_mnt)], capture_output=True, timeout=2)
         except Exception:
@@ -610,7 +603,6 @@ class MountManager:
                             log_warning(f"Could not cleanly unmount {mount_pt}")
                         success = False
 
-        # Clean workdir if requested
         if config.get("storage", {}).get("auto_clean_workdir", True) and overlay_work.exists():
             shutil.rmtree(overlay_work, ignore_errors=True)
 
@@ -642,14 +634,14 @@ class MountManager:
 
 class ActiveRunContext:
     """Tracks running processes and mounts for guaranteed clean teardown."""
-    active_profile_config: Optional[Dict[str, Any]] = None
-    game_process: Optional[subprocess.Popen] = None
+    active_profile_config: dict[str, Any] | None = None
+    game_process: subprocess.Popen | None = None
     wineserver_managed: bool = False
-    wine_prefix: Optional[Path] = None
+    wine_prefix: Path | None = None
     cleaned: bool = False
 
 
-def cleanup_active_context():
+def cleanup_active_context() -> None:
     """Emergency and normal teardown cleanup handler."""
     if ActiveRunContext.cleaned:
         return
@@ -682,7 +674,7 @@ def cleanup_active_context():
             MountManager.unmount(cfg, silent=True)
 
 
-def signal_handler(signum, frame):
+def signal_handler(signum: int, frame: Any) -> None:
     sig_name = signal.Signals(signum).name
     log_warning(f"Received signal {sig_name}. Initiating safe teardown...")
     cleanup_active_context()
@@ -702,7 +694,7 @@ atexit.register(cleanup_active_context)
 class GameRunner:
     """Orchestrates environment, GPU offload, Gamescope, Wine, and process execution."""
 
-    def __init__(self, profile_id: str, config: Dict[str, Any], extra_args: Optional[List[str]] = None, dry_run: bool = False, verbose: bool = False):
+    def __init__(self, profile_id: str, config: dict[str, Any], extra_args: list[str] | None = None, dry_run: bool = False, verbose: bool = False):
         self.profile_id = profile_id
         self.config = config
         self.extra_args = extra_args or []
@@ -749,23 +741,19 @@ class GameRunner:
         env["WINEARCH"] = wine_cfg.get("arch", "win64")
         env["WINEDEBUG"] = "-all"
 
-        wine_bin = wine_cfg.get("wine_binary", "wine")
         wineboot_bin = "wineboot"
         winecfg_bin = "winecfg"
         wineserver_bin = "wineserver"
 
-        # Run wineboot
         subprocess.run([wineboot_bin, "-i"], env=env, capture_output=True)
-        # Set Windows 11
         subprocess.run([winecfg_bin, "-v", "win11"], env=env, capture_output=True)
-        # Wait for prefix server
         subprocess.run([wineserver_bin, "-w"], env=env, capture_output=True)
 
         log_success("Wine prefix initialized successfully.")
         return prefix_path
 
-    def build_environment(self) -> Dict[str, str]:
-        """Constructs environment variables for the execution pipeline."""
+    def build_environment(self) -> dict[str, str]:
+        """Constructs pure Wayland environment variables for the execution pipeline."""
         env = os.environ.copy()
 
         # 1. Profile custom environment variables
@@ -776,24 +764,30 @@ class GameRunner:
             else:
                 env[k] = str(v)
 
-        # 2. Audio & PipeWire
+        # 2. Audio & PipeWire Tuning
         audio_cfg = self.config.get("audio", {})
         if audio_cfg.get("driver") == "pipewire":
             latency = audio_cfg.get("pipewire_latency", "128/48000")
             env["PIPEWIRE_LATENCY"] = latency
 
-        # 3. Wayland & Graphics Presentation
+        # 3. Pure Wayland & Graphics Presentation
         gfx_cfg = self.config.get("graphics", {})
-        if gfx_cfg.get("wayland_native", True) and not gfx_cfg.get("prefer_xwayland", False):
+        if gfx_cfg.get("prefer_xwayland", False):
+            # XWayland bridge explicitly requested by profile
+            env["SDL_VIDEODRIVER"] = "x11"
+            env["GDK_BACKEND"] = "x11"
+            env["QT_QPA_PLATFORM"] = "xcb"
+            if not env.get("DISPLAY"):
+                env["DISPLAY"] = ":0"
+        else:
+            # Pure Wayland Native
             env["SDL_VIDEODRIVER"] = "wayland"
             env["CLUTTER_BACKEND"] = "wayland"
             env["GDK_BACKEND"] = "wayland"
             env["QT_QPA_PLATFORM"] = "wayland"
             env["PROTON_ENABLE_WAYLAND"] = "1"
-        elif gfx_cfg.get("prefer_xwayland", False):
-            env["SDL_VIDEODRIVER"] = "x11"
-            env["GDK_BACKEND"] = "x11"
-            env["QT_QPA_PLATFORM"] = "xcb"
+            env["WAYLAND_DISPLAY"] = os.environ.get("WAYLAND_DISPLAY", "wayland-1")
+            env["XDG_SESSION_TYPE"] = "wayland"
 
         # 4. GPU Offload Configuration
         gpu_choice = gfx_cfg.get("gpu", "auto")
@@ -841,20 +835,20 @@ class GameRunner:
                 env["WINE_LARGE_ADDRESS_AWARE"] = "1"
 
             # Sync Mode
-            sync_mode = wine_cfg.get("sync_mode", "fsync")
-            if sync_mode == "fsync":
-                env["WINEFSYNC"] = "1"
-                env["WINEESYNC"] = "0"
-            elif sync_mode == "esync":
-                env["WINEESYNC"] = "1"
-                env["WINEFSYNC"] = "0"
-            elif sync_mode == "ntsync":
-                env["WINENTSYNC"] = "1"
-                env["WINEFSYNC"] = "0"
-                env["WINEESYNC"] = "0"
-            elif sync_mode == "server":
-                env["WINEFSYNC"] = "0"
-                env["WINEESYNC"] = "0"
+            match wine_cfg.get("sync_mode", "fsync"):
+                case "fsync":
+                    env["WINEFSYNC"] = "1"
+                    env["WINEESYNC"] = "0"
+                case "esync":
+                    env["WINEESYNC"] = "1"
+                    env["WINEFSYNC"] = "0"
+                case "ntsync":
+                    env["WINENTSYNC"] = "1"
+                    env["WINEFSYNC"] = "0"
+                    env["WINEESYNC"] = "0"
+                case "server":
+                    env["WINEFSYNC"] = "0"
+                    env["WINEESYNC"] = "0"
 
             # DLL Overrides
             dll_map = wine_cfg.get("dll_overrides", {})
@@ -884,7 +878,7 @@ class GameRunner:
 
         return env
 
-    def build_command_pipeline(self) -> Tuple[List[str], Path]:
+    def build_command_pipeline(self) -> tuple[list[str], Path]:
         """Assembles the complete nested command pipeline and working directory."""
         paths_cfg = self.config.get("paths", {})
         runtime_cfg = self.config.get("runtime", {})
@@ -934,11 +928,11 @@ class GameRunner:
 
         pipeline = base_cmd
 
-        # Wrap: Gamescope
+        # Wrap: Gamescope (Wayland native backend)
         gamescope_cfg = self.config.get("graphics", {}).get("gamescope", {})
         if gamescope_cfg.get("enabled", False) and shutil.which("gamescope"):
-            log_info("Pipeline Layer: Gamescope Micro-Compositor")
-            gs_cmd = ["gamescope"]
+            log_info("Pipeline Layer: Gamescope Wayland Micro-Compositor")
+            gs_cmd = ["gamescope", "--backend", "wayland", "--expose-wayland"]
             w = gamescope_cfg.get("width", 1920)
             h = gamescope_cfg.get("height", 1080)
             W = gamescope_cfg.get("output_width", 1920)
@@ -947,10 +941,13 @@ class GameRunner:
 
             gs_cmd.extend(["-w", str(w), "-h", str(h), "-W", str(W), "-H", str(H), "-r", str(r)])
 
-            if gamescope_cfg.get("mode", "embedded") == "embedded":
-                gs_cmd.append("-b")  # Borderless
-            elif gamescope_cfg.get("mode") == "fullscreen":
-                gs_cmd.append("-f")
+            match gamescope_cfg.get("mode", "embedded"):
+                case "embedded" | "borderless":
+                    gs_cmd.append("-b")
+                case "fullscreen":
+                    gs_cmd.append("-f")
+                case "nested":
+                    pass
 
             if gamescope_cfg.get("fsr_upscaling", False):
                 gs_cmd.extend(["-F", "fsr", "--fsr-sharpness", str(gamescope_cfg.get("fsr_sharpness", 2))])
@@ -991,8 +988,8 @@ class GameRunner:
             bwrap_cmd = [
                 "bwrap",
                 "--ro-bind", "/usr", "/usr",
-                "--ro-bind", "/lib", "/lib",
-                "--ro-bind", "/lib64", "/lib64" if Path("/lib64").exists() else "/usr/lib64",
+                "--ro-bind-try", "/lib", "/lib",
+                "--ro-bind-try", "/lib64", "/lib64",
                 "--ro-bind", "/bin", "/bin",
                 "--ro-bind", "/etc", "/etc",
                 "--proc", "/proc",
@@ -1001,19 +998,19 @@ class GameRunner:
                 "--bind", str(self.paths["game_dir"]), str(self.paths["game_dir"])
             ]
             if sandbox_cfg.get("bind_gpu", True):
-                bwrap_cmd.extend(["--dev-bind", "/dev/dri", "/dev/dri"])
+                bwrap_cmd.extend(["--dev-bind-try", "/dev/dri", "/dev/dri"])
                 for nv in glob.glob("/dev/nvidia*"):
-                    bwrap_cmd.extend(["--dev-bind", nv, nv])
+                    bwrap_cmd.extend(["--dev-bind-try", nv, nv])
             if sandbox_cfg.get("bind_sound", True):
                 uid = os.getuid()
                 for sock in [f"/run/user/{uid}/pipewire-0", f"/run/user/{uid}/pulse"]:
                     if Path(sock).exists():
-                        bwrap_cmd.extend(["--ro-bind", sock, sock])
+                        bwrap_cmd.extend(["--ro-bind-try", sock, sock])
             if sandbox_cfg.get("bind_wayland", True):
                 w_disp = os.environ.get("WAYLAND_DISPLAY", "wayland-1")
                 w_sock = Path(f"/run/user/{os.getuid()}/{w_disp}")
                 if w_sock.exists():
-                    bwrap_cmd.extend(["--ro-bind", str(w_sock), str(w_sock)])
+                    bwrap_cmd.extend(["--ro-bind-try", str(w_sock), str(w_sock)])
             if not sandbox_cfg.get("bind_network", False):
                 bwrap_cmd.append("--unshare-net")
 
@@ -1116,13 +1113,12 @@ class ProfileScaffolder:
     """Intelligently inspects a directory and generates a ready-to-run TOML profile."""
 
     @staticmethod
-    def scaffold(target_dir: Path, name: Optional[str] = None, profile_id: Optional[str] = None, preset: Optional[str] = None, output_path: Optional[Path] = None, overwrite: bool = False) -> Path:
+    def scaffold(target_dir: Path, name: str | None = None, profile_id: str | None = None, preset: str | None = None, output_path: Path | None = None, overwrite: bool = False) -> Path:
         target_dir = target_dir.resolve()
         if not target_dir.is_dir():
             raise NotADirectoryError(f"Target directory {target_dir} does not exist.")
 
         folder_name = target_dir.name
-        # Sanitize ID
         if not profile_id:
             clean_id = re.sub(r"[-. ]+", "_", folder_name.lower())
             clean_id = re.sub(r"_jc141$", "", clean_id)
@@ -1148,13 +1144,12 @@ class ProfileScaffolder:
         is_ue5 = False
         is_wine = False
         executable_rel = ""
-        args: List[str] = []
+        args: list[str] = []
 
-        # Check existing start scripts for clues
         start_scripts = list(target_dir.glob("start*.sh")) + list(target_dir.glob("*/start*.sh"))
         for s in start_scripts:
             try:
-                content = s.read_text(errors="ignore")
+                content = s.read_text(encoding="utf-8", errors="ignore")
                 if "SYSWINE" in content or "wine" in content:
                     is_wine = True
                 m_cmd = re.search(r'CMD=\((.*?)\)', content)
@@ -1175,7 +1170,7 @@ class ProfileScaffolder:
         tree_text = ""
         for tf in tree_files:
             try:
-                tree_text = tf.read_text(errors="ignore")
+                tree_text = tf.read_text(encoding="utf-8", errors="ignore")
                 break
             except Exception:
                 pass
@@ -1198,10 +1193,8 @@ class ProfileScaffolder:
         else:
             chosen_preset = "base_native"
 
-        # Determine Runtime Type
         runtime_type = "wine" if is_wine else "native"
 
-        # Fallback executable search
         if not executable_rel:
             if is_wine:
                 executable_rel = "game.exe"
@@ -1216,7 +1209,6 @@ class ProfileScaffolder:
         if output_path.exists() and not overwrite:
             raise FileExistsError(f"Profile file already exists at {output_path}. Use --overwrite to replace it.")
 
-        # Construct TOML
         toml_content = f"""# ==============================================================================
 # {name} Game Profile
 # Auto-generated by Master Game Runner Engine Scaffolder
@@ -1292,7 +1284,7 @@ def run_doctor() -> bool:
         pass
 
     try:
-        max_map = int(Path("/proc/sys/vm/max_map_count").read_text().strip())
+        max_map = int(Path("/proc/sys/vm/max_map_count").read_text(encoding="utf-8").strip())
         if max_map >= 2147483642:
             table.add_row("Sysctl", "vm.max_map_count", "[bold green]OK[/bold green]", f"{max_map} (UE5 & DX12 ready)")
         else:
@@ -1301,17 +1293,17 @@ def run_doctor() -> bool:
         table.add_row("Sysctl", "vm.max_map_count", "[bold red]FAIL[/bold red]", str(e))
 
     try:
-        split_lock = Path("/proc/sys/kernel/split_lock_mitigate").read_text().strip()
+        split_lock = Path("/proc/sys/kernel/split_lock_mitigate").read_text(encoding="utf-8").strip()
         table.add_row("Sysctl", "split_lock_mitigate", "[bold green]OK[/bold green]", f"{split_lock} (0 = low-latency gaming)")
     except Exception:
         pass
 
-    # 2. Display & Wayland
+    # 2. Display & Wayland Session
     wayland_display = os.environ.get("WAYLAND_DISPLAY", "")
     if wayland_display:
         table.add_row("Display", "Wayland Session", "[bold green]OK[/bold green]", f"Active socket: {wayland_display}")
     else:
-        table.add_row("Display", "Wayland Session", "[bold yellow]WARN[/bold yellow]", "WAYLAND_DISPLAY not set (XWayland/X11 fallback)")
+        table.add_row("Display", "Wayland Session", "[bold yellow]WARN[/bold yellow]", "WAYLAND_DISPLAY not set")
 
     # 3. GPU Matrix & Drivers
     gpus = detect_gpus()
@@ -1364,7 +1356,7 @@ def run_doctor() -> bool:
 # 9. VALIDATOR ENGINE (`master_runner.py validate`)
 # ==============================================================================
 
-def validate_profiles(manager: ProfileManager, target_id: Optional[str] = None) -> bool:
+def validate_profiles(manager: ProfileManager, target_id: str | None = None) -> bool:
     """Validates profile syntax, files, and executable paths."""
     profiles = manager.discover_profiles()
     if target_id:
@@ -1413,7 +1405,6 @@ def validate_profiles(manager: ProfileManager, target_id: Optional[str] = None) 
             elif exec_cand2.exists():
                 exec_status = "[bold green]Found[/bold green]"
             elif dwarfs_img and dwarfs_img.exists():
-                # Dwarfs image present; executable will be populated upon mount
                 exec_status = "[bold cyan]Packed in DwarFS[/bold cyan]"
             else:
                 exec_status = "[bold yellow]Unverified[/bold yellow]"
@@ -1469,7 +1460,7 @@ StartupNotify=true
 # 11. INTERACTIVE RICH TUI DASHBOARD (`master_runner.py menu`)
 # ==============================================================================
 
-def render_interactive_menu(manager: ProfileManager):
+def render_interactive_menu(manager: ProfileManager) -> None:
     """Renders the Rich TUI Dashboard for instant keyboard launching and management."""
     if not console:
         print("Interactive menu requires rich console.")
@@ -1583,7 +1574,7 @@ def main():
     run_parser.add_argument("--no-gamescope", action="store_false", dest="gamescope", help="Force disable Gamescope")
     run_parser.add_argument("--gamescope-res", help="Gamescope render resolution (e.g. 1920x1080)")
     run_parser.add_argument("--gamescope-out-res", help="Gamescope output display resolution (e.g. 1920x1080)")
-    run_parser.add_argument("--gamescope-mode", choices=["embedded", "nested", "fullscreen"], help="Gamescope mode")
+    run_parser.add_argument("--gamescope-mode", choices=["embedded", "nested", "fullscreen", "borderless"], help="Gamescope mode")
     run_parser.add_argument("--gamescope-fsr", action="store_true", help="Enable Gamescope FSR upscaling")
     run_parser.add_argument("--gamescope-sharpness", type=int, help="Gamescope FSR sharpness (0-20)")
     run_parser.add_argument("--gamescope-tearing", action="store_true", help="Enable Gamescope immediate flips (low-latency tearing)")
@@ -1655,220 +1646,219 @@ def main():
     args = parser.parse_args()
 
     if not args.command:
-        # Default to interactive menu if no arguments provided
         manager = ProfileManager()
         render_interactive_menu(manager)
         return
 
     manager = ProfileManager()
 
-    if args.command == "menu":
-        render_interactive_menu(manager)
+    match args.command:
+        case "menu":
+            render_interactive_menu(manager)
 
-    elif args.command == "list":
-        profiles = manager.discover_profiles()
-        presets = manager.discover_presets()
+        case "list":
+            profiles = manager.discover_profiles()
+            presets = manager.discover_presets()
 
-        if console:
-            p_table = Table(title="Discovered Game Profiles", box=box.ROUNDED)
-            p_table.add_column("Profile ID", style="cyan")
-            p_table.add_column("Title", style="white")
-            p_table.add_column("Preset Hierarchy", style="magenta")
-            p_table.add_column("Game Directory", style="dim")
+            if console:
+                p_table = Table(title="Discovered Game Profiles", box=box.ROUNDED)
+                p_table.add_column("Profile ID", style="cyan")
+                p_table.add_column("Title", style="white")
+                p_table.add_column("Preset Hierarchy", style="magenta")
+                p_table.add_column("Game Directory", style="dim")
 
-            for pid, path in profiles.items():
-                try:
-                    _, cfg = manager.load_profile(pid)
-                    title = cfg.get("meta", {}).get("name", pid)
-                    preset = cfg.get("extends", "none")
-                    gdir = cfg.get("paths", {}).get("game_dir", "-")
-                    p_table.add_row(pid, title, preset, gdir)
-                except Exception as e:
-                    p_table.add_row(pid, "[red]Error[/red]", "-", str(e))
+                for pid, path in profiles.items():
+                    try:
+                        _, cfg = manager.load_profile(pid)
+                        title = cfg.get("meta", {}).get("name", pid)
+                        preset = cfg.get("extends", "none")
+                        gdir = cfg.get("paths", {}).get("game_dir", "-")
+                        p_table.add_row(pid, title, preset, gdir)
+                    except Exception as e:
+                        p_table.add_row(pid, "[red]Error[/red]", "-", str(e))
 
-            console.print(p_table)
+                console.print(p_table)
 
-            pr_table = Table(title="Base Archetype Presets", box=box.ROUNDED)
-            pr_table.add_column("Preset ID", style="blue")
-            pr_table.add_column("File Path", style="dim")
-            for prid, path in presets.items():
-                pr_table.add_row(prid, str(path))
-            console.print(pr_table)
-        else:
-            print("Profiles:", list(profiles.keys()))
-            print("Presets:", list(presets.keys()))
+                pr_table = Table(title="Base Archetype Presets", box=box.ROUNDED)
+                pr_table.add_column("Preset ID", style="blue")
+                pr_table.add_column("File Path", style="dim")
+                for prid, path in presets.items():
+                    pr_table.add_row(prid, str(path))
+                console.print(pr_table)
+            else:
+                print("Profiles:", list(profiles.keys()))
+                print("Presets:", list(presets.keys()))
 
-    elif args.command == "status":
-        profiles = manager.discover_profiles()
-        if console:
-            table = Table(title="Active Game Mount & Runtime Status", box=box.ROUNDED)
-            table.add_column("Profile ID", style="cyan")
-            table.add_column("Game Title", style="white")
-            table.add_column("DwarFS Layer", justify="center")
-            table.add_column("OverlayFS Layer", justify="center")
-            table.add_column("Playable Game Root", style="dim")
+        case "status":
+            profiles = manager.discover_profiles()
+            if console:
+                table = Table(title="Active Game Mount & Runtime Status", box=box.ROUNDED)
+                table.add_column("Profile ID", style="cyan")
+                table.add_column("Game Title", style="white")
+                table.add_column("DwarFS Layer", justify="center")
+                table.add_column("OverlayFS Layer", justify="center")
+                table.add_column("Playable Game Root", style="dim")
 
-            for pid, p_path in profiles.items():
-                try:
-                    _, cfg = manager.load_profile(pid)
-                    paths = MountManager.get_profile_paths(cfg)
-                    dw_m, ov_m = MountManager.get_mount_status(cfg)
-                    dw_badge = "[bold green]MOUNTED[/bold green]" if dw_m else "[dim]UNMOUNTED[/dim]"
-                    ov_badge = "[bold green]MOUNTED[/bold green]" if ov_m else "[dim]UNMOUNTED[/dim]"
-                    name = cfg.get("meta", {}).get("name", pid)
-                    table.add_row(pid, name, dw_badge, ov_badge, str(paths["overlay_dir"]))
-                except Exception as e:
-                    table.add_row(pid, "ERROR", "-", "-", str(e))
+                for pid, p_path in profiles.items():
+                    try:
+                        _, cfg = manager.load_profile(pid)
+                        paths = MountManager.get_profile_paths(cfg)
+                        dw_m, ov_m = MountManager.get_mount_status(cfg)
+                        dw_badge = "[bold green]MOUNTED[/bold green]" if dw_m else "[dim]UNMOUNTED[/dim]"
+                        ov_badge = "[bold green]MOUNTED[/bold green]" if ov_m else "[dim]UNMOUNTED[/dim]"
+                        name = cfg.get("meta", {}).get("name", pid)
+                        table.add_row(pid, name, dw_badge, ov_badge, str(paths["overlay_dir"]))
+                    except Exception as e:
+                        table.add_row(pid, "ERROR", "-", "-", str(e))
 
-            console.print(table)
+                console.print(table)
 
-    elif args.command == "mount":
-        try:
-            pid, cfg = manager.load_profile(args.profile)
-            MountManager.mount(cfg, dry_run=args.dry_run)
-        except Exception as e:
-            log_error(f"Mount failed: {e}")
-            sys.exit(1)
-
-    elif args.command == "unmount":
-        try:
-            pid, cfg = manager.load_profile(args.profile)
-            MountManager.unmount(cfg, dry_run=args.dry_run)
-        except Exception as e:
-            log_error(f"Unmount failed: {e}")
-            sys.exit(1)
-
-    elif args.command == "unmount-all":
-        count = MountManager.unmount_all(manager, dry_run=args.dry_run)
-        log_success(f"Completed unmount sweep. Unmounted {count} active profiles.")
-
-    elif args.command == "doctor":
-        ok = run_doctor()
-        sys.exit(0 if ok else 1)
-
-    elif args.command == "validate":
-        target = None if args.all or not args.profile else args.profile
-        ok = validate_profiles(manager, target_id=target)
-        sys.exit(0 if ok else 1)
-
-    elif args.command == "init":
-        try:
-            out_p = Path(args.output).resolve() if args.output else None
-            ProfileScaffolder.scaffold(
-                target_dir=Path(args.path),
-                name=args.name,
-                profile_id=args.id,
-                preset=args.preset,
-                output_path=out_p,
-                overwrite=args.overwrite
-            )
-        except Exception as e:
-            log_error(f"Failed to auto-scaffold profile: {e}")
-            sys.exit(1)
-
-    elif args.command == "install-desktop":
-        try:
-            install_desktop_shortcut(manager, args.profile)
-        except Exception as e:
-            log_error(f"Failed to install desktop shortcut: {e}")
-            sys.exit(1)
-
-    elif args.command == "install-all-desktops":
-        profiles = manager.discover_profiles()
-        for pid in profiles:
+        case "mount":
             try:
-                install_desktop_shortcut(manager, pid)
+                pid, cfg = manager.load_profile(args.profile)
+                MountManager.mount(cfg, dry_run=args.dry_run)
             except Exception as e:
-                log_error(f"Failed for {pid}: {e}")
+                log_error(f"Mount failed: {e}")
+                sys.exit(1)
 
-    elif args.command == "run":
-        # Build CLI overrides dict
-        overrides: Dict[str, Any] = {}
-
-        if args.gpu:
-            overrides.setdefault("graphics", {})["gpu"] = args.gpu
-
-        if args.gamescope is not None:
-            overrides.setdefault("graphics", {}).setdefault("gamescope", {})["enabled"] = args.gamescope
-
-        if args.gamescope_res:
+        case "unmount":
             try:
-                w, h = map(int, args.gamescope_res.lower().split("x"))
-                overrides.setdefault("graphics", {}).setdefault("gamescope", {})["width"] = w
-                overrides.setdefault("graphics", {}).setdefault("gamescope", {})["height"] = h
-            except ValueError:
-                log_error("Invalid --gamescope-res format. Use WIDTHxHEIGHT (e.g. 1920x1080)")
+                pid, cfg = manager.load_profile(args.profile)
+                MountManager.unmount(cfg, dry_run=args.dry_run)
+            except Exception as e:
+                log_error(f"Unmount failed: {e}")
+                sys.exit(1)
 
-        if args.gamescope_out_res:
+        case "unmount-all":
+            count = MountManager.unmount_all(manager, dry_run=args.dry_run)
+            log_success(f"Completed unmount sweep. Unmounted {count} active profiles.")
+
+        case "doctor":
+            ok = run_doctor()
+            sys.exit(0 if ok else 1)
+
+        case "validate":
+            target = None if args.all or not args.profile else args.profile
+            ok = validate_profiles(manager, target_id=target)
+            sys.exit(0 if ok else 1)
+
+        case "init":
             try:
-                w, h = map(int, args.gamescope_out_res.lower().split("x"))
-                overrides.setdefault("graphics", {}).setdefault("gamescope", {})["output_width"] = w
-                overrides.setdefault("graphics", {}).setdefault("gamescope", {})["output_height"] = h
-            except ValueError:
-                log_error("Invalid --gamescope-out-res format. Use WIDTHxHEIGHT (e.g. 1920x1080)")
+                out_p = Path(args.output).resolve() if args.output else None
+                ProfileScaffolder.scaffold(
+                    target_dir=Path(args.path),
+                    name=args.name,
+                    profile_id=args.id,
+                    preset=args.preset,
+                    output_path=out_p,
+                    overwrite=args.overwrite
+                )
+            except Exception as e:
+                log_error(f"Failed to auto-scaffold profile: {e}")
+                sys.exit(1)
 
-        if args.gamescope_mode:
-            overrides.setdefault("graphics", {}).setdefault("gamescope", {})["mode"] = args.gamescope_mode
+        case "install-desktop":
+            try:
+                install_desktop_shortcut(manager, args.profile)
+            except Exception as e:
+                log_error(f"Failed to install desktop shortcut: {e}")
+                sys.exit(1)
 
-        if args.gamescope_fsr:
-            overrides.setdefault("graphics", {}).setdefault("gamescope", {})["fsr_upscaling"] = True
+        case "install-all-desktops":
+            profiles = manager.discover_profiles()
+            for pid in profiles:
+                try:
+                    install_desktop_shortcut(manager, pid)
+                except Exception as e:
+                    log_error(f"Failed for {pid}: {e}")
 
-        if args.gamescope_sharpness is not None:
-            overrides.setdefault("graphics", {}).setdefault("gamescope", {})["fsr_sharpness"] = args.gamescope_sharpness
+        case "run":
+            overrides: dict[str, Any] = {}
 
-        if args.gamescope_tearing:
-            overrides.setdefault("graphics", {}).setdefault("gamescope", {})["allow_tearing"] = True
+            if args.gpu:
+                overrides.setdefault("graphics", {})["gpu"] = args.gpu
 
-        if args.fps_limit is not None:
-            overrides.setdefault("performance", {})["fps_limit"] = args.fps_limit
+            if args.gamescope is not None:
+                overrides.setdefault("graphics", {}).setdefault("gamescope", {})["enabled"] = args.gamescope
 
-        if args.mangohud is not None:
-            overrides.setdefault("performance", {})["mangohud"] = args.mangohud
+            if args.gamescope_res:
+                try:
+                    w, h = map(int, args.gamescope_res.lower().split("x"))
+                    overrides.setdefault("graphics", {}).setdefault("gamescope", {})["width"] = w
+                    overrides.setdefault("graphics", {}).setdefault("gamescope", {})["height"] = h
+                except ValueError:
+                    log_error("Invalid --gamescope-res format. Use WIDTHxHEIGHT (e.g. 1920x1080)")
 
-        if args.mangohud_preset:
-            overrides.setdefault("performance", {})["mangohud_preset"] = args.mangohud_preset
+            if args.gamescope_out_res:
+                try:
+                    w, h = map(int, args.gamescope_out_res.lower().split("x"))
+                    overrides.setdefault("graphics", {}).setdefault("gamescope", {})["output_width"] = w
+                    overrides.setdefault("graphics", {}).setdefault("gamescope", {})["output_height"] = h
+                except ValueError:
+                    log_error("Invalid --gamescope-out-res format. Use WIDTHxHEIGHT (e.g. 1920x1080)")
 
-        if args.gamemode is not None:
-            overrides.setdefault("performance", {})["gamemode"] = args.gamemode
+            if args.gamescope_mode:
+                overrides.setdefault("graphics", {}).setdefault("gamescope", {})["mode"] = args.gamescope_mode
 
-        if args.sync:
-            overrides.setdefault("runtime", {}).setdefault("wine", {})["sync_mode"] = args.sync
+            if args.gamescope_fsr:
+                overrides.setdefault("graphics", {}).setdefault("gamescope", {})["fsr_upscaling"] = True
 
-        if args.wine_bin:
-            overrides.setdefault("runtime", {}).setdefault("wine", {})["wine_binary"] = args.wine_bin
+            if args.gamescope_sharpness is not None:
+                overrides.setdefault("graphics", {}).setdefault("gamescope", {})["fsr_sharpness"] = args.gamescope_sharpness
 
-        if args.wine_debug:
-            overrides.setdefault("runtime", {}).setdefault("wine", {})["debug"] = args.wine_debug
+            if args.gamescope_tearing:
+                overrides.setdefault("graphics", {}).setdefault("gamescope", {})["allow_tearing"] = True
 
-        if args.dxvk is not None:
-            overrides.setdefault("runtime", {}).setdefault("wine", {})["dxvk"] = args.dxvk
+            if args.fps_limit is not None:
+                overrides.setdefault("performance", {})["fps_limit"] = args.fps_limit
 
-        if args.vkd3d is not None:
-            overrides.setdefault("runtime", {}).setdefault("wine", {})["vkd3d"] = args.vkd3d
+            if args.mangohud is not None:
+                overrides.setdefault("performance", {})["mangohud"] = args.mangohud
 
-        if args.dxvk_nvapi:
-            overrides.setdefault("runtime", {}).setdefault("wine", {})["dxvk_nvapi"] = True
+            if args.mangohud_preset:
+                overrides.setdefault("performance", {})["mangohud_preset"] = args.mangohud_preset
 
-        if args.sandbox is not None:
-            overrides.setdefault("sandbox", {})["enabled"] = args.sandbox
+            if args.gamemode is not None:
+                overrides.setdefault("performance", {})["gamemode"] = args.gamemode
 
-        try:
-            pid, cfg = manager.load_profile(args.profile, cli_overrides=overrides)
-            runner = GameRunner(
-                profile_id=pid,
-                config=cfg,
-                extra_args=args.extra_args,
-                dry_run=args.dry_run,
-                verbose=args.verbose
-            )
-            exit_code = runner.execute()
-            sys.exit(exit_code)
-        except Exception as e:
-            log_error(f"Fatal execution error: {e}")
-            if args.verbose:
-                import traceback
-                traceback.print_exc()
-            sys.exit(1)
+            if args.sync:
+                overrides.setdefault("runtime", {}).setdefault("wine", {})["sync_mode"] = args.sync
+
+            if args.wine_bin:
+                overrides.setdefault("runtime", {}).setdefault("wine", {})["wine_binary"] = args.wine_bin
+
+            if args.wine_debug:
+                overrides.setdefault("runtime", {}).setdefault("wine", {})["debug"] = args.wine_debug
+
+            if args.dxvk is not None:
+                overrides.setdefault("runtime", {}).setdefault("wine", {})["dxvk"] = args.dxvk
+
+            if args.vkd3d is not None:
+                overrides.setdefault("runtime", {}).setdefault("wine", {})["vkd3d"] = args.vkd3d
+
+            if args.dxvk_nvapi:
+                overrides.setdefault("runtime", {}).setdefault("wine", {})["dxvk_nvapi"] = True
+
+            if args.sandbox is not None:
+                overrides.setdefault("sandbox", {})["enabled"] = args.sandbox
+
+            try:
+                pid, cfg = manager.load_profile(args.profile, cli_overrides=overrides)
+                runner = GameRunner(
+                    profile_id=pid,
+                    config=cfg,
+                    extra_args=args.extra_args,
+                    dry_run=args.dry_run,
+                    verbose=args.verbose
+                )
+                exit_code = runner.execute()
+                sys.exit(exit_code)
+            except Exception as e:
+                log_error(f"Fatal execution error: {e}")
+                if args.verbose:
+                    import traceback
+                    traceback.print_exc()
+                sys.exit(1)
 
 
 if __name__ == "__main__":
