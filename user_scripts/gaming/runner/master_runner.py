@@ -24,6 +24,7 @@ import argparse
 import atexit
 import copy
 import glob
+import json
 import os
 import re
 import shutil
@@ -253,6 +254,74 @@ def detect_gpus() -> list[GPUInfo]:
             pass
 
     return gpus
+
+
+def detect_display_refresh_rate() -> int:
+    """Auto-detects the active display's native refresh rate, falling back to 60Hz if undetectable."""
+    # 1. Try Hyprland IPC
+    if shutil.which("hyprctl"):
+        try:
+            res = subprocess.run(["hyprctl", "monitors", "-j"], capture_output=True, text=True, timeout=1.5)
+            if res.returncode == 0:
+                monitors = json.loads(res.stdout)
+                for mon in monitors:
+                    if mon.get("focused", False):
+                        rate = float(mon.get("refreshRate", 0))
+                        if rate > 0:
+                            return int(round(rate))
+                if monitors:
+                    rate = float(monitors[0].get("refreshRate", 0))
+                    if rate > 0:
+                        return int(round(rate))
+        except Exception:
+            pass
+
+    # 2. Try wlr-randr (wlroots Wayland compositors)
+    if shutil.which("wlr-randr"):
+        try:
+            res = subprocess.run(["wlr-randr", "--json"], capture_output=True, text=True, timeout=1.5)
+            if res.returncode == 0:
+                monitors = json.loads(res.stdout)
+                for mon in monitors:
+                    for mode in mon.get("modes", []):
+                        if mode.get("current", False):
+                            rate = float(mode.get("refresh", 0))
+                            if rate > 0:
+                                return int(round(rate))
+        except Exception:
+            pass
+
+    # 3. Try kscreen-doctor (KDE Plasma Wayland)
+    if shutil.which("kscreen-doctor"):
+        try:
+            res = subprocess.run(["kscreen-doctor", "-j"], capture_output=True, text=True, timeout=1.5)
+            if res.returncode == 0:
+                data = json.loads(res.stdout)
+                for out in data.get("outputs", []):
+                    if out.get("connected", False) and out.get("enabled", False):
+                        for mode in out.get("modes", []):
+                            if mode.get("id") == out.get("currentModeId"):
+                                rate = float(mode.get("refreshRate", 0))
+                                if rate > 0:
+                                    return int(round(rate))
+        except Exception:
+            pass
+
+    # 4. Try DRM sysfs connector modes
+    try:
+        for mode_file in sorted(glob.glob("/sys/class/drm/card*-*/modes")):
+            modes = Path(mode_file).read_text(encoding="utf-8").strip().splitlines()
+            for m in modes:
+                match = re.search(r"@(\d+)", m)
+                if match:
+                    rate = int(match.group(1))
+                    if rate > 0:
+                        return rate
+    except Exception:
+        pass
+
+    # 5. Standard universal baseline fallback
+    return 60
 
 
 # ==============================================================================
@@ -1014,7 +1083,16 @@ class GameRunner:
             h = gamescope_cfg.get("height", 1080)
             W = gamescope_cfg.get("output_width", 1920)
             H = gamescope_cfg.get("output_height", 1080)
-            r = gamescope_cfg.get("refresh_rate", 144)
+
+            # Resolve refresh rate: explicit gamescope config > fps_limit > auto-detected display rate (fallback: 60Hz)
+            fps_limit = perf_cfg.get("fps_limit", 0)
+            configured_rate = gamescope_cfg.get("refresh_rate", 0)
+            if configured_rate > 0:
+                r = configured_rate
+            elif fps_limit > 0:
+                r = fps_limit
+            else:
+                r = detect_display_refresh_rate()
 
             gs_cmd.extend(["-w", str(w), "-h", str(h), "-W", str(W), "-H", str(H), "-r", str(r)])
 

@@ -32,3 +32,4 @@ wayland_native = true
 
 [performance]
 gamemode = true
+fps_limit = 60

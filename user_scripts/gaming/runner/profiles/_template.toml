@@ -117,7 +117,7 @@ width = 1920                                # Internal render resolution width (
 height = 1080                               # Internal render resolution height (-h)
 output_width = 1920                         # Monitor output width (-W)
 output_height = 1080                        # Monitor output height (-H)
-refresh_rate = 144                          # Display refresh rate and FPS cap (-r)
+refresh_rate = 0                            # Frame rate cap / refresh rate (-r, 0 = auto-detect display, fallback: 60Hz)
 fsr_upscaling = false                       # Enable AMD FidelityFX Super Resolution (-F fsr)
 fsr_sharpness = 2                           # FSR sharpness (0 to 20)
 allow_tearing = true                        # Low-latency immediate presentation (--immediate-flips)
@@ -132,7 +132,7 @@ extra_args = []                             # Additional custom CLI flags for Ga
 gamemode = true                             # Enable Feral GameMode daemon (gamemoderun)
 mangohud = false                            # Inject MangoHud telemetry overlay (MANGOHUD=1)
 mangohud_preset = ""                        # MangoHud config preset (e.g. "minimal", "full")
-fps_limit = 0                               # Frame rate limiter (0 = uncapped, 60, 144, etc.)
+fps_limit = 0                               # Per-game frame rate limiter (0 = auto/uncapped, 60, 90, 120, 144)
 cpu_governor = "performance"                # Recommended CPU governor
 process_priority = 0                        # Process nice level (-20 highest priority, 19 lowest)
 

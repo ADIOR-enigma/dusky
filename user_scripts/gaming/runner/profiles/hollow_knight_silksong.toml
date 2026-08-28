@@ -35,3 +35,4 @@ allow_tearing = true
 
 [performance]
 gamemode = true
+fps_limit = 60

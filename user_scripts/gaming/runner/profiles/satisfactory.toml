@@ -43,6 +43,7 @@ wayland_native = true
 
 [performance]
 gamemode = true
+fps_limit = 60
 cpu_governor = "performance"
 
 [env]

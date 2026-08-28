@@ -38,5 +38,5 @@ gpu = "auto"
 wayland_native = true
 
 [performance]
-fps_limit = 144
+fps_limit = 60
 gamemode = true
