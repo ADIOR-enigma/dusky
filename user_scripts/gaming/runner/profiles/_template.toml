@@ -56,6 +56,11 @@ vkd3d = true                                # Enable VKD3D-Proton (Direct3D 12 -
 dxvk_nvapi = false                          # Enable DXVK-NVAPI for NVIDIA DLSS/Reflex
 debug = "fixme-all"                         # WINEDEBUG logging level
 
+# Automated Prefix Provisioning & Runtime Redistributables
+# Executed on first launch or when prefix is newly initialized
+redistributables = ["VC_redist.x64.exe"]    # Bundled installer filenames to run with /q
+winetricks = ["dxvk"]                       # Winetricks verbs to apply (e.g. "dxvk", "vcrun2022")
+
 # ------------------------------------------------------------------------------
 # Graphics & Compositor Pipeline
 # ------------------------------------------------------------------------------

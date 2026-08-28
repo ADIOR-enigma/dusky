@@ -11,9 +11,10 @@ Target Architecture:
   * Dual-GPU Matrix: Intel Iris Xe (iGPU) + NVIDIA GeForce RTX 3050 Ti (dGPU)
   * Declarative TOML Profiles with Preset Inheritance (Zero Hardcoded Game IDs)
   * Dynamic DwarFS FUSE & fuse-overlayfs Mount Lifecycle with Rock-Solid Teardown
+  * Automated Wine/Proton Prefix Provisioning (Redistributables & Winetricks)
   * Wine-Staging (Esync / Fsync / NTSYNC) + DXVK / VKD3D Translation
   * Gamescope Micro-Compositor, MangoHud, Feral GameMode, PipeWire Tuning
-  * Interactive Rich TUI Dashboard, System Doctor, & Auto-Scaffolder
+  * Interactive Rich TUI Dashboard, System Doctor, & Deep Auto-Scaffolder
 
 Author: Dusk / AGY Team
 Date: 2026-08-28
@@ -54,7 +55,7 @@ except ImportError:
 # ==============================================================================
 
 ENGINE_NAME: Final[str] = "Master Game Runner Engine"
-ENGINE_VERSION: Final[str] = "1.1.0"
+ENGINE_VERSION: Final[str] = "1.3.0"
 SELF_DIR: Final[Path] = Path(__file__).resolve().parent
 GLOBAL_CONFIG_PATH: Final[Path] = SELF_DIR / "config.toml"
 PRESETS_DIR: Final[Path] = SELF_DIR / "presets"
@@ -410,22 +411,21 @@ class MountManager:
 
     @staticmethod
     def is_mounted(path: Path) -> bool:
-        """Checks if a directory is an active mountpoint."""
+        """Checks if a directory is an active and healthy mountpoint."""
         if not path.exists():
             return False
         try:
             res = subprocess.run(["mountpoint", "-q", str(path)], capture_output=True, timeout=2)
-            return res.returncode == 0
+            if res.returncode != 0:
+                return False
+            # Health check: probe directory access (catches disconnected FUSE transport endpoints)
+            os.listdir(str(path))
+            return True
+        except OSError:
+            # Dead/stale FUSE endpoint -> unmount stale mount
+            subprocess.run(["fusermount3", "-u", "-z", str(path)], capture_output=True)
+            return False
         except Exception:
-            try:
-                mounts = Path("/proc/mounts").read_text(encoding="utf-8")
-                resolved = str(path.resolve())
-                for line in mounts.splitlines():
-                    parts = line.split()
-                    if len(parts) >= 2 and parts[1] == resolved:
-                        return True
-            except Exception:
-                pass
             return False
 
     @staticmethod
@@ -491,7 +491,7 @@ class MountManager:
             log_info(f"Game already mounted at {overlay_dir}")
             return True
 
-        # Clean stale mounts if partially mounted
+        # Clean stale mounts if partially mounted or broken
         cls.unmount(config, dry_run=dry_run, silent=True)
 
         # Calculate DwarFS cache size (default 25% of RAM)
@@ -523,6 +523,12 @@ class MountManager:
 
         # Locate DwarFS binary: bundled repack binary vs system dwarfs
         dwarfs_bin = game_dir / "files" / "dwarfs-binary"
+        if dwarfs_bin.exists():
+            try:
+                dwarfs_bin.chmod(0o755)
+            except Exception:
+                pass
+
         if dwarfs_bin.exists() and os.access(dwarfs_bin, os.X_OK):
             dwarfs_cmd = [
                 str(dwarfs_bin), "--tool=dwarfs", str(dwarfs_img), str(dwarfs_mnt),
@@ -530,7 +536,8 @@ class MountManager:
                 "-o", f"tidy_interval={tidy_interval}",
                 "-o", f"tidy_max_age={tidy_max_age}",
                 "-o", f"cachesize={cache_kb}k",
-                "-o", "clone_fd"
+                "-o", "clone_fd",
+                "-o", "cache_image"
             ]
         elif shutil.which("dwarfs"):
             dwarfs_cmd = [
@@ -539,7 +546,8 @@ class MountManager:
                 "-o", f"tidy_interval={tidy_interval}",
                 "-o", f"tidy_max_age={tidy_max_age}",
                 "-o", f"cachesize={cache_kb}k",
-                "-o", "clone_fd"
+                "-o", "clone_fd",
+                "-o", "cache_image"
             ]
         else:
             log_error("DwarFS executable not found (neither bundled repack nor system 'dwarfs').")
@@ -592,16 +600,13 @@ class MountManager:
             pass
 
         for mount_pt in [overlay_dir, dwarfs_mnt]:
-            if cls.is_mounted(mount_pt):
-                if not silent:
-                    log_info(f"Unmounting {mount_pt}...")
-                res = subprocess.run(["fusermount3", "-u", "-z", str(mount_pt)], capture_output=True)
-                if res.returncode != 0:
-                    res2 = subprocess.run(["sudo", "-n", "umount", "-l", str(mount_pt)], capture_output=True)
-                    if res2.returncode != 0:
-                        if not silent:
-                            log_warning(f"Could not cleanly unmount {mount_pt}")
-                        success = False
+            res = subprocess.run(["fusermount3", "-u", "-z", str(mount_pt)], capture_output=True)
+            if res.returncode != 0 and cls.is_mounted(mount_pt):
+                res2 = subprocess.run(["sudo", "-n", "umount", "-l", str(mount_pt)], capture_output=True)
+                if res2.returncode != 0:
+                    if not silent:
+                        log_warning(f"Could not cleanly unmount {mount_pt}")
+                    success = False
 
         if config.get("storage", {}).get("auto_clean_workdir", True) and overlay_work.exists():
             shutil.rmtree(overlay_work, ignore_errors=True)
@@ -694,12 +699,21 @@ atexit.register(cleanup_active_context)
 class GameRunner:
     """Orchestrates environment, GPU offload, Gamescope, Wine, and process execution."""
 
-    def __init__(self, profile_id: str, config: dict[str, Any], extra_args: list[str] | None = None, dry_run: bool = False, verbose: bool = False):
+    def __init__(
+        self,
+        profile_id: str,
+        config: dict[str, Any],
+        extra_args: list[str] | None = None,
+        dry_run: bool = False,
+        verbose: bool = False,
+        reprovision: bool = False
+    ):
         self.profile_id = profile_id
         self.config = config
         self.extra_args = extra_args or []
         self.dry_run = dry_run
         self.verbose = verbose
+        self.reprovision = reprovision
         self.paths = MountManager.get_profile_paths(config)
         self.gpus = detect_gpus()
 
@@ -721,18 +735,24 @@ class GameRunner:
                 log_error(f"Error executing hook '{cmd}': {e}")
 
     def prepare_wine_prefix(self) -> Path:
-        """Initializes and configures the Wine prefix if runtime is Wine."""
+        """Initializes and provisions the Wine prefix with runtime dependencies."""
         wine_cfg = self.config.get("runtime", {}).get("wine", {})
         prefix_str = wine_cfg.get("prefix_dir", "files/wine-prefix")
         p = Path(prefix_str)
         prefix_path = p if p.is_absolute() else (self.paths["game_dir"] / p).resolve()
 
-        if prefix_path.exists() and (prefix_path / "system.reg").exists():
+        stamp_file = prefix_path / ".runner_provisioned"
+        prefix_initialized = prefix_path.exists() and (prefix_path / "system.reg").exists()
+
+        if self.reprovision and stamp_file.exists():
+            stamp_file.unlink(missing_ok=True)
+
+        if prefix_initialized and stamp_file.exists():
             return prefix_path
 
-        log_info(f"Initializing Wine prefix at {prefix_path}...")
+        log_info(f"Preparing and provisioning Wine prefix at {prefix_path}...")
         if self.dry_run:
-            log_info(f"[DRY RUN] Would initialize wine prefix at {prefix_path}")
+            log_info(f"[DRY RUN] Would initialize and provision Wine prefix at {prefix_path}")
             return prefix_path
 
         prefix_path.mkdir(parents=True, exist_ok=True)
@@ -741,15 +761,65 @@ class GameRunner:
         env["WINEARCH"] = wine_cfg.get("arch", "win64")
         env["WINEDEBUG"] = "-all"
 
+        wine_bin = wine_cfg.get("wine_binary", "wine")
         wineboot_bin = "wineboot"
         winecfg_bin = "winecfg"
         wineserver_bin = "wineserver"
 
-        subprocess.run([wineboot_bin, "-i"], env=env, capture_output=True)
-        subprocess.run([winecfg_bin, "-v", "win11"], env=env, capture_output=True)
-        subprocess.run([wineserver_bin, "-w"], env=env, capture_output=True)
+        # 1. Base Prefix Creation
+        if not prefix_initialized:
+            subprocess.run([wineboot_bin, "-i"], env=env, capture_output=True)
+            subprocess.run([winecfg_bin, "-v", "win11"], env=env, capture_output=True)
+            subprocess.run([wineserver_bin, "-w"], env=env, capture_output=True)
 
-        log_success("Wine prefix initialized successfully.")
+        # 2. Automated Prefix Provisioning Pipeline (Redistributables & Winetricks)
+        if not stamp_file.exists():
+            root_dir = self.paths["overlay_dir"] if self.paths["dwarfs_image"] and self.paths["dwarfs_image"].exists() else self.paths["game_dir"]
+
+            redist_candidates: list[Path] = []
+            declared_redists = wine_cfg.get("redistributables", [])
+
+            for dr in declared_redists:
+                p_cand = (root_dir / dr).resolve()
+                if p_cand.exists() and p_cand not in redist_candidates:
+                    redist_candidates.append(p_cand)
+
+            # Deep recursive scan for common installers if none declared or to supplement
+            if root_dir.exists():
+                common_patterns = [
+                    "**/VC_redist*.exe", "**/vcredist*.exe",
+                    "**/DXSETUP.exe", "**/dxsetup.exe",
+                    "**/oalinst.exe", "**/OpenAL*.exe",
+                    "**/windowsdesktop-runtime*.exe"
+                ]
+                for pat in common_patterns:
+                    for found in root_dir.glob(pat):
+                        if found.is_file() and found not in redist_candidates:
+                            redist_candidates.append(found)
+
+            # Execute redistributable installers silently
+            for installer in redist_candidates:
+                log_info(f"Provisioning runtime dependency: {installer.name}...")
+                quiet_flag = "/q" if any(k in installer.name for k in ["VC_redist", "vcredist", "windowsdesktop"]) else "/silent"
+                subprocess.run([wine_bin, str(installer), quiet_flag], env=env, capture_output=True)
+                subprocess.run([wineserver_bin, "-w"], env=env, capture_output=True)
+
+            # Apply Winetricks Verbs
+            winetricks_verbs = wine_cfg.get("winetricks", [])
+            if winetricks_verbs:
+                bundled_winetricks = root_dir / "winetricks.sh"
+                for verb in winetricks_verbs:
+                    log_info(f"Applying winetricks verb: {verb}...")
+                    if bundled_winetricks.exists() and os.access(bundled_winetricks, os.R_OK):
+                        subprocess.run(["bash", str(bundled_winetricks), "-q", verb], env=env, cwd=str(root_dir), capture_output=True)
+                    elif shutil.which("winetricks"):
+                        subprocess.run(["winetricks", "-q", verb], env=env, capture_output=True)
+                    subprocess.run([wineserver_bin, "-w"], env=env, capture_output=True)
+
+            stamp_file.write_text(f"provisioned_at={time.time()}\nengine_version={ENGINE_VERSION}\n", encoding="utf-8")
+            subprocess.run([wineserver_bin, "-w"], env=env, capture_output=True)
+            log_success("Wine prefix provisioning completed successfully.")
+
         return prefix_path
 
     def build_environment(self) -> dict[str, str]:
@@ -759,8 +829,15 @@ class GameRunner:
         # 1. Profile custom environment variables
         custom_env = self.config.get("env", {})
         for k, v in custom_env.items():
-            if k == "LD_PRELOAD" and "LD_PRELOAD" in env and env["LD_PRELOAD"]:
-                env["LD_PRELOAD"] = f"{v}:{env['LD_PRELOAD']}"
+            if k == "LD_PRELOAD":
+                expanded_preload = os.path.expanduser(os.path.expandvars(str(v)))
+                if Path(expanded_preload).exists():
+                    if "LD_PRELOAD" in env and env["LD_PRELOAD"]:
+                        env["LD_PRELOAD"] = f"{expanded_preload}:{env['LD_PRELOAD']}"
+                    else:
+                        env["LD_PRELOAD"] = expanded_preload
+                else:
+                    log_warning(f"LD_PRELOAD shim not found at {expanded_preload}; skipping injection.")
             else:
                 env[k] = str(v)
 
@@ -773,14 +850,12 @@ class GameRunner:
         # 3. Pure Wayland & Graphics Presentation
         gfx_cfg = self.config.get("graphics", {})
         if gfx_cfg.get("prefer_xwayland", False):
-            # XWayland bridge explicitly requested by profile
             env["SDL_VIDEODRIVER"] = "x11"
             env["GDK_BACKEND"] = "x11"
             env["QT_QPA_PLATFORM"] = "xcb"
             if not env.get("DISPLAY"):
                 env["DISPLAY"] = ":0"
         else:
-            # Pure Wayland Native
             env["SDL_VIDEODRIVER"] = "wayland"
             env["CLUTTER_BACKEND"] = "wayland"
             env["GDK_BACKEND"] = "wayland"
@@ -795,7 +870,6 @@ class GameRunner:
         has_intel = any(g.is_intel for g in self.gpus)
         runtime_type = self.config.get("runtime", {}).get("type", "native")
 
-        # Auto determination: Wine / UE5 / heavy 3D -> Discrete GPU
         is_heavy_profile = (
             runtime_type == "wine" or
             "unreal" in str(self.config.get("extends", "")).lower() or
@@ -834,7 +908,6 @@ class GameRunner:
             if wine_cfg.get("large_address_aware", True):
                 env["WINE_LARGE_ADDRESS_AWARE"] = "1"
 
-            # Sync Mode
             match wine_cfg.get("sync_mode", "fsync"):
                 case "fsync":
                     env["WINEFSYNC"] = "1"
@@ -850,7 +923,6 @@ class GameRunner:
                     env["WINEFSYNC"] = "0"
                     env["WINEESYNC"] = "0"
 
-            # DLL Overrides
             dll_map = wine_cfg.get("dll_overrides", {})
             if isinstance(dll_map, dict) and dll_map:
                 override_str = ";".join(f"{k}={v}" for k, v in dll_map.items())
@@ -884,7 +956,6 @@ class GameRunner:
         runtime_cfg = self.config.get("runtime", {})
         runtime_type = runtime_cfg.get("type", "native")
 
-        # Resolve playable root
         if self.paths["dwarfs_image"] and self.paths["dwarfs_image"].exists():
             root_dir = self.paths["overlay_dir"]
         else:
@@ -896,7 +967,6 @@ class GameRunner:
 
         exec_path = (root_dir / exec_rel).resolve()
 
-        # Fallback resolution (e.g. StardewModdingAPI -> Stardew Valley if mod API absent)
         if not exec_path.exists():
             alt_candidates = [
                 root_dir / "Stardew Valley",
@@ -909,17 +979,22 @@ class GameRunner:
                     exec_path = cand
                     break
 
+        # Auto-ensure execution permission for Linux ELF binaries and scripts
+        if runtime_type == "native" and exec_path.exists():
+            try:
+                exec_path.chmod(exec_path.stat().st_mode | 0o755)
+            except Exception:
+                pass
+
         working_dir_cfg = paths_cfg.get("working_dir", "")
         if working_dir_cfg:
             working_dir = (root_dir / working_dir_cfg).resolve()
         else:
             working_dir = exec_path.parent
 
-        # Default arguments from config + runtime extra CLI args
         cmd_args = list(paths_cfg.get("arguments", []))
         cmd_args.extend(self.extra_args)
 
-        # Base execution command
         if runtime_type == "wine":
             wine_bin = runtime_cfg.get("wine", {}).get("wine_binary", "wine")
             base_cmd = [wine_bin, str(exec_path)] + cmd_args
@@ -1113,7 +1188,15 @@ class ProfileScaffolder:
     """Intelligently inspects a directory and generates a ready-to-run TOML profile."""
 
     @staticmethod
-    def scaffold(target_dir: Path, name: str | None = None, profile_id: str | None = None, preset: str | None = None, output_path: Path | None = None, overwrite: bool = False) -> Path:
+    def scaffold(
+        target_dir: Path,
+        name: str | None = None,
+        profile_id: str | None = None,
+        preset: str | None = None,
+        output_path: Path | None = None,
+        overwrite: bool = False,
+        install_desktop: bool = False
+    ) -> Path:
         target_dir = target_dir.resolve()
         if not target_dir.is_dir():
             raise NotADirectoryError(f"Target directory {target_dir} does not exist.")
@@ -1145,6 +1228,7 @@ class ProfileScaffolder:
         is_wine = False
         executable_rel = ""
         args: list[str] = []
+        has_vc_redist = False
 
         start_scripts = list(target_dir.glob("start*.sh")) + list(target_dir.glob("*/start*.sh"))
         for s in start_scripts:
@@ -1152,6 +1236,8 @@ class ProfileScaffolder:
                 content = s.read_text(encoding="utf-8", errors="ignore")
                 if "SYSWINE" in content or "wine" in content:
                     is_wine = True
+                if "VC_redist" in content or "vcredist" in content:
+                    has_vc_redist = True
                 m_cmd = re.search(r'CMD=\((.*?)\)', content)
                 if m_cmd:
                     tokens = m_cmd.group(1).split()
@@ -1177,9 +1263,11 @@ class ProfileScaffolder:
 
         if "globalgamemanagers" in tree_text or "UnityPlayer.so" in tree_text or "GameAssembly.so" in tree_text:
             is_unity = True
-        if "Engine/Binaries" in tree_text or "Satisfactory" in folder_name:
+        if "Engine/Binaries" in tree_text or "Satisfactory" in folder_name or "FactoryGame" in tree_text:
             is_ue5 = True
             is_wine = True
+        if "VC_redist" in tree_text or "vcredist" in tree_text:
+            has_vc_redist = True
 
         # Choose base preset
         if preset:
@@ -1243,6 +1331,7 @@ type = "{runtime_type}"
 """
         if runtime_type == "wine":
             prefix_loc = "files/prefix" if (target_dir / "files" / "prefix").exists() else "files/wine-prefix-ew"
+            redist_list = '["VC_redist.x64.exe"]' if has_vc_redist else '[]'
             toml_content += f"""
 [runtime.wine]
 prefix_dir = "{prefix_loc}"
@@ -1250,11 +1339,18 @@ arch = "win64"
 sync_mode = "fsync"
 dxvk = true
 vkd3d = {str(is_ue5).lower()}
+redistributables = {redist_list}
+winetricks = ["dxvk"]
 """
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(toml_content, encoding="utf-8")
         log_success(f"Generated profile at: {output_path}")
+
+        if install_desktop:
+            mgr = ProfileManager()
+            install_desktop_shortcut(mgr, profile_id)
+
         return output_path
 
 
@@ -1323,6 +1419,7 @@ def run_doctor() -> bool:
         ("fusermount3", "FUSE unmount utility", True),
         ("wine", "Wine-Staging runtime", True),
         ("wineserver", "Wine prefix coordinator", True),
+        ("winetricks", "Wine prefix configuration helper", True),
         ("gamescope", "Wayland micro-compositor", False),
         ("mangohud", "Universal OpenGL/Vulkan HUD & limiter", False),
         ("gamemoderun", "Feral GameMode performance daemon", False),
@@ -1558,6 +1655,19 @@ def render_interactive_menu(manager: ProfileManager) -> None:
 # ==============================================================================
 
 def main():
+    # Quality of Life: Auto-dispatch direct game invocation (e.g. `python3 master_runner.py factorio`)
+    known_commands = {
+        "run", "menu", "list", "status", "mount", "unmount", "unmount-all",
+        "validate", "init", "doctor", "install-desktop", "install-all-desktops",
+        "-h", "--help"
+    }
+
+    if len(sys.argv) > 1 and sys.argv[1] not in known_commands:
+        target_cand = sys.argv[1]
+        profiles_cand = [p.stem for p in PROFILES_DIR.glob("*.toml") if not p.name.startswith("_")]
+        if target_cand in profiles_cand or Path(target_cand).is_file():
+            sys.argv.insert(1, "run")
+
     parser = argparse.ArgumentParser(
         prog="master_runner.py",
         description=f"{ENGINE_NAME} v{ENGINE_VERSION} — Declarative Arch Linux Gaming Engine",
@@ -1590,6 +1700,7 @@ def main():
     run_parser.add_argument("--dxvk", action="store_true", default=None, help="Enable DXVK translation")
     run_parser.add_argument("--vkd3d", action="store_true", default=None, help="Enable VKD3D-Proton translation")
     run_parser.add_argument("--dxvk-nvapi", action="store_true", help="Enable DXVK-NVAPI (DLSS/Reflex)")
+    run_parser.add_argument("--reprovision", action="store_true", help="Force re-provisioning of Wine prefix redistributables and winetricks")
     run_parser.add_argument("--sandbox", action="store_true", default=None, help="Enable Bubblewrap isolation")
     run_parser.add_argument("--no-sandbox", action="store_false", dest="sandbox", help="Disable Bubblewrap isolation")
     run_parser.add_argument("--dry-run", action="store_true", help="Simulate pipeline setup without running game binary")
@@ -1632,6 +1743,7 @@ def main():
     init_parser.add_argument("--preset", help="Force specific base preset")
     init_parser.add_argument("--output", help="Custom output path for generated .toml")
     init_parser.add_argument("--overwrite", action="store_true", help="Overwrite existing profile if present")
+    init_parser.add_argument("--install-desktop", action="store_true", help="Automatically create FreeDesktop shortcut")
 
     # Command: doctor
     subparsers.add_parser("doctor", help="Run system diagnostics on drivers, kernel, FUSE, and Wayland stack")
@@ -1751,7 +1863,8 @@ def main():
                     profile_id=args.id,
                     preset=args.preset,
                     output_path=out_p,
-                    overwrite=args.overwrite
+                    overwrite=args.overwrite,
+                    install_desktop=args.install_desktop
                 )
             except Exception as e:
                 log_error(f"Failed to auto-scaffold profile: {e}")
@@ -1849,7 +1962,8 @@ def main():
                     config=cfg,
                     extra_args=args.extra_args,
                     dry_run=args.dry_run,
-                    verbose=args.verbose
+                    verbose=args.verbose,
+                    reprovision=args.reprovision
                 )
                 exit_code = runner.execute()
                 sys.exit(exit_code)
