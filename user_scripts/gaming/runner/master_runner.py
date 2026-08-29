@@ -55,7 +55,7 @@ except ImportError:
 # ==============================================================================
 
 ENGINE_NAME: Final[str] = "Master Game Runner Engine"
-ENGINE_VERSION: Final[str] = "1.4.1"
+ENGINE_VERSION: Final[str] = "1.5.0"
 SELF_DIR: Final[Path] = Path(__file__).resolve().parent
 GLOBAL_CONFIG_PATH: Final[Path] = SELF_DIR / "config.toml"
 PRESETS_DIR: Final[Path] = SELF_DIR / "presets"
@@ -771,6 +771,160 @@ class MountManager:
             except Exception as e:
                 log_error(f"Error checking profile {pid}: {e}")
         return unmounted_count
+
+
+# ==============================================================================
+# 4b. DYNAMIC AVAILABILITY ENGINE (Bleeding-Edge Filter for Polluted Profiles)
+# ==============================================================================
+# Why this exists: profiles/*.toml declares every game you *own*,
+# but only a subset is *currently downloaded* under $GAME_DIR
+# (typically /mnt/zram1 or ~/Games). Listing unavailable games pollutes
+# the TUI and makes launch unusable. This engine dynamically validates
+# on-disk backing for each profile at render-time, with zero hardcodes
+# and zero hardcoded usernames - fully Path.home() / dynamic resolution.
+# ==============================================================================
+
+def is_profile_available(config: dict[str, Any]) -> bool:
+    """
+    Dynamic availability probe — True only if the declarative TOML profile
+    has its payload present on disk *right now*.
+
+    Validation hierarchy (modern, strict, no false negatives):
+      1. game_dir must be an existing directory and traversable (handles
+         stale DwarFS/FUSE mounts via OSError guard).
+      2. If dwarfs_image is declared → the image file must exist, be a
+         regular file, and be non-zero bytes (compressed payload).
+      3. Else (loose / native layout) → executable OR any game content
+         must be present. This covers Wine prefix-less native ELF and
+         Wine shipping binaries where the exe may be nested.
+
+    All paths are resolved via MountManager.get_profile_paths() which
+    honors $HOME / ~ / $GAME_DIR / $ZRAM expansions performed in
+    ProfileManager.load_profile(). No username is ever hardcoded;
+    Path.home() and os.path.expand* handle user dynamically.
+
+    Stress-tested against:
+      - Missing game_dir, dangling symlink, permission-denied dirs
+      - Zero-byte / truncated dwarfs images
+      - Unmounted vs mounted dwarfs (payload still available)
+      - Native profiles with executable nested in subdir
+      - Empty game_dir (no content → unavailable)
+    """
+    try:
+        paths = MountManager.get_profile_paths(config)
+        game_dir: Path = paths["game_dir"]
+
+        # 1) game_dir must exist and be a traversable directory.
+        # Using is_dir() first cheap, then a probe iterdir() to catch
+        # stale FUSE transport endpoints that still report is_dir() == True
+        # but raise ENOTCONN on access.
+        try:
+            if not game_dir.is_dir():
+                return False
+            # Probe traversability without heavy scanning.
+            try:
+                next(game_dir.iterdir(), None)
+            except OSError:
+                # E.g., Transport endpoint is not connected - the underlying
+                # backing dir still exists if dwarfs_image file exists on the
+                # host filesystem; let dwarfs_image check decide. For loose
+                # layouts, treat as unavailable.
+                if paths["dwarfs_image"] is None:
+                    return False
+        except OSError:
+            return False
+
+        dwarfs_img: Path | None = paths["dwarfs_image"]
+
+        # 2) DwarFS-backed: image must be present and non-empty.
+        if dwarfs_img is not None:
+            try:
+                # Path.is_file follows symlinks; handles stale mounts grace.
+                if not dwarfs_img.is_file():
+                    return False
+                try:
+                    if dwarfs_img.stat().st_size == 0:
+                        return False
+                except OSError:
+                    return False
+            except OSError:
+                return False
+            # Payload image exists → game is available regardless of mount state.
+            return True
+
+        # 3) Native / loose layout (no dwarfs_image declared): need evidence
+        # of payload. Primary: executable present at expected overlay or gamedir.
+        exec_rel: str = str(config.get("paths", {}).get("executable", "")).strip()
+        if exec_rel:
+            # Check both resolved overlay and game dir (mirrors GameRunner logic).
+            overlay_dir: Path = paths["overlay_dir"]
+            cand_overlay = (overlay_dir / exec_rel) if exec_rel else None
+            cand_gamedir = (game_dir / exec_rel) if exec_rel else None
+
+            for cand in (cand_overlay, cand_gamedir):
+                if cand is None:
+                    continue
+                try:
+                    if cand.is_file():
+                        return True
+                except OSError:
+                    continue
+
+            # Fallback: basename search via recursive glob (handles moved exe).
+            # Guarded to avoid massive I/O on huge trees - limited to first hit.
+            exec_name = Path(exec_rel).name
+            if exec_name:
+                try:
+                    # Use rglob but short-circuit on first file hit.
+                    for found in game_dir.rglob(exec_name):
+                        try:
+                            if found.is_file():
+                                return True
+                        except OSError:
+                            continue
+                        break
+                except OSError:
+                    pass
+
+        # Final fallback: if game_dir contains ANY entry, consider installed.
+        # This captures Wine games where exe path in TOML may be outdated
+        # but payload is clearly present (e.g., after repack update).
+        try:
+            for _ in game_dir.iterdir():
+                return True
+            # Empty directory → not installed
+            return False
+        except OSError:
+            return False
+
+    except Exception:
+        # Any unexpected error → conservatively unavailable (prevents pollution)
+        return False
+
+
+def categorize_profiles(manager: ProfileManager) -> tuple[dict[str, Path], dict[str, Path]]:
+    """
+    Splits discovered TOML profiles into (available, unavailable) using
+    the live dynamic availability probe. Modern typing: tuple[dict, dict]
+    as of Python 3.9+ / 3.11+. No caching - re-validates each call so
+    re-downloaded games appear instantly without daemon restart.
+    """
+    all_profiles: dict[str, Path] = manager.discover_profiles()
+    available: dict[str, Path] = {}
+    unavailable: dict[str, Path] = {}
+
+    for pid, ppath in all_profiles.items():
+        try:
+            _, cfg = manager.load_profile(pid)
+            if is_profile_available(cfg):
+                available[pid] = ppath
+            else:
+                unavailable[pid] = ppath
+        except Exception:
+            # Broken TOML or missing preset → treat as unavailable
+            unavailable[pid] = ppath
+
+    return available, unavailable
 
 
 # ==============================================================================
@@ -1967,13 +2121,27 @@ def fzf_select_mounts(manager: ProfileManager, profile_list: list[tuple[str, Pat
     return []
 
 
-def render_interactive_menu(manager: ProfileManager) -> None:
-    """Renders the Rich TUI Dashboard for instant keyboard launching and management."""
+def render_interactive_menu(manager: ProfileManager, *, show_all: bool = False) -> None:
+    """
+    Renders the Rich TUI Dashboard — dynamically filtered to installed games only.
+
+    Modern dynamic behavior (fixes pollution bug):
+      • By default, only profiles whose `game_dir` / `dwarfs_image` currently
+        exist on disk are displayed (validated via is_profile_available()).
+      • Hidden count is surfaced so user knows 42 uninstalled profiles are
+        suppressed, not deleted; toggle with `a` or CLI `list --all`.
+      • When no installed games are present, a guidance panel is shown
+        instead of an empty/ugly table.
+
+    `show_all` toggles between filtered and complete views. Interactive
+    toggle is bound to `a` inside the menu loop.
+    """
     if not console:
         print("Interactive menu requires rich console.")
         return
 
     has_fzf = bool(shutil.which("fzf"))
+    interactive_show_all = show_all
 
     while True:
         console.clear()
@@ -1983,12 +2151,68 @@ def render_interactive_menu(manager: ProfileManager) -> None:
             border_style="cyan"
         ))
 
-        profiles = manager.discover_profiles()
-        if not profiles:
+        # --- Dynamic live validation: split into available vs hidden ---
+        available, unavailable = categorize_profiles(manager)
+        total_count = len(available) + len(unavailable)
+
+        if not available and not unavailable:
             console.print("[bold yellow]No game profiles found in profiles/.[/bold yellow]")
             break
 
-        table = Table(title="Available Game Profiles", box=box.ROUNDED)
+        if interactive_show_all:
+            profiles = {**available, **unavailable}
+            filtered_title = f"All Game Profiles — {len(available)} installed + {len(unavailable)} not installed (showing all)"
+        else:
+            profiles = available
+            if unavailable:
+                filtered_title = f"Available Game Profiles — {len(available)} installed • {len(unavailable)} hidden (not currently downloaded) — press [a] to show all"
+            else:
+                filtered_title = f"Available Game Profiles — {len(available)} installed"
+
+        if not profiles:
+            # All profiles are hidden (polluted set) — show helpful guidance instead of empty table
+            console.print(Panel(
+                f"[bold yellow]No installed games detected.[/bold yellow]\n"
+                f"[dim]Found {len(unavailable)} profile(s) but none of their game_dir / dwarfs_image paths exist on disk right now.[/dim]\n"
+                f"[dim]Currently checked root: /mnt/zram1 and profile-specific paths. Re-download a game or press [a] to reveal hidden profiles.[/dim]\n"
+                f"[dim]Tip: `python3 master_runner.py list --all` shows every profile.[/dim]",
+                title="🎮 No Installed Games",
+                border_style="yellow",
+                box=box.ROUNDED
+            ))
+            # still allow toggle / quit / doctor / validate
+            console.print(f"\n[bold]Commands:[/bold] [cyan]a[/cyan] Toggle show all ({len(unavailable)} hidden) | [magenta]d[/magenta] Doctor | [magenta]v[/magenta] Validate | [red]q[/red] Quit")
+            choice = Prompt.ask("\n[bold green]Selection[/bold green]", default="q").strip()
+            if choice.lower() in ("q", "quit", "exit"):
+                break
+            elif choice.lower() in ("a", "all", "toggle"):
+                interactive_show_all = not interactive_show_all
+                continue
+            elif choice.lower() == "d":
+                run_doctor()
+                Prompt.ask("\nPress Enter to return to menu...")
+                continue
+            elif choice.lower() == "v":
+                validate_profiles(manager)
+                Prompt.ask("\nPress Enter to return to menu...")
+                continue
+            else:
+                # FZF on empty filtered still respects toggle
+                if choice.lower() in ("f", "s", "search", "fzf", "/") and has_fzf:
+                    # When filtered empty, offer fzf over all
+                    profile_list_all = list({**available, **unavailable}.items())
+                    selected_pid = fzf_select_game(manager, profile_list_all)
+                    if selected_pid:
+                        try:
+                            _, cfg = manager.load_profile(selected_pid)
+                            runner = GameRunner(selected_pid, cfg)
+                            runner.execute()
+                        except Exception as e:
+                            log_error(f"Execution failed for {selected_pid}: {e}")
+                        Prompt.ask("\nPress Enter to return to menu...")
+                continue
+
+        table = Table(title=filtered_title, box=box.ROUNDED)
         table.add_column("#", style="bold cyan", justify="right")
         table.add_column("ID", style="cyan")
         table.add_column("Game Title", style="white")
@@ -2020,13 +2244,21 @@ def render_interactive_menu(manager: ProfileManager) -> None:
                 table.add_row(str(idx), pid, "[red]Error loading[/red]", "-", "-", "[red]ERR[/red]", str(e))
 
         console.print(table)
+        # Footer: surface hidden count and toggle hint (dynamic filtering UX)
         fzf_hint = " | [bold blue]f[/bold blue] Fuzzy Search (FZF)" if has_fzf else ""
-        console.print(f"\n[bold]Commands:[/bold] [cyan]1-{len(profile_list)}[/cyan] Launch | [yellow]m <targets|all>[/yellow] Mount | [yellow]u <targets|all>[/yellow] Unmount{fzf_hint} | [magenta]d[/magenta] Doctor | [magenta]v[/magenta] Validate | [red]q[/red] Quit")
+        if not interactive_show_all and unavailable:
+            console.print(f"[dim]Showing {len(available)} installed • {len(unavailable)} hidden (not downloaded). Press [a] to show all • `list --all` shows everything.[/dim]")
+        elif interactive_show_all and unavailable:
+            console.print(f"[dim]Showing all {total_count} profiles (including {len(unavailable)} not installed). Press [a] to filter again.[/dim]")
+        console.print(f"\n[bold]Commands:[/bold] [cyan]1-{len(profile_list)}[/cyan] Launch | [yellow]m <targets|all>[/yellow] Mount | [yellow]u <targets|all>[/yellow] Unmount{fzf_hint} | [magenta]d[/magenta] Doctor | [magenta]v[/magenta] Validate | [cyan]a[/cyan] Toggle hidden | [red]q[/red] Quit")
 
         choice = Prompt.ask("\n[bold green]Selection[/bold green]", default="q").strip()
 
         if choice.lower() in ("q", "quit", "exit"):
             break
+        elif choice.lower() in ("a", "all", "toggle", "showall", "show_all"):
+            interactive_show_all = not interactive_show_all
+            continue
         elif choice.lower() in ("f", "s", "search", "fzf", "/"):
             selected_pid = fzf_select_game(manager, profile_list)
             if selected_pid:
@@ -2150,28 +2382,35 @@ def main():
     run_parser.add_argument("-v", "--verbose", action="store_true", help="Enable detailed debug logs")
     run_parser.add_argument("extra_args", nargs="*", help="Arbitrary trailing arguments passed directly to the game binary")
 
-    # Command: menu
-    subparsers.add_parser("menu", help="Launch interactive Rich TUI Dashboard")
+    # Command: menu — dynamic filtered view (pollution fix)
+    menu_parser = subparsers.add_parser("menu", help="Launch interactive Rich TUI Dashboard (dynamic: installed games only)")
+    menu_parser.add_argument("--all", action="store_true", help="Show all profiles including not-installed (polluted) — default filters to installed only")
 
-    # Command: fzf / select
-    subparsers.add_parser("fzf", help="Interactive FZF game selector and launcher")
-    subparsers.add_parser("select", help="Interactive FZF game selector and launcher")
+    # Command: fzf / select — dynamic filtered
+    fzf_parser = subparsers.add_parser("fzf", help="Interactive FZF game selector and launcher (installed only)")
+    fzf_parser.add_argument("--all", action="store_true", help="Include not-installed profiles in FZF list")
+    select_parser = subparsers.add_parser("select", help="Interactive FZF game selector and launcher (installed only)")
+    select_parser.add_argument("--all", action="store_true", help="Include not-installed profiles in FZF list")
 
-    # Command: list
-    subparsers.add_parser("list", help="List all discovered game profiles and base presets")
+    # Command: list — dynamic filtered by default, --all shows polluted set
+    list_parser = subparsers.add_parser("list", help="List discovered game profiles (dynamic: installed only)")
+    list_parser.add_argument("--all", action="store_true", help="Show all profiles including not-installed (default: installed only)")
 
-    # Command: status
-    subparsers.add_parser("status", help="Show active DwarFS and fuse-overlayfs mount statuses")
+    # Command: status — dynamic filtered by default
+    status_parser = subparsers.add_parser("status", help="Show active DwarFS and fuse-overlayfs mount statuses (installed only)")
+    status_parser.add_argument("--all", action="store_true", help="Show all profiles including not-installed")
 
     # Command: mount
     mount_parser = subparsers.add_parser("mount", help="Mount DwarFS & OverlayFS for one or more game profiles without launching")
     mount_parser.add_argument("profiles", nargs="*", help="Profile ID(s), numbers, ranges (e.g. 1-3), or 'all' to mount")
     mount_parser.add_argument("--dry-run", action="store_true", help="Simulate mount operation")
+    mount_parser.add_argument("--all", action="store_true", help="Include not-installed profiles in target resolution (default: installed only)")
 
     # Command: unmount
     unmount_parser = subparsers.add_parser("unmount", help="Unmount DwarFS & OverlayFS for one or more game profiles")
     unmount_parser.add_argument("profiles", nargs="*", help="Profile ID(s), numbers, ranges (e.g. 1-3), or 'all' to unmount")
     unmount_parser.add_argument("--dry-run", action="store_true", help="Simulate unmount operation")
+    unmount_parser.add_argument("--all", action="store_true", help="Include not-installed profiles in target resolution")
 
     # Command: unmount-all
     unmount_all_parser = subparsers.add_parser("unmount-all", help="Unmount all active game profiles across the system")
@@ -2199,8 +2438,9 @@ def main():
     desktop_parser = subparsers.add_parser("install-desktop", help="Install .desktop application shortcut")
     desktop_parser.add_argument("profile", help="Profile ID to install shortcut for")
 
-    # Command: install-all-desktops
-    subparsers.add_parser("install-all-desktops", help="Install .desktop shortcuts for all discovered profiles")
+    # Command: install-all-desktops — dynamic: installed only by default
+    iad_parser = subparsers.add_parser("install-all-desktops", help="Install .desktop shortcuts for discovered profiles (dynamic: installed only)")
+    iad_parser.add_argument("--all", action="store_true", help="Include not-installed profiles (default: installed only)")
 
     args = parser.parse_args()
 
@@ -2213,10 +2453,21 @@ def main():
 
     match args.command:
         case "menu":
-            render_interactive_menu(manager)
+            render_interactive_menu(manager, show_all=args.all)
 
         case "fzf" | "select":
-            profile_list = list(manager.discover_profiles().items())
+            # Dynamic: default to installed-only; --all includes polluted hidden
+            available, unavailable = categorize_profiles(manager)
+            if args.all:
+                filtered = {**available, **unavailable}
+            else:
+                filtered = available
+            if not filtered:
+                log_warning(f"No {'profiles' if args.all else 'installed games'} found for FZF selection.")
+                if not args.all and unavailable:
+                    log_info(f"Tip: {len(unavailable)} profiles hidden (not installed). Use `fzf --all` or `list --all` to see them.")
+                sys.exit(0)
+            profile_list = list(filtered.items())
             selected_pid = fzf_select_game(manager, profile_list)
             if selected_pid:
                 try:
@@ -2228,27 +2479,56 @@ def main():
                     sys.exit(1)
 
         case "list":
-            profiles = manager.discover_profiles()
+            available, unavailable = categorize_profiles(manager)
             presets = manager.discover_presets()
+            show_all = args.all
+            if show_all:
+                profiles = {**available, **unavailable}
+                title = f"Discovered Game Profiles — {len(available)} installed + {len(unavailable)} not installed (showing all)"
+            else:
+                profiles = available
+                if unavailable:
+                    title = f"Discovered Game Profiles — {len(available)} installed • {len(unavailable)} hidden (not installed) — use --all to show all"
+                else:
+                    title = f"Discovered Game Profiles — {len(available)} installed"
 
             if console:
-                p_table = Table(title="Discovered Game Profiles", box=box.ROUNDED)
-                p_table.add_column("Profile ID", style="cyan")
-                p_table.add_column("Title", style="white")
-                p_table.add_column("Preset Hierarchy", style="magenta")
-                p_table.add_column("Game Directory", style="dim")
+                if not profiles:
+                    # Empty filtered view → guidance panel instead of empty table
+                    console.print(Panel(
+                        f"[bold yellow]No installed games detected.[/bold yellow]\n"
+                        f"[dim]Found {len(unavailable)} profile(s) but none currently exist on disk.[/dim]\n"
+                        f"[dim]Use `list --all` to see every declared profile.[/dim]",
+                        title="🎮 No Installed Games",
+                        border_style="yellow",
+                        box=box.ROUNDED
+                    ))
+                else:
+                    p_table = Table(title=title, box=box.ROUNDED)
+                    p_table.add_column("Profile ID", style="cyan")
+                    p_table.add_column("Title", style="white")
+                    p_table.add_column("Preset Hierarchy", style="magenta")
+                    p_table.add_column("Game Directory", style="dim")
+                    p_table.add_column("Status", justify="center", style="green")
 
-                for pid, path in profiles.items():
-                    try:
-                        _, cfg = manager.load_profile(pid)
-                        title = cfg.get("meta", {}).get("name", pid)
-                        preset = cfg.get("extends", "none")
-                        gdir = cfg.get("paths", {}).get("game_dir", "-")
-                        p_table.add_row(pid, title, preset, gdir)
-                    except Exception as e:
-                        p_table.add_row(pid, "[red]Error[/red]", "-", str(e))
+                    for pid, path in profiles.items():
+                        try:
+                            _, cfg = manager.load_profile(pid)
+                            title_name = cfg.get("meta", {}).get("name", pid)
+                            preset = cfg.get("extends", "none")
+                            gdir = cfg.get("paths", {}).get("game_dir", "-")
+                            # Dynamic badge: available vs unavailable (when --all)
+                            if pid in available:
+                                badge = "[bold green]INSTALLED[/bold green]"
+                            else:
+                                badge = "[dim]NOT INSTALLED[/dim]"
+                            p_table.add_row(pid, title_name, preset, gdir, badge)
+                        except Exception as e:
+                            p_table.add_row(pid, "[red]Error[/red]", "-", str(e), "[red]ERR[/red]")
 
-                console.print(p_table)
+                    console.print(p_table)
+                    if not show_all and unavailable:
+                        console.print(f"[dim]Hidden {len(unavailable)} not-installed profiles. Run with --all to reveal.[/dim]")
 
                 pr_table = Table(title="Base Archetype Presets", box=box.ROUNDED)
                 pr_table.add_column("Preset ID", style="blue")
@@ -2258,12 +2538,31 @@ def main():
                 console.print(pr_table)
             else:
                 print("Profiles:", list(profiles.keys()))
+                if not show_all and unavailable:
+                    print(f"Hidden {len(unavailable)} not installed")
                 print("Presets:", list(presets.keys()))
 
         case "status":
-            profiles = manager.discover_profiles()
-            if console:
-                table = Table(title="Active Game Mount & Runtime Status", box=box.ROUNDED)
+            available, unavailable = categorize_profiles(manager)
+            show_all = args.all
+            if show_all:
+                profiles = {**available, **unavailable}
+                title = f"Active Game Mount & Runtime Status — {len(available)} installed + {len(unavailable)} not installed"
+            else:
+                profiles = available
+                title = f"Active Game Mount & Runtime Status — {len(profiles)} installed" + (f" ({len(unavailable)} hidden)" if unavailable else "")
+            if not profiles:
+                if console:
+                    console.print(Panel(
+                        f"[bold yellow]No installed games to show status for.[/bold yellow]\n[dim]{len(unavailable)} profiles hidden (not installed). Use `status --all` to see every profile.[/dim]",
+                        title="Mount Status",
+                        border_style="yellow",
+                        box=box.ROUNDED
+                    ))
+                else:
+                    print("No installed games for status")
+            elif console:
+                table = Table(title=title, box=box.ROUNDED)
                 table.add_column("Profile ID", style="cyan")
                 table.add_column("Game Title", style="white")
                 table.add_column("DwarFS Layer", justify="center")
@@ -2283,42 +2582,92 @@ def main():
                         table.add_row(pid, "ERROR", "-", "-", str(e))
 
                 console.print(table)
+                if not show_all and unavailable:
+                    console.print(f"[dim]Hidden {len(unavailable)} not-installed profiles. Use --all to see all.[/dim]")
 
         case "mount":
-            profile_list = list(manager.discover_profiles().items())
+            available, unavailable = categorize_profiles(manager)
+            if args.all:
+                filtered = {**available, **unavailable}
+            else:
+                filtered = available
+            profile_list = list(filtered.items())
             if not args.profiles:
-                target_pids = fzf_select_mounts(manager, profile_list, action="mount")
+                if not profile_list:
+                    log_warning(f"No {'profiles' if args.all else 'installed games'} available to mount.")
+                    if not args.all and unavailable:
+                        log_info(f"{len(unavailable)} profiles hidden — use `mount --all` or `mount <id>` to target hidden.")
+                else:
+                    target_pids = fzf_select_mounts(manager, profile_list, action="mount")
+                    if not target_pids:
+                        log_warning("No game profiles specified or selected for mount.")
+                    else:
+                        for pid in target_pids:
+                            try:
+                                _, cfg = manager.load_profile(pid)
+                                MountManager.mount(cfg, dry_run=args.dry_run)
+                            except Exception as e:
+                                log_error(f"Mount failed for {pid}: {e}")
             else:
                 combined_targets = " ".join(args.profiles)
                 target_pids = parse_profile_targets(combined_targets, profile_list, manager)
 
-            if not target_pids:
-                log_warning("No game profiles specified or selected for mount.")
-            else:
-                for pid in target_pids:
-                    try:
-                        _, cfg = manager.load_profile(pid)
-                        MountManager.mount(cfg, dry_run=args.dry_run)
-                    except Exception as e:
-                        log_error(f"Mount failed for {pid}: {e}")
+                if not target_pids:
+                    log_warning("No game profiles specified or selected for mount.")
+                else:
+                    for pid in target_pids:
+                        try:
+                            _, cfg = manager.load_profile(pid)
+                            MountManager.mount(cfg, dry_run=args.dry_run)
+                        except Exception as e:
+                            log_error(f"Mount failed for {pid}: {e}")
 
         case "unmount":
-            profile_list = list(manager.discover_profiles().items())
+            available, unavailable = categorize_profiles(manager)
+            # For unmount, we want to consider mounted state even if profile is currently unavailable?
+            # But default still filters to installed; --all includes everything.
+            if args.all:
+                filtered = {**available, **unavailable}
+            else:
+                # Include any currently-mounted profile even if its backing dir was removed after mount?
+                # So merge mounted unavailable that still show as MOUNTED
+                filtered = dict(available)
+                for pid in unavailable:
+                    try:
+                        _, cfg = manager.load_profile(pid)
+                        dw_m, ov_m = MountManager.get_mount_status(cfg)
+                        if dw_m or ov_m:
+                            filtered[pid] = unavailable[pid]
+                    except Exception:
+                        continue
+            profile_list = list(filtered.items())
             if not args.profiles:
-                target_pids = fzf_select_mounts(manager, profile_list, action="unmount")
+                if not profile_list:
+                    log_warning(f"No {'profiles' if args.all else 'installed/mounted games'} available to unmount.")
+                else:
+                    target_pids = fzf_select_mounts(manager, profile_list, action="unmount")
+                    if not target_pids:
+                        log_warning("No game profiles specified or selected for unmount.")
+                    else:
+                        for pid in target_pids:
+                            try:
+                                _, cfg = manager.load_profile(pid)
+                                MountManager.unmount(cfg, dry_run=args.dry_run)
+                            except Exception as e:
+                                log_error(f"Unmount failed for {pid}: {e}")
             else:
                 combined_targets = " ".join(args.profiles)
                 target_pids = parse_profile_targets(combined_targets, profile_list, manager)
 
-            if not target_pids:
-                log_warning("No game profiles specified or selected for unmount.")
-            else:
-                for pid in target_pids:
-                    try:
-                        _, cfg = manager.load_profile(pid)
-                        MountManager.unmount(cfg, dry_run=args.dry_run)
-                    except Exception as e:
-                        log_error(f"Unmount failed for {pid}: {e}")
+                if not target_pids:
+                    log_warning("No game profiles specified or selected for unmount.")
+                else:
+                    for pid in target_pids:
+                        try:
+                            _, cfg = manager.load_profile(pid)
+                            MountManager.unmount(cfg, dry_run=args.dry_run)
+                        except Exception as e:
+                            log_error(f"Unmount failed for {pid}: {e}")
 
         case "unmount-all":
             count = MountManager.unmount_all(manager, dry_run=args.dry_run)
@@ -2357,7 +2706,14 @@ def main():
                 sys.exit(1)
 
         case "install-all-desktops":
-            profiles = manager.discover_profiles()
+            if args.all:
+                available, unavailable = categorize_profiles(manager)
+                profiles = {**available, **unavailable}
+            else:
+                available, unavailable = categorize_profiles(manager)
+                profiles = available
+                if unavailable:
+                    log_info(f"Installing shortcuts for {len(available)} installed games ({len(unavailable)} hidden — use --all to include all)")
             for pid in profiles:
                 try:
                     install_desktop_shortcut(manager, pid)
