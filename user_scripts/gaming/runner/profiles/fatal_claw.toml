@@ -36,7 +36,7 @@ debug = "fixme-all"
 dll_overrides = { "winemenubuilder.exe" = "d", "mshtml" = "d", "dxgi" = "n", "d3d11" = "n", "d3d12" = "n", "d3d9" = "n" }
 
 [graphics]
-gpu = "discrete"
+gpu = "integrated"
 wayland_native = true
 prefer_xwayland = false
 

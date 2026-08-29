@@ -1023,21 +1023,65 @@ class GameRunner:
 
         use_discrete = (gpu_choice == "discrete") or (gpu_choice == "auto" and is_heavy_profile and has_nvidia)
 
-        if use_discrete and has_nvidia:
-            log_info("GPU Pipeline: NVIDIA Discrete GPU (Render Offload via PRIME)")
-            env["__NV_PRIME_RENDER_OFFLOAD"] = "1"
-            env["__GLX_VENDOR_LIBRARY_NAME"] = "nvidia"
-            env["__VK_LAYER_NV_optimus"] = "NVIDIA_only"
-            if gfx_cfg.get("vulkan_icd") == "nvidia" or gfx_cfg.get("vulkan_icd") == "auto":
-                if Path("/usr/share/vulkan/icd.d/nvidia_icd.json").exists():
-                    env["VK_ICD_FILENAMES"] = "/usr/share/vulkan/icd.d/nvidia_icd.json"
-        elif gpu_choice == "integrated" or (not use_discrete and has_intel):
-            log_info("GPU Pipeline: Intel Iris Xe Integrated GPU")
+        # Hardware-agnostic GPU pipeline (Intel/NVIDIA/AMD, no hardcoded Iris Xe)
+        has_amd = any(g.is_amd for g in self.gpus)
+        primary_gpu = next((g for g in self.gpus if g.is_primary), self.gpus[0] if self.gpus else None)
+
+        if use_discrete and (has_nvidia or has_amd):
+            # Discrete path: prefer NVIDIA if present, else AMD
+            if has_nvidia:
+                log_info("GPU Pipeline: Discrete GPU (PRIME Render Offload)")
+                env["__NV_PRIME_RENDER_OFFLOAD"] = "1"
+                env["__GLX_VENDOR_LIBRARY_NAME"] = "nvidia"
+                env["__VK_LAYER_NV_optimus"] = "NVIDIA_only"
+                if gfx_cfg.get("vulkan_icd") in ("nvidia", "auto"):
+                    for cand in ["/usr/share/vulkan/icd.d/nvidia_icd.json", "/usr/share/vulkan/icd.d/nvidia_icd.x86_64.json"]:
+                        if Path(cand).exists():
+                            env["VK_ICD_FILENAMES"] = cand
+                            break
+                env.pop("MESA_LOADER_DRIVER_OVERRIDE", None)
+            elif has_amd:
+                log_info("GPU Pipeline: Discrete AMD GPU (DRI_PRIME)")
+                env["DRI_PRIME"] = "1"
+                env.pop("__NV_PRIME_RENDER_OFFLOAD", None)
+                env.pop("__GLX_VENDOR_LIBRARY_NAME", None)
+                env.pop("__VK_LAYER_NV_optimus", None)
+                # AMD ICDs: radeon, amdvulkan
+                for cand in ["/usr/share/vulkan/icd.d/radeon_icd.x86_64.json", "/usr/share/vulkan/icd.d/radeon_icd.i686.json", "/usr/share/vulkan/icd.d/amd_icd64.json", "/usr/share/vulkan/icd.d/amd_icd32.json"]:
+                    if Path(cand).exists():
+                        env["VK_ICD_FILENAMES"] = cand
+                        break
+        elif gpu_choice == "integrated" or (not use_discrete and (has_intel or has_amd)):
+            # Integrated path: auto-detect Intel vs AMD
+            if has_intel:
+                log_info("GPU Pipeline: Integrated GPU (Intel)")
+                env["MESA_LOADER_DRIVER_OVERRIDE"] = "iris"
+                for cand in ["/usr/share/vulkan/icd.d/intel_icd.json", "/usr/share/vulkan/icd.d/intel_hasvk_icd.json", "/usr/share/vulkan/icd.d/intel_icd.x86_64.json"]:
+                    if Path(cand).exists():
+                        env["VK_ICD_FILENAMES"] = cand
+                        break
+            elif has_amd:
+                log_info("GPU Pipeline: Integrated GPU (AMD)")
+                env["MESA_LOADER_DRIVER_OVERRIDE"] = "radeonsi"
+                for cand in ["/usr/share/vulkan/icd.d/radeon_icd.x86_64.json", "/usr/share/vulkan/icd.d/amd_icd64.json"]:
+                    if Path(cand).exists():
+                        env["VK_ICD_FILENAMES"] = cand
+                        break
+            else:
+                log_info("GPU Pipeline: Integrated GPU (Generic)")
+                env.pop("MESA_LOADER_DRIVER_OVERRIDE", None)
+            # Clear discrete offload for integrated
             env.pop("__NV_PRIME_RENDER_OFFLOAD", None)
+            env.pop("__GLX_VENDOR_LIBRARY_NAME", None)
+            env.pop("__VK_LAYER_NV_optimus", None)
             env.pop("DRI_PRIME", None)
-            env["MESA_LOADER_DRIVER_OVERRIDE"] = "iris"
-            if Path("/usr/share/vulkan/icd.d/intel_icd.x86_64.json").exists():
-                env["VK_ICD_FILENAMES"] = "/usr/share/vulkan/icd.d/intel_icd.x86_64.json"
+            # If user forced nvidia ICD but on integrated Intel/AMD, don't leak nvidia
+            if env.get("VK_ICD_FILENAMES", "").endswith("nvidia_icd.json"):
+                # Re-evaluate via integrated path above, else clear
+                if has_intel or has_amd:
+                    pass  # already set to correct ICD above
+                else:
+                    env.pop("VK_ICD_FILENAMES", None)
 
         # 5. Wine / Proton Specific Environment
         if runtime_type == "wine":
