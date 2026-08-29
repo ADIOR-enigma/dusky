@@ -36,12 +36,30 @@ arch = "win64"
 sync_mode = "fsync"
 dxvk = true
 vkd3d = true
-dll_overrides = { "winemenubuilder.exe" = "d", "mshtml" = "d", "nvapi" = "n", "nvapi64" = "n", "d3d9" = "n", "d3d10core" = "n", "d3d11" = "n", "dxgi" = "n", "d3d12" = "n", "d3d12core" = "n", "d3d8" = "n,b", "dsoal-aldrv" = "n,b", "dsound" = "n,b" }
+
+[runtime.wine.dll_overrides]
+"winemenubuilder.exe" = "d"
+mshtml = "d"
+dxgi = "n"
+d3d11 = "n"
+d3d12 = "n"
+d3d9 = "n"
+d3d8 = "n,b"
+d3d10core = "n"
+d3d12core = "n"
+nvapi = "n"
+nvapi64 = "n"
+dsoal-aldrv = "n,b"
+dsound = "n,b"
 
 [graphics]
 gpu = "discrete"
 wayland_native = true
 
+[graphics.gamescope]
+enabled = false
+
 [performance]
 gamemode = true
+mangohud = false
 fps_limit = 60

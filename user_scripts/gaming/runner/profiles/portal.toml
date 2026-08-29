@@ -38,4 +38,5 @@ allow_tearing = true
 
 [performance]
 gamemode = true
+mangohud = false
 fps_limit = 60

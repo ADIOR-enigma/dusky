@@ -46,12 +46,11 @@ allow_tearing = true
 
 [performance]
 gamemode = true
+mangohud = false
 fps_limit = 60
 
 [hooks]
-pre_launch = [
-    "bash -c 'if [ ! -f \"$HOME/.local/lib32/libmeminfo_fix32.so\" ]; then mkdir -p \"$HOME/.local/lib32\" && gcc -m32 -shared -fPIC -O2 -o \"$HOME/.local/lib32/libmeminfo_fix32.so\" -x c - -ldl << \"EOF\"\n#define _GNU_SOURCE\n#include <stdio.h>\n#include <string.h>\n#include <dlfcn.h>\n#include <unistd.h>\nFILE *fopen(const char *path, const char *mode) {\n    static FILE *(*real_fopen)(const char *, const char *) = NULL;\n    if (!real_fopen) real_fopen = dlsym(RTLD_NEXT, \"fopen\");\n    if (path && strcmp(path, \"/proc/meminfo\") == 0) {\n        const char *data = \"MemTotal:        4194304 kB\\nMemFree:         2097152 kB\\nMemAvailable:    3000000 kB\\nBuffers:          100000 kB\\nCached:          1000000 kB\\n\";\n        return fmemopen((void*)data, strlen(data), \"r\");\n    }\n    return real_fopen(path, mode);\n}\nFILE *fopen64(const char *path, const char *mode) {\n    return fopen(path, mode);\n}\nlong sysconf(int name) {\n    static long (*real_sysconf)(int) = NULL;\n    if (!real_sysconf) real_sysconf = dlsym(RTLD_NEXT, \"sysconf\");\n    if (name == _SC_PHYS_PAGES || name == _SC_AVPHYS_PAGES) {\n        return 1048576;\n    }\n    return real_sysconf(name);\n}\nEOF\nfi'"
-]
+pre_launch = ["bash -c 'if [ ! -f \"$HOME/.local/lib32/libmeminfo_fix32.so\" ]; then mkdir -p \"$HOME/.local/lib32\" && gcc -m32 -shared -fPIC -O2 -o \"$HOME/.local/lib32/libmeminfo_fix32.so\" -x c - -ldl << \"EOF\"\n#define _GNU_SOURCE\n#include <stdio.h>\n#include <string.h>\n#include <dlfcn.h>\n#include <unistd.h>\nFILE *fopen(const char *path, const char *mode) {\n    static FILE *(*real_fopen)(const char *, const char *) = NULL;\n    if (!real_fopen) real_fopen = dlsym(RTLD_NEXT, \"fopen\");\n    if (path && strcmp(path, \"/proc/meminfo\") == 0) {\n        const char *data = \"MemTotal:        4194304 kB\\nMemFree:         2097152 kB\\nMemAvailable:    3000000 kB\\nBuffers:          100000 kB\\nCached:          1000000 kB\\n\";\n        return fmemopen((void*)data, strlen(data), \"r\");\n    }\n    return real_fopen(path, mode);\n}\nFILE *fopen64(const char *path, const char *mode) {\n    return fopen(path, mode);\n}\nlong sysconf(int name) {\n    static long (*real_sysconf)(int) = NULL;\n    if (!real_sysconf) real_sysconf = dlsym(RTLD_NEXT, \"sysconf\");\n    if (name == _SC_PHYS_PAGES || name == _SC_AVPHYS_PAGES) {\n        return 1048576;\n    }\n    return real_sysconf(name);\n}\nEOF\nfi'"]
 
 [env]
 LD_PRELOAD = "$HOME/.local/lib32/libmeminfo_fix32.so"

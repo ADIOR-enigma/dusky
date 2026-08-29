@@ -31,9 +31,9 @@ prefix_dir = "files/prefix"
 arch = "win64"
 sync_mode = "fsync"
 large_address_aware = true
+debug = "fixme-all"
 dxvk = true
 vkd3d = true
-debug = "fixme-all"
 redistributables = ["VC_redist.x64.exe"]
 winetricks = ["dxvk"]
 
@@ -41,8 +41,12 @@ winetricks = ["dxvk"]
 gpu = "discrete"
 wayland_native = true
 
+[graphics.gamescope]
+enabled = false
+
 [performance]
 gamemode = true
+mangohud = false
 fps_limit = 60
 cpu_governor = "performance"
 

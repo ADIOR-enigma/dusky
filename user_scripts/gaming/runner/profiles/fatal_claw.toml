@@ -25,20 +25,30 @@ arguments = []
 type = "wine"
 
 [runtime.wine]
+wine_binary = "~/.local/share/Steam/compatibilitytools.d/GE-Proton11-6-x86_64/files/bin/wine"
 prefix_dir = "/mnt/zram1/games/fatal-flaw"
 arch = "win64"
 sync_mode = "fsync"
-wine_binary = "~/.local/share/Steam/compatibilitytools.d/GE-Proton11-6-x86_64/files/bin/wine"
+debug = "fixme-all"
 dxvk = true
 vkd3d = true
 dxvk_nvapi = false
-debug = "fixme-all"
-dll_overrides = { "winemenubuilder.exe" = "d", "mshtml" = "d", "dxgi" = "n", "d3d11" = "n", "d3d12" = "n", "d3d9" = "n" }
+
+[runtime.wine.dll_overrides]
+"winemenubuilder.exe" = "d"
+mshtml = "d"
+dxgi = "n"
+d3d11 = "n"
+d3d12 = "n"
+d3d9 = "n"
 
 [graphics]
 gpu = "integrated"
 wayland_native = true
 prefer_xwayland = false
+
+[graphics.gamescope]
+enabled = false
 
 [performance]
 gamemode = true

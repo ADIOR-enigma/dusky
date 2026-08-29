@@ -30,6 +30,10 @@ type = "native"
 gpu = "auto"
 wayland_native = true
 
+[graphics.gamescope]
+enabled = false
+
 [performance]
-fps_limit = 60
 gamemode = true
+mangohud = false
+fps_limit = 60
