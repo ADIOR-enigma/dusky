@@ -16,6 +16,10 @@ post_hook   = '''
   ln -nfs "$HOME/.config/matugen/generated/gtk-3.css" "$HOME/.config/gtk-3.0/gtk.css"
   gsettings set org.gnome.desktop.interface gtk-theme "Adwaita" || :
   gsettings set org.gnome.desktop.interface gtk-theme "adw-gtk3-dark" || :
+  # Portal file chooser (xdg-desktop-portal-gtk) caches theme at startup; new
+  # dialogs opened after a matugen switch would otherwise stay teal/cyan until
+  # next login. Cheap try-restart makes the next Select folder pick up pink.
+  systemctl --user try-restart xdg-desktop-portal-gtk >/dev/null 2>&1 || :
 '''
 
 [templates.gtk4]
