@@ -978,6 +978,32 @@ _PER_GAME_HELP_EXT = "**Per-Game Preset (extends)**\n\nOverrides the archetype p
 
 _PER_GAME_HELP_SYNC = "**Per-Game Wine Sync**\n\nOverrides `runtime.wine.sync_mode` for Wine titles.\n- **fsync** (default): `WINEFSYNC=1`.\n- **esync**: `WINEESYNC=1`.\n- **ntsync**: `WINENTSYNC=1`.\n- **server**: No userspace sync."
 
+def _get_profile_value(pid: str, scope: str, key: str, fallback):
+    """Read a single value from profiles/<pid>.toml with fallback, for dynamic per-game defaults."""
+    try:
+        import tomllib
+        p = _PROFILES_DIR / f"{pid}.toml"
+        if not p.is_file():
+            return fallback
+        with open(p, "rb") as f:
+            data = tomllib.load(f)
+        # Scope handling: DEFAULT means root key
+        if scope == "DEFAULT":
+            return data.get(key, fallback)
+        # Dotted scope traversal
+        cur = data
+        for part in scope.split("."):
+            if not isinstance(cur, dict):
+                return fallback
+            cur = cur.get(part)
+            if cur is None:
+                return fallback
+        if isinstance(cur, dict):
+            return cur.get(key, fallback)
+        return fallback
+    except Exception:
+        return fallback
+
 def _build_per_game_items() -> list[ConfigItem]:
     if not _DISCOVERED_PROFILES:
         return [
@@ -1012,6 +1038,21 @@ def _build_per_game_items() -> list[ConfigItem]:
             )
         )
 
+        # Per-game defaults are read from the current profile so the TUI does NOT show them as edited.
+        # This makes the TUI's default == profile's actual value, so is_modified is False on first load.
+        _gpu_def = _get_profile_value(pid, "graphics", "gpu", "auto")
+        _fps_def = _get_profile_value(pid, "performance", "fps_limit", 60)
+        # Ensure int
+        try:
+            _fps_def = int(_fps_def)
+        except Exception:
+            _fps_def = 60
+        _gs_def = _get_profile_value(pid, "graphics.gamescope", "enabled", False)
+        _mh_def = _get_profile_value(pid, "performance", "mangohud", False)
+        _gm_def = _get_profile_value(pid, "performance", "gamemode", True)
+        _ext_def = _get_profile_value(pid, "DEFAULT", "extends", "base_native")
+        _sync_def = _get_profile_value(pid, "runtime.wine", "sync_mode", "fsync")
+
         # GPU
         items.append(
             ConfigItem(
@@ -1019,7 +1060,7 @@ def _build_per_game_items() -> list[ConfigItem]:
                 key="gpu",
                 scope="graphics",
                 type_="cycle",
-                default="auto",
+                default=_gpu_def if _gpu_def in ("auto", "discrete", "integrated") else "auto",
                 options=["auto", "discrete", "integrated"],
                 parent_ref=menu_key,
                 target_file_override=profile_toml,
@@ -1033,7 +1074,7 @@ def _build_per_game_items() -> list[ConfigItem]:
                 key="fps_limit",
                 scope="performance",
                 type_="int",
-                default=60,
+                default=_fps_def,
                 min_val=0,
                 max_val=480,
                 step=5,
@@ -1050,7 +1091,7 @@ def _build_per_game_items() -> list[ConfigItem]:
                 key="enabled",
                 scope="graphics.gamescope",
                 type_="bool",
-                default=False,
+                default=bool(_gs_def),
                 parent_ref=menu_key,
                 target_file_override=profile_toml,
                 extended_help=_PER_GAME_HELP_GS,
@@ -1063,7 +1104,7 @@ def _build_per_game_items() -> list[ConfigItem]:
                 key="mangohud",
                 scope="performance",
                 type_="bool",
-                default=False,
+                default=bool(_mh_def),
                 parent_ref=menu_key,
                 target_file_override=profile_toml,
                 extended_help=_PER_GAME_HELP_MH,
@@ -1076,7 +1117,7 @@ def _build_per_game_items() -> list[ConfigItem]:
                 key="gamemode",
                 scope="performance",
                 type_="bool",
-                default=True,
+                default=bool(_gm_def),
                 parent_ref=menu_key,
                 target_file_override=profile_toml,
                 extended_help=_PER_GAME_HELP_GM,
@@ -1089,7 +1130,7 @@ def _build_per_game_items() -> list[ConfigItem]:
                 key="extends",
                 scope="DEFAULT",
                 type_="picker",
-                default="base_native",
+                default=_ext_def if _ext_def in ("base_native", "base_unity_native", "base_wine_dxvk", "base_unreal_engine_5") else "base_native",
                 options=["base_native", "base_unity_native", "base_wine_dxvk", "base_unreal_engine_5"],
                 hints=[
                     "Native Linux ELF / shell",
@@ -1109,7 +1150,7 @@ def _build_per_game_items() -> list[ConfigItem]:
                 key="sync_mode",
                 scope="runtime.wine",
                 type_="cycle",
-                default="fsync",
+                default=_sync_def if _sync_def in ("fsync", "esync", "ntsync", "server") else "fsync",
                 options=["fsync", "esync", "ntsync", "server"],
                 parent_ref=menu_key,
                 target_file_override=profile_toml,
