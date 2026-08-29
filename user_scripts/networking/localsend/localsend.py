@@ -1243,21 +1243,17 @@ def install_localsend(method: InstallMethod, target: TargetUser, dry_run: bool =
     # Resolve method
     chosen = method
     if method == "auto":
-        # Prefer paru/yay native if helper available and not inside Toolbox, else flatpak (fastest, no 15-min build)
+        # Auto when not installed → prefer localsend-bin (prebuilt native, instant, no 15min Rust+Flutter build)
+        # User requested: if localsend not found, auto-download localsend-bin
         has_paru = shutil.which("paru") is not None
         has_yay = shutil.which("yay") is not None
         has_flatpak = shutil.which("flatpak") is not None
         if has_paru or has_yay:
-            # Ask? In auto we choose flatpak for speed unless user forced native
-            # Modern guidance: flatpak is more reliable for Flutter+Rust build; native build via AUR is heavy.
-            # So auto → flatpak if available, else paru.
-            if has_flatpak:
-                chosen = "flatpak"
-                log_info("Auto-selected Flatpak (fast, no build). Use --install native to force AUR build.")
-            else:
-                chosen = "native"
+            chosen = "native-bin"
+            log_info("Auto-selected localsend-bin (AUR prebuilt, instant native). Use --install native for source build (1.18.2) or --install flatpak for sandbox.")
         elif has_flatpak:
             chosen = "flatpak"
+            log_info("Auto-selected Flatpak (no AUR helper). Use --install flatpak to force.")
         else:
             log_err("No AUR helper (paru/yay) nor flatpak found. Install one first: sudo pacman -S --needed flatpak")
             return False
@@ -1668,7 +1664,7 @@ def main() -> None:
         ),
     )
     p.add_argument("--install", choices=["auto", "native", "native-bin", "flatpak", "flatpak-user", "skip"], default=None,
-                   help="Installation method (default: interactive ask; auto picks flatpak for speed)")
+                   help="Installation method (default: interactive ask; auto picks localsend-bin prebuilt when not installed)")
     p.add_argument("--no-install", action="store_true", help="Skip installation step")
     p.add_argument("--thunar", action="store_true", help="Force Thunar setup (default: always unless --check/--uninstall)")
     p.add_argument("--no-thunar", action="store_true", help="Skip Thunar Custom Action/SendTo")
