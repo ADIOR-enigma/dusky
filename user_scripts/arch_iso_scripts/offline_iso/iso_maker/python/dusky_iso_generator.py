@@ -276,6 +276,7 @@ AUR_SEED: Tuple[str, ...] = (
     "xdg-terminal-exec",
     "paru",
     "waybar-git",
+    "papirus-folders",
 )
 
 # ==============================================================================
