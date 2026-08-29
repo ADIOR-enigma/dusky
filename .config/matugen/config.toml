@@ -125,21 +125,21 @@ post_hook   = '''
   ln -nfs "$HOME/.config/matugen/generated/kate-matugen.theme" "$HOME/.local/share/org.kde.syntax-highlighting/themes/Matugen.theme"
 '''
 
-[templates.konsole]
-input_path  = '~/.config/matugen/templates/konsole.colorscheme'
-output_path = '~/.config/matugen/generated/konsole-matugen.colorscheme'
-post_hook   = '''
-  mkdir -p "$HOME/.local/share/konsole"
-  ln -nfs "$HOME/.config/matugen/generated/konsole-matugen.colorscheme" "$HOME/.local/share/konsole/Matugen.colorscheme"
-'''
+# [templates.konsole]
+# input_path  = '~/.config/matugen/templates/konsole.colorscheme'
+# output_path = '~/.config/matugen/generated/konsole-matugen.colorscheme'
+# post_hook   = '''
+#   mkdir -p "$HOME/.local/share/konsole"
+#   ln -nfs "$HOME/.config/matugen/generated/konsole-matugen.colorscheme" "$HOME/.local/share/konsole/Matugen.colorscheme"
+# '''
 
-[templates.konsole_profile]
-input_path  = '~/.config/matugen/templates/konsole.profile'
-output_path = '~/.config/matugen/generated/konsole-matugen.profile'
-post_hook   = '''
-  mkdir -p "$HOME/.local/share/konsole"
-  ln -nfs "$HOME/.config/matugen/generated/konsole-matugen.profile" "$HOME/.local/share/konsole/Matugen.profile"
-'''
+# [templates.konsole_profile]
+# input_path  = '~/.config/matugen/templates/konsole.profile'
+# output_path = '~/.config/matugen/generated/konsole-matugen.profile'
+# post_hook   = '''
+#   mkdir -p "$HOME/.local/share/konsole"
+#   ln -nfs "$HOME/.config/matugen/generated/konsole-matugen.profile" "$HOME/.local/share/konsole/Matugen.profile"
+# '''
 
 [templates.kvantum_kvconfig]
 input_path  = '~/.config/matugen/templates/kvantum-colors.kvconfig'
@@ -153,6 +153,17 @@ input_path  = '~/.config/matugen/templates/kvantum-colors.svg'
 output_path = '~/.config/matugen/generated/kvantum-matugen.svg'
 post_hook   = '''
   ln -nfs "$HOME/.config/matugen/generated/kvantum-matugen.svg" "$HOME/.config/Kvantum/matugen/matugen.svg"
+'''
+
+[templates.gimp]
+input_path  = '~/.config/matugen/templates/gimp.css'
+output_path = '~/.config/matugen/generated/gimp.css'
+post_hook   = '''
+  ln -nfs "$HOME/.config/matugen/generated/gimp.css" "$HOME/.config/GIMP/3.0/themes/Matugen/gimp.css"
+  ln -nfs "$HOME/.config/matugen/generated/gimp.css" "$HOME/.config/GIMP/3.2/themes/Matugen/gimp.css"
+  # Personal override for immediate effect regardless of theme selection
+  ln -nfs "$HOME/.config/matugen/generated/gimp.css" "$HOME/.config/GIMP/3.2/gimp.css"
+  ln -nfs "$HOME/.config/matugen/generated/gimp.css" "$HOME/.config/GIMP/3.0/gimp.css"
 '''
 
 
@@ -233,13 +244,13 @@ post_hook   = 'ln -nfs "$HOME/.config/matugen/generated/khal-config" "$HOME/.con
 #   touch "$HOME/.config/zellij/config.kdl" || :
 # '''
 
-# [templates.opencode]
-# input_path  = '~/.config/matugen/templates/opencode-colors.json'
-# output_path = '~/.config/matugen/generated/opencode.json'
-# post_hook   = '''
-#   ln -nfs "$HOME/.config/matugen/generated/opencode.json" "$HOME/.config/opencode/themes/matugen.json"
-#   pkill -SIGUSR1 -x kitty || :
-# '''
+[templates.opencode]
+input_path  = '~/.config/matugen/templates/opencode-colors.json'
+output_path = '~/.config/matugen/generated/opencode.json'
+post_hook   = '''
+  ln -nfs "$HOME/.config/matugen/generated/opencode.json" "$HOME/.config/opencode/themes/matugen.json"
+  pkill -SIGUSR1 -x kitty || :
+'''
 
 # [templates.vscode]
 # input_path  = '~/.config/matugen/templates/vscode.json'
@@ -296,15 +307,15 @@ post_hook   = '''
 # input_path  = '~/.config/matugen/templates/tmux-colors.conf'
 # output_path = '~/.config/matugen/generated/tmux-colors.conf'
 
-[templates.pywalfox]
-input_path  = '~/.config/matugen/templates/pywalfox-colors.json'
-output_path = '~/.config/matugen/generated/pywalfox-colors.json'
-post_hook   = '''
-  if command -v pywalfox >/dev/null 2>&1; then
-    ln -nfs "$HOME/.config/matugen/generated/pywalfox-colors.json" "$HOME/.cache/wal/colors.json"
-    pywalfox update || :
-  fi
-'''
+# [templates.pywalfox]
+# input_path  = '~/.config/matugen/templates/pywalfox-colors.json'
+# output_path = '~/.config/matugen/generated/pywalfox-colors.json'
+# post_hook   = '''
+#   if command -v pywalfox >/dev/null 2>&1; then
+#     ln -nfs "$HOME/.config/matugen/generated/pywalfox-colors.json" "$HOME/.cache/wal/colors.json"
+#     pywalfox update || :
+#   fi
+# '''
 
 [templates.obsidian]
 input_path  = '~/.config/matugen/templates/obsidian-theme.css'
