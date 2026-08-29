@@ -1267,9 +1267,9 @@ def install_localsend(method: InstallMethod, target: TargetUser, dry_run: bool =
             log_err(f"AUR helper required for {pkg}. Install paru: sudo pacman -S --needed paru  OR  use --install flatpak")
             return False
         helper_name = Path(helper).name
-        # paru/yay must NOT run as root
+        # paru/yay must NOT run as root, skip PGP review prompt for non-interactive
         prefix = sudo_user_prefix(target) if is_root() else []
-        cmd = [*prefix, helper, "-S", "--needed", "--noconfirm", pkg]
+        cmd = [*prefix, helper, "-S", "--needed", "--noconfirm", "--skipreview", pkg]
         # paru needs non-root + no lock contention
         if dry_run:
             log_info(f"[dry-run] would run: {' '.join(cmd)}  (build may take 10-15 min for {pkg})")
