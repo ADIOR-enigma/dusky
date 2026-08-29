@@ -46,7 +46,7 @@ PACKAGE_CATALOG: Dict[str, Dict[str, any]] = {
         "description": "Wine-Staging with Esync/Fsync and native Wayland staging driver",
         "packages": [
             "wine-staging", "wine-gecko", "wine-mono", "winetricks",
-            "cabextract", "samba", "zenity"
+            "cabextract", "samba", "zenity", "kdialog"
         ]
     },
     "runtime_32bit": {
@@ -56,7 +56,9 @@ PACKAGE_CATALOG: Dict[str, Dict[str, any]] = {
             "lib32-gnutls", "lib32-gtk3", "lib32-libpulse", "lib32-alsa-plugins",
             "lib32-vulkan-icd-loader", "vulkan-icd-loader", "vulkan-tools",
             "lib32-libxcomposite", "lib32-libxinerama", "lib32-libxrandr",
-            "lib32-libxcursor", "lib32-libxi", "ttf-liberation", "noto-fonts"
+            "lib32-libxcursor", "lib32-libxi", "lib32-libxtst",
+            "lib32-libpng", "lib32-libldap", "lib32-vkd3d",
+            "ttf-liberation", "ttf-dejavu", "noto-fonts"
         ]
     },
     "performance_tools": {
@@ -69,9 +71,12 @@ PACKAGE_CATALOG: Dict[str, Dict[str, any]] = {
         ]
     },
     "repack_tools": {
-        "title": "Container, Sandboxing, & Mount Utilities",
-        "description": "Filesystem utilities required for compressed game repacks and containers",
-        "packages": ["desktop-file-utils", "fuse-overlayfs", "bubblewrap", "psmisc"]
+        "title": "Repack Extraction, Container, & Mount Utilities",
+        "description": "Decompression & filesystem utilities for high-compression game repacks",
+        "packages": [
+            "desktop-file-utils", "fuse-overlayfs", "bubblewrap", "psmisc",
+            "7zip", "unrar", "innoextract"
+        ]
     }
 }
 
@@ -152,6 +157,7 @@ FLATPAK_APP_CATALOG: List[Dict[str, any]] = [
     {"name": "Bottles", "id": "com.usebottles.bottles", "wayland": True, "host_fs": True},
     {"name": "Flatseal", "id": "com.github.tchx84.Flatseal", "wayland": False, "host_fs": False},
     {"name": "ProtonPlus", "id": "com.vysp3r.ProtonPlus", "wayland": False, "host_fs": False},
+    {"name": "ProtonUp-Qt", "id": "net.davidotek.pupgui2", "wayland": False, "host_fs": False},
     {"name": "Heroic Games Launcher", "id": "com.heroicgameslauncher.hgl", "wayland": True, "host_fs": True}
 ]
 
@@ -235,6 +241,7 @@ class SelectedModules:
     gpu_drivers: bool = True
     sysctl_tuning: bool = True
     dwarfs_mode: str = "bin"  # "bin", "native", "source", or "skip"
+    protonup_mode: str = "bin"  # "bin", "source", "flatpak", or "skip"
     flatpak_apps: bool = True
     launcher_bridge: bool = True
     extra_packages: List[str] = field(default_factory=list)
@@ -907,6 +914,14 @@ def install_native_gaming_stack(ctx: SetupContext):
             retries=3
         )
 
+    # Ensure Lutris runner directory exists for ProtonUp-Qt / GE-Proton integration
+    if not ctx.dry_run:
+        try:
+            lutris_runners_dir = Path.home() / ".local/share/lutris/runners/wine"
+            lutris_runners_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
     if "performance_tools" in ctx.modules.categories:
         # Enable Gamescope real-time scheduling capability (CAP_SYS_NICE) for low-latency Wayland frame pacing
         if shutil.which("setcap") and Path("/usr/bin/gamescope").exists():
@@ -977,6 +992,36 @@ def configure_dwarfs(ctx: SetupContext):
             "Compile DwarFS tools from AUR",
             critical=False
         )
+
+
+def configure_protonup(ctx: SetupContext):
+    """
+    Installs ProtonUp-Qt (GE-Proton / Wine-GE runner manager) via AUR with
+    non-interactive provider resolution. Explicitly targets protonup-qt-bin
+    to avoid paru's interactive provider prompt (protonup-qt vs -bin vs -git).
+    Flatpak fallback (net.davidotek.pupgui2) is handled via FLATPAK_APP_CATALOG.
+    """
+    mode = ctx.modules.protonup_mode
+    if mode == "skip":
+        return
+
+    if shutil.which("protonup-qt") or shutil.which("pupgui2"):
+        console.print("[bold green]✔ ProtonUp-Qt is already installed on the system.[/bold green]")
+        return
+
+    aur_helper = next((h for h in ("paru", "yay") if shutil.which(h)), None)
+    if not aur_helper:
+        console.print("[yellow]No AUR helper (paru/yay) detected. ProtonUp-Qt will be provided via Flatpak (net.davidotek.pupgui2) if Flatpak apps are enabled.[/yellow]")
+        return
+
+    console.print("\n[bold cyan]Installing ProtonUp-Qt (GE-Proton & Wine-GE manager for Lutris)...[/bold cyan]")
+    # Explicitly target protonup-qt-bin to avoid interactive provider selection (3 providers in AUR)
+    run_command(
+        ctx,
+        f"{aur_helper} -S --needed --noconfirm protonup-qt-bin || {aur_helper} -S --needed --noconfirm protonup-qt",
+        "Install ProtonUp-Qt (Proton-GE / Lutris-GE runner downloader) via AUR",
+        critical=False
+    )
 
 
 def configure_flatpak_ecosystem(ctx: SetupContext):
@@ -1150,6 +1195,7 @@ def check_system_installed_status() -> Dict[str, bool]:
     status["steam"] = shutil.which("steam") is not None
     status["lutris"] = shutil.which("lutris") is not None
     status["wine"] = shutil.which("wine") is not None
+    status["protonup"] = shutil.which("protonup-qt") is not None or shutil.which("pupgui2") is not None
     status["gamescope"] = shutil.which("gamescope") is not None
     status["gamemode"] = shutil.which("gamemoded") is not None
     status["mangohud"] = shutil.which("mangohud") is not None
@@ -1164,6 +1210,7 @@ def check_system_installed_status() -> Dict[str, bool]:
     flatpaks = get_installed_flatpaks()
     status["flatpak_bottles"] = "com.usebottles.bottles" in flatpaks
     status["flatpak_heroic"] = "com.heroicgameslauncher.hgl" in flatpaks
+    status["flatpak_pupgui"] = "net.davidotek.pupgui2" in flatpaks
 
     return status
 
@@ -1187,6 +1234,7 @@ def run_interactive_menu() -> Tuple[str, SelectedModules]:
 
     table.add_row("Core Clients (Steam / Lutris)", "[green]✓ Installed[/green]" if (sys_status["steam"] and sys_status["lutris"]) else "[yellow]✗ Missing[/yellow]", "Essential")
     table.add_row("Wine-Staging & 32-bit Runtimes", "[green]✓ Installed[/green]" if sys_status["wine"] else "[yellow]✗ Missing[/yellow]", "Essential for Windows games")
+    table.add_row("ProtonUp-Qt (GE-Proton Runner Manager)", "[green]✓ Installed[/green]" if (sys_status["protonup"] or sys_status["flatpak_pupgui"]) else "[yellow]✗ Missing[/yellow]", "Recommended for Lutris runners")
     table.add_row("Performance Tools (Gamescope/MangoHud)", "[green]✓ Installed[/green]" if sys_status["mangohud"] else "[yellow]✗ Missing[/yellow]", "Recommended for Wayland")
     table.add_row("Kernel 7.x Sysctl Optimizations", "[green]✓ Active[/green]" if sys_status["sysctl"] else "[yellow]✗ Inactive[/yellow]", "Crucial (prevents UE5 crashes)")
     table.add_row("DwarFS Compression Tools", "[green]✓ Installed[/green]" if sys_status["dwarfs"] else "[dim]Optional[/dim]", "Required for repack mounts")
@@ -1208,6 +1256,7 @@ def run_interactive_menu() -> Tuple[str, SelectedModules]:
 
     if choice == "1":
         modules.dwarfs_mode = "skip" if sys_status["dwarfs"] else "bin"
+        modules.protonup_mode = "skip" if (sys_status["protonup"] or sys_status["flatpak_pupgui"]) else "bin"
         return "full", modules
 
     elif choice == "2":
@@ -1229,6 +1278,16 @@ def run_interactive_menu() -> Tuple[str, SelectedModules]:
 
         modules.categories = selected_cats
         modules.sysctl_tuning = Confirm.ask("Apply Kernel 7.x Sysctl Tweaks (vm.max_map_count & split_lock_mitigate)?", default=not sys_status["sysctl"])
+
+        # ProtonUp-Qt handling
+        if sys_status["protonup"] or sys_status["flatpak_pupgui"]:
+            console.print("[dim]ProtonUp-Qt is already installed (native or Flatpak).[/dim]")
+            modules.protonup_mode = "skip"
+        else:
+            if Confirm.ask("Install ProtonUp-Qt (Lutris GE-Proton runner downloader via AUR/Flatpak)?", default=True):
+                modules.protonup_mode = "bin"
+            else:
+                modules.protonup_mode = "skip"
 
         if sys_status["dwarfs"]:
             console.print("[dim]DwarFS is already installed.[/dim]")
@@ -1261,6 +1320,7 @@ def run_interactive_menu() -> Tuple[str, SelectedModules]:
         modules.categories = {"core_clients", "wine_stack", "runtime_32bit"}
         modules.sysctl_tuning = True
         modules.dwarfs_mode = "skip"
+        modules.protonup_mode = "bin"
         modules.flatpak_apps = False
         modules.launcher_bridge = False
         return "minimal", modules
@@ -1270,6 +1330,7 @@ def run_interactive_menu() -> Tuple[str, SelectedModules]:
         modules.categories = set()
         modules.sysctl_tuning = True
         modules.dwarfs_mode = "skip"
+        modules.protonup_mode = "skip"
         modules.flatpak_apps = False
         modules.launcher_bridge = False
         return "perf_only", modules
@@ -1279,6 +1340,7 @@ def run_interactive_menu() -> Tuple[str, SelectedModules]:
         modules.categories = set()
         modules.sysctl_tuning = False
         modules.dwarfs_mode = "skip"
+        modules.protonup_mode = "skip"
         modules.flatpak_apps = False
         modules.launcher_bridge = True
         return "maintenance", modules
@@ -1296,7 +1358,7 @@ def parse_arguments() -> Tuple[argparse.Namespace, SelectedModules]:
     parser.add_argument("-y", "--yes", action="store_true", help="Non-interactive mode (automatically confirm all recommended steps with fast binary packages).")
     parser.add_argument("-i", "--interactive", action="store_true", help="Open interactive custom component checklist directly.")
     parser.add_argument("-n", "--dry-run", action="store_true", help="Dry run mode (simulate operations without modifying system).")
-    parser.add_argument("--bin", action="store_true", help="Prefer pre-compiled binary packages for AUR tools (e.g. dwarfs-bin).")
+    parser.add_argument("--bin", action="store_true", help="Prefer pre-compiled binary packages for AUR tools (e.g. protonup-qt-bin, dwarfs-bin).")
     parser.add_argument("--native", action="store_true", help="Compile AUR packages from source with host CPU microarchitecture optimizations (-march=native -O3).")
     parser.add_argument("--extra-pkgs", nargs="*", default=[], help="Specify additional pacman packages to install.")
     parser.add_argument("--skip-gpu", action="store_true", help="Skip GPU driver detection and installation.")
@@ -1305,6 +1367,7 @@ def parse_arguments() -> Tuple[argparse.Namespace, SelectedModules]:
     parser.add_argument("--skip-flatpak", action="store_true", help="Skip Flatpak applications and runtime layers.")
     parser.add_argument("--skip-sysctl", action="store_true", help="Skip kernel sysctl and limits optimizations.")
     parser.add_argument("--skip-dwarfs", action="store_true", help="Skip DwarFS compression tools.")
+    parser.add_argument("--skip-protonup", action="store_true", help="Skip ProtonUp-Qt runner manager.")
 
     args = parser.parse_args()
 
@@ -1330,6 +1393,13 @@ def parse_arguments() -> Tuple[argparse.Namespace, SelectedModules]:
     elif args.bin:
         modules.dwarfs_mode = "bin"
 
+    if args.skip_protonup:
+        modules.protonup_mode = "skip"
+    else:
+        # Default to bin unless explicitly skipped; respects --skip-protonup
+        if modules.protonup_mode != "skip":
+            modules.protonup_mode = "bin"
+
     return args, modules
 
 
@@ -1347,7 +1417,7 @@ def main():
         border_style="magenta"
     ))
 
-    if not args.yes and not (args.skip_gpu and args.skip_flatpak and args.skip_sysctl and args.skip_dwarfs):
+    if not args.yes and not (args.skip_gpu and args.skip_flatpak and args.skip_sysctl and args.skip_dwarfs and args.skip_protonup):
         preset_name, modules = run_interactive_menu()
     else:
         modules = cli_modules
@@ -1404,6 +1474,11 @@ def main():
             console.print("\n[bold cyan]Step 5: DwarFS Compression Tools[/bold cyan]")
             configure_dwarfs(ctx)
 
+        # Step 5b: ProtonUp-Qt (GE-Proton / Lutris-GE runner manager)
+        if modules.protonup_mode != "skip":
+            console.print("\n[bold cyan]Step 5b: ProtonUp-Qt Runner Manager[/bold cyan]")
+            configure_protonup(ctx)
+
         # Step 6: Flatpak Ecosystem & Runtime Layers
         if modules.flatpak_apps:
             console.print("\n[bold cyan]Step 6: Flatpak Sandbox & Runtime Layers[/bold cyan]")
@@ -1430,6 +1505,10 @@ def main():
             report_text.append("• Gamescope micro-compositor with CAP_SYS_NICE real-time frame pacing & Feral GameMode daemon\n", style="white")
         if modules.sysctl_tuning:
             report_text.append("• vm.max_map_count=2147483642 & kernel.split_lock_mitigate=0 tuned in /etc/sysctl.d/99-gaming.conf\n", style="white")
+        if "runtime_32bit" in modules.categories:
+            report_text.append("• 32-bit Audio/Video codec stack (libpng, libldap, vkd3d, libxtst) + innoextract/7zip/unrar\n", style="white")
+        if modules.protonup_mode != "skip":
+            report_text.append("• ProtonUp-Qt: Runner manager for GE-Proton & Lutris-GE (via AUR protonup-qt-bin or Flatpak pupgui2)\n", style="white")
         if modules.flatpak_apps:
             report_text.append("• Flatpak native Wayland sockets & crisp icons bridged directly into ~/.local/share/\n", style="white")
         if modules.dwarfs_mode != "skip":
