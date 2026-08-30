@@ -1157,6 +1157,8 @@ class Gpu:
     boot_vga: bool
     revision: str
     model: str
+    vulkan_name: str = ""
+    device_uuid: str = ""
 
     @property
     def vendor(self) -> str:
@@ -1340,15 +1342,52 @@ _GPU_RAW: tuple[Gpu, ...] | None = None
 
 
 @cache
+def _vulkan_devices_info() -> dict[tuple[int, int], tuple[str, str]]:
+    """Parse vulkaninfo --summary to map (vendor_id, device_id) -> (deviceName, deviceUUID)."""
+    if not have("vulkaninfo"):
+        return {}
+    res = run_cmd(["vulkaninfo", "--summary"], timeout=5.0)
+    if not res.ok:
+        return {}
+    out: dict[tuple[int, int], tuple[str, str]] = {}
+    cur_vid: int | None = None
+    cur_did: int | None = None
+    cur_name: str = ""
+    cur_uuid: str = ""
+    for line in res.out.splitlines():
+        line = line.strip()
+        if line.startswith("GPU") and line.endswith(":"):
+            if cur_vid is not None and cur_did is not None:
+                out[(cur_vid, cur_did)] = (cur_name, cur_uuid)
+            cur_vid = cur_did = None
+            cur_name = cur_uuid = ""
+        elif "vendorID" in line and "=" in line:
+            with suppress(ValueError):
+                cur_vid = int(line.split("=")[1].strip(), 16)
+        elif "deviceID" in line and "=" in line:
+            with suppress(ValueError):
+                cur_did = int(line.split("=")[1].strip(), 16)
+        elif "deviceName" in line and "=" in line:
+            cur_name = line.split("=", 1)[1].strip()
+        elif "deviceUUID" in line and "=" in line:
+            cur_uuid = line.split("=", 1)[1].strip().replace("-", "")
+    if cur_vid is not None and cur_did is not None:
+        out[(cur_vid, cur_did)] = (cur_name, cur_uuid)
+    return out
+
+
+@cache
 def gpus() -> tuple[Gpu, ...]:
-    """Full GPU topology with human-readable model names resolved from hwdata."""
+    """Full GPU topology with human-readable model names and Vulkan device info."""
     db = _pci_ids_db()
+    vk_info = _vulkan_devices_info()
     out: list[Gpu] = []
     for g in _enumerate_gpus_raw():
         model = db.get((g.vendor_id, g.device_id), "")
         if not model:
             model = f"{g.vendor_name} display {g.device_id:04x}"
-        out.append(replace(g, model=model))
+        vk_name, vk_uuid = vk_info.get((g.vendor_id, g.device_id), ("", ""))
+        out.append(replace(g, model=model, vulkan_name=vk_name, device_uuid=vk_uuid))
     # Deterministic ordering: boot VGA first, then PCI address.
     out.sort(key=lambda g: (not g.boot_vga, g.pci_addr))
     return tuple(out)
@@ -3074,8 +3113,11 @@ class EnvironmentBuilder:
         if hybrid:
             self._set("MESA_VK_DEVICE_SELECT", gpu.vk_device_select)
             self._set("MESA_VK_DEVICE_SELECT_FORCE_DEFAULT_DEVICE", "1")
-            self._set("DXVK_FILTER_DEVICE_NAME", gpu.model)
-            self._set("VKD3D_FILTER_DEVICE_NAME", gpu.model)
+            if gpu.vulkan_name:
+                self._set("DXVK_FILTER_DEVICE_NAME", gpu.vulkan_name)
+                self._set("VKD3D_FILTER_DEVICE_NAME", gpu.vulkan_name)
+            if gpu.device_uuid:
+                self._set("DXVK_FILTER_DEVICE_UUID", gpu.device_uuid)
 
         # --- vendor specifics ---------------------------------------------
         self._drop(
