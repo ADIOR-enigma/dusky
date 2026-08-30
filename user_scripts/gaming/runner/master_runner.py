@@ -3134,7 +3134,10 @@ class EnvironmentBuilder:
             self._set("CLUTTER_BACKEND", "x11")
             # Always ensure DISPLAY points to a live XWayland socket (not stale :0 after Hyprland reload moved to :2)
             # Previous logic only set if not already set, which kept stale :0 from parent environ.
-            socks = sorted(Path("/tmp/.X11-unix").glob("X[0-9]*")) if \
+            socks = sorted(
+                Path("/tmp/.X11-unix").glob("X[0-9]*"),
+                key=lambda p: int(p.name[1:]) if p.name[1:].isdigit() else 999,
+            ) if \
                 Path("/tmp/.X11-unix").is_dir() else []
             # Filter to only sockets that actually exist and are live (check via displayfd or just existence)
             # Prefer the Hyprland XWayland (parent is Hyprland) — pick the one with lowest display number that exists
@@ -3201,7 +3204,7 @@ class EnvironmentBuilder:
         raw = str(self.p.get("input.sdl_gamecontrollerconfig", "") or "").strip()
         candidates: list[Path] = []
         if raw:
-            p = Path(expand_str(raw, {})).expanduser()
+            p = Path(expand_str(raw, self.env)).expanduser()
             if p.is_file():
                 candidates.append(p)
             else:
@@ -3803,7 +3806,7 @@ class PipelineBuilder:
                     return cand
         raise ConfigError(
             f"[{self.p.pid}] executable {rel!r} not found under {root}"
-            + ("" if self.paths.uses_dwarfs else " (is the game mounted?)")
+            + (" (is the game mounted?)" if self.paths.uses_dwarfs else "")
         )
 
     def build(self, *, under_gamescope: bool) -> tuple[list[str], Path]:
