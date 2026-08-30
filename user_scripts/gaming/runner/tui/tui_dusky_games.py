@@ -554,7 +554,7 @@ SCHEMA: dict[int, list[ConfigItem]] = {
             scope="runtime",
             type_="cycle",
             default="native",
-            options=["native", "wine"],
+            options=["native", "wine", "proton", "umu", "script"],
             group="Runtime",
             extended_help="**Runtime Type**\n\n- **native**: Linux ELF / shell script launched directly (chmod +x auto-applied).\n- **wine**: Windows `.exe` via Wine-Staging / Proton (`wine_binary` + `prefix_dir`). Global default is informational; per-game `runtime.type` decides execution path.",
         ),
@@ -583,8 +583,8 @@ SCHEMA: dict[int, list[ConfigItem]] = {
             key="sync_mode",
             scope="runtime.wine",
             type_="cycle",
-            default="fsync",
-            options=["fsync", "esync", "ntsync", "server"],
+            default="auto",
+            options=["auto", "ntsync", "fsync", "esync", "server"],
             group="Wine",
             extended_help="**Thread Synchronization Primitive**\n\n- **fsync**: `WINEFSYNC=1` (recommended, requires fsync kernel).\n- **esync**: `WINEESYNC=1`.\n- **ntsync**: `WINENTSYNC=1` (Linux ntsync driver).\n- **server**: No userspace sync (fallback).",
         ),
@@ -866,7 +866,7 @@ SCHEMA: dict[int, list[ConfigItem]] = {
                 "performance.process_priority": -5,
                 "audio.driver": "pipewire",
                 "audio.pipewire_latency": "128/48000",
-                "runtime.wine.sync_mode": "fsync",
+                "runtime.wine.sync_mode": "auto",
                 "runtime.wine.dxvk": True,
                 "runtime.wine.vkd3d": True,
                 "runtime.wine.dxvk_nvapi": False,
@@ -907,7 +907,7 @@ SCHEMA: dict[int, list[ConfigItem]] = {
                 "performance.process_priority": 0,
                 "audio.driver": "pipewire",
                 "audio.pipewire_latency": "256/48000",
-                "runtime.wine.sync_mode": "fsync",
+                "runtime.wine.sync_mode": "auto",
                 "runtime.wine.dxvk": True,
                 "runtime.wine.vkd3d": False,
                 "runtime.wine.dxvk_nvapi": False,
@@ -948,7 +948,7 @@ SCHEMA: dict[int, list[ConfigItem]] = {
                 "performance.process_priority": 0,
                 "audio.driver": "pipewire",
                 "audio.pipewire_latency": "128/48000",
-                "runtime.wine.sync_mode": "fsync",
+                "runtime.wine.sync_mode": "auto",
                 "runtime.wine.dxvk": True,
                 "runtime.wine.vkd3d": True,
                 "runtime.wine.dxvk_nvapi": False,
@@ -976,7 +976,11 @@ _PER_GAME_HELP_GM = "**Per-Game GameMode**\n\nOverrides `performance.gamemode` f
 
 _PER_GAME_HELP_EXT = "**Per-Game Preset (extends)**\n\nOverrides the archetype preset this profile inherits:\n- **base_native**: Linux ELF / shell.\n- **base_unity_native**: Unity 2021+ native.\n- **base_wine_dxvk**: Wine-Staging + DXVK (D3D9-11).\n- **base_unreal_engine_5**: UE5 / D3D12 + VKD3D."
 
-_PER_GAME_HELP_SYNC = "**Per-Game Wine Sync**\n\nOverrides `runtime.wine.sync_mode` for Wine titles.\n- **fsync** (default): `WINEFSYNC=1`.\n- **esync**: `WINEESYNC=1`.\n- **ntsync**: `WINENTSYNC=1`.\n- **server**: No userspace sync."
+_PER_GAME_HELP_NVAPI = "**Per-Game DLSS / NVAPI**\n\nOverrides `runtime.wine.dxvk_nvapi` for this game. Enables NVIDIA DLSS Super Resolution, Frame Generation, and Reflex through DXVK-NVAPI."
+_PER_GAME_HELP_FSR = "**Per-Game FSR Upscaling**\n\nOverrides `graphics.gamescope.fsr_upscaling` for this game. Enables AMD FidelityFX Super Resolution spatial upscaling when Gamescope is active."
+_PER_GAME_HELP_UNMOUNT = "**Per-Game Auto Unmount**\n\nOverrides `runner.auto_unmount_on_exit` for this game. Automatically unmounts DwarFS and OverlayFS layers upon game exit (guarded by MountLease)."
+
+_PER_GAME_HELP_SYNC = "**Per-Game Wine Sync**\n\nOverrides `runtime.wine.sync_mode` for Wine titles.\n- **auto** (recommended): Auto-probes /dev/ntsync on Linux 7.1+; falls back to fsync.\n- **ntsync**: Forces in-kernel NT sync primitives.\n- **fsync**: Forces `WINEFSYNC=1`.\n- **esync**: Forces `WINEESYNC=1`.\n- **server**: Standard wineserver sync."
 
 def _get_profile_value(pid: str, scope: str, key: str, fallback):
     """Read a single value from profiles/<pid>.toml with fallback, for dynamic per-game defaults."""
@@ -1123,6 +1127,48 @@ def _build_per_game_items() -> list[ConfigItem]:
                 extended_help=_PER_GAME_HELP_GM,
             )
         )
+        # FSR Upscaling (when Gamescope is used)
+        _fsr_def = _get_profile_value(pid, "graphics.gamescope", "fsr_upscaling", False)
+        items.append(
+            ConfigItem(
+                label="FSR Upscaling",
+                key="fsr_upscaling",
+                scope="graphics.gamescope",
+                type_="bool",
+                default=bool(_fsr_def),
+                parent_ref=menu_key,
+                target_file_override=profile_toml,
+                extended_help=_PER_GAME_HELP_FSR,
+            )
+        )
+        # DLSS / DXVK-NVAPI
+        _nvapi_def = _get_profile_value(pid, "runtime.wine", "dxvk_nvapi", False)
+        items.append(
+            ConfigItem(
+                label="DLSS (NVAPI)",
+                key="dxvk_nvapi",
+                scope="runtime.wine",
+                type_="bool",
+                default=bool(_nvapi_def),
+                parent_ref=menu_key,
+                target_file_override=profile_toml,
+                extended_help=_PER_GAME_HELP_NVAPI,
+            )
+        )
+        # Auto Unmount
+        _unmount_def = _get_profile_value(pid, "runner", "auto_unmount_on_exit", True)
+        items.append(
+            ConfigItem(
+                label="Auto Unmount",
+                key="auto_unmount_on_exit",
+                scope="runner",
+                type_="bool",
+                default=bool(_unmount_def),
+                parent_ref=menu_key,
+                target_file_override=profile_toml,
+                extended_help=_PER_GAME_HELP_UNMOUNT,
+            )
+        )
         # Extends (preset)
         items.append(
             ConfigItem(
@@ -1130,13 +1176,15 @@ def _build_per_game_items() -> list[ConfigItem]:
                 key="extends",
                 scope="DEFAULT",
                 type_="picker",
-                default=_ext_def if _ext_def in ("base_native", "base_unity_native", "base_wine_dxvk", "base_unreal_engine_5") else "base_native",
-                options=["base_native", "base_unity_native", "base_wine_dxvk", "base_unreal_engine_5"],
+                default=_ext_def if _ext_def in ("base_native", "base_unity_native", "base_wine_dxvk", "base_unreal_engine_5", "base_proton_umu", "handheld_720p") else "base_native",
+                options=["base_native", "base_unity_native", "base_wine_dxvk", "base_unreal_engine_5", "base_proton_umu", "handheld_720p"],
                 hints=[
                     "Native Linux ELF / shell",
                     "Unity 2021+ native Linux",
                     "Wine-Staging + DXVK (D3D9-11)",
                     "UE5 / D3D12 + VKD3D-Proton",
+                    "Proton / UMU launcher",
+                    "Compact 720p Gamescope with FSR",
                 ],
                 parent_ref=menu_key,
                 target_file_override=profile_toml,
@@ -1150,8 +1198,8 @@ def _build_per_game_items() -> list[ConfigItem]:
                 key="sync_mode",
                 scope="runtime.wine",
                 type_="cycle",
-                default=_sync_def if _sync_def in ("fsync", "esync", "ntsync", "server") else "fsync",
-                options=["fsync", "esync", "ntsync", "server"],
+                default=_sync_def if _sync_def in ("auto", "ntsync", "fsync", "esync", "server") else "auto",
+                options=["auto", "ntsync", "fsync", "esync", "server"],
                 parent_ref=menu_key,
                 target_file_override=profile_toml,
                 extended_help=_PER_GAME_HELP_SYNC,

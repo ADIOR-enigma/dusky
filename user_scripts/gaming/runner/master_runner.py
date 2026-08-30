@@ -4317,8 +4317,13 @@ def _render_checks(checks: Sequence[Check]) -> None:
 # ==============================================================================
 # SECTION 16 -- Validation
 # ==============================================================================
-def validate(mgr: ProfileManager, target: str | None, *, as_json: bool) -> int:
-    ids = [target] if target else list(mgr.discover_profiles())
+def validate(mgr: ProfileManager, targets: Sequence[str] | str | None, *, as_json: bool) -> int:
+    if isinstance(targets, str):
+        ids = [targets]
+    elif targets:
+        ids = list(targets)
+    else:
+        ids = list(mgr.discover_profiles())
     if not ids:
         Log.warn(f"no profiles in {mgr.profiles_dir}")
         return 0
@@ -5136,7 +5141,7 @@ def build_parser() -> argparse.ArgumentParser:
     ua.add_argument("-n", "--dry-run", action="store_true")
 
     v = sub.add_parser("validate", help="validate profile definitions")
-    v.add_argument("profile", nargs="?")
+    v.add_argument("profile", nargs="*")
     v.add_argument("--all", action="store_true")
     _add_json(v)
 

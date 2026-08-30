@@ -9,70 +9,39 @@ type = "wine"
 [runtime.wine]
 wine_binary = "wine"
 arch = "win64"
-sync_mode = "fsync"
+sync_mode = "auto"
 large_address_aware = true
 dxvk = true
 vkd3d = true
 dxvk_nvapi = false
+disable_menubuilder = true
 debug = "fixme-all"
 dll_overrides = { "winemenubuilder.exe" = "d", "mshtml" = "d", "dxgi" = "n", "d3d11" = "n", "d3d12" = "n", "d3d9" = "n" }
 
 [graphics]
 gpu = "discrete"
-wayland_native = true
 prefer_xwayland = false
-vulkan_icd = "auto"
-
-[graphics.gamescope]
-enabled = false
-mode = "embedded"
-width = 0
-height = 0
-output_width = 0
-output_height = 0
-refresh_rate = 0
-fsr_upscaling = false
-fsr_sharpness = 2
-allow_tearing = true
-force_grab_cursor = false
-hdr = false
-extra_args = []
+gl_threaded = true
 
 [performance]
 gamemode = true
 mangohud = false
-mangohud_preset = ""
 fps_limit = 0
-cpu_governor = "performance"
-process_priority = 0
 
 [audio]
 driver = "pipewire"
-pipewire_latency = "128/48000"
+quantum = 1024
+rate = 48000
 
 [storage]
 dwarfs_cache_percent = 25
-dwarfs_tidy_interval = "15m"
-dwarfs_tidy_max_age = "30m"
-persistent_overlay = true
+dwarfs_tidy_interval = "5m"
+dwarfs_tidy_max_age = "10m"
 auto_clean_workdir = true
 
-[sandbox]
-enabled = false
-isolate_home = true
-bind_gpu = true
-bind_sound = true
-bind_wayland = true
-bind_network = false
-
-[hooks]
-pre_mount = []
-post_mount = []
-pre_launch = []
-post_launch = []
-post_unmount = []
-
-[env]
-WINE_LARGE_ADDRESS_AWARE = "1"
-WINEDEBUG = "fixme-all"
-DXVK_LOG_LEVEL = "none"
+[runner]
+auto_mount = true
+auto_unmount_on_exit = true
+use_systemd_scope = true
+inhibit_idle = true
+inhibit_sleep = true

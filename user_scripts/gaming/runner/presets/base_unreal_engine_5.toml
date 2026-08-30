@@ -1,6 +1,6 @@
 # ==============================================================================
 # Base Unreal Engine 5 (Wine/Proton) Preset
-# Optimized for heavy Unreal Engine 5 Direct3D 12 titles (e.g. Satisfactory)
+# Optimized for heavy Unreal Engine 5 Direct3D 12 titles
 # ==============================================================================
 
 extends = "base_wine_dxvk"
@@ -9,7 +9,7 @@ extends = "base_wine_dxvk"
 type = "wine"
 
 [runtime.wine]
-sync_mode = "fsync"
+sync_mode = "auto"
 dxvk = true
 vkd3d = true
 debug = "fixme-all"
@@ -22,13 +22,6 @@ prefer_xwayland = false
 
 [performance]
 gamemode = true
-cpu_governor = "performance"
 
 [env]
-VKD3D_DEBUG = "info"
 VKD3D_CONFIG = "force_static_cbv"
-WINE_LARGE_ADDRESS_AWARE = "1"
-WINEFSYNC = "1"
-__NV_PRIME_RENDER_OFFLOAD = "1"
-__GLX_VENDOR_LIBRARY_NAME = "nvidia"
-__VK_LAYER_NV_optimus = "NVIDIA_only"

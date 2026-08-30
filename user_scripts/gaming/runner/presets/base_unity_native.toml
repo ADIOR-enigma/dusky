@@ -1,6 +1,6 @@
 # ==============================================================================
 # Base Unity Native Linux Preset
-# Optimized for Unity Engine Linux ELF binaries (e.g. Hollow Knight, Megabonk)
+# Optimized for Unity Engine titles on modern Linux / Wayland.
 # ==============================================================================
 
 extends = "base_native"
@@ -9,15 +9,7 @@ extends = "base_native"
 type = "native"
 
 [graphics]
-gpu = "auto"
-wayland_native = true
-
-[graphics.gamescope]
-allow_tearing = true
-
-[performance]
-gamemode = true
+gl_threaded = true
 
 [env]
-UNITY_DISABLE_AUTOLOAD = "0"
-SDL_DYNAMIC_API = ""
+UNITY_DISABLE_AUTOREDUCE = "1"
