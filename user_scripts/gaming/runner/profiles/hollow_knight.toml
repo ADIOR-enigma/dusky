@@ -14,7 +14,7 @@ genre = "Metroidvania / Action-Adventure"
 description = "Forge your own path in Hollow Knight! An epic action adventure through a vast ruined kingdom of insects and heroes."
 
 [paths]
-game_dir = "/mnt/zram1/Hollow.Knight-jc141"
+game_dir = "/mnt/media/games/good_quality/Hollow.Knight-jc141"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"

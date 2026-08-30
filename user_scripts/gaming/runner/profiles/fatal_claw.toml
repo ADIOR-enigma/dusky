@@ -1,6 +1,6 @@
 # ==============================================================================
 # Fatal Claw — Unreal Engine 5 (Windows) via Wine/GE-Proton
-# Fix: Use Shipping binary (89M) not launcher (337K crash). Prefix is Lutris GE-Proton at /mnt/zram1/games/fatal-flaw
+# Fix: Use Shipping binary (89M) not launcher (337K crash). Prefix is Lutris GE-Proton at /mnt/media/games/installed_games/fatal-flaw
 # Tested 2026-08-29: Shipping boots to LogInit: Game Engine Initialized (20s run, exit 0 on SIGTERM)
 # ==============================================================================
 
@@ -16,7 +16,7 @@ genre = "Action / UE"
 description = "Fatal Claw — Unreal Engine 5, GE-Proton prefix, Shipping binary (verified launch)."
 
 [paths]
-game_dir = "/mnt/zram1/games/Fatal Claw"
+game_dir = "/mnt/media/games/installed_games/Fatal Claw"
 executable = "FatalClaw/Binaries/Win64/FatalClaw-Win64-Shipping.exe"
 working_dir = "."
 arguments = []
@@ -26,7 +26,7 @@ type = "wine"
 
 [runtime.wine]
 wine_binary = "~/.local/share/Steam/compatibilitytools.d/GE-Proton11-6-x86_64/files/bin/wine"
-prefix_dir = "/mnt/zram1/games/fatal-flaw"
+prefix_dir = "/mnt/media/games/installed_games/fatal-flaw"
 arch = "win64"
 sync_mode = "fsync"
 debug = "fixme-all"

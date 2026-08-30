@@ -14,7 +14,7 @@ genre = "Simulation / RPG"
 description = "Build your dream farm, raise animals, and integrate into the Pelican Town community."
 
 [paths]
-game_dir = "/mnt/zram1/Stardew.Valley-jc141"
+game_dir = "/mnt/media/games/good_quality/Stardew.Valley-jc141"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"

@@ -14,7 +14,7 @@ genre = "Adventure / Indie"
 description = "Atmospheric indie adventure weaving narrative exploration and surreal visuals."
 
 [paths]
-game_dir = "/mnt/zram1/Mesmalie-jc141"
+game_dir = "/mnt/media/games/unknown_quality/Mesmalie-jc141"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"

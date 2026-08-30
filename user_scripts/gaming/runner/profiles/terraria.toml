@@ -14,7 +14,7 @@ genre = "Sandbox / Adventure"
 description = "Dig, fight, explore, build: the world is at your fingertips as you fight for survival, fortune, and glory."
 
 [paths]
-game_dir = "/mnt/zram1/Terraria-jc141"
+game_dir = "/mnt/media/games/good_quality/Terraria-jc141"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"

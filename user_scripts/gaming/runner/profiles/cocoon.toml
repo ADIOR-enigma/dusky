@@ -16,7 +16,7 @@ genre = "Puzzle / Adventure"
 description = "From the lead gameplay designer of LIMBO & INSIDE — an adventure across worlds within worlds. Master world-leaping mechanics to unravel a cosmic mystery."
 
 [paths]
-game_dir = "/mnt/zram1/COCOON-jc141"
+game_dir = "/mnt/media/games/unknown_quality/COCOON-jc141"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"

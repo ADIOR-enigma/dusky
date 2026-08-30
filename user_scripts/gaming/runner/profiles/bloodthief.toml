@@ -14,7 +14,7 @@ genre = "Action / Indie, Parkour Dungeon-Runner"
 description = "Ultra-fast melee dungeon-runner where you parkour through haunted crypts and castles, slashing undead foes with momentum-driven combat as a vampire."
 
 [paths]
-game_dir = "/mnt/zram1/Bloodthief-jc141"
+game_dir = "/mnt/media/games/unknown_quality/Bloodthief-jc141"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"

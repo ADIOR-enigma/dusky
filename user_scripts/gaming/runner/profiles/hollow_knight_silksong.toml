@@ -14,7 +14,7 @@ genre = "Metroidvania / Action-Adventure"
 description = "Play as Hornet, princess-protector of Hallownest, in a vast new kingdom ruled by silk and song."
 
 [paths]
-game_dir = "/mnt/zram1/Hollow.Knight.Silksong-jc141"
+game_dir = "/mnt/media/games/good_quality/Hollow.Knight.Silksong-jc141"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"

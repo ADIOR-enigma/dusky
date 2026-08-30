@@ -14,7 +14,7 @@ genre = "Adventure / Simulation"
 description = "Whimsical exploration adventure through desktop environments and hidden system worlds."
 
 [paths]
-game_dir = "/mnt/zram1/Desktop.Explorer-jc141"
+game_dir = "/mnt/media/games/unknown_quality/Desktop.Explorer-jc141"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"

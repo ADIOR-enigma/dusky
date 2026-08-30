@@ -14,7 +14,7 @@ genre = "Puzzle / Platformer"
 description = "Dark fairy-tale puzzle platformer - explore a twisted mirror world of a tormented prince's psyche."
 
 [paths]
-game_dir = "/mnt/zram1/Ugly-jc141"
+game_dir = "/mnt/media/games/unknown_quality/Ugly-jc141"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"

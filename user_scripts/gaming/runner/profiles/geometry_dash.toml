@@ -14,7 +14,7 @@ genre = "Rhythm / Platformer"
 description = "Jump and fly your way through danger in this rhythm-based action platformer."
 
 [paths]
-game_dir = "/mnt/zram1/Geometry.Dash-jc141"
+game_dir = "/mnt/media/games/good_quality/Geometry.Dash-jc141"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"

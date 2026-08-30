@@ -14,7 +14,7 @@ genre = "Automation / Strategy"
 description = "Build and maintain automated factories on an alien planet."
 
 [paths]
-game_dir = "/mnt/zram1/factorio/Factorio_2.1.14"
+game_dir = "/mnt/media/games/good_quality/factorio/Factorio_2.1.14"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"
@@ -41,7 +41,7 @@ mangohud = false
 fps_limit = 60
 
 [hooks]
-pre_launch = ["bash -c 'if [ ! -f \"$HOME/.factorio/wayland_fix/libEGL.so.1\" ]; then python3 \"$HOME/user_scripts/apps/factorio/use_wayland/fix_run_on_wayland.py\" --game-dir \"/mnt/zram1/factorio/Factorio_2.1.14\" --force; fi'"]
+pre_launch = ["bash -c 'if [ ! -f \"$HOME/.factorio/wayland_fix/libEGL.so.1\" ]; then python3 \"$HOME/user_scripts/apps/factorio/use_wayland/fix_run_on_wayland.py\" --game-dir \"/mnt/media/games/good_quality/factorio/Factorio_2.1.14\" --force; fi'"]
 
 [env]
 LD_PRELOAD = "$HOME/.factorio/wayland_fix/libEGL.so.1"

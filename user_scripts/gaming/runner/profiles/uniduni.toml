@@ -14,7 +14,7 @@ genre = "Platformer / Action"
 description = "Charming uni-cycle platformer - balance, bounce and puzzle your way through whimsical challenges."
 
 [paths]
-game_dir = "/mnt/zram1/UniDuni-jc141"
+game_dir = "/mnt/media/games/unknown_quality/UniDuni-jc141"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"

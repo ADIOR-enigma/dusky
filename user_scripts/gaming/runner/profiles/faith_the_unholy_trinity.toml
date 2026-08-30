@@ -17,7 +17,7 @@ genre = "Horror / Adventure"
 description = "Mortal obsession and demonic paranoia collide in this 8-bit Atari-styled horror trilogy inspired by the satanic panic of the 1980s."
 
 [paths]
-game_dir = "/mnt/zram1/FAITH.The.Unholy.Trinity-jc141"
+game_dir = "/mnt/media/games/unknown_quality/FAITH.The.Unholy.Trinity-jc141"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"

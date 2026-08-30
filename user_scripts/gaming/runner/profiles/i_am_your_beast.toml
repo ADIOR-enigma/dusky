@@ -14,7 +14,7 @@ genre = "FPS / Action"
 description = "Revenge thriller FPS - you are a retired covert agent dragged back for one last mission against the military-industrial complex."
 
 [paths]
-game_dir = "/mnt/zram1/I.Am.Your.Beast-jc141"
+game_dir = "/mnt/media/games/unknown_quality/I.Am.Your.Beast-jc141"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"

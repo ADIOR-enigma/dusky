@@ -14,13 +14,13 @@ extends = "base_wine_dxvk"
 id = "beamng_drive"
 name = "BeamNG.drive"
 version = "0.39.4"
-icon = "/mnt/zram1/BeamNG.drive.v0.39.4/icon-beamng.ico"
+icon = "/mnt/media/games/installed_games/beamng/BeamNG.drive.v0.39.4/icon-beamng.ico"
 developer = "BeamNG GmbH"
 genre = "Driving / Simulation"
 description = "Dynamic soft-body physics vehicle simulator with open-world driving, highly detailed crash deformation, and extensive modding via Wine + DXVK/VKD3D on native Wayland."
 
 [paths]
-game_dir = "/mnt/zram1/BeamNG.drive.v0.39.4"
+game_dir = "/mnt/media/games/installed_games/beamng/BeamNG.drive.v0.39.4"
 executable = "BeamNG.drive/Bin64/BeamNG.drive.x64.exe"
 arguments = []
 

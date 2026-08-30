@@ -14,7 +14,7 @@ genre = "Puzzle / Mystery"
 description = "Genealogy mystery puzzle - untangle the sprawling Roottree family tree using scattered evidence and historical records."
 
 [paths]
-game_dir = "/mnt/zram1/The.Roottrees.are.Dead-jc141"
+game_dir = "/mnt/media/games/unknown_quality/The.Roottrees.are.Dead-jc141"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"

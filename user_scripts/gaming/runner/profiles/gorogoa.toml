@@ -14,7 +14,7 @@ genre = "Puzzle / Narrative"
 description = "Elegant hand-illustrated puzzle story where you rearrange panels to guide a boy through fantastical scenes."
 
 [paths]
-game_dir = "/mnt/zram1/Gorogoa-jc141"
+game_dir = "/mnt/media/games/unknown_quality/Gorogoa-jc141"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"

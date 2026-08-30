@@ -16,7 +16,7 @@ genre = "Survival Horror / Adventure"
 description = "Top-down survival horror in a mysterious, procedurally generated forest of the Soviet Bloc. Scavenge by day, hide by night and pray for dawn."
 
 [paths]
-game_dir = "/mnt/zram1/Darkwood-jc141"
+game_dir = "/mnt/media/games/unknown_quality/Darkwood-jc141"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"

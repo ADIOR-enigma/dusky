@@ -10,7 +10,7 @@ genre = "Horror / Adventure"
 description = "First-person folk horror - hunt witches through cursed villages and dark forests armed with period weapons and folklore."
 
 [paths]
-game_dir = "/mnt/zram1/Witch.Hunt-jc141"
+game_dir = "/mnt/media/games/unknown_quality/Witch.Hunt-jc141"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"

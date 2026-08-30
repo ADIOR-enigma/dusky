@@ -15,7 +15,7 @@ genre = "Action / Roguelike / Platformer"
 description = "High-velocity third-person action roguelike - run, vault and shatter through collapsing worlds."
 
 [paths]
-game_dir = "/mnt/zram1/Haste-jc141"
+game_dir = "/mnt/media/games/unknown_quality/Haste-jc141"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"

@@ -22,7 +22,7 @@ genre = "Puzzle / FPS / Co-op"
 description = "The sequel to the acclaimed original expands with new puzzles, chambers, and dynamic co-op multiplayer."
 
 [paths]
-game_dir = "/mnt/zram1/portal/Portal.Collection-jc141"
+game_dir = "/mnt/media/games/good_quality/portal/Portal.Collection-jc141"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"

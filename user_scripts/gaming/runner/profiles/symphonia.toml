@@ -14,7 +14,7 @@ genre = "Platformer / Music"
 description = "Musical platformer where you awaken a vast mechanical world as a violinist, using the power of music to restore harmony."
 
 [paths]
-game_dir = "/mnt/zram1/Symphonia-jc141"
+game_dir = "/mnt/media/games/unknown_quality/Symphonia-jc141"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"

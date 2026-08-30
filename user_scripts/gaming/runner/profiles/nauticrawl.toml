@@ -14,7 +14,7 @@ genre = "Simulation / Adventure"
 description = "Atmospheric first-person submarine simulation - learn to operate a mysterious vessel through tactile, claustrophobic controls."
 
 [paths]
-game_dir = "/mnt/zram1/Nauticrawl-jc141"
+game_dir = "/mnt/media/games/unknown_quality/Nauticrawl-jc141"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"

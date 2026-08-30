@@ -14,7 +14,7 @@ genre = "Platformer / Action"
 description = "Fast-paced slime platformer - bounce, dash and splat your way through chaotic hazards."
 
 [paths]
-game_dir = "/mnt/zram1/Go.Slimey.Go-jc141"
+game_dir = "/mnt/media/games/unknown_quality/Go.Slimey.Go-jc141"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"

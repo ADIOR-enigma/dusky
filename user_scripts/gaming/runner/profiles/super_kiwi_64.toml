@@ -14,7 +14,7 @@ genre = "Platformer / Adventure"
 description = "N64-inspired 3D collect-a-thon platformer - explore vibrant islands as a tiny kiwi bird on a big adventure."
 
 [paths]
-game_dir = "/mnt/zram1/Super.Kiwi.64-jc141"
+game_dir = "/mnt/media/games/unknown_quality/Super.Kiwi.64-jc141"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"

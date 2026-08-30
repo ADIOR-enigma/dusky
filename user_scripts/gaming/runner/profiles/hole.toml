@@ -16,7 +16,7 @@ genre = "Horror / Adventure / Unreal"
 description = "Unreal Engine psychological horror - descend through a mysterious hole into shifting, unsettling environments."
 
 [paths]
-game_dir = "/mnt/zram1/HOLE-jc141"
+game_dir = "/mnt/media/games/unknown_quality/HOLE-jc141"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"

@@ -14,7 +14,7 @@ genre = "Action / Platformer"
 description = "Stylish dystopian action platformer with a legendary grappling chain - slice through foes and traverse a corrupted cyberpunk city."
 
 [paths]
-game_dir = "/mnt/zram1/SANABI-jc141"
+game_dir = "/mnt/media/games/unknown_quality/SANABI-jc141"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"

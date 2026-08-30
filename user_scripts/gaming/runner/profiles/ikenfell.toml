@@ -16,7 +16,7 @@ genre = "RPG / Tactical"
 description = "Turn-based tactical RPG about troubled students at a magical school. Time your hits and blocks for tactical advantage in grid-based combat."
 
 [paths]
-game_dir = "/mnt/zram1/Ikenfell-jc141"
+game_dir = "/mnt/media/games/unknown_quality/Ikenfell-jc141"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"

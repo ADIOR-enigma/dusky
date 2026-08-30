@@ -14,7 +14,7 @@ genre = "Roguelike / Strategy"
 description = "Become a giant walking die and battle to the end of an ever-changing dungeon in this inventive dice-driven roguelike."
 
 [paths]
-game_dir = "/mnt/zram1/Dicey.Dungeons-jc141"
+game_dir = "/mnt/media/games/unknown_quality/Dicey.Dungeons-jc141"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"

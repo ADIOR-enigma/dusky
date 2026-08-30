@@ -14,7 +14,7 @@ genre = "Factory Simulation / Open World"
 description = "First-person open-world factory building game with exploration and combat."
 
 [paths]
-game_dir = "/mnt/zram1/Satisfactory-jc141"
+game_dir = "/mnt/media/games/good_quality/Satisfactory-jc141"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"

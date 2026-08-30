@@ -14,7 +14,7 @@ genre = "Metroidvania / Action"
 description = "Join the Penitent One once again in Blasphemous 2, thrusting him back into the endless struggle against the Miracle."
 
 [paths]
-game_dir = "/mnt/zram1/Blasphemous.Collection-jc141"
+game_dir = "/mnt/media/games/good_quality/Blasphemous.Collection-jc141"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"

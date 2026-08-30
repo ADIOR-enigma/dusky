@@ -15,7 +15,7 @@ genre = "Adventure / Horror / Fishing"
 description = "Single-player fishing adventure with a sinister undercurrent. Sell your catch, upgrade your boat, and dredge the depths for long-buried secrets across a mysterious archipelago."
 
 [paths]
-game_dir = "/mnt/zram1/DREDGE-jc141"
+game_dir = "/mnt/media/games/unknown_quality/DREDGE-jc141"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"

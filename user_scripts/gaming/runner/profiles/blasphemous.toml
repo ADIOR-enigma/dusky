@@ -24,7 +24,7 @@ genre = "Metroidvania / Action"
 description = "A punishing action-platformer that combines the fast-paced, skillful combat of a hack-n-slash game with a deep and evocative narrative core."
 
 [paths]
-game_dir = "/mnt/zram1/Blasphemous.Collection-jc141"
+game_dir = "/mnt/media/games/good_quality/Blasphemous.Collection-jc141"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"

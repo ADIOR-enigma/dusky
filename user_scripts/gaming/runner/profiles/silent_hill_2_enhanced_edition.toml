@@ -18,7 +18,7 @@ genre = "Survival Horror / Adventure"
 description = "Definitive PC experience of the 2001 classic. Enhanced Edition restores PS2 visuals and audio, fixes bugs and adds modern resolution and audio support."
 
 [paths]
-game_dir = "/mnt/zram1/Silent.Hill.2.Enhanced.Edition-jc141"
+game_dir = "/mnt/media/games/unknown_quality/Silent.Hill.2.Enhanced.Edition-jc141"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"

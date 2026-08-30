@@ -15,7 +15,7 @@ genre = "Adventure / Puzzle"
 description = "Time-bending Unity adventure from Draw Me A Pixel. Manipulate timelines and solve intricate puzzles across interconnected eras."
 
 [paths]
-game_dir = "/mnt/zram1/Crushed.In.Time-jc141"
+game_dir = "/mnt/media/games/unknown_quality/Crushed.In.Time-jc141"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"

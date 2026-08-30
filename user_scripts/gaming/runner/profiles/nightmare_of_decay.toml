@@ -14,7 +14,7 @@ genre = "Horror / FPS"
 description = "PS1-styled survival horror FPS inspired by classic Resident Evil - scavenge, survive and escape a house of nightmares."
 
 [paths]
-game_dir = "/mnt/zram1/Nightmare.of.Decay-jc141"
+game_dir = "/mnt/media/games/unknown_quality/Nightmare.of.Decay-jc141"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"

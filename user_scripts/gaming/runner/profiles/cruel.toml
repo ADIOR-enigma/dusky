@@ -16,7 +16,7 @@ genre = "FPS / Horror / Roguelike"
 description = "Fast run-and-gun horror boomer shooter with roguelike elements. Race through a collapsing cult-infested hotel, using speed and soda as health and currency for upgrades."
 
 [paths]
-game_dir = "/mnt/zram1/CRUEL-jc141"
+game_dir = "/mnt/media/games/unknown_quality/CRUEL-jc141"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"

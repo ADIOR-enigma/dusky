@@ -14,7 +14,7 @@ genre = "Action / Arena"
 description = "Fast-paced physics arena combat game."
 
 [paths]
-game_dir = "/mnt/zram1/Megabonk-jc141"
+game_dir = "/mnt/media/games/good_quality/Megabonk-jc141"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"

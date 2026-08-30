@@ -17,7 +17,7 @@ genre = "Horror / Adventure"
 description = "First-person horror in the evacuated suburb of North Hollow Heights. As Agent Jay of Aegis, search abandoned homes, solve puzzles and evade Buffers to uncover what transpired."
 
 [paths]
-game_dir = "/mnt/zram1/Born.Into.Fear-jc141"
+game_dir = "/mnt/media/games/unknown_quality/Born.Into.Fear-jc141"
 dwarfs_image = "files/game-root.dwarfs"
 dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"
