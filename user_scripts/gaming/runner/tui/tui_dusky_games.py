@@ -1005,7 +1005,7 @@ _PER_GAME_HELP_GS_GRAB = "**Per-Game Force Grab Cursor**\n\nOverrides `graphics.
 _PER_GAME_HELP_GS_HDR = "**Per-Game Gamescope HDR**\n\nOverrides `graphics.gamescope.hdr` (`--hdr-enabled`). Requires HDR monitor/compositor."
 
 def _get_profile_value(pid: str, scope: str, key: str, fallback):
-    """Read a single value from profiles/<pid>.toml with fallback, for dynamic per-game defaults."""
+    """Read a single value from profiles/<pid>.toml with preset inheritance fallback."""
     try:
         import tomllib
         p = _PROFILES_DIR / f"{pid}.toml"
@@ -1013,19 +1013,35 @@ def _get_profile_value(pid: str, scope: str, key: str, fallback):
             return fallback
         with open(p, "rb") as f:
             data = tomllib.load(f)
-        # Scope handling: DEFAULT means root key
-        if scope == "DEFAULT":
-            return data.get(key, fallback)
-        # Dotted scope traversal
-        cur = data
-        for part in scope.split("."):
-            if not isinstance(cur, dict):
-                return fallback
-            cur = cur.get(part)
-            if cur is None:
-                return fallback
-        if isinstance(cur, dict):
-            return cur.get(key, fallback)
+
+        def _lookup(d: dict, sc: str, k: str):
+            if sc == "DEFAULT":
+                return d.get(k)
+            cur = d
+            for part in sc.split("."):
+                if not isinstance(cur, dict):
+                    return None
+                cur = cur.get(part)
+            if isinstance(cur, dict) and k in cur:
+                return cur[k]
+            return None
+
+        # 1. Direct profile lookup
+        val = _lookup(data, scope, key)
+        if val is not None:
+            return val
+
+        # 2. Preset inheritance lookup (extends)
+        extends = data.get("extends")
+        if isinstance(extends, str) and extends:
+            preset_file = _PRESETS_DIR / f"{extends}.toml"
+            if preset_file.is_file():
+                with open(preset_file, "rb") as pf:
+                    preset_data = tomllib.load(pf)
+                val = _lookup(preset_data, scope, key)
+                if val is not None:
+                    return val
+
         return fallback
     except Exception:
         return fallback
