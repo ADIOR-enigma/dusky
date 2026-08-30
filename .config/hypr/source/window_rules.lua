@@ -233,9 +233,17 @@ hl.window_rule({
 -- })
 
 
+--- Wine: Headless explorer.exe Systray / Background Stub ---
+-- Rationale: Wine spawns headless explorer.exe helper windows (title="") for background
+-- systray and shell plumbing. These can steal focus from fullscreen games.
+-- Matching title="^$" ensures real Wine File Manager / Explorer windows (with non-empty titles)
+-- remain visible and interactable.
 hl.window_rule({
     name = "suppress-wine-explorer",
-    match = { class = "^(explorer\\.exe)$" },
+    match = {
+        class = "^(explorer\\.exe)$",
+        title = "^$"
+    },
     float = true,
     no_initial_focus = true,
     no_focus = true,
