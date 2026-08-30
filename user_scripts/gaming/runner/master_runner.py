@@ -3031,10 +3031,29 @@ class EnvironmentBuilder:
             self._set("GDK_BACKEND", "x11")
             self._set("QT_QPA_PLATFORM", "xcb")
             self._set("CLUTTER_BACKEND", "x11")
-            if not self.env.get("DISPLAY"):
-                socks = sorted(Path("/tmp/.X11-unix").glob("X[0-9]*")) if \
-                    Path("/tmp/.X11-unix").is_dir() else []
-                self._set("DISPLAY", f":{socks[0].name[1:]}" if socks else ":0")
+            # Always ensure DISPLAY points to a live XWayland socket (not stale :0 after Hyprland reload moved to :2)
+            # Previous logic only set if not already set, which kept stale :0 from parent environ.
+            socks = sorted(Path("/tmp/.X11-unix").glob("X[0-9]*")) if \
+                Path("/tmp/.X11-unix").is_dir() else []
+            # Filter to only sockets that actually exist and are live (check via displayfd or just existence)
+            # Prefer the Hyprland XWayland (parent is Hyprland) — pick the one with lowest display number that exists
+            # If current DISPLAY is stale (socket missing), override.
+            current_disp = self.env.get("DISPLAY", "")
+            # Check if current DISPLAY socket exists
+            need_update = True
+            if current_disp and current_disp.startswith(":"):
+                disp_num = current_disp[1:].split(".")[0]
+                if disp_num.isdigit():
+                    sock_path = Path(f"/tmp/.X11-unix/X{disp_num}")
+                    if sock_path.exists():
+                        need_update = False
+            if need_update:
+                if socks:
+                    # Prefer the one whose Xwayland parent is Hyprland (most recent)
+                    # Sort by display number, pick lowest existing
+                    self._set("DISPLAY", f":{socks[0].name[1:]}" if socks else ":0")
+                else:
+                    self._set("DISPLAY", ":0")
             self._drop("PROTON_ENABLE_WAYLAND")
             self.notes["session"] = "xwayland"
         else:

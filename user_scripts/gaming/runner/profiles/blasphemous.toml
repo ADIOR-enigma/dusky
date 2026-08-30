@@ -39,9 +39,10 @@ type = "native"
 [graphics]
 gpu = "auto"
 wayland_native = true
+prefer_xwayland = true  # Unity 2017 X11-only, needs XWayland — system xwayland now enabled, gamescope caused SIGSEGV/XWAYLAND sync fail
 
 [graphics.gamescope]
-enabled = true
+enabled = false
 mode = "embedded"
 allow_tearing = true
 

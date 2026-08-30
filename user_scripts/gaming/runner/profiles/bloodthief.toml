@@ -29,9 +29,12 @@ type = "native"
 [graphics]
 gpu = "auto"
 wayland_native = true
+prefer_xwayland = true  # Godot 4.4 custom_build: display driver only "x11" (no wayland) — requires XWayland
 
 [graphics.gamescope]
 enabled = false
+# Was enabled=true with wayland backend to match JC141 GAMESCOPE=1, but caused Hyprland SIGABRT in libgallium/EGL (Mesa 26.2.1 + NVIDIA 610.57 + gamescope 3.16 XWayland :1)
+# Reverted to system XWayland (now enabled) + prefer_xwayland=true — tested stable 7s Vulkan init, no crash
 
 [performance]
 gamemode = true

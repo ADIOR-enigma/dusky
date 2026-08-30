@@ -139,10 +139,19 @@ PY
 fi
 
 # --- LOCKING TO PREVENT CONCURRENT DMENU INSTANCES ---
+# FD 9 holds the lock; must be CLOEXEC so games launched via dusky-run/systemd-run don't inherit it
+# (otherwise the lock stays held while the game runs and the keybind appears dead)
 readonly LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/rofi_game_runner.lock"
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
     exit 0
+fi
+# Ensure lock is released on exit and not inherited by game children
+release_lock() { exec 9>&- 2>/dev/null || true; rm -f "$LOCK_FILE" 2>/dev/null || true; }
+trap 'release_lock' EXIT
+# Mark FD 9 as close-on-exec so child processes (games) don't keep the lock
+if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import fcntl, os; fcntl.fcntl(9, fcntl.F_SETFD, fcntl.FD_CLOEXEC)' 2>/dev/null || true
 fi
 
 # ------------------------------------------------------------------------------
@@ -600,6 +609,7 @@ for p in json.load(sys.stdin):
 
 _do_launch() {
     local pid="$1" name="$2" icon="$3" runtime="${4:-}"
+    release_lock
     log_info "Launching $name ($pid)"
     notify normal "Launching $name" "$pid • $runtime"
     if have_cmd dusky-run; then
@@ -616,6 +626,7 @@ _do_launch() {
 
 _do_mount() {
     local pid="$1" name="$2" icon="$3"
+    release_lock
     log_info "Mounting $name ($pid)"
     notify normal "Mounting $name" "$pid"
     if have_cmd dusky-run; then
@@ -628,6 +639,7 @@ _do_mount() {
 
 _do_unmount() {
     local pid="$1" name="$2" icon="$3"
+    release_lock
     log_info "Unmounting $name ($pid)"
     notify normal "Unmounting $name" "$pid"
     if have_cmd dusky-run; then

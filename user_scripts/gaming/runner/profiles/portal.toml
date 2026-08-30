@@ -1,7 +1,3 @@
-# ==============================================================================
-# Portal Profile
-# ==============================================================================
-
 extends = "base_native"
 
 [meta]
@@ -30,9 +26,10 @@ type = "native"
 [graphics]
 gpu = "auto"
 wayland_native = true
+prefer_xwayland = true
 
 [graphics.gamescope]
-enabled = true
+enabled = false
 mode = "embedded"
 allow_tearing = true
 
