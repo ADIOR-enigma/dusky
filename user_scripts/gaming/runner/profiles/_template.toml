@@ -70,7 +70,15 @@ overlay_work    = "files/.game-root-work"      # Scratch workdir for OverlayFS (
 # (such as "steamclient_loader_x64.exe") which exit immediately and cause session teardown.
 executable  = "bin/example_binary"
 working_dir = ""                               # Execution CWD (empty = executable parent directory)
-arguments   = []                               # Forwarded CLI arguments, e.g. ["-fullscreen", "-novid"]
+
+# CLI Arguments & Renderer Flags:
+# Forwarded directly to the binary. Use this for engine-specific rendering backends:
+#   - BeamNG.drive / Torque3D:  ["-gfx", "vk"]       (Native Vulkan — eliminates D3D12/VKD3D flickering on Intel iGPU)
+#   - Unreal Engine 4/5:        ["-dx11"] or ["-dx12"] or ["-vulkan"]
+#   - Unity / Source / Godot:   ["-force-vulkan"] or ["-force-d3d11"] or ["-novid", "-fullscreen"]
+# TIP: On Intel Integrated Graphics (Iris Xe / ANV Mesa), prefer native Vulkan ("-gfx vk", "-vulkan")
+#      or DXVK Direct3D 11 ("-dx11") over D3D12/VKD3D to prevent descriptor indexing / swapchain flickering.
+arguments   = []
 
 # ------------------------------------------------------------------------------
 # 4. Runtime Selection [runtime]
@@ -129,6 +137,12 @@ protonfixes = true                             # Enable community protonfixes da
 #   - Semantic:  "auto", "discrete", "integrated", "primary"
 #   - Vendor:    "nvidia", "amd", "intel"
 #   - Explicit:  "10de:25a0", "card0", "card1", "0000:01:00.0", "pci-0000_01_00_0", "0", "1"
+# ARCHITECTURE NOTE ON VRAM VS SHARED RAM:
+#   - "discrete":   Uses NVIDIA dGPU (e.g. RTX 3050 Ti Laptop). Fast compute, but hard-capped by dedicated
+#                   VRAM (e.g. 4GB). Heavy textures/simulation maps exceeding 4GB can cause VRAM exhaustion.
+#   - "integrated": Uses Intel Iris Xe / AMD Radeon iGPU. Dynamically allocates from system RAM (e.g. up to
+#                   32GB shared memory on a 64GB host). Ideal for memory-heavy games.
+#                   Pair with native Vulkan ("-gfx vk") or DXVK ("-dx11") to prevent D3D12 Intel ANV flickering.
 gpu = "auto"
 
 wayland_native      = true                     # Enable Wine-Staging native Wayland driver (waylanddrv)

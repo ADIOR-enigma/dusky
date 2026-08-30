@@ -2827,7 +2827,7 @@ class WinePrefix:
                                         continue
                                     dst.unlink()
                                 elif dst.exists():
-                                    continue
+                                    dst.unlink()
                                 dst.symlink_to(src)
                                 linked += 1
 
@@ -2851,7 +2851,7 @@ class WinePrefix:
                                         continue
                                     dst.unlink()
                                 elif dst.exists():
-                                    continue
+                                    dst.unlink()
                                 dst.symlink_to(src)
                                 linked += 1
 
@@ -2872,7 +2872,7 @@ class WinePrefix:
                                         continue
                                     dst.unlink()
                                 elif dst.exists():
-                                    continue
+                                    dst.unlink()
                                 dst.symlink_to(src)
                                 linked += 1
 
@@ -2892,7 +2892,7 @@ class WinePrefix:
                                     continue
                                 dst.unlink()
                             elif dst.exists():
-                                continue
+                                dst.unlink()
                             dst.symlink_to(src)
                             linked += 1
 

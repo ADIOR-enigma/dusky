@@ -12,7 +12,7 @@ description = "Dynamic soft-body physics vehicle simulator with open-world drivi
 [paths]
 game_dir = "/mnt/media/games/installed_games/beamng/BeamNG.drive.v0.39.4"
 executable = "BeamNG.drive/Bin64/BeamNG.drive.x64.exe"
-arguments = []
+arguments = ["-gfx", "vk"]
 
 [runtime]
 type = "wine"
