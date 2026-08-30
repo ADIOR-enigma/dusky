@@ -1,24 +1,14 @@
 # ==============================================================================
-# BeamNG.drive Profile — Native Linux (v0.39.4)
+# BeamNG.drive Profile — Wine / DXVK / VKD3D (v0.39.4)
 # ==============================================================================
-# Engine: Custom BeamNG Torque-derived / Vulkan (Native Linux BinLinux binary)
-# Tested: 2026-08-30 — BinLinux/BeamNG.drive.x64 ELF verified (ldd clean, headless init OK)
-# Fix 2026-08-30: On pure Wayland Hyprland (DISPLAY="") native launch hits
-#   "[error] [:1] No DISPLAY detected" -> GFX Null device -> hang/segfault.
-#   Enabling Gamescope embedded provides nested Xwayland :0 + Wayland backend,
-#   matching fix used for Unity 2017 (blasphemous.toml:17) on pure Wayland.
-# Notes:
-#   * Native Wayland Vulkan binary (libwayland-client.so, vulkan on wayland/x11/offscreen)
-#   * CEF/EOS + SDL still probes X11 - requires Xwayland via Gamescope on pure Wayland
-#   * No DwarFS — loose repack at /mnt/zram1/BeamNG.drive.v0.39.4
-#   * Executable: BeamNG.drive/BinLinux/BeamNG.drive.x64 (chmod +x auto-handled)
-#   * Working dir defaults to executable's parent (BinLinux) — required for bundled libs
-#   * GPU: discrete (heavy soft-body physics + Vulkan renderer benefits from dGPU prime-run)
-#   * Verified headless init: "./BeamNG.drive.x64 -headless" boots to [S_API] SteamAPI_Init OK
-#   * Verified Gamescope: stays alive 10s with vulkan Intel compositor + prime-run dGPU child
+# Engine: Torque3D / BeamNG Physics Engine
+# Graphics: Direct3D 11/12 via DXVK/VKD3D -> Vulkan
+# Tested: 2026-08-30 — Pure Wayland (waylanddrv) on Hyprland, discrete NVIDIA
+#         GeForce RTX 3050 Ti Laptop GPU offload, Goldberg Steam emulator,
+#         DirectInput device acquisition, and FMOD 3D audio.
 # ==============================================================================
 
-extends = "base_native"
+extends = "base_wine_dxvk"
 
 [meta]
 id = "beamng_drive"
@@ -27,24 +17,38 @@ version = "0.39.4"
 icon = "/mnt/zram1/BeamNG.drive.v0.39.4/icon-beamng.ico"
 developer = "BeamNG GmbH"
 genre = "Driving / Simulation"
-description = "Dynamic soft-body physics vehicle simulator with open-world driving, highly detailed crash deformation, and extensive modding. Native Linux Vulkan build verified via headless init and dry-run."
+description = "Dynamic soft-body physics vehicle simulator with open-world driving, highly detailed crash deformation, and extensive modding via Wine + DXVK/VKD3D on native Wayland."
 
 [paths]
 game_dir = "/mnt/zram1/BeamNG.drive.v0.39.4"
-executable = "BeamNG.drive/BinLinux/BeamNG.drive.x64"
+executable = "BeamNG.drive/Bin64/BeamNG.drive.x64.exe"
 arguments = []
 
 [runtime]
-type = "native"
+type = "wine"
+
+[runtime.wine]
+wine_binary = "wine"
+prefix_dir = "files/wine-prefix-beamng"
+arch = "win64"
+sync_mode = "fsync"
+large_address_aware = true
+debug = "fixme-all"
+dxvk = true
+vkd3d = true
+dxvk_nvapi = false
+dll_overrides = { "winemenubuilder.exe" = "d", "mshtml" = "d", "dxgi" = "n", "d3d11" = "n", "d3d12" = "n", "d3d9" = "n" }
+redistributables = ["BeamNG.drive/Bin64/VC_redist.x64.exe"]
+winetricks = []
 
 [graphics]
 gpu = "discrete"
 wayland_native = true
-prefer_xwayland = true
+prefer_xwayland = false
 vulkan_icd = "auto"
 
 [graphics.gamescope]
-enabled = true
+enabled = false
 mode = "embedded"
 width = 0
 height = 0
@@ -78,11 +82,6 @@ auto_clean_workdir = true
 
 [sandbox]
 enabled = false
-isolate_home = true
-bind_gpu = true
-bind_sound = true
-bind_wayland = true
-bind_network = false
 
 [hooks]
 pre_mount = []
@@ -92,7 +91,7 @@ post_launch = []
 post_unmount = []
 
 [env]
-SDL_VIDEODRIVER = "wayland"
-CLUTTER_BACKEND = "wayland"
-GDK_BACKEND = "wayland"
-QT_QPA_PLATFORM = "wayland"
+WINE_LARGE_ADDRESS_AWARE = "1"
+WINEDEBUG = "fixme-all"
+DXVK_LOG_LEVEL = "none"
+VKD3D_DEBUG = "none"

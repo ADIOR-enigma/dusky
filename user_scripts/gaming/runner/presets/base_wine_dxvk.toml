@@ -20,7 +20,9 @@ dll_overrides = { "winemenubuilder.exe" = "d", "mshtml" = "d", "dxgi" = "n", "d3
 
 [graphics]
 gpu = "discrete"
+wayland_native = true
 prefer_xwayland = false
+vulkan_icd = "auto"
 gl_threaded = true
 
 [performance]

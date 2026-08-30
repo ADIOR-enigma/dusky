@@ -966,6 +966,16 @@ SCHEMA: dict[int, list[ConfigItem]] = {
 # ---------------------------------------------------------------------------
 _PER_GAME_HELP_GPU = "**Per-Game GPU**\n\nOverrides `graphics.gpu` for this game only.\n- **auto**: Inherit heuristic (or global `runner.default_gpu`).\n- **discrete**: Force dGPU for this title.\n- **integrated**: Force iGPU (e.g. light indie / 2D)."
 
+_PER_GAME_HELP_RUNTIME = "**Per-Game Runtime Type**\n\nOverrides `runtime.type` for this game.\n- **native**: Linux ELF binary / script.\n- **wine**: Windows executable via Wine-Staging.\n- **proton**: Steam Proton container.\n- **umu**: Unified launcher (umu-run).\n- **script**: Custom shell script launcher."
+
+_PER_GAME_HELP_WAYLAND = "**Per-Game Wayland Native**\n\nOverrides `graphics.wayland_native` for this game. Enables Wine's pure Wayland driver (`waylanddrv`) for zero-X11 presentation on Hyprland."
+
+_PER_GAME_HELP_DXVK = "**Per-Game DXVK**\n\nOverrides `runtime.wine.dxvk` for this game. Translates Direct3D 9/10/11 into Vulkan. Disable to fall back to WineD3D OpenGL."
+
+_PER_GAME_HELP_VKD3D = "**Per-Game VKD3D-Proton**\n\nOverrides `runtime.wine.vkd3d` for this game. Translates Direct3D 12 into native Vulkan via VKD3D-Proton."
+
+_PER_GAME_HELP_ICD = "**Per-Game Vulkan ICD**\n\nOverrides `graphics.vulkan_icd` for this game.\n- **auto**: Auto-detects based on active GPU vendor.\n- **nvidia / intel / radv / amd**: Forces a specific Vulkan ICD manifest."
+
 _PER_GAME_HELP_FPS = "**Per-Game FPS Limit**\n\nOverrides `performance.fps_limit` for this game.\n- **0**: Uncapped / auto.\n- **>0**: Caps via Gamescope `--framerate-limit`, or `MANGOHUD_CONFIG` / `DXVK_FRAME_RATE` when Gamescope is off."
 
 _PER_GAME_HELP_GS = "**Per-Game Gamescope**\n\nOverrides `graphics.gamescope.enabled` for this game. Toggle per title — e.g. enable for Unity 2017 / Source 1 / FNA titles that need an embedded Xwayland sandbox, disable for native Wayland titles."
@@ -1044,7 +1054,12 @@ def _build_per_game_items() -> list[ConfigItem]:
 
         # Per-game defaults are read from the current profile so the TUI does NOT show them as edited.
         # This makes the TUI's default == profile's actual value, so is_modified is False on first load.
+        _rt_def = _get_profile_value(pid, "runtime", "type", "native")
         _gpu_def = _get_profile_value(pid, "graphics", "gpu", "auto")
+        _wayland_def = _get_profile_value(pid, "graphics", "wayland_native", True)
+        _icd_def = _get_profile_value(pid, "graphics", "vulkan_icd", "auto")
+        _dxvk_def = _get_profile_value(pid, "runtime.wine", "dxvk", True)
+        _vkd3d_def = _get_profile_value(pid, "runtime.wine", "vkd3d", True)
         _fps_def = _get_profile_value(pid, "performance", "fps_limit", 60)
         # Ensure int
         try:
@@ -1055,8 +1070,22 @@ def _build_per_game_items() -> list[ConfigItem]:
         _mh_def = _get_profile_value(pid, "performance", "mangohud", False)
         _gm_def = _get_profile_value(pid, "performance", "gamemode", True)
         _ext_def = _get_profile_value(pid, "DEFAULT", "extends", "base_native")
-        _sync_def = _get_profile_value(pid, "runtime.wine", "sync_mode", "fsync")
+        _sync_def = _get_profile_value(pid, "runtime.wine", "sync_mode", "auto")
 
+        # Runtime Type
+        items.append(
+            ConfigItem(
+                label="Runtime Type",
+                key="type",
+                scope="runtime",
+                type_="cycle",
+                default=_rt_def if _rt_def in ("native", "wine", "proton", "umu", "script") else "native",
+                options=["native", "wine", "proton", "umu", "script"],
+                parent_ref=menu_key,
+                target_file_override=profile_toml,
+                extended_help=_PER_GAME_HELP_RUNTIME,
+            )
+        )
         # GPU
         items.append(
             ConfigItem(
@@ -1069,6 +1098,59 @@ def _build_per_game_items() -> list[ConfigItem]:
                 parent_ref=menu_key,
                 target_file_override=profile_toml,
                 extended_help=_PER_GAME_HELP_GPU,
+            )
+        )
+        # Wayland Native
+        items.append(
+            ConfigItem(
+                label="Wayland Native",
+                key="wayland_native",
+                scope="graphics",
+                type_="bool",
+                default=bool(_wayland_def),
+                parent_ref=menu_key,
+                target_file_override=profile_toml,
+                extended_help=_PER_GAME_HELP_WAYLAND,
+            )
+        )
+        # DXVK
+        items.append(
+            ConfigItem(
+                label="DXVK (D3D11/9)",
+                key="dxvk",
+                scope="runtime.wine",
+                type_="bool",
+                default=bool(_dxvk_def),
+                parent_ref=menu_key,
+                target_file_override=profile_toml,
+                extended_help=_PER_GAME_HELP_DXVK,
+            )
+        )
+        # VKD3D
+        items.append(
+            ConfigItem(
+                label="VKD3D (D3D12)",
+                key="vkd3d",
+                scope="runtime.wine",
+                type_="bool",
+                default=bool(_vkd3d_def),
+                parent_ref=menu_key,
+                target_file_override=profile_toml,
+                extended_help=_PER_GAME_HELP_VKD3D,
+            )
+        )
+        # Vulkan ICD
+        items.append(
+            ConfigItem(
+                label="Vulkan ICD",
+                key="vulkan_icd",
+                scope="graphics",
+                type_="cycle",
+                default=_icd_def if _icd_def in ("auto", "nvidia", "intel", "radv", "amd") else "auto",
+                options=["auto", "nvidia", "intel", "radv", "amd"],
+                parent_ref=menu_key,
+                target_file_override=profile_toml,
+                extended_help=_PER_GAME_HELP_ICD,
             )
         )
         # FPS

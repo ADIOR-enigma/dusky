@@ -113,7 +113,9 @@ winetricks       = []                          # e.g. ["vcrun2022", "d3dcompiler
 # GPU Selection: "auto", "discrete", "integrated", "primary", "nvidia", "amd", "intel"
 gpu = "auto"
 
+wayland_native      = true                     # Enable Wine-Staging native Wayland driver (waylanddrv)
 prefer_xwayland     = false                    # Force DISPLAY=:0 for archaic engines lacking Wayland
+vulkan_icd          = "auto"                   # Vulkan driver manifest: "auto", "nvidia", "radv", "intel"
 gl_threaded         = true                     # Multithreaded OpenGL (MESA_GL_THREAD / __GL_THREADED_OPTIMIZATIONS)
 vsync               = "default"                # "default", "on", "off"
 hdr                 = false                    # Enable HDR surface presentation (ENABLE_HDR_WSI=1)
