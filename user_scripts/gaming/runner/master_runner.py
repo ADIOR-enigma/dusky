@@ -1421,12 +1421,36 @@ def enum_or[E: StrEnum](cls: type[E], raw: Any, fallback: E) -> E:
 def select_gpu(mode: str, *, prefer_vendor: str = "") -> Gpu | None:
     """Resolve a policy string into a concrete device.
 
-    `discrete` is defined structurally (not by vendor): a display-class device
-    that is NOT boot_vga, or an NVIDIA/AMD dGPU alongside an integrated GPU.
+    Supports:
+      - Semantic roles: 'auto', 'discrete', 'integrated', 'primary'
+      - Vendor names:   'nvidia', 'amd', 'intel'
+      - Explicit PCI:   '10de:25a0', '0000:01:00.0', 'pci-0000_01_00_0'
+      - Device names:   'card0', 'card1', or numeric index '0', '1'
     """
     devs = [g for g in gpus() if not g.is_software]
     if not devs:
         return None
+
+    # Check explicit device selectors first
+    m = mode.strip().lower()
+    for g in devs:
+        if m in (g.card.lower(), g.pci_addr.lower(), g.dri_prime.lower()):
+            return g
+        if m.endswith(g.pci_addr.lower()):
+            return g
+        if ":" in m:
+            parts = m.split(":")
+            if len(parts) == 2:
+                with suppress(ValueError):
+                    v = int(parts[0], 16)
+                    d = int(parts[1], 16)
+                    if v == g.vendor_id and d == g.device_id:
+                        return g
+    if m.isdigit():
+        idx = int(m)
+        if 0 <= idx < len(devs):
+            return devs[idx]
+
     igpu = next((g for g in devs if g.boot_vga), devs[0])
     dgpus = [g for g in devs if not g.boot_vga] or [
         g for g in devs if g.is_nvidia and len(devs) > 1
@@ -4262,10 +4286,27 @@ def collect_checks() -> list[Check]:
 
     # -- nvidia specifics --------------------------------------------------
     if any(g.is_nvidia for g in devs):
-        modeset = read_first_line("/sys/module/nvidia_drm/parameters/modeset")
+        modeset_raw = read_first_line("/sys/module/nvidia_drm/parameters/modeset").upper()
+        ver_raw = read_first_line("/sys/module/nvidia/version")
+        ver_match = re.match(r"^(\d+)", ver_raw)
+        has_card = any(g.is_nvidia and g.card.startswith("card") for g in devs)
+        cmdline = read_first_line("/proc/cmdline")
+        modeset_active = (
+            modeset_raw in ("Y", "1")
+            or (ver_match and int(ver_match.group(1)) >= 560 and has_card)
+            or "nvidia-drm.modeset=1" in cmdline
+            or "nvidia_drm.modeset=1" in cmdline
+        )
         is_secondary = any(g.boot_vga for g in devs if not g.is_nvidia)
-        modeset_status = Health.OK if modeset == "Y" else (Health.WARN if is_secondary else Health.FAIL)
-        modeset_msg = f"nvidia_drm.modeset={modeset or 'unset'} " + ("(recommended Y; secondary offload active)" if is_secondary else "(must be Y for primary Wayland)")
+        if modeset_active:
+            modeset_status = Health.OK
+            modeset_msg = f"active (driver {ver_raw or '>=560'})"
+        else:
+            modeset_status = Health.WARN if is_secondary else Health.FAIL
+            modeset_msg = f"modeset={modeset_raw or 'unset'} " + (
+                "(recommended Y; secondary offload active)"
+                if is_secondary else "(must be Y for primary Wayland)"
+            )
         add(Check("nvidia", "drm modeset", modeset_status, modeset_msg))
         fbdev = read_first_line("/sys/module/nvidia_drm/parameters/fbdev")
         add(Check("nvidia", "drm fbdev", Health.INFO, f"nvidia_drm.fbdev={fbdev or 'unset'}"))
@@ -5135,7 +5176,8 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                    dest="overrides",
                    help="dotted override, e.g. --set graphics.gamescope.width=1280")
-    r.add_argument("--gpu", choices=[str(g) for g in GpuSelection])
+    r.add_argument("--gpu", metavar="GPU",
+                   help="GPU selector: auto, discrete, integrated, nvidia, amd, intel, or PCI/card ID (e.g. 10de:25a0, card0)")
     r.add_argument("--gamescope", action="store_true", default=None)
     r.add_argument("--no-gamescope", action="store_false", dest="gamescope")
     r.add_argument("--res", "--gamescope-res", dest="res", metavar="WxH", help="gamescope internal render size")

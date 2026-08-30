@@ -110,7 +110,10 @@ winetricks       = []                          # e.g. ["vcrun2022", "d3dcompiler
 # 6. Graphics Pipeline & Wayland Integration [graphics]
 # ------------------------------------------------------------------------------
 [graphics]
-# GPU Selection: "auto", "discrete", "integrated", "primary", "nvidia", "amd", "intel"
+# GPU Selection:
+#   - Semantic: "auto", "discrete", "integrated", "primary"
+#   - Vendor:   "nvidia", "amd", "intel"
+#   - Explicit: "10de:25a0", "card0", "card1", "0000:01:00.0", "pci-0000_01_00_0", "0", "1"
 gpu = "auto"
 
 wayland_native      = true                     # Enable Wine-Staging native Wayland driver (waylanddrv)
