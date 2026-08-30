@@ -73,15 +73,8 @@ ENABLE_USER_PRESETS = True
 USER_PRESETS_TAB = "Presets"
 
 GLOBAL_POPUP = {
-    "title": "Dusky Games — Profile Inheritance",
-    "message": (
-        "Global defaults in **config.toml** cascade into every game.\n\n"
-        "- **Global tabs** edit the shared defaults (affects all games).\n"
-        "- **Per-Game tab** edits individual `profiles/*.toml` overrides.\n"
-        "- Missing per-game keys inherit from `presets/*.toml` via `extends`.\n\n"
-        "Only high-frequency knobs are surfaced. Paths, DwarFS mounts, "
-        "executables, hooks, and env shims stay in the raw TOML."
-    ),
+    "title": "Dusky Games",
+    "message": "**Global** tabs → defaults for all games. **Per-Game** → overrides for one game. Missing keys inherit via `presets/*.toml` (`extends`).",
     "level": "info",
     "require_confirm": False,
     "cancel_quits": False,
@@ -992,6 +985,25 @@ _PER_GAME_HELP_UNMOUNT = "**Per-Game Auto Unmount**\n\nOverrides `runner.auto_un
 
 _PER_GAME_HELP_SYNC = "**Per-Game Wine Sync**\n\nOverrides `runtime.wine.sync_mode` for Wine titles.\n- **auto** (recommended): Auto-probes /dev/ntsync on Linux 7.1+; falls back to fsync.\n- **ntsync**: Forces in-kernel NT sync primitives.\n- **fsync**: Forces `WINEFSYNC=1`.\n- **esync**: Forces `WINEESYNC=1`.\n- **server**: Standard wineserver sync."
 
+_PER_GAME_HELP_XWAYLAND = "**Per-Game XWayland**\n\nOverrides `graphics.prefer_xwayland` for this game. Forces `DISPLAY=:0` XWayland presentation. Useful for Unity 2017 / Source 1 titles that query XRandR root geometry; prefer Gamescope embedded for a cleaner sandbox."
+_PER_GAME_HELP_WINE_BIN = "**Per-Game Wine Binary**\n\nOverrides `runtime.wine.wine_binary` for this game. Path or name of Wine/Proton binary (`wine`, `wine64`, `GE-Proton`, or absolute path to custom build)."
+_PER_GAME_HELP_ARCH = "**Per-Game Wine Arch**\n\nOverrides `runtime.wine.arch` for this game.\n- **win64**: 64-bit prefix (default).\n- **win32**: Legacy 32-bit prefix."
+_PER_GAME_HELP_LAA = "**Per-Game Large Address Aware**\n\nOverrides `runtime.wine.large_address_aware` for this game. Exposes 4 GB address space to 32-bit processes (`WINE_LARGE_ADDRESS_AWARE=1`)."
+_PER_GAME_HELP_WINE_DBG = "**Per-Game Wine Debug**\n\nOverrides `runtime.wine.debug` for this game. WINEDEBUG filter:\n- **fixme-all**: Hide stubs (default).\n- **-all**: Silence all.\n- **warn+all/err+all**: Verbose."
+_PER_GAME_HELP_MH_PRESET = "**Per-Game MangoHud Preset**\n\nOverrides `performance.mangohud_preset`. Appended as `MANGOHUD_CONFIG=preset=<preset>`. Empty = MangoHud defaults."
+_PER_GAME_HELP_CPU_GOV = "**Per-Game CPU Governor**\n\nHint for `performance.cpu_governor` per game. Logged and may be requested via GameMode; actual switching via `cpupower`."
+_PER_GAME_HELP_PRIO = "**Per-Game Nice Level**\n\nOverrides `performance.process_priority` nice value. -20 (high) to 19 (low), 0 = default."
+_PER_GAME_HELP_GS_MODE = "**Per-Game Gamescope Mode**\n\nOverrides `graphics.gamescope.mode` for this game. `embedded` (-b) recommended, `fullscreen` (-f), `borderless`/`nested` alternatives."
+_PER_GAME_HELP_GS_W = "**Per-Game Render Width**\n\nOverrides `graphics.gamescope.width` (`-w`). 0 = auto-detect, else fixed render target width."
+_PER_GAME_HELP_GS_H = "**Per-Game Render Height**\n\nOverrides `graphics.gamescope.height` (`-h`). 0 = auto."
+_PER_GAME_HELP_GS_OW = "**Per-Game Output Width**\n\nOverrides `graphics.gamescope.output_width` (`-W`). 0 = native display."
+_PER_GAME_HELP_GS_OH = "**Per-Game Output Height**\n\nOverrides `graphics.gamescope.output_height` (`-H`). 0 = native."
+_PER_GAME_HELP_GS_RR = "**Per-Game Refresh Rate**\n\nOverrides `graphics.gamescope.refresh_rate` (`-r`). 0 = auto-detect via hyprctl/DRM, else fixed Hz. FPS limit may override via `--framerate-limit`."
+_PER_GAME_HELP_GS_SHARP = "**Per-Game FSR Sharpness**\n\nOverrides `graphics.gamescope.fsr_sharpness` (0–20). Only when FSR upscaling is enabled."
+_PER_GAME_HELP_GS_TEAR = "**Per-Game Allow Tearing**\n\nOverrides `graphics.gamescope.allow_tearing` (`--immediate-flips`). Low-latency but may tear."
+_PER_GAME_HELP_GS_GRAB = "**Per-Game Force Grab Cursor**\n\nOverrides `graphics.gamescope.force_grab_cursor` (`--force-grab-cursor`). Confine cursor for FPS titles."
+_PER_GAME_HELP_GS_HDR = "**Per-Game Gamescope HDR**\n\nOverrides `graphics.gamescope.hdr` (`--hdr-enabled`). Requires HDR monitor/compositor."
+
 def _get_profile_value(pid: str, scope: str, key: str, fallback):
     """Read a single value from profiles/<pid>.toml with fallback, for dynamic per-game defaults."""
     try:
@@ -1071,6 +1083,53 @@ def _build_per_game_items() -> list[ConfigItem]:
         _gm_def = _get_profile_value(pid, "performance", "gamemode", True)
         _ext_def = _get_profile_value(pid, "DEFAULT", "extends", "base_native")
         _sync_def = _get_profile_value(pid, "runtime.wine", "sync_mode", "auto")
+        # Additional per-game defaults for extended coverage (mirrors global tabs)
+        _xway_def = _get_profile_value(pid, "graphics", "prefer_xwayland", False)
+        _winebin_def = _get_profile_value(pid, "runtime.wine", "wine_binary", "wine")
+        _arch_def = _get_profile_value(pid, "runtime.wine", "arch", "win64")
+        _laa_def = _get_profile_value(pid, "runtime.wine", "large_address_aware", True)
+        _dbg_def = _get_profile_value(pid, "runtime.wine", "debug", "fixme-all")
+        _mh_preset_def = _get_profile_value(pid, "performance", "mangohud_preset", "")
+        _cpu_gov_def = _get_profile_value(pid, "performance", "cpu_governor", "performance")
+        _prio_def = _get_profile_value(pid, "performance", "process_priority", 0)
+        try:
+            _prio_def = int(_prio_def)
+        except Exception:
+            _prio_def = 0
+        _gs_mode_def = _get_profile_value(pid, "graphics.gamescope", "mode", "borderless")
+        _gs_w_def = _get_profile_value(pid, "graphics.gamescope", "width", 0)
+        _gs_h_def = _get_profile_value(pid, "graphics.gamescope", "height", 0)
+        _gs_ow_def = _get_profile_value(pid, "graphics.gamescope", "output_width", 0)
+        _gs_oh_def = _get_profile_value(pid, "graphics.gamescope", "output_height", 0)
+        _gs_rr_def = _get_profile_value(pid, "graphics.gamescope", "refresh_rate", 0)
+        _gs_sharp_def = _get_profile_value(pid, "graphics.gamescope", "fsr_sharpness", 5)
+        _gs_tear_def = _get_profile_value(pid, "graphics.gamescope", "allow_tearing", True)
+        _gs_grab_def = _get_profile_value(pid, "graphics.gamescope", "force_grab_cursor", False)
+        _gs_hdr_def = _get_profile_value(pid, "graphics.gamescope", "hdr", False)
+        try:
+            _gs_w_def = int(_gs_w_def)
+        except Exception:
+            _gs_w_def = 0
+        try:
+            _gs_h_def = int(_gs_h_def)
+        except Exception:
+            _gs_h_def = 0
+        try:
+            _gs_ow_def = int(_gs_ow_def)
+        except Exception:
+            _gs_ow_def = 0
+        try:
+            _gs_oh_def = int(_gs_oh_def)
+        except Exception:
+            _gs_oh_def = 0
+        try:
+            _gs_rr_def = int(_gs_rr_def)
+        except Exception:
+            _gs_rr_def = 0
+        try:
+            _gs_sharp_def = int(_gs_sharp_def)
+        except Exception:
+            _gs_sharp_def = 5
 
         # Runtime Type
         items.append(
@@ -1285,6 +1344,259 @@ def _build_per_game_items() -> list[ConfigItem]:
                 parent_ref=menu_key,
                 target_file_override=profile_toml,
                 extended_help=_PER_GAME_HELP_SYNC,
+            )
+        )
+        # Prefer XWayland
+        items.append(
+            ConfigItem(
+                label="Prefer XWayland",
+                key="prefer_xwayland",
+                scope="graphics",
+                type_="bool",
+                default=bool(_xway_def),
+                parent_ref=menu_key,
+                target_file_override=profile_toml,
+                extended_help=_PER_GAME_HELP_XWAYLAND,
+            )
+        )
+        # Wine Binary
+        items.append(
+            ConfigItem(
+                label="Wine Binary",
+                key="wine_binary",
+                scope="runtime.wine",
+                type_="string",
+                default=str(_winebin_def),
+                options=["wine", "wine64", "proton", "GE-Proton"],
+                parent_ref=menu_key,
+                target_file_override=profile_toml,
+                extended_help=_PER_GAME_HELP_WINE_BIN,
+            )
+        )
+        # Wine Arch
+        items.append(
+            ConfigItem(
+                label="Wine Arch",
+                key="arch",
+                scope="runtime.wine",
+                type_="cycle",
+                default=_arch_def if _arch_def in ("win64", "win32") else "win64",
+                options=["win64", "win32"],
+                parent_ref=menu_key,
+                target_file_override=profile_toml,
+                extended_help=_PER_GAME_HELP_ARCH,
+            )
+        )
+        # Large Address Aware
+        items.append(
+            ConfigItem(
+                label="Large Address Aware",
+                key="large_address_aware",
+                scope="runtime.wine",
+                type_="bool",
+                default=bool(_laa_def),
+                parent_ref=menu_key,
+                target_file_override=profile_toml,
+                extended_help=_PER_GAME_HELP_LAA,
+            )
+        )
+        # Wine Debug
+        items.append(
+            ConfigItem(
+                label="Wine Debug",
+                key="debug",
+                scope="runtime.wine",
+                type_="string",
+                default=str(_dbg_def),
+                options=["fixme-all", "-all", "warn+all", "err+all"],
+                parent_ref=menu_key,
+                target_file_override=profile_toml,
+                extended_help=_PER_GAME_HELP_WINE_DBG,
+            )
+        )
+        # MangoHud Preset
+        items.append(
+            ConfigItem(
+                label="MangoHud Preset",
+                key="mangohud_preset",
+                scope="performance",
+                type_="string",
+                default=str(_mh_preset_def),
+                options=["", "minimal", "full", "fps_only", "horizontal"],
+                parent_ref=menu_key,
+                target_file_override=profile_toml,
+                extended_help=_PER_GAME_HELP_MH_PRESET,
+            )
+        )
+        # CPU Governor
+        items.append(
+            ConfigItem(
+                label="CPU Governor",
+                key="cpu_governor",
+                scope="performance",
+                type_="cycle",
+                default=_cpu_gov_def if _cpu_gov_def in ("performance", "powersave", "schedutil", "ondemand", "conservative") else "performance",
+                options=["performance", "powersave", "schedutil", "ondemand", "conservative"],
+                parent_ref=menu_key,
+                target_file_override=profile_toml,
+                extended_help=_PER_GAME_HELP_CPU_GOV,
+            )
+        )
+        # Process Priority
+        items.append(
+            ConfigItem(
+                label="Nice Level",
+                key="process_priority",
+                scope="performance",
+                type_="int",
+                default=_prio_def,
+                min_val=-20,
+                max_val=19,
+                step=1,
+                parent_ref=menu_key,
+                target_file_override=profile_toml,
+                extended_help=_PER_GAME_HELP_PRIO,
+            )
+        )
+        # Gamescope Mode
+        items.append(
+            ConfigItem(
+                label="GS Mode",
+                key="mode",
+                scope="graphics.gamescope",
+                type_="cycle",
+                default=_gs_mode_def if _gs_mode_def in ("embedded", "fullscreen", "borderless", "nested", "windowed") else "borderless",
+                options=["embedded", "fullscreen", "borderless", "nested"],
+                parent_ref=menu_key,
+                target_file_override=profile_toml,
+                extended_help=_PER_GAME_HELP_GS_MODE,
+            )
+        )
+        # Gamescope Width
+        items.append(
+            ConfigItem(
+                label="GS Render W",
+                key="width",
+                scope="graphics.gamescope",
+                type_="int",
+                default=_gs_w_def,
+                min_val=0,
+                max_val=7680,
+                step=1,
+                parent_ref=menu_key,
+                target_file_override=profile_toml,
+                extended_help=_PER_GAME_HELP_GS_W,
+            )
+        )
+        items.append(
+            ConfigItem(
+                label="GS Render H",
+                key="height",
+                scope="graphics.gamescope",
+                type_="int",
+                default=_gs_h_def,
+                min_val=0,
+                max_val=4320,
+                step=1,
+                parent_ref=menu_key,
+                target_file_override=profile_toml,
+                extended_help=_PER_GAME_HELP_GS_H,
+            )
+        )
+        items.append(
+            ConfigItem(
+                label="GS Output W",
+                key="output_width",
+                scope="graphics.gamescope",
+                type_="int",
+                default=_gs_ow_def,
+                min_val=0,
+                max_val=7680,
+                step=1,
+                parent_ref=menu_key,
+                target_file_override=profile_toml,
+                extended_help=_PER_GAME_HELP_GS_OW,
+            )
+        )
+        items.append(
+            ConfigItem(
+                label="GS Output H",
+                key="output_height",
+                scope="graphics.gamescope",
+                type_="int",
+                default=_gs_oh_def,
+                min_val=0,
+                max_val=4320,
+                step=1,
+                parent_ref=menu_key,
+                target_file_override=profile_toml,
+                extended_help=_PER_GAME_HELP_GS_OH,
+            )
+        )
+        items.append(
+            ConfigItem(
+                label="GS Refresh",
+                key="refresh_rate",
+                scope="graphics.gamescope",
+                type_="int",
+                default=_gs_rr_def,
+                min_val=0,
+                max_val=500,
+                step=5,
+                parent_ref=menu_key,
+                target_file_override=profile_toml,
+                extended_help=_PER_GAME_HELP_GS_RR,
+            )
+        )
+        items.append(
+            ConfigItem(
+                label="GS Sharpness",
+                key="fsr_sharpness",
+                scope="graphics.gamescope",
+                type_="int",
+                default=_gs_sharp_def,
+                min_val=0,
+                max_val=20,
+                step=1,
+                parent_ref=menu_key,
+                target_file_override=profile_toml,
+                extended_help=_PER_GAME_HELP_GS_SHARP,
+            )
+        )
+        items.append(
+            ConfigItem(
+                label="GS Tearing",
+                key="allow_tearing",
+                scope="graphics.gamescope",
+                type_="bool",
+                default=bool(_gs_tear_def),
+                parent_ref=menu_key,
+                target_file_override=profile_toml,
+                extended_help=_PER_GAME_HELP_GS_TEAR,
+            )
+        )
+        items.append(
+            ConfigItem(
+                label="GS Grab Cursor",
+                key="force_grab_cursor",
+                scope="graphics.gamescope",
+                type_="bool",
+                default=bool(_gs_grab_def),
+                parent_ref=menu_key,
+                target_file_override=profile_toml,
+                extended_help=_PER_GAME_HELP_GS_GRAB,
+            )
+        )
+        items.append(
+            ConfigItem(
+                label="GS HDR",
+                key="hdr",
+                scope="graphics.gamescope",
+                type_="bool",
+                default=bool(_gs_hdr_def),
+                parent_ref=menu_key,
+                target_file_override=profile_toml,
+                extended_help=_PER_GAME_HELP_GS_HDR,
             )
         )
         # Quick launch action per game (convenience)
