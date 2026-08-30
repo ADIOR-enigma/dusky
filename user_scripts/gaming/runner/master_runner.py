@@ -2773,7 +2773,9 @@ class WinePrefix:
 
         have_hash = ""
         with suppress(OSError, ValueError):
-            have_hash = json.loads(self.stamp.read_text(encoding="utf-8")).get("hash", "")
+            raw = self.stamp.read_text(encoding="utf-8")
+            if raw.strip().startswith("{"):
+                have_hash = json.loads(raw).get("hash", "")
 
         needs_boot = not self.initialised
         needs_provision = force or have_hash != want_hash
@@ -2833,6 +2835,8 @@ class WinePrefix:
                 seen.append(cand)
             else:
                 matches = sorted(root.glob(rel))
+                if not matches and not os.path.isabs(rel):
+                    matches = sorted(root.rglob(rel))
                 seen.extend(m for m in matches if m.is_file())
         for installer in dict.fromkeys(seen):
             low = installer.name.lower()
@@ -3829,6 +3833,9 @@ class Supervisor:
                 for pid in pids:
                     with suppress(ProcessLookupError, PermissionError, OSError):
                         os.kill(pid, sig)
+                        if sig in (signal.SIGTERM, signal.SIGKILL, signal.SIGINT):
+                            with suppress(ProcessLookupError, PermissionError, OSError):
+                                os.kill(pid, signal.SIGCONT)
                 return
         try:
             pgid = os.getpgid(self.proc.pid)
@@ -3837,9 +3844,15 @@ class Supervisor:
         if pgid > 0 and pgid != os.getpgid(0):
             with suppress(ProcessLookupError, PermissionError, OSError):
                 os.killpg(pgid, sig)
+                if sig in (signal.SIGTERM, signal.SIGKILL, signal.SIGINT):
+                    with suppress(ProcessLookupError, PermissionError, OSError):
+                        os.killpg(pgid, signal.SIGCONT)
                 return
         with suppress(ProcessLookupError, OSError):
             self.proc.send_signal(sig)
+            if sig in (signal.SIGTERM, signal.SIGKILL, signal.SIGINT):
+                with suppress(ProcessLookupError, OSError):
+                    self.proc.send_signal(signal.SIGCONT)
 
     def kill_now(self) -> None:
         if self.proc.poll() is not None:
@@ -3983,6 +3996,7 @@ class GameSession:
                 list(argv),
                 cwd=str(workdir),
                 env=dict(env),
+                stdin=subprocess.DEVNULL,
                 # process_group=0 keeps the child in our *session* (so the
                 # terminal keeps working) but in its own process group, which
                 # makes killpg() precise. start_new_session would additionally
