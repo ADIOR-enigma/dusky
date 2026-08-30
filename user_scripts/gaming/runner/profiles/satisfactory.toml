@@ -20,7 +20,7 @@ dwarfs_mount = "files/.game-root-mnt"
 overlay_dir = "files/game-root"
 overlay_storage = "files/overlay-storage"
 overlay_work = "files/.game-root-work"
-executable = "steamclient_loader_x64.exe"
+executable = "FactoryGameSteam.exe"
 arguments = ["-dx12"]
 
 [runtime]

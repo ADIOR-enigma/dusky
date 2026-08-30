@@ -2781,34 +2781,128 @@ class WinePrefix:
             if not r.ok:
                 Log.trace(f"reg add {key}\\{name} -> {r.message}")
 
-    def link_nvidia_dlss(self) -> bool:
-        """Symlink nvngx/nvofapi into the prefix so DXVK-NVAPI can load DLSS."""
+    def link_translators(
+        self,
+        *,
+        want_dxvk: bool = True,
+        want_vkd3d: bool = True,
+        want_nvapi: bool = False,
+        want_dlss: bool = False,
+    ) -> int:
+        """Symlink runtime translators (DXVK, VKD3D, DXVK-NVAPI, DLSS) into prefix."""
         sys32 = self.drive_c / "windows" / "system32"
         syswow = self.drive_c / "windows" / "syswow64"
         if not sys32.is_dir():
-            return False
+            return 0
         linked = 0
-        for src_dir in NVIDIA_WINE_DIRS:
-            if not src_dir.is_dir():
-                continue
-            dst_dir = syswow if "lib32" in str(src_dir) and syswow.is_dir() else sys32
-            for dll in NVNGX_DLLS:
-                src = src_dir / dll
-                if not src.is_file():
+
+        def _find_runtime_dir(pattern: str, sub: str) -> Path | None:
+            p = Path(os.path.expanduser(pattern))
+            if not p.is_dir():
+                return None
+            dirs = sorted([d for d in p.iterdir() if d.is_dir()], reverse=True)
+            for d in dirs:
+                cand = d / sub if (d / sub).is_dir() else d
+                if cand.is_dir():
+                    return cand
+            return None
+
+        # 1. DXVK (D3D9, D3D10, D3D11, DXGI -> Vulkan)
+        if want_dxvk:
+            for sub, target_dir in (("x64", sys32), ("x32", syswow if syswow.is_dir() else None)):
+                if not target_dir:
                     continue
-                dst = dst_dir / dll
-                with suppress(OSError):
-                    if dst.is_symlink():
-                        if os.path.realpath(dst) == str(src.resolve()):
-                            continue
-                        dst.unlink()
-                    elif dst.exists():
-                        continue
-                    dst.symlink_to(src)
-                    linked += 1
+                dxvk_src = (
+                    _find_runtime_dir("~/.local/share/lutris/runtime/dxvk", sub)
+                    or (Path("/usr/share/dxvk") / sub if (Path("/usr/share/dxvk") / sub).is_dir() else None)
+                )
+                if dxvk_src:
+                    for dll in ("d3d11.dll", "dxgi.dll", "d3d9.dll", "d3d10core.dll", "d3d8.dll"):
+                        src = dxvk_src / dll
+                        if src.is_file():
+                            dst = target_dir / dll
+                            with suppress(OSError):
+                                if dst.is_symlink():
+                                    if os.path.realpath(dst) == str(src.resolve()):
+                                        continue
+                                    dst.unlink()
+                                elif dst.exists():
+                                    continue
+                                dst.symlink_to(src)
+                                linked += 1
+
+        # 2. VKD3D (D3D12 -> Vulkan)
+        if want_vkd3d:
+            for sub, target_dir in (("x64", sys32), ("x32", syswow if syswow.is_dir() else None)):
+                if not target_dir:
+                    continue
+                vkd3d_src = (
+                    _find_runtime_dir("~/.local/share/lutris/runtime/vkd3d", sub)
+                    or (Path("/usr/share/vkd3d") / sub if (Path("/usr/share/vkd3d") / sub).is_dir() else None)
+                )
+                if vkd3d_src:
+                    for dll in ("d3d12.dll", "d3d12core.dll"):
+                        src = vkd3d_src / dll
+                        if src.is_file():
+                            dst = target_dir / dll
+                            with suppress(OSError):
+                                if dst.is_symlink():
+                                    if os.path.realpath(dst) == str(src.resolve()):
+                                        continue
+                                    dst.unlink()
+                                elif dst.exists():
+                                    continue
+                                dst.symlink_to(src)
+                                linked += 1
+
+        # 3. DXVK-NVAPI
+        if want_nvapi:
+            for sub, target_dir in (("x64", sys32), ("x32", syswow if syswow.is_dir() else None)):
+                if not target_dir:
+                    continue
+                nvapi_src = _find_runtime_dir("~/.local/share/lutris/runtime/dxvk-nvapi", sub)
+                if nvapi_src:
+                    for dll in ("nvapi64.dll", "nvofapi64.dll", "nvapi.dll"):
+                        src = nvapi_src / dll
+                        if src.is_file():
+                            dst = target_dir / dll
+                            with suppress(OSError):
+                                if dst.is_symlink():
+                                    if os.path.realpath(dst) == str(src.resolve()):
+                                        continue
+                                    dst.unlink()
+                                elif dst.exists():
+                                    continue
+                                dst.symlink_to(src)
+                                linked += 1
+
+        # 4. NVIDIA DLSS (nvngx.dll / _nvngx.dll)
+        if want_dlss:
+            for src_dir in NVIDIA_WINE_DIRS:
+                if not src_dir.is_dir():
+                    continue
+                dst_dir = syswow if "lib32" in str(src_dir) and syswow.is_dir() else sys32
+                for dll in NVNGX_DLLS:
+                    src = src_dir / dll
+                    if src.is_file():
+                        dst = dst_dir / dll
+                        with suppress(OSError):
+                            if dst.is_symlink():
+                                if os.path.realpath(dst) == str(src.resolve()):
+                                    continue
+                                dst.unlink()
+                            elif dst.exists():
+                                continue
+                            dst.symlink_to(src)
+                            linked += 1
+
         if linked:
-            Log.debug(f"linked {linked} NVIDIA NGX/OFAPI libraries into the prefix")
-        return linked > 0
+            Log.debug(f"linked {linked} runtime translator libraries into the prefix")
+        return linked
+
+    def link_nvidia_dlss(self) -> bool:
+        """Compatibility wrapper for link_translators(want_dlss=True)."""
+        return self.link_translators(want_dxvk=False, want_vkd3d=False, want_dlss=True) > 0
 
     # -- provisioning -----------------------------------------------------
     def provision(
@@ -2817,9 +2911,12 @@ class WinePrefix:
         root_dir: Path,
         redistributables: Sequence[str],
         winetricks: Sequence[str],
-        want_dlss: bool,
-        force: bool,
-        dry_run: bool,
+        want_dxvk: bool = True,
+        want_vkd3d: bool = True,
+        want_nvapi: bool = False,
+        want_dlss: bool = False,
+        force: bool = False,
+        dry_run: bool = False,
     ) -> None:
         want_hash = hashlib.blake2b(
             json.dumps(
@@ -2886,8 +2983,12 @@ class WinePrefix:
                     )
                 Log.ok("prefix provisioning complete")
 
-            if want_dlss:
-                self.link_nvidia_dlss()
+            self.link_translators(
+                want_dxvk=want_dxvk,
+                want_vkd3d=want_vkd3d,
+                want_nvapi=want_nvapi,
+                want_dlss=want_dlss,
+            )
 
     def _install_redists(self, env: Mapping[str, str], root: Path,
                          declared: Sequence[str]) -> None:
@@ -3326,7 +3427,11 @@ class EnvironmentBuilder:
             overrides["winemenubuilder.exe"] = ""
         declared = wcfg.get("dll_overrides")
         if isinstance(declared, Mapping):
-            overrides.update({str(k): str(v) for k, v in declared.items()})
+            for k, v in declared.items():
+                k_str, v_str = str(k), str(v)
+                if k_str in ("dxgi", "d3d9", "d3d10core", "d3d11", "d3d12", "d3d12core") and v_str == "n":
+                    v_str = "n,b"
+                overrides[k_str] = v_str
         if bool(wcfg.get("dxvk_nvapi", False)):
             overrides.update({"nvapi": "n", "nvapi64": "n", "nvofapi64": "n"})
         if overrides:
@@ -3377,6 +3482,9 @@ class EnvironmentBuilder:
             root_dir=self.paths.root,
             redistributables=redists,
             winetricks=verbs,
+            want_dxvk=bool(wcfg.get("dxvk", True)),
+            want_vkd3d=bool(wcfg.get("vkd3d", True)),
+            want_nvapi=bool(wcfg.get("dxvk_nvapi", False)),
             want_dlss=bool(wcfg.get("dxvk_nvapi", False)) and any(g.is_nvidia for g in gpus()),
             force=bool(self.p.get("runtime.wine.reprovision", False)),
             dry_run=dry_run,

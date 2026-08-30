@@ -16,7 +16,7 @@ vkd3d = true
 dxvk_nvapi = false
 disable_menubuilder = true
 debug = "fixme-all"
-dll_overrides = { "winemenubuilder.exe" = "d", "mshtml" = "d", "dxgi" = "n", "d3d11" = "n", "d3d12" = "n", "d3d9" = "n" }
+dll_overrides = { "winemenubuilder.exe" = "d", "mshtml" = "d", "dxgi" = "n,b", "d3d11" = "n,b", "d3d12" = "n,b", "d3d9" = "n,b" }
 
 [graphics]
 gpu = "discrete"

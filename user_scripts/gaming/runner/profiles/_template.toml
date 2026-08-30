@@ -100,7 +100,7 @@ disable_menubuilder   = true                   # Suppress winemenubuilder .deskt
 hide_wine             = false                  # PROTON_HIDE_NVIDIA_GPU / hide Wine from detection
 
 # DLL Overrides: Map DLL to "n" (native), "b" (builtin), or "d" (disabled)
-dll_overrides = { "winemenubuilder.exe" = "d", "mshtml" = "d", "dxgi" = "n", "d3d11" = "n", "d3d12" = "n", "d3d9" = "n" }
+dll_overrides = { "winemenubuilder.exe" = "d", "mshtml" = "d", "dxgi" = "n,b", "d3d11" = "n,b", "d3d12" = "n,b", "d3d9" = "n,b" }
 
 # Automated Prefix Provisioning (executed on initial launch or when digest changes)
 redistributables = []                          # e.g. ["VC_redist.x64.exe"]

@@ -14,7 +14,7 @@ dxvk = true
 vkd3d = true
 debug = "fixme-all"
 redistributables = ["VC_redist.x64.exe"]
-winetricks = ["dxvk"]
+winetricks = []
 
 [graphics]
 gpu = "discrete"
