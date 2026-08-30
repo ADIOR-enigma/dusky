@@ -522,6 +522,13 @@ hl.bind(
     { description = "Image Search (Select and search)" }
 )
 
+-- Game Runner (Master Runner) — installed games only
+hl.bind(
+    "SUPER + ALT + G",
+    hl.dsp.exec_cmd("pkill rofi; " .. dusky_scripts .. "gaming/runner/rofi/rofi_game_runner.sh"),
+    { description = "Game Launcher" }
+)
+
 -- OCR (Tesseract)
 hl.bind(
     "SUPER + T",
