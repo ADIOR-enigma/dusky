@@ -2100,9 +2100,7 @@ class ProfileManager:
         cfg["meta"] = meta
 
         game_dir = str((cfg.get("paths") or {}).get("game_dir") or "")
-        ctx = {
-            "GAME_DIR": expand_str(game_dir, {}),
-            "PROFILE_ID": pid,
+        base_ctx = {
             "ROOT": str(self.root),
             "HOME": str(HOME),
             "USER": os.environ.get("USER") or HOME.name,
@@ -2114,6 +2112,9 @@ class ProfileManager:
             "STATE_DIR": str(STATE_DIR),
             "CACHE_DIR": str(CACHE_DIR),
         }
+        ctx = dict(base_ctx)
+        ctx["PROFILE_ID"] = pid
+        ctx["GAME_DIR"] = expand_str(game_dir, base_ctx)
         cfg = expand_tree(cfg, ctx)
 
         prof = Profile(pid=pid, path=path, cfg=cfg)
@@ -3665,7 +3666,8 @@ class PipelineBuilder:
         if filt:
             argv += ["-F", filt]
             if filt in ("fsr", "nis"):
-                sharp = max(0, min(20, _int0(gs.get("fsr_sharpness")) or 5))
+                raw_sharp = gs.get("fsr_sharpness")
+                sharp = max(0, min(20, _int0(raw_sharp))) if raw_sharp is not None else 5
                 argv += ["--sharpness", str(sharp)]
         scaler = str(gs.get("scaler", "") or "")
         if scaler:
@@ -3733,6 +3735,8 @@ class PipelineBuilder:
         ]
         if self.paths.uses_dwarfs:
             argv += ["--bind", str(self.paths.overlay_dir), str(self.paths.overlay_dir)]
+        if os.path.exists("/tmp/.X11-unix"):
+            argv += ["--ro-bind-try", "/tmp/.X11-unix", "/tmp/.X11-unix"]
         if bool(sb.get("bind_gpu", True)):
             argv += ["--dev-bind-try", "/dev/dri", "/dev/dri"]
             for node in sorted(Path("/dev").glob("nvidia*")):
