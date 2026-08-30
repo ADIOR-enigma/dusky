@@ -232,6 +232,17 @@ hl.window_rule({
 --     idle_inhibit = "fullscreen"
 -- })
 
+
+hl.window_rule({
+    name = "suppress-wine-explorer",
+    match = { class = "^(explorer\\.exe)$" },
+    float = true,
+    no_initial_focus = true,
+    no_focus = true,
+    opacity = "0.0 override 0.0 override",
+})
+
+
 -- -----------------------------------------------------------------------------
 -- COMMON DESKTOP / GNOME / QT UTILITIES (calculator, viewers, managers)
 -- -----------------------------------------------------------------------------
