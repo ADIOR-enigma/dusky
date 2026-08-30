@@ -6,17 +6,19 @@ Master Game Runner Engine (AGY Gaming Architecture)
 ================================================================================
 
 Target Architecture:
-  * Arch Linux (Bleeding Edge, Linux Kernel 7.2+)
-  * Pure Wayland & Hyprland Session (Wayland native / XWayland bridge)
-  * Dual-GPU Matrix: Intel Iris Xe (iGPU) + NVIDIA GeForce RTX 3050 Ti (dGPU)
+  * Arch Linux (Bleeding Edge, Linux Kernel 7.1+ / 7.2+)
+  * Pure Wayland & Hyprland Session (Native Wayland / XWayland bridge)
+  * Dual-GPU Matrix: Multi-GPU offload (NVIDIA PRIME / AMD DRI_PRIME / Intel Xe)
   * Declarative TOML Profiles with Preset Inheritance (Zero Hardcoded Game IDs)
   * Dynamic DwarFS FUSE & fuse-overlayfs Mount Lifecycle with Rock-Solid Teardown
-  * Automated Wine/Proton Prefix Provisioning (Redistributables & Winetricks)
+  * Automated Wine/Proton Prefix Management (Broken Symlink Cleanup, User Symlinks,
+    NVIDIA DLSS nvngx Linking, Crash Dialog Suppression, Fsync/Esync/Ntsync, UMU/Proton)
   * Gamescope Micro-Compositor, Mangoapp/MangoHud, Feral GameMode, PipeWire Tuning
-  * Interactive Rich TUI Dashboard, System Doctor, & Deep Auto-Scaffolder
+  * Screen Saver / Sleep Inhibition via DBus
+  * Interactive Rich TUI Dashboard, FZF Selector, System Doctor, & Auto-Scaffolder
 
 Author: Dusk / AGY Team
-Date: 2026-08-28
+Date: 2026-08-30
 ================================================================================
 """
 
@@ -27,6 +29,7 @@ import glob
 import json
 import os
 import re
+import resource
 import shutil
 import signal
 import subprocess
@@ -35,7 +38,7 @@ import time
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, Sequence, Iterable, Callable
 
 # Rich Console Integration
 try:
@@ -55,13 +58,27 @@ except ImportError:
 # ==============================================================================
 
 ENGINE_NAME: Final[str] = "Master Game Runner Engine"
-ENGINE_VERSION: Final[str] = "1.5.0"
+ENGINE_VERSION: Final[str] = "2.0.0"
 SELF_DIR: Final[Path] = Path(__file__).resolve().parent
 GLOBAL_CONFIG_PATH: Final[Path] = SELF_DIR / "config.toml"
 PRESETS_DIR: Final[Path] = SELF_DIR / "presets"
 PROFILES_DIR: Final[Path] = SELF_DIR / "profiles"
 
 console: Console | None = Console() if RICH_AVAILABLE else None
+
+
+def optimize_system_limits() -> None:
+    """Maximizes file descriptor limits (RLIMIT_NOFILE) to prevent Esync/Wine crashes."""
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        target = min(hard, 1048576)
+        if soft < target:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+    except Exception:
+        pass
+
+
+optimize_system_limits()
 
 
 def log_info(msg: str) -> None:
@@ -110,6 +127,56 @@ def send_notification(title: str, message: str, urgency: str = "normal", icon: s
 # 2. HARDWARE & GPU DETECTION ENGINE
 # ==============================================================================
 
+VULKAN_DATA_DIRS: Final[list[str]] = [
+    "/usr/share",
+    "/usr/local/share",
+    "/etc",
+    "/usr/local/etc",
+    "/usr/lib/x86_64-linux-gnu/GL",
+    "/usr/lib/i386-linux-gnu/GL",
+    "/opt/amdgpu-pro/etc",
+]
+
+GPU_VENDOR_MAP: Final[dict[str, str]] = {
+    "0x8086": "Intel",
+    "0x1002": "AMD",
+    "0x10de": "NVIDIA",
+    "0x1af4": "RedHat VirtIO",
+}
+
+DRIVER_TO_ICD_KEY: Final[dict[str, str]] = {
+    "amdgpu": "radeon",
+    "radeon": "radeon",
+    "radeonsi": "radeon",
+    "i915": "intel",
+    "xe": "intel",
+    "nvidia": "nvidia",
+    "nouveau": "nouveau",
+    "virtio-pci": "lvp",
+    "vc4-drm": "broadcom",
+    "v3d": "broadcom",
+}
+
+
+def get_vk_icd_files() -> list[str]:
+    """Discovers available Vulkan ICD JSON files in canonical loader order."""
+    all_icd_files: list[str] = []
+    for data_dir in VULKAN_DATA_DIRS:
+        p = Path(data_dir) / "vulkan" / "icd.d"
+        if p.is_dir():
+            for json_file in sorted(p.glob("*.json")):
+                p_str = str(json_file.resolve())
+                if p_str not in all_icd_files:
+                    all_icd_files.append(p_str)
+        p_direct = Path(data_dir) / "icd.d"
+        if p_direct.is_dir():
+            for json_file in sorted(p_direct.glob("*.json")):
+                p_str = str(json_file.resolve())
+                if p_str not in all_icd_files:
+                    all_icd_files.append(p_str)
+    return all_icd_files
+
+
 @dataclass(frozen=True, slots=True)
 class GPUInfo:
     dev_node: str
@@ -119,6 +186,8 @@ class GPUInfo:
     device_name: str
     boot_vga: int
     driver: str
+    device_uuid: str = ""
+    icd_files: str = ""
 
     @property
     def is_primary(self) -> bool:
@@ -126,29 +195,49 @@ class GPUInfo:
 
     @property
     def is_nvidia(self) -> bool:
-        return "10de" in self.vendor_id.lower() or "nvidia" in self.vendor_name.lower()
+        return "10de" in self.vendor_id.lower() or "nvidia" in self.vendor_name.lower() or self.driver == "nvidia"
 
     @property
     def is_intel(self) -> bool:
-        return "8086" in self.vendor_id.lower() or "intel" in self.vendor_name.lower()
+        return "8086" in self.vendor_id.lower() or "intel" in self.vendor_name.lower() or self.driver in ("i915", "xe")
 
     @property
     def is_amd(self) -> bool:
-        return "1002" in self.vendor_id.lower() or "amd" in self.vendor_name.lower()
+        return "1002" in self.vendor_id.lower() or "amd" in self.vendor_name.lower() or self.driver in ("amdgpu", "radeon")
 
-
-GPU_VENDOR_MAP: Final[dict[str, str]] = {
-    "0x8086": "Intel",
-    "0x1002": "AMD",
-    "0x10de": "NVIDIA",
-    "0x1af4": "RedHat VirtIO",
-}
+    @property
+    def short_name(self) -> str:
+        """Returns a simplified, clean GPU descriptor."""
+        clean = re.sub(r"\(rev\s+[0-9a-fA-F]+\)", "", self.device_name).strip()
+        clean = re.sub(r"\s*\[.*?\]", lambda m: " " + m.group(0).strip("[]"), clean)
+        return clean or self.device_name
 
 
 def detect_gpus() -> list[GPUInfo]:
-    """Auto-detects all GPUs present via DRM card nodes and lspci."""
+    """Auto-detects all GPUs present via DRM card nodes, lspci, and vulkaninfo."""
     gpus: list[GPUInfo] = []
     seen_slots: set[str] = set()
+    all_icd_list = get_vk_icd_files()
+
+    vulkan_uuids: dict[str, str] = {}
+    if shutil.which("vulkaninfo"):
+        try:
+            res = subprocess.run(["vulkaninfo", "--summary"], capture_output=True, text=True, timeout=2)
+            if res.returncode == 0:
+                current_pci = ""
+                for line in res.stdout.splitlines():
+                    line = line.strip()
+                    if "vendorID" in line:
+                        m_v = re.search(r"vendorID\s*=\s*(0x[0-9a-fA-F]+)", line)
+                        m_d = re.search(r"deviceID\s*=\s*(0x[0-9a-fA-F]+)", line)
+                        if m_v and m_d:
+                            current_pci = f"{m_v.group(1).lower()}:{m_d.group(1).lower()}"
+                    elif "deviceUUID" in line and current_pci:
+                        m_u = re.search(r"deviceUUID\s*=\s*([0-9a-fA-F-]+)", line)
+                        if m_u:
+                            vulkan_uuids[current_pci] = m_u.group(1).replace("-", "").lower()
+        except Exception:
+            pass
 
     for s in sorted(glob.glob("/sys/class/drm/card[0-9]*")):
         p = Path(s)
@@ -217,6 +306,20 @@ def detect_gpus() -> list[GPUInfo]:
             except Exception:
                 pass
 
+        icd_keyword = DRIVER_TO_ICD_KEY.get(driver, driver)
+        matched_icds = [icd for icd in all_icd_list if icd_keyword in icd.lower()]
+        icd_files_str = ":".join(matched_icds)
+
+        matched_uuid = ""
+        try:
+            did_file = vdir / "device"
+            if did_file.exists():
+                did = did_file.read_text(encoding="utf-8").strip().lower()
+                pci_key = f"{vid}:{did}"
+                matched_uuid = vulkan_uuids.get(pci_key, "")
+        except Exception:
+            pass
+
         gpus.append(GPUInfo(
             dev_node=dev_node,
             pci_slot=pci_slot,
@@ -224,10 +327,11 @@ def detect_gpus() -> list[GPUInfo]:
             vendor_name=vendor_name,
             device_name=device_name,
             boot_vga=boot_vga,
-            driver=driver
+            driver=driver,
+            device_uuid=matched_uuid,
+            icd_files=icd_files_str
         ))
 
-    # Fallback to lspci if DRM nodes not populated
     if not gpus and shutil.which("lspci"):
         try:
             res = subprocess.run(["lspci", "-mm", "-nn"], capture_output=True, text=True, timeout=2)
@@ -256,9 +360,12 @@ def detect_gpus() -> list[GPUInfo]:
     return gpus
 
 
+# ==============================================================================
+# 2b. DISPLAY & RESOLUTION DETECTION
+# ==============================================================================
+
 def detect_display_refresh_rate() -> int:
     """Auto-detects the active display's native refresh rate, falling back to 60Hz if undetectable."""
-    # 1. Try Hyprland IPC
     if shutil.which("hyprctl"):
         try:
             res = subprocess.run(["hyprctl", "monitors", "-j"], capture_output=True, text=True, timeout=1.5)
@@ -276,22 +383,6 @@ def detect_display_refresh_rate() -> int:
         except Exception:
             pass
 
-    # 2. Try wlr-randr (wlroots Wayland compositors)
-    if shutil.which("wlr-randr"):
-        try:
-            res = subprocess.run(["wlr-randr", "--json"], capture_output=True, text=True, timeout=1.5)
-            if res.returncode == 0:
-                monitors = json.loads(res.stdout)
-                for mon in monitors:
-                    for mode in mon.get("modes", []):
-                        if mode.get("current", False):
-                            rate = float(mode.get("refresh", 0))
-                            if rate > 0:
-                                return int(round(rate))
-        except Exception:
-            pass
-
-    # 3. Try kscreen-doctor (KDE Plasma Wayland)
     if shutil.which("kscreen-doctor"):
         try:
             res = subprocess.run(["kscreen-doctor", "-j"], capture_output=True, text=True, timeout=1.5)
@@ -307,7 +398,32 @@ def detect_display_refresh_rate() -> int:
         except Exception:
             pass
 
-    # 4. Try DRM sysfs connector modes
+    if shutil.which("wlr-randr"):
+        try:
+            res = subprocess.run(["wlr-randr", "--json"], capture_output=True, text=True, timeout=1.5)
+            if res.returncode == 0:
+                monitors = json.loads(res.stdout)
+                for mon in monitors:
+                    for mode in mon.get("modes", []):
+                        if mode.get("current", False):
+                            rate = float(mode.get("refresh", 0))
+                            if rate > 0:
+                                return int(round(rate))
+        except Exception:
+            pass
+
+    if shutil.which("xrandr"):
+        try:
+            res = subprocess.run(["xrandr", "--current"], capture_output=True, text=True, timeout=1.5)
+            if res.returncode == 0:
+                for line in res.stdout.splitlines():
+                    if "*" in line:
+                        m = re.search(r"(\d+\.\d+|\d+)\*", line)
+                        if m:
+                            return int(round(float(m.group(1))))
+        except Exception:
+            pass
+
     try:
         for mode_file in sorted(glob.glob("/sys/class/drm/card*-*/modes")):
             modes = Path(mode_file).read_text(encoding="utf-8").strip().splitlines()
@@ -320,13 +436,11 @@ def detect_display_refresh_rate() -> int:
     except Exception:
         pass
 
-    # 5. Standard universal baseline fallback
     return 60
 
 
 def detect_display_resolution() -> tuple[int, int]:
     """Auto-detects the active display's native resolution (width, height), falling back to (1920, 1080)."""
-    # 1. Try Hyprland IPC
     if shutil.which("hyprctl"):
         try:
             res = subprocess.run(["hyprctl", "monitors", "-j"], capture_output=True, text=True, timeout=1.5)
@@ -346,23 +460,6 @@ def detect_display_resolution() -> tuple[int, int]:
         except Exception:
             pass
 
-    # 2. Try wlr-randr (wlroots Wayland compositors)
-    if shutil.which("wlr-randr"):
-        try:
-            res = subprocess.run(["wlr-randr", "--json"], capture_output=True, text=True, timeout=1.5)
-            if res.returncode == 0:
-                monitors = json.loads(res.stdout)
-                for mon in monitors:
-                    for mode in mon.get("modes", []):
-                        if mode.get("current", False):
-                            w = int(mode.get("width", 0))
-                            h = int(mode.get("height", 0))
-                            if w > 0 and h > 0:
-                                return w, h
-        except Exception:
-            pass
-
-    # 3. Try kscreen-doctor (KDE Plasma Wayland)
     if shutil.which("kscreen-doctor"):
         try:
             res = subprocess.run(["kscreen-doctor", "-j"], capture_output=True, text=True, timeout=1.5)
@@ -380,7 +477,33 @@ def detect_display_resolution() -> tuple[int, int]:
         except Exception:
             pass
 
-    # 4. Try DRM sysfs connector modes
+    if shutil.which("wlr-randr"):
+        try:
+            res = subprocess.run(["wlr-randr", "--json"], capture_output=True, text=True, timeout=1.5)
+            if res.returncode == 0:
+                monitors = json.loads(res.stdout)
+                for mon in monitors:
+                    for mode in mon.get("modes", []):
+                        if mode.get("current", False):
+                            w = int(mode.get("width", 0))
+                            h = int(mode.get("height", 0))
+                            if w > 0 and h > 0:
+                                return w, h
+        except Exception:
+            pass
+
+    if shutil.which("xrandr"):
+        try:
+            res = subprocess.run(["xrandr", "--current"], capture_output=True, text=True, timeout=1.5)
+            if res.returncode == 0:
+                for line in res.stdout.splitlines():
+                    if "*" in line:
+                        m = re.search(r"(\d+)x(\d+)", line)
+                        if m:
+                            return int(m.group(1)), int(m.group(2))
+        except Exception:
+            pass
+
     try:
         for mode_file in sorted(glob.glob("/sys/class/drm/card*-*/modes")):
             modes = Path(mode_file).read_text(encoding="utf-8").strip().splitlines()
@@ -394,8 +517,79 @@ def detect_display_resolution() -> tuple[int, int]:
     except Exception:
         pass
 
-    # 5. Standard universal baseline fallback
     return 1920, 1080
+
+
+# ==============================================================================
+# 2c. SCREEN SAVER & POWER MANAGEMENT INHIBITOR
+# ==============================================================================
+
+class ScreenSaverInhibitor:
+    """Inhibits system sleep, screen dimming, and screen lock while gaming."""
+
+    def __init__(self):
+        self.cookie: int | None = None
+
+    def inhibit(self, app_name: str, reason: str) -> None:
+        """Requests sleep/screensaver inhibition via DBus."""
+        try:
+            res = subprocess.run(
+                [
+                    "busctl", "--user", "call",
+                    "org.freedesktop.ScreenSaver",
+                    "/org/freedesktop/ScreenSaver",
+                    "org.freedesktop.ScreenSaver",
+                    "Inhibit",
+                    "ss", app_name, reason
+                ],
+                capture_output=True, text=True, timeout=1.5
+            )
+            if res.returncode == 0:
+                m = re.search(r"(\d+)", res.stdout)
+                if m:
+                    self.cookie = int(m.group(1))
+                    return
+        except Exception:
+            pass
+
+        try:
+            res = subprocess.run(
+                [
+                    "busctl", "--user", "call",
+                    "org.freedesktop.PowerManagement.Inhibit",
+                    "/org/freedesktop/PowerManagement/Inhibit",
+                    "org.freedesktop.PowerManagement.Inhibit",
+                    "Inhibit",
+                    "ss", app_name, reason
+                ],
+                capture_output=True, text=True, timeout=1.5
+            )
+            if res.returncode == 0:
+                m = re.search(r"(\d+)", res.stdout)
+                if m:
+                    self.cookie = int(m.group(1))
+                    return
+        except Exception:
+            pass
+
+    def uninhibit(self) -> None:
+        """Releases the sleep/screensaver inhibition lock."""
+        if self.cookie is not None:
+            try:
+                subprocess.run(
+                    [
+                        "busctl", "--user", "call",
+                        "org.freedesktop.ScreenSaver",
+                        "/org/freedesktop/ScreenSaver",
+                        "org.freedesktop.ScreenSaver",
+                        "UnInhibit",
+                        "u", str(self.cookie)
+                    ],
+                    capture_output=True, timeout=1.5
+                )
+            except Exception:
+                pass
+            self.cookie = None
 
 
 # ==============================================================================
@@ -533,11 +727,15 @@ class ProfileManager:
         # 5. Variable Expansion
         game_dir = resolved_config.get("paths", {}).get("game_dir", "")
         game_dir_expanded = os.path.expanduser(os.path.expandvars(game_dir))
-        
+
         context = {
             "GAME_DIR": game_dir_expanded,
             "ZRAM": "/mnt/zram1",
             "HOME": str(Path.home()),
+            "USER": os.environ.get("USER", Path.home().name),
+            "XDG_DATA_HOME": os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share")),
+            "XDG_CONFIG_HOME": os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")),
+            "XDG_CACHE_HOME": os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")),
         }
         resolved_config = expand_variables(resolved_config, context)
 
@@ -560,11 +758,9 @@ class MountManager:
             res = subprocess.run(["mountpoint", "-q", str(path)], capture_output=True, timeout=2)
             if res.returncode != 0:
                 return False
-            # Health check: probe directory access (catches disconnected FUSE transport endpoints)
             os.listdir(str(path))
             return True
         except OSError:
-            # Dead/stale FUSE endpoint -> unmount stale mount
             subprocess.run(["fusermount3", "-u", "-z", str(path)], capture_output=True)
             return False
         except Exception:
@@ -633,10 +829,8 @@ class MountManager:
             log_info(f"Game already mounted at {overlay_dir}")
             return True
 
-        # Clean stale mounts if partially mounted or broken
         cls.unmount(config, dry_run=dry_run, silent=True)
 
-        # Calculate DwarFS cache size (default 25% of RAM)
         storage_cfg = config.get("storage", {})
         cache_percent = storage_cfg.get("dwarfs_cache_percent", 25)
         try:
@@ -656,14 +850,12 @@ class MountManager:
             log_info(f"[DRY RUN] Would mount fuse-overlayfs: {overlay_dir}")
             return True
 
-        # Ensure workdir is clean (fuse-overlayfs requirement)
         if overlay_work.exists():
             shutil.rmtree(overlay_work, ignore_errors=True)
 
         for d in [dwarfs_mnt, overlay_storage, overlay_work, overlay_dir]:
             d.mkdir(parents=True, exist_ok=True)
 
-        # Locate DwarFS binary: bundled repack binary vs system dwarfs
         dwarfs_bin = game_dir / "files" / "dwarfs-binary"
         if dwarfs_bin.exists():
             try:
@@ -699,7 +891,6 @@ class MountManager:
             log_error(f"DwarFS mount failed: {res.stderr.strip() or res.stdout.strip()}")
             return False
 
-        # Mount fuse-overlayfs
         uid = os.getuid()
         gid = os.getgid()
         overlay_cmd = [
@@ -774,61 +965,24 @@ class MountManager:
 
 
 # ==============================================================================
-# 4b. DYNAMIC AVAILABILITY ENGINE (Bleeding-Edge Filter for Polluted Profiles)
-# ==============================================================================
-# Why this exists: profiles/*.toml declares every game you *own*,
-# but only a subset is *currently downloaded* under $GAME_DIR
-# (typically /mnt/zram1 or ~/Games). Listing unavailable games pollutes
-# the TUI and makes launch unusable. This engine dynamically validates
-# on-disk backing for each profile at render-time, with zero hardcodes
-# and zero hardcoded usernames - fully Path.home() / dynamic resolution.
+# 4b. DYNAMIC AVAILABILITY ENGINE
 # ==============================================================================
 
 def is_profile_available(config: dict[str, Any]) -> bool:
     """
     Dynamic availability probe — True only if the declarative TOML profile
-    has its payload present on disk *right now*.
-
-    Validation hierarchy (modern, strict, no false negatives):
-      1. game_dir must be an existing directory and traversable (handles
-         stale DwarFS/FUSE mounts via OSError guard).
-      2. If dwarfs_image is declared → the image file must exist, be a
-         regular file, and be non-zero bytes (compressed payload).
-      3. Else (loose / native layout) → executable OR any game content
-         must be present. This covers Wine prefix-less native ELF and
-         Wine shipping binaries where the exe may be nested.
-
-    All paths are resolved via MountManager.get_profile_paths() which
-    honors $HOME / ~ / $GAME_DIR / $ZRAM expansions performed in
-    ProfileManager.load_profile(). No username is ever hardcoded;
-    Path.home() and os.path.expand* handle user dynamically.
-
-    Stress-tested against:
-      - Missing game_dir, dangling symlink, permission-denied dirs
-      - Zero-byte / truncated dwarfs images
-      - Unmounted vs mounted dwarfs (payload still available)
-      - Native profiles with executable nested in subdir
-      - Empty game_dir (no content → unavailable)
+    has its payload present on disk right now.
     """
     try:
         paths = MountManager.get_profile_paths(config)
         game_dir: Path = paths["game_dir"]
 
-        # 1) game_dir must exist and be a traversable directory.
-        # Using is_dir() first cheap, then a probe iterdir() to catch
-        # stale FUSE transport endpoints that still report is_dir() == True
-        # but raise ENOTCONN on access.
         try:
             if not game_dir.is_dir():
                 return False
-            # Probe traversability without heavy scanning.
             try:
                 next(game_dir.iterdir(), None)
             except OSError:
-                # E.g., Transport endpoint is not connected - the underlying
-                # backing dir still exists if dwarfs_image file exists on the
-                # host filesystem; let dwarfs_image check decide. For loose
-                # layouts, treat as unavailable.
                 if paths["dwarfs_image"] is None:
                     return False
         except OSError:
@@ -836,10 +990,8 @@ def is_profile_available(config: dict[str, Any]) -> bool:
 
         dwarfs_img: Path | None = paths["dwarfs_image"]
 
-        # 2) DwarFS-backed: image must be present and non-empty.
         if dwarfs_img is not None:
             try:
-                # Path.is_file follows symlinks; handles stale mounts grace.
                 if not dwarfs_img.is_file():
                     return False
                 try:
@@ -849,14 +1001,10 @@ def is_profile_available(config: dict[str, Any]) -> bool:
                     return False
             except OSError:
                 return False
-            # Payload image exists → game is available regardless of mount state.
             return True
 
-        # 3) Native / loose layout (no dwarfs_image declared): need evidence
-        # of payload. Primary: executable present at expected overlay or gamedir.
         exec_rel: str = str(config.get("paths", {}).get("executable", "")).strip()
         if exec_rel:
-            # Check both resolved overlay and game dir (mirrors GameRunner logic).
             overlay_dir: Path = paths["overlay_dir"]
             cand_overlay = (overlay_dir / exec_rel) if exec_rel else None
             cand_gamedir = (game_dir / exec_rel) if exec_rel else None
@@ -870,12 +1018,9 @@ def is_profile_available(config: dict[str, Any]) -> bool:
                 except OSError:
                     continue
 
-            # Fallback: basename search via recursive glob (handles moved exe).
-            # Guarded to avoid massive I/O on huge trees - limited to first hit.
             exec_name = Path(exec_rel).name
             if exec_name:
                 try:
-                    # Use rglob but short-circuit on first file hit.
                     for found in game_dir.rglob(exec_name):
                         try:
                             if found.is_file():
@@ -886,29 +1031,19 @@ def is_profile_available(config: dict[str, Any]) -> bool:
                 except OSError:
                     pass
 
-        # Final fallback: if game_dir contains ANY entry, consider installed.
-        # This captures Wine games where exe path in TOML may be outdated
-        # but payload is clearly present (e.g., after repack update).
         try:
             for _ in game_dir.iterdir():
                 return True
-            # Empty directory → not installed
             return False
         except OSError:
             return False
 
     except Exception:
-        # Any unexpected error → conservatively unavailable (prevents pollution)
         return False
 
 
 def categorize_profiles(manager: ProfileManager) -> tuple[dict[str, Path], dict[str, Path]]:
-    """
-    Splits discovered TOML profiles into (available, unavailable) using
-    the live dynamic availability probe. Modern typing: tuple[dict, dict]
-    as of Python 3.9+ / 3.11+. No caching - re-validates each call so
-    re-downloaded games appear instantly without daemon restart.
-    """
+    """Splits discovered TOML profiles into (available, unavailable)."""
     all_profiles: dict[str, Path] = manager.discover_profiles()
     available: dict[str, Path] = {}
     unavailable: dict[str, Path] = {}
@@ -921,22 +1056,132 @@ def categorize_profiles(manager: ProfileManager) -> tuple[dict[str, Path], dict[
             else:
                 unavailable[pid] = ppath
         except Exception:
-            # Broken TOML or missing preset → treat as unavailable
             unavailable[pid] = ppath
 
     return available, unavailable
 
 
 # ==============================================================================
-# 5. GLOBAL LIFECYCLE & SIGNAL SAFETY
+# 5. WINE / PROTON PREFIX & LIFECYCLE MANAGEMENT (LUTRIS INTEGRATION)
+# ==============================================================================
+
+class WinePrefixManager:
+    """
+    Authoritative Wine & Proton prefix manager inspired by Lutris.
+    Handles broken symlink cleanup, user profile linking, DLSS setup, and crash suppression.
+    """
+
+    @staticmethod
+    def cleanup_broken_symlinks(prefix_path: Path) -> int:
+        """
+        Removes broken DLL/file symlinks from system32/syswow64 before Wine/Proton launch.
+        Prevents FileExistsError and DLL load crashes when switching Wine/Proton versions.
+        """
+        removed = 0
+        pfx = prefix_path / "pfx" if (prefix_path / "pfx").is_dir() else prefix_path
+        for sub in ["system32", "syswow64"]:
+            dir_p = pfx / "drive_c" / "windows" / sub
+            if not dir_p.is_dir():
+                continue
+            try:
+                for item in dir_p.iterdir():
+                    if item.is_symlink() and not item.exists():
+                        try:
+                            item.unlink(missing_ok=True)
+                            removed += 1
+                        except OSError:
+                            pass
+            except OSError:
+                pass
+        return removed
+
+    @staticmethod
+    def create_user_symlinks(prefix_path: Path) -> None:
+        """
+        Links together user profiles created by Wine and Proton.
+        Ensures save games in AppData/Documents are transparently shared between Wine and Proton.
+        """
+        pfx = prefix_path / "pfx" if (prefix_path / "pfx").is_dir() else prefix_path
+        users_dir = pfx / "drive_c" / "users"
+        if not users_dir.is_dir():
+            return
+
+        current_user = os.environ.get("USER", Path.home().name)
+        wine_user_dir = users_dir / current_user
+        proton_user_dir = users_dir / "steamuser"
+
+        try:
+            if wine_user_dir.exists() and not proton_user_dir.exists():
+                proton_user_dir.symlink_to(wine_user_dir.name, target_is_directory=True)
+            elif proton_user_dir.exists() and not wine_user_dir.exists():
+                wine_user_dir.symlink_to(proton_user_dir.name, target_is_directory=True)
+        except OSError:
+            pass
+
+    @staticmethod
+    def setup_nvidia_dlss(prefix_path: Path) -> bool:
+        """Links NVIDIA DLSS (nvngx.dll, _nvngx.dll, nvngx_dlssg.dll) into Wine prefix system32."""
+        pfx = prefix_path / "pfx" if (prefix_path / "pfx").is_dir() else prefix_path
+        sys32 = pfx / "drive_c" / "windows" / "system32"
+        if not sys32.is_dir():
+            return False
+
+        nv_wine_dirs = [
+            Path("/usr/lib/nvidia/wine"),
+            Path("/usr/lib64/nvidia/wine"),
+            Path("/usr/lib/x86_64-linux-gnu/nvidia/wine"),
+        ]
+
+        found_dir = None
+        for cand in nv_wine_dirs:
+            if (cand / "nvngx.dll").is_file():
+                found_dir = cand
+                break
+
+        if not found_dir:
+            return False
+
+        for dll_name in ["nvngx.dll", "_nvngx.dll", "nvngx_dlssg.dll"]:
+            src = found_dir / dll_name
+            dst = sys32 / dll_name
+            if src.is_file() and not dst.exists():
+                try:
+                    dst.symlink_to(src)
+                except OSError:
+                    try:
+                        shutil.copy2(src, dst)
+                    except OSError:
+                        pass
+        return True
+
+    @staticmethod
+    def suppress_crash_dialogs(prefix_path: Path) -> None:
+        """Directly ensures Wine registry disables GUI crash dialogs to prevent hung sessions."""
+        pfx = prefix_path / "pfx" if (prefix_path / "pfx").is_dir() else prefix_path
+        user_reg = pfx / "user.reg"
+        if not user_reg.exists():
+            return
+        try:
+            content = user_reg.read_text(encoding="utf-8", errors="ignore")
+            if "[Software\\\\Wine\\\\WineDbg]" not in content:
+                addition = '\n[Software\\\\Wine\\\\WineDbg]\n"ShowCrashDialog"=dword:00000000\n'
+                with open(user_reg, "a", encoding="utf-8") as f:
+                    f.write(addition)
+        except Exception:
+            pass
+
+
+# ==============================================================================
+# 6. GLOBAL LIFECYCLE & SIGNAL SAFETY
 # ==============================================================================
 
 class ActiveRunContext:
-    """Tracks running processes and mounts for guaranteed clean teardown."""
+    """Tracks running processes, inhibitor, and mounts for guaranteed clean teardown."""
     active_profile_config: dict[str, Any] | None = None
     game_process: subprocess.Popen | None = None
     wineserver_managed: bool = False
     wine_prefix: Path | None = None
+    inhibitor: ScreenSaverInhibitor = ScreenSaverInhibitor()
     cleaned: bool = False
 
 
@@ -946,16 +1191,26 @@ def cleanup_active_context() -> None:
         return
     ActiveRunContext.cleaned = True
 
+    try:
+        ActiveRunContext.inhibitor.uninhibit()
+    except Exception:
+        pass
+
     if ActiveRunContext.game_process and ActiveRunContext.game_process.poll() is None:
-        log_warning("Terminating game process...")
+        log_warning("Terminating game process group...")
         try:
-            ActiveRunContext.game_process.terminate()
+            pgid = os.getpgid(ActiveRunContext.game_process.pid)
+            os.killpg(pgid, signal.SIGTERM)
             ActiveRunContext.game_process.wait(timeout=3)
         except Exception:
             try:
-                ActiveRunContext.game_process.kill()
+                pgid = os.getpgid(ActiveRunContext.game_process.pid)
+                os.killpg(pgid, signal.SIGKILL)
             except Exception:
-                pass
+                try:
+                    ActiveRunContext.game_process.kill()
+                except Exception:
+                    pass
 
     if ActiveRunContext.wineserver_managed:
         log_info("Stopping wineserver...")
@@ -987,7 +1242,7 @@ atexit.register(cleanup_active_context)
 
 
 # ==============================================================================
-# 6. RUNNER EXECUTION PIPELINE
+# 7. RUNNER EXECUTION PIPELINE
 # ==============================================================================
 
 class GameRunner:
@@ -1041,6 +1296,15 @@ class GameRunner:
         if self.reprovision and stamp_file.exists():
             stamp_file.unlink(missing_ok=True)
 
+        if prefix_path.exists():
+            removed = WinePrefixManager.cleanup_broken_symlinks(prefix_path)
+            if removed > 0:
+                log_info(f"Cleaned up {removed} stale/broken Wine DLL symlinks.")
+            WinePrefixManager.create_user_symlinks(prefix_path)
+            WinePrefixManager.suppress_crash_dialogs(prefix_path)
+            if wine_cfg.get("dxvk_nvapi", False) and any(g.is_nvidia for g in self.gpus):
+                WinePrefixManager.setup_nvidia_dlss(prefix_path)
+
         if prefix_initialized and stamp_file.exists():
             return prefix_path
 
@@ -1066,7 +1330,7 @@ class GameRunner:
             subprocess.run([winecfg_bin, "-v", "win11"], env=env, capture_output=True)
             subprocess.run([wineserver_bin, "-w"], env=env, capture_output=True)
 
-        # 2. Automated Prefix Provisioning Pipeline (Redistributables & Winetricks)
+        # 2. Automated Prefix Provisioning Pipeline
         if not stamp_file.exists():
             root_dir = self.paths["overlay_dir"] if self.paths["dwarfs_image"] and self.paths["dwarfs_image"].exists() else self.paths["game_dir"]
 
@@ -1078,7 +1342,6 @@ class GameRunner:
                 if p_cand.exists() and p_cand not in redist_candidates:
                     redist_candidates.append(p_cand)
 
-            # Deep recursive scan for common installers if none declared or to supplement
             if root_dir.exists():
                 common_patterns = [
                     "**/VC_redist*.exe", "**/vcredist*.exe",
@@ -1091,14 +1354,12 @@ class GameRunner:
                         if found.is_file() and found not in redist_candidates:
                             redist_candidates.append(found)
 
-            # Execute redistributable installers silently
             for installer in redist_candidates:
                 log_info(f"Provisioning runtime dependency: {installer.name}...")
                 quiet_flag = "/q" if any(k in installer.name for k in ["VC_redist", "vcredist", "windowsdesktop"]) else "/silent"
                 subprocess.run([wine_bin, str(installer), quiet_flag], env=env, capture_output=True)
                 subprocess.run([wineserver_bin, "-w"], env=env, capture_output=True)
 
-            # Apply Winetricks Verbs
             winetricks_verbs = wine_cfg.get("winetricks", [])
             if winetricks_verbs:
                 bundled_winetricks = root_dir / "winetricks.sh"
@@ -1114,19 +1375,25 @@ class GameRunner:
             subprocess.run([wineserver_bin, "-w"], env=env, capture_output=True)
             log_success("Wine prefix provisioning completed successfully.")
 
+        WinePrefixManager.cleanup_broken_symlinks(prefix_path)
+        WinePrefixManager.create_user_symlinks(prefix_path)
+        WinePrefixManager.suppress_crash_dialogs(prefix_path)
+        if wine_cfg.get("dxvk_nvapi", False) and any(g.is_nvidia for g in self.gpus):
+            WinePrefixManager.setup_nvidia_dlss(prefix_path)
+
         return prefix_path
 
     def build_environment(self) -> dict[str, str]:
         """Constructs pure Wayland environment variables for the execution pipeline."""
         env = os.environ.copy()
 
-        # 1. Profile custom environment variables
+        # 1. Custom Profile Environment Variables
         custom_env = self.config.get("env", {})
         for k, v in custom_env.items():
             if k == "LD_PRELOAD":
                 expanded_preload = Path(os.path.expanduser(os.path.expandvars(str(v)))).resolve()
                 if expanded_preload.exists():
-                    log_info(f"Injecting Wayland runtime shim: {expanded_preload.name}")
+                    log_info(f"Injecting runtime preload shim: {expanded_preload.name}")
                     if "LD_PRELOAD" in env and env["LD_PRELOAD"]:
                         env["LD_PRELOAD"] = f"{expanded_preload}:{env['LD_PRELOAD']}"
                     else:
@@ -1136,13 +1403,41 @@ class GameRunner:
             else:
                 env[k] = str(v)
 
-        # 2. Audio & PipeWire Tuning
+        # 2. Audio Tuning (PipeWire & PulseAudio)
         audio_cfg = self.config.get("audio", {})
-        if audio_cfg.get("driver") == "pipewire":
+        driver = audio_cfg.get("driver", "pipewire")
+        if driver == "pipewire":
             latency = audio_cfg.get("pipewire_latency", "128/48000")
             env["PIPEWIRE_LATENCY"] = latency
+            env["PULSE_LATENCY_MSEC"] = "60"
+        elif driver == "pulseaudio":
+            env["PULSE_LATENCY_MSEC"] = "60"
 
-        # 3. Pure Wayland & Graphics Presentation
+        # 3. SDL Controller Mappings
+        sdl_config = self.config.get("input", {}).get("sdl_gamecontrollerconfig", "")
+        if sdl_config:
+            p_db = Path(os.path.expanduser(os.path.expandvars(sdl_config)))
+            if p_db.is_file():
+                try:
+                    env["SDL_GAMECONTROLLERCONFIG"] = p_db.read_text(encoding="utf-8").strip()
+                except Exception:
+                    pass
+            else:
+                env["SDL_GAMECONTROLLERCONFIG"] = sdl_config
+        else:
+            for cand_db in [
+                self.paths["game_dir"] / "gamecontrollerdb.txt",
+                Path.home() / ".config/gamecontrollerdb.txt",
+                Path("/usr/share/gamecontrollerdb/gamecontrollerdb.txt")
+            ]:
+                if cand_db.is_file():
+                    try:
+                        env["SDL_GAMECONTROLLERCONFIG"] = cand_db.read_text(encoding="utf-8").strip()
+                        break
+                    except Exception:
+                        pass
+
+        # 4. Pure Wayland & Graphics Presentation
         gfx_cfg = self.config.get("graphics", {})
         if gfx_cfg.get("prefer_xwayland", False):
             env["SDL_VIDEODRIVER"] = "x11"
@@ -1164,80 +1459,87 @@ class GameRunner:
             env["WAYLAND_DISPLAY"] = os.environ.get("WAYLAND_DISPLAY", "wayland-1")
             env["XDG_SESSION_TYPE"] = "wayland"
 
-        # 4. GPU Offload Configuration
+        # 5. Multi-GPU Offload & Vulkan ICD Matrix
         gpu_choice = gfx_cfg.get("gpu", "auto")
         has_nvidia = any(g.is_nvidia for g in self.gpus)
+        has_amd = any(g.is_amd for g in self.gpus)
         has_intel = any(g.is_intel for g in self.gpus)
         runtime_type = self.config.get("runtime", {}).get("type", "native")
 
-        is_heavy_profile = (
-            runtime_type == "wine" or
-            "unreal" in str(self.config.get("extends", "")).lower()
-        )
+        use_discrete = (gpu_choice == "discrete") or (gpu_choice == "auto" and (runtime_type == "wine" or "unreal" in str(self.config.get("extends", "")).lower()) and (has_nvidia or has_amd))
 
-        use_discrete = (gpu_choice == "discrete") or (gpu_choice == "auto" and is_heavy_profile and has_nvidia)
+        cache_base = Path.home() / ".cache"
+        nvidia_cache = cache_base / "nvidia" / "GLCache" / self.profile_id
+        mesa_cache = cache_base / "mesa_shader_cache" / self.profile_id
+        nvidia_cache.mkdir(parents=True, exist_ok=True)
+        mesa_cache.mkdir(parents=True, exist_ok=True)
 
-        # Hardware-agnostic GPU pipeline (Intel/NVIDIA/AMD, no hardcoded Iris Xe)
-        has_amd = any(g.is_amd for g in self.gpus)
-        primary_gpu = next((g for g in self.gpus if g.is_primary), self.gpus[0] if self.gpus else None)
+        env["__GL_SHADER_DISK_CACHE"] = "1"
+        env["__GL_SHADER_DISK_CACHE_PATH"] = str(nvidia_cache)
+        env["MESA_SHADER_CACHE_DIR"] = str(mesa_cache)
+
+        if gfx_cfg.get("gl_multithread", True):
+            env["MESA_GL_THREAD"] = "true"
+            env["__GL_THREADED_OPTIMIZATIONS"] = "1"
 
         if use_discrete and (has_nvidia or has_amd):
-            # Discrete path: prefer NVIDIA if present, else AMD
             if has_nvidia:
-                log_info("GPU Pipeline: Discrete GPU (PRIME Render Offload)")
+                log_info("GPU Pipeline: Discrete NVIDIA GPU (PRIME Offload)")
                 env["__NV_PRIME_RENDER_OFFLOAD"] = "1"
                 env["__GLX_VENDOR_LIBRARY_NAME"] = "nvidia"
                 env["__VK_LAYER_NV_optimus"] = "NVIDIA_only"
-                if gfx_cfg.get("vulkan_icd") in ("nvidia", "auto"):
+                env["DRI_PRIME"] = "1"
+                nv_gpu = next((g for g in self.gpus if g.is_nvidia), None)
+                if nv_gpu and nv_gpu.icd_files:
+                    env["VK_DRIVER_FILES"] = nv_gpu.icd_files
+                    env["VK_ICD_FILENAMES"] = nv_gpu.icd_files
+                else:
                     for cand in ["/usr/share/vulkan/icd.d/nvidia_icd.json", "/usr/share/vulkan/icd.d/nvidia_icd.x86_64.json"]:
                         if Path(cand).exists():
+                            env["VK_DRIVER_FILES"] = cand
                             env["VK_ICD_FILENAMES"] = cand
                             break
+                if nv_gpu and nv_gpu.device_uuid:
+                    env["DXVK_FILTER_DEVICE_UUID"] = nv_gpu.device_uuid
                 env.pop("MESA_LOADER_DRIVER_OVERRIDE", None)
             elif has_amd:
                 log_info("GPU Pipeline: Discrete AMD GPU (DRI_PRIME)")
-                env["DRI_PRIME"] = "1"
+                amd_gpu = next((g for g in self.gpus if g.is_amd), None)
+                env["DRI_PRIME"] = amd_gpu.pci_slot if amd_gpu else "1"
+                if amd_gpu and amd_gpu.icd_files:
+                    env["VK_DRIVER_FILES"] = amd_gpu.icd_files
+                    env["VK_ICD_FILENAMES"] = amd_gpu.icd_files
+                if amd_gpu and amd_gpu.device_uuid:
+                    env["DXVK_FILTER_DEVICE_UUID"] = amd_gpu.device_uuid
                 env.pop("__NV_PRIME_RENDER_OFFLOAD", None)
                 env.pop("__GLX_VENDOR_LIBRARY_NAME", None)
                 env.pop("__VK_LAYER_NV_optimus", None)
-                # AMD ICDs: radeon, amdvulkan
-                for cand in ["/usr/share/vulkan/icd.d/radeon_icd.x86_64.json", "/usr/share/vulkan/icd.d/radeon_icd.i686.json", "/usr/share/vulkan/icd.d/amd_icd64.json", "/usr/share/vulkan/icd.d/amd_icd32.json"]:
-                    if Path(cand).exists():
-                        env["VK_ICD_FILENAMES"] = cand
-                        break
-        elif gpu_choice == "integrated" or (not use_discrete and (has_intel or has_amd)):
-            # Integrated path: auto-detect Intel vs AMD
+        else:
             if has_intel:
-                log_info("GPU Pipeline: Integrated GPU (Intel)")
-                env["MESA_LOADER_DRIVER_OVERRIDE"] = "iris"
-                for cand in ["/usr/share/vulkan/icd.d/intel_icd.json", "/usr/share/vulkan/icd.d/intel_hasvk_icd.json", "/usr/share/vulkan/icd.d/intel_icd.x86_64.json"]:
-                    if Path(cand).exists():
-                        env["VK_ICD_FILENAMES"] = cand
-                        break
+                log_info("GPU Pipeline: Integrated Intel GPU")
+                intel_gpu = next((g for g in self.gpus if g.is_intel), None)
+                if intel_gpu and intel_gpu.driver == "xe":
+                    env["MESA_LOADER_DRIVER_OVERRIDE"] = "xe"
+                else:
+                    env["MESA_LOADER_DRIVER_OVERRIDE"] = "iris"
+                if intel_gpu and intel_gpu.icd_files:
+                    env["VK_DRIVER_FILES"] = intel_gpu.icd_files
+                    env["VK_ICD_FILENAMES"] = intel_gpu.icd_files
+                if intel_gpu and intel_gpu.device_uuid:
+                    env["DXVK_FILTER_DEVICE_UUID"] = intel_gpu.device_uuid
             elif has_amd:
-                log_info("GPU Pipeline: Integrated GPU (AMD)")
+                log_info("GPU Pipeline: Integrated AMD GPU")
+                amd_gpu = next((g for g in self.gpus if g.is_amd), None)
                 env["MESA_LOADER_DRIVER_OVERRIDE"] = "radeonsi"
-                for cand in ["/usr/share/vulkan/icd.d/radeon_icd.x86_64.json", "/usr/share/vulkan/icd.d/amd_icd64.json"]:
-                    if Path(cand).exists():
-                        env["VK_ICD_FILENAMES"] = cand
-                        break
-            else:
-                log_info("GPU Pipeline: Integrated GPU (Generic)")
-                env.pop("MESA_LOADER_DRIVER_OVERRIDE", None)
-            # Clear discrete offload for integrated
+                if amd_gpu and amd_gpu.icd_files:
+                    env["VK_DRIVER_FILES"] = amd_gpu.icd_files
+                    env["VK_ICD_FILENAMES"] = amd_gpu.icd_files
             env.pop("__NV_PRIME_RENDER_OFFLOAD", None)
             env.pop("__GLX_VENDOR_LIBRARY_NAME", None)
             env.pop("__VK_LAYER_NV_optimus", None)
             env.pop("DRI_PRIME", None)
-            # If user forced nvidia ICD but on integrated Intel/AMD, don't leak nvidia
-            if env.get("VK_ICD_FILENAMES", "").endswith("nvidia_icd.json"):
-                # Re-evaluate via integrated path above, else clear
-                if has_intel or has_amd:
-                    pass  # already set to correct ICD above
-                else:
-                    env.pop("VK_ICD_FILENAMES", None)
 
-        # 5. Wine / Proton Specific Environment
+        # 6. Wine / Proton Specific Environment
         if runtime_type == "wine":
             wine_cfg = self.config.get("runtime", {}).get("wine", {})
             prefix_path = self.prepare_wine_prefix()
@@ -1246,18 +1548,31 @@ class GameRunner:
 
             env["WINEPREFIX"] = str(prefix_path)
             env["WINEARCH"] = wine_cfg.get("arch", "win64")
-            env["WINEDEBUG"] = wine_cfg.get("debug", "fixme-all")
+            
+            show_debug = wine_cfg.get("debug", "fixme-all")
+            env["WINEDEBUG"] = show_debug
+            if show_debug in ("-all", ""):
+                env["DXVK_LOG_LEVEL"] = "error"
+            elif "warn" in show_debug:
+                env["DXVK_LOG_LEVEL"] = "warn"
+            elif "debug" in show_debug or "+all" in show_debug:
+                env["DXVK_LOG_LEVEL"] = "debug"
 
             if wine_cfg.get("large_address_aware", True):
                 env["WINE_LARGE_ADDRESS_AWARE"] = "1"
 
-            match wine_cfg.get("sync_mode", "fsync"):
+            sync_mode = wine_cfg.get("sync_mode", "fsync")
+            match sync_mode:
                 case "fsync":
                     env["WINEFSYNC"] = "1"
                     env["WINEESYNC"] = "0"
+                    env["PROTON_NO_FSYNC"] = "0"
+                    env["PROTON_NO_ESYNC"] = "1"
                 case "esync":
                     env["WINEESYNC"] = "1"
                     env["WINEFSYNC"] = "0"
+                    env["PROTON_NO_FSYNC"] = "1"
+                    env["PROTON_NO_ESYNC"] = "0"
                 case "ntsync":
                     env["WINENTSYNC"] = "1"
                     env["WINEFSYNC"] = "0"
@@ -1265,6 +1580,8 @@ class GameRunner:
                 case "server":
                     env["WINEFSYNC"] = "0"
                     env["WINEESYNC"] = "0"
+                    env["PROTON_NO_FSYNC"] = "1"
+                    env["PROTON_NO_ESYNC"] = "1"
 
             dll_map = wine_cfg.get("dll_overrides", {})
             if isinstance(dll_map, dict) and dll_map:
@@ -1273,8 +1590,20 @@ class GameRunner:
 
             if wine_cfg.get("dxvk_nvapi", False):
                 env["DXVK_ENABLE_NVAPI"] = "1"
+                env["DXVK_NVAPIHACK"] = "0"
+                env["PROTON_ENABLE_NVAPI"] = "1"
+                env["PROTON_HIDE_NVIDIA_GPU"] = "0"
 
-        # 6. MangoHud & Frame Rate Limiter Environment
+            if wine_cfg.get("dxvk", True) is False:
+                env["PROTON_USE_WINED3D"] = "1"
+
+            if gfx_cfg.get("hdr", False):
+                env["PROTON_ENABLE_HDR"] = "1"
+
+            env["GAMEID"] = self.profile_id
+            env["PROTON_VERB"] = "waitforexitandrun"
+
+        # 7. MangoHud & Frame Rate Limiter Environment
         perf_cfg = self.config.get("performance", {})
         fps_limit = perf_cfg.get("fps_limit", 0)
 
@@ -1312,7 +1641,6 @@ class GameRunner:
         exec_path = (root_dir / exec_rel).resolve()
 
         if not exec_path.exists():
-            # Search for matching executable name in subdirectories
             exec_name = Path(exec_rel).name
             for cand in root_dir.glob(f"**/{exec_name}"):
                 if cand.is_file():
@@ -1320,7 +1648,6 @@ class GameRunner:
                     exec_path = cand
                     break
 
-        # Auto-ensure execution permission for Linux ELF binaries and scripts
         if runtime_type == "native" and exec_path.exists():
             try:
                 exec_path.chmod(exec_path.stat().st_mode | 0o755)
@@ -1338,13 +1665,15 @@ class GameRunner:
 
         if runtime_type == "wine":
             wine_bin = runtime_cfg.get("wine", {}).get("wine_binary", "wine")
-            base_cmd = [wine_bin, str(exec_path)] + cmd_args
+            if "proton" in Path(wine_bin).name.lower() or "umu" in Path(wine_bin).name.lower():
+                base_cmd = [wine_bin, "run", str(exec_path)] + cmd_args
+            else:
+                base_cmd = [wine_bin, str(exec_path)] + cmd_args
         else:
             base_cmd = [str(exec_path)] + cmd_args
 
         pipeline = base_cmd
 
-        # Wrap: Gamescope (Wayland native backend)
         gamescope_cfg = self.config.get("graphics", {}).get("gamescope", {})
         perf_cfg = self.config.get("performance", {})
         fps_limit = perf_cfg.get("fps_limit", 0)
@@ -1352,14 +1681,12 @@ class GameRunner:
 
         if using_gamescope:
             log_info("Pipeline Layer: Gamescope Wayland Micro-Compositor")
-            # Resolve display resolution: explicit config > auto-detected display resolution (fallback: 1920x1080)
             det_w, det_h = detect_display_resolution()
             W = gamescope_cfg.get("output_width", 0) or det_w
             H = gamescope_cfg.get("output_height", 0) or det_h
             w = gamescope_cfg.get("width", 0) or W
             h = gamescope_cfg.get("height", 0) or H
 
-            # Resolve refresh rate: explicit gamescope config > fps_limit > auto-detected display rate (fallback: 60Hz)
             configured_rate = gamescope_cfg.get("refresh_rate", 0)
             if configured_rate > 0:
                 r = configured_rate
@@ -1393,7 +1720,6 @@ class GameRunner:
             if gamescope_cfg.get("hdr", False):
                 gs_cmd.append("--hdr-enabled")
 
-            # Gamescope Mangoapp integration
             if perf_cfg.get("mangohud", False) and shutil.which("mangoapp"):
                 gs_cmd.append("--mangoapp")
 
@@ -1402,20 +1728,17 @@ class GameRunner:
             gs_cmd.append("--")
             pipeline = gs_cmd + pipeline
         elif perf_cfg.get("mangohud", False) and shutil.which("mangohud"):
-            log_info("Pipeline Layer: MangoHud Performance Telemetry Overlay")
+            log_info("Pipeline Layer: MangoHud Telemetry Overlay")
             pipeline = ["mangohud"] + pipeline
 
-        # Wrap: GameMode
         if perf_cfg.get("gamemode", True) and shutil.which("gamemoderun"):
             log_info("Pipeline Layer: Feral GameMode (gamemoderun)")
             pipeline = ["gamemoderun"] + pipeline
 
-        # Wrap: Prime-Run (if discrete requested and prime-run binary available)
         gfx_cfg = self.config.get("graphics", {})
-        if gfx_cfg.get("gpu") == "discrete" and shutil.which("prime-run"):
+        if gfx_cfg.get("gpu") == "discrete" and shutil.which("prime-run") and not using_gamescope:
             pipeline = ["prime-run"] + pipeline
 
-        # Wrap: Bubblewrap Sandbox
         sandbox_cfg = self.config.get("sandbox", {})
         if sandbox_cfg.get("enabled", False) and shutil.which("bwrap"):
             log_info("Pipeline Layer: Bubblewrap Sandbox")
@@ -1477,14 +1800,13 @@ class GameRunner:
         # 3. Post-Mount Hook
         self.run_hooks("post_mount")
 
-        # 4. Pre-Launch Hook (Executed before build_environment so any just-in-time assets are built)
+        # 4. Pre-Launch Hook
         self.run_hooks("pre_launch")
 
         # 5. Build Environment & Command Pipeline
         env = self.build_environment()
         pipeline, working_dir = self.build_command_pipeline()
 
-        # Display Pipeline Details
         if console:
             table = Table(title=f"Game Launch Specification: {game_name}", box=box.ROUNDED)
             table.add_column("Parameter", style="cyan", no_wrap=True)
@@ -1505,12 +1827,20 @@ class GameRunner:
             MountManager.unmount(self.config, dry_run=True)
             return 0
 
-        # 6. Spawn Game Process
+        # 6. Inhibit Sleep / Screen Saver
+        ActiveRunContext.inhibitor.inhibit(ENGINE_NAME, f"Running {game_name}")
+
+        # 7. Spawn Game Process in new process group session
         start_time = time.time()
         send_notification("Game Starting", f"Launching {game_name}...", icon=meta.get("icon", "applications-games"))
 
         try:
-            proc = subprocess.Popen(pipeline, cwd=str(working_dir), env=env)
+            proc = subprocess.Popen(
+                pipeline,
+                cwd=str(working_dir),
+                env=env,
+                start_new_session=True
+            )
             ActiveRunContext.game_process = proc
             returncode = proc.wait()
         except KeyboardInterrupt:
@@ -1527,24 +1857,24 @@ class GameRunner:
         log_info(f"Game process exited with code {returncode} (Session Duration: {duration_str})")
         send_notification("Game Exited", f"{game_name} session ended ({duration_str}).", icon=meta.get("icon", "applications-games"))
 
-        # 7. Post-Launch Hook
+        # 8. Post-Launch Hook
         self.run_hooks("post_launch")
 
-        # 8. Teardown & Unmount
+        # 9. Teardown & Unmount
         cleanup_active_context()
 
-        # 9. Post-Unmount Hook
+        # 10. Post-Unmount Hook
         self.run_hooks("post_unmount")
 
         return returncode
 
 
 # ==============================================================================
-# 7. AUTO-SCAFFOLDER / PROFILE GENERATOR (`master_runner.py init`)
+# 8. AUTO-SCAFFOLDER / PROFILE GENERATOR (`master_runner.py init`)
 # ==============================================================================
 
 class ProfileScaffolder:
-    """Intelligently inspects a directory and generates a ready-to-run TOML profile."""
+    """Intelligently inspects a directory and generates a clean, modular TOML profile."""
 
     @staticmethod
     def scaffold(
@@ -1562,23 +1892,23 @@ class ProfileScaffolder:
 
         folder_name = target_dir.name
         if not profile_id:
-            clean_id = re.sub(r"[-. ]+", "_", folder_name.lower())
-            clean_id = re.sub(r"_jc141$", "", clean_id)
-            profile_id = clean_id
+            clean_id = re.sub(r"[-_.](?:jc141|fitgirl|dodi|gog|steam|rip|repack|v\d+.*)$", "", folder_name, flags=re.IGNORECASE)
+            clean_id = re.sub(r"[-. ]+", "_", clean_id.lower()).strip("_")
+            profile_id = clean_id or "game_profile"
 
         if not name:
-            clean_name = folder_name.replace("-jc141", "").replace(".", " ").replace("_", " ").title()
-            name = clean_name
+            clean_name = re.sub(r"[-_.](?:jc141|fitgirl|dodi|gog|steam|rip|repack|v\d+.*)$", "", folder_name, flags=re.IGNORECASE)
+            clean_name = clean_name.replace(".", " ").replace("_", " ").replace("-", " ").title().strip()
+            name = clean_name or "Game Title"
 
-        # Detect DwarFS image
         dwarfs_img_rel = ""
         for dw in target_dir.glob("**/*.dwarfs"):
             dwarfs_img_rel = str(dw.relative_to(target_dir))
             break
 
-        # Detect Engine & Archetype
         is_unity = False
         is_ue = False
+        is_godot = False
         is_wine = False
         executable_rel = ""
         args: list[str] = []
@@ -1605,7 +1935,6 @@ class ProfileScaffolder:
             except Exception:
                 pass
 
-        # Inspect dwarfs-tree or directory
         tree_files = list(target_dir.glob("**/dwarfs-tree"))
         tree_text = ""
         for tf in tree_files:
@@ -1617,13 +1946,21 @@ class ProfileScaffolder:
 
         if "globalgamemanagers" in tree_text or "UnityPlayer.so" in tree_text or "GameAssembly.so" in tree_text:
             is_unity = True
-        if "Engine/Binaries" in tree_text or "UE4" in tree_text or "UE5" in tree_text or "FactoryGame" in tree_text:
+        if "Engine/Binaries" in tree_text or "UE4" in tree_text or "UE5" in tree_text or "Binaries/Win64" in tree_text or ".uproject" in tree_text:
             is_ue = True
             is_wine = True
+        if ".pck" in tree_text:
+            is_godot = True
         if "VC_redist" in tree_text or "vcredist" in tree_text:
             has_vc_redist = True
 
-        # Choose base preset
+        if not is_wine and not is_unity and not is_ue:
+            exe_files = list(target_dir.glob("**/*.exe"))
+            if exe_files:
+                is_wine = True
+                if not executable_rel:
+                    executable_rel = str(exe_files[0].relative_to(target_dir))
+
         if preset:
             chosen_preset = preset
         elif is_ue:
@@ -1709,14 +2046,23 @@ winetricks = ["dxvk"]
 
 
 # ==============================================================================
-# 8. SYSTEM DOCTOR DIAGNOSTIC ENGINE (`master_runner.py doctor`)
+# 9. SYSTEM DOCTOR DIAGNOSTIC ENGINE (`master_runner.py doctor`)
 # ==============================================================================
 
-def run_doctor() -> bool:
+def run_doctor(fix: bool = False) -> bool:
     """Runs a comprehensive system diagnostic check."""
     if not console:
         print("Doctor diagnostics require rich console.")
         return False
+
+    if fix:
+        log_info("Attempting automatic kernel/system optimizations via sysctl...")
+        try:
+            subprocess.run(["sudo", "sysctl", "-w", "vm.max_map_count=2147483642"], capture_output=True)
+            subprocess.run(["sudo", "sysctl", "-w", "kernel.split_lock_mitigate=0"], capture_output=True)
+            log_success("Applied sysctl vm.max_map_count and split_lock_mitigate tuning.")
+        except Exception as e:
+            log_error(f"Failed to apply sysctl fixes: {e}")
 
     table = Table(title="System Doctor Diagnostics (AGY Gaming Environment)", box=box.ROUNDED)
     table.add_column("Category", style="cyan", no_wrap=True)
@@ -1726,7 +2072,6 @@ def run_doctor() -> bool:
 
     overall_ok = True
 
-    # 1. Kernel & Sysctl
     try:
         uname = os.uname()
         table.add_row("Kernel", "Linux Version", "[bold green]OK[/bold green]", f"{uname.sysname} {uname.release}")
@@ -1748,25 +2093,30 @@ def run_doctor() -> bool:
     except Exception:
         pass
 
-    # 2. Display & Wayland Session
+    # File Descriptor Limits
+    soft_fd, hard_fd = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if hard_fd >= 524288:
+        table.add_row("Limits", "File Descriptors (NOFILE)", "[bold green]OK[/bold green]", f"Soft: {soft_fd} / Hard: {hard_fd} (Esync/Fsync ready)")
+    else:
+        table.add_row("Limits", "File Descriptors (NOFILE)", "[bold yellow]WARN[/bold yellow]", f"Soft: {soft_fd} / Hard: {hard_fd}")
+
     wayland_display = os.environ.get("WAYLAND_DISPLAY", "")
     if wayland_display:
         table.add_row("Display", "Wayland Session", "[bold green]OK[/bold green]", f"Active socket: {wayland_display}")
     else:
         table.add_row("Display", "Wayland Session", "[bold yellow]WARN[/bold yellow]", "WAYLAND_DISPLAY not set")
 
-    # 3. GPU Matrix & Drivers
     gpus = detect_gpus()
     if gpus:
         for g in gpus:
             role = "Primary Display" if g.is_primary else "3D Render Offload"
             status = "[bold green]OK[/bold green]"
-            table.add_row("GPU", f"{g.vendor_name} ({g.driver})", status, f"{g.device_name} [{role}]")
+            icd_note = f" [ICD: {Path(g.icd_files.split(':')[0]).name}]" if g.icd_files else ""
+            table.add_row("GPU", f"{g.vendor_name} ({g.driver})", status, f"{g.short_name} [{role}]{icd_note}")
     else:
         table.add_row("GPU", "GPU Detection", "[bold red]FAIL[/bold red]", "No GPU DRM nodes found")
         overall_ok = False
 
-    # 4. Binaries & Packaging
     binaries = [
         ("dwarfs", "DwarFS FUSE driver", True),
         ("fuse-overlayfs", "Rootless overlay filesystem", True),
@@ -1780,6 +2130,8 @@ def run_doctor() -> bool:
         ("gamemoderun", "Feral GameMode performance daemon", False),
         ("bwrap", "Bubblewrap container sandbox", False),
         ("prime-run", "NVIDIA PRIME GPU offload wrapper", False),
+        ("fzf", "Interactive fuzzy search filter", False),
+        ("fuser", "Process file & mount holder tracker", False),
     ]
 
     for binary, desc, required in binaries:
@@ -1793,23 +2145,28 @@ def run_doctor() -> bool:
             else:
                 table.add_row("Tools", binary, "[bold yellow]OPTIONAL[/bold yellow]", f"{desc} not found")
 
-    # 5. Audio Server
     pipewire_sock = Path(f"/run/user/{os.getuid()}/pipewire-0")
     if pipewire_sock.exists():
         table.add_row("Audio", "PipeWire Socket", "[bold green]OK[/bold green]", f"Connected ({pipewire_sock})")
     else:
         table.add_row("Audio", "PipeWire Socket", "[bold yellow]WARN[/bold yellow]", "PipeWire socket not active")
 
+    has_busctl = bool(shutil.which("busctl"))
+    if has_busctl:
+        table.add_row("Power", "DBus Sleep Inhibitor", "[bold green]OK[/bold green]", "Ready (busctl / org.freedesktop.ScreenSaver)")
+    else:
+        table.add_row("Power", "DBus Sleep Inhibitor", "[bold yellow]OPTIONAL[/bold yellow]", "busctl not found")
+
     console.print(table)
     return overall_ok
 
 
 # ==============================================================================
-# 9. VALIDATOR ENGINE (`master_runner.py validate`)
+# 10. VALIDATOR ENGINE (`master_runner.py validate`)
 # ==============================================================================
 
 def validate_profiles(manager: ProfileManager, target_id: str | None = None) -> bool:
-    """Validates profile syntax, files, and executable paths."""
+    """Validates profile syntax, files, presets, and executable paths."""
     profiles = manager.discover_profiles()
     if target_id:
         if target_id not in profiles:
@@ -1847,7 +2204,7 @@ def validate_profiles(manager: ProfileManager, target_id: str | None = None) -> 
             exec_rel = cfg.get("paths", {}).get("executable", "")
             ov_dir = paths["overlay_dir"]
             gm_dir = paths["game_dir"]
-            
+
             exec_cand1 = ov_dir / exec_rel
             exec_cand2 = gm_dir / exec_rel
             is_mounted = MountManager.is_mounted(ov_dir)
@@ -1873,7 +2230,7 @@ def validate_profiles(manager: ProfileManager, target_id: str | None = None) -> 
 
 
 # ==============================================================================
-# 10. DESKTOP SHORTCUT INTEGRATION
+# 11. DESKTOP SHORTCUT INTEGRATION
 # ==============================================================================
 
 def install_desktop_shortcut(manager: ProfileManager, profile_id: str) -> bool:
@@ -1909,7 +2266,7 @@ StartupNotify=true
 
 
 # ==============================================================================
-# 11. INTERACTIVE RICH TUI DASHBOARD (`master_runner.py menu`)
+# 12. INTERACTIVE RICH TUI DASHBOARD (`master_runner.py menu`)
 # ==============================================================================
 
 def parse_profile_targets(target_str: str, profile_list: list[tuple[str, Path]], manager: ProfileManager) -> list[str]:
@@ -1917,8 +2274,7 @@ def parse_profile_targets(target_str: str, profile_list: list[tuple[str, Path]],
     Parses flexible profile target strings:
       - 'all', '*', 'a' -> all profile IDs
       - '11,13', '11 13', '1-3', '11, 13' -> numeric indexes and ranges
-      - 'stardew_valley terraria', 'stardew_valley,terraria' -> profile IDs
-      - Mixed: '1, terraria, 3-5'
+      - profile IDs or titles
     """
     target_str = target_str.strip()
     if not target_str:
@@ -1943,7 +2299,6 @@ def parse_profile_targets(target_str: str, profile_list: list[tuple[str, Path]],
         if not token:
             continue
 
-        # Range format: e.g. "1-3" or "1..3"
         range_match = re.fullmatch(r"(\d+)[-..]+(\d+)", token)
         if range_match:
             start, end = int(range_match.group(1)), int(range_match.group(2))
@@ -1955,7 +2310,6 @@ def parse_profile_targets(target_str: str, profile_list: list[tuple[str, Path]],
                         resolved_pids.append(pid)
             continue
 
-        # Single numeric index
         if token.isdigit():
             idx = int(token) - 1
             if 0 <= idx < len(profile_list):
@@ -1964,7 +2318,6 @@ def parse_profile_targets(target_str: str, profile_list: list[tuple[str, Path]],
                     resolved_pids.append(pid)
             continue
 
-        # Direct profile ID or Name match
         lowered = token.lower()
         if lowered in pid_map:
             pid = pid_map[lowered]
@@ -1999,7 +2352,7 @@ def get_fzf_theme_args() -> list[str]:
 
 
 def fzf_select_game(manager: ProfileManager, profile_list: list[tuple[str, Path]]) -> str | None:
-    """Launches clean, fast full-width interactive FZF fuzzy finder to search, select, and launch a game."""
+    """Launches interactive FZF fuzzy finder to search, select, and launch a game."""
     if not shutil.which("fzf"):
         log_warning("FZF is not installed. Use direct numeric or ID selection.")
         return None
@@ -2124,17 +2477,7 @@ def fzf_select_mounts(manager: ProfileManager, profile_list: list[tuple[str, Pat
 def render_interactive_menu(manager: ProfileManager, *, show_all: bool = False) -> None:
     """
     Renders the Rich TUI Dashboard — dynamically filtered to installed games only.
-
-    Modern dynamic behavior (fixes pollution bug):
-      • By default, only profiles whose `game_dir` / `dwarfs_image` currently
-        exist on disk are displayed (validated via is_profile_available()).
-      • Hidden count is surfaced so user knows 42 uninstalled profiles are
-        suppressed, not deleted; toggle with `a` or CLI `list --all`.
-      • When no installed games are present, a guidance panel is shown
-        instead of an empty/ugly table.
-
-    `show_all` toggles between filtered and complete views. Interactive
-    toggle is bound to `a` inside the menu loop.
+    Press 'a' to toggle showing all profiles.
     """
     if not console:
         print("Interactive menu requires rich console.")
@@ -2151,7 +2494,6 @@ def render_interactive_menu(manager: ProfileManager, *, show_all: bool = False) 
             border_style="cyan"
         ))
 
-        # --- Dynamic live validation: split into available vs hidden ---
         available, unavailable = categorize_profiles(manager)
         total_count = len(available) + len(unavailable)
 
@@ -2170,7 +2512,6 @@ def render_interactive_menu(manager: ProfileManager, *, show_all: bool = False) 
                 filtered_title = f"Available Game Profiles — {len(available)} installed"
 
         if not profiles:
-            # All profiles are hidden (polluted set) — show helpful guidance instead of empty table
             console.print(Panel(
                 f"[bold yellow]No installed games detected.[/bold yellow]\n"
                 f"[dim]Found {len(unavailable)} profile(s) but none of their game_dir / dwarfs_image paths exist on disk right now.[/dim]\n"
@@ -2180,7 +2521,6 @@ def render_interactive_menu(manager: ProfileManager, *, show_all: bool = False) 
                 border_style="yellow",
                 box=box.ROUNDED
             ))
-            # still allow toggle / quit / doctor / validate
             console.print(f"\n[bold]Commands:[/bold] [cyan]a[/cyan] Toggle show all ({len(unavailable)} hidden) | [magenta]d[/magenta] Doctor | [magenta]v[/magenta] Validate | [red]q[/red] Quit")
             choice = Prompt.ask("\n[bold green]Selection[/bold green]", default="q").strip()
             if choice.lower() in ("q", "quit", "exit"):
@@ -2197,9 +2537,7 @@ def render_interactive_menu(manager: ProfileManager, *, show_all: bool = False) 
                 Prompt.ask("\nPress Enter to return to menu...")
                 continue
             else:
-                # FZF on empty filtered still respects toggle
                 if choice.lower() in ("f", "s", "search", "fzf", "/") and has_fzf:
-                    # When filtered empty, offer fzf over all
                     profile_list_all = list({**available, **unavailable}.items())
                     selected_pid = fzf_select_game(manager, profile_list_all)
                     if selected_pid:
@@ -2244,7 +2582,6 @@ def render_interactive_menu(manager: ProfileManager, *, show_all: bool = False) 
                 table.add_row(str(idx), pid, "[red]Error loading[/red]", "-", "-", "[red]ERR[/red]", str(e))
 
         console.print(table)
-        # Footer: surface hidden count and toggle hint (dynamic filtering UX)
         fzf_hint = " | [bold blue]f[/bold blue] Fuzzy Search (FZF)" if has_fzf else ""
         if not interactive_show_all and unavailable:
             console.print(f"[dim]Showing {len(available)} installed • {len(unavailable)} hidden (not downloaded). Press [a] to show all • `list --all` shows everything.[/dim]")
@@ -2326,11 +2663,10 @@ def render_interactive_menu(manager: ProfileManager, *, show_all: bool = False) 
 
 
 # ==============================================================================
-# 12. CLI ARGUMENT PARSER & MAIN ENTRYPOINT
+# 13. CLI ARGUMENT PARSER & MAIN ENTRYPOINT
 # ==============================================================================
 
 def main():
-    # Quality of Life: Auto-dispatch direct game invocation (e.g. `python3 master_runner.py <game_id>`)
     known_commands = {
         "run", "menu", "list", "status", "mount", "unmount", "unmount-all",
         "validate", "init", "doctor", "install-desktop", "install-all-desktops",
@@ -2382,21 +2718,21 @@ def main():
     run_parser.add_argument("-v", "--verbose", action="store_true", help="Enable detailed debug logs")
     run_parser.add_argument("extra_args", nargs="*", help="Arbitrary trailing arguments passed directly to the game binary")
 
-    # Command: menu — dynamic filtered view (pollution fix)
+    # Command: menu
     menu_parser = subparsers.add_parser("menu", help="Launch interactive Rich TUI Dashboard (dynamic: installed games only)")
-    menu_parser.add_argument("--all", action="store_true", help="Show all profiles including not-installed (polluted) — default filters to installed only")
+    menu_parser.add_argument("--all", action="store_true", help="Show all profiles including not-installed")
 
-    # Command: fzf / select — dynamic filtered
+    # Command: fzf / select
     fzf_parser = subparsers.add_parser("fzf", help="Interactive FZF game selector and launcher (installed only)")
     fzf_parser.add_argument("--all", action="store_true", help="Include not-installed profiles in FZF list")
     select_parser = subparsers.add_parser("select", help="Interactive FZF game selector and launcher (installed only)")
     select_parser.add_argument("--all", action="store_true", help="Include not-installed profiles in FZF list")
 
-    # Command: list — dynamic filtered by default, --all shows polluted set
+    # Command: list
     list_parser = subparsers.add_parser("list", help="List discovered game profiles (dynamic: installed only)")
-    list_parser.add_argument("--all", action="store_true", help="Show all profiles including not-installed (default: installed only)")
+    list_parser.add_argument("--all", action="store_true", help="Show all profiles including not-installed")
 
-    # Command: status — dynamic filtered by default
+    # Command: status
     status_parser = subparsers.add_parser("status", help="Show active DwarFS and fuse-overlayfs mount statuses (installed only)")
     status_parser.add_argument("--all", action="store_true", help="Show all profiles including not-installed")
 
@@ -2404,7 +2740,7 @@ def main():
     mount_parser = subparsers.add_parser("mount", help="Mount DwarFS & OverlayFS for one or more game profiles without launching")
     mount_parser.add_argument("profiles", nargs="*", help="Profile ID(s), numbers, ranges (e.g. 1-3), or 'all' to mount")
     mount_parser.add_argument("--dry-run", action="store_true", help="Simulate mount operation")
-    mount_parser.add_argument("--all", action="store_true", help="Include not-installed profiles in target resolution (default: installed only)")
+    mount_parser.add_argument("--all", action="store_true", help="Include not-installed profiles in target resolution")
 
     # Command: unmount
     unmount_parser = subparsers.add_parser("unmount", help="Unmount DwarFS & OverlayFS for one or more game profiles")
@@ -2432,15 +2768,16 @@ def main():
     init_parser.add_argument("--install-desktop", action="store_true", help="Automatically create FreeDesktop shortcut")
 
     # Command: doctor
-    subparsers.add_parser("doctor", help="Run system diagnostics on drivers, kernel, FUSE, and Wayland stack")
+    doctor_parser = subparsers.add_parser("doctor", help="Run system diagnostics on drivers, kernel, FUSE, and Wayland stack")
+    doctor_parser.add_argument("--fix", action="store_true", help="Automatically apply optimal kernel sysctl parameters via sudo")
 
     # Command: install-desktop
     desktop_parser = subparsers.add_parser("install-desktop", help="Install .desktop application shortcut")
     desktop_parser.add_argument("profile", help="Profile ID to install shortcut for")
 
-    # Command: install-all-desktops — dynamic: installed only by default
-    iad_parser = subparsers.add_parser("install-all-desktops", help="Install .desktop shortcuts for discovered profiles (dynamic: installed only)")
-    iad_parser.add_argument("--all", action="store_true", help="Include not-installed profiles (default: installed only)")
+    # Command: install-all-desktops
+    iad_parser = subparsers.add_parser("install-all-desktops", help="Install .desktop shortcuts for discovered profiles")
+    iad_parser.add_argument("--all", action="store_true", help="Include not-installed profiles")
 
     args = parser.parse_args()
 
@@ -2456,12 +2793,8 @@ def main():
             render_interactive_menu(manager, show_all=args.all)
 
         case "fzf" | "select":
-            # Dynamic: default to installed-only; --all includes polluted hidden
             available, unavailable = categorize_profiles(manager)
-            if args.all:
-                filtered = {**available, **unavailable}
-            else:
-                filtered = available
+            filtered = {**available, **unavailable} if args.all else available
             if not filtered:
                 log_warning(f"No {'profiles' if args.all else 'installed games'} found for FZF selection.")
                 if not args.all and unavailable:
@@ -2494,7 +2827,6 @@ def main():
 
             if console:
                 if not profiles:
-                    # Empty filtered view → guidance panel instead of empty table
                     console.print(Panel(
                         f"[bold yellow]No installed games detected.[/bold yellow]\n"
                         f"[dim]Found {len(unavailable)} profile(s) but none currently exist on disk.[/dim]\n"
@@ -2517,11 +2849,7 @@ def main():
                             title_name = cfg.get("meta", {}).get("name", pid)
                             preset = cfg.get("extends", "none")
                             gdir = cfg.get("paths", {}).get("game_dir", "-")
-                            # Dynamic badge: available vs unavailable (when --all)
-                            if pid in available:
-                                badge = "[bold green]INSTALLED[/bold green]"
-                            else:
-                                badge = "[dim]NOT INSTALLED[/dim]"
+                            badge = "[bold green]INSTALLED[/bold green]" if pid in available else "[dim]NOT INSTALLED[/dim]"
                             p_table.add_row(pid, title_name, preset, gdir, badge)
                         except Exception as e:
                             p_table.add_row(pid, "[red]Error[/red]", "-", str(e), "[red]ERR[/red]")
@@ -2587,10 +2915,7 @@ def main():
 
         case "mount":
             available, unavailable = categorize_profiles(manager)
-            if args.all:
-                filtered = {**available, **unavailable}
-            else:
-                filtered = available
+            filtered = {**available, **unavailable} if args.all else available
             profile_list = list(filtered.items())
             if not args.profiles:
                 if not profile_list:
@@ -2624,13 +2949,9 @@ def main():
 
         case "unmount":
             available, unavailable = categorize_profiles(manager)
-            # For unmount, we want to consider mounted state even if profile is currently unavailable?
-            # But default still filters to installed; --all includes everything.
             if args.all:
                 filtered = {**available, **unavailable}
             else:
-                # Include any currently-mounted profile even if its backing dir was removed after mount?
-                # So merge mounted unavailable that still show as MOUNTED
                 filtered = dict(available)
                 for pid in unavailable:
                     try:
@@ -2674,7 +2995,7 @@ def main():
             log_success(f"Completed unmount sweep. Unmounted {count} active profiles.")
 
         case "doctor":
-            ok = run_doctor()
+            ok = run_doctor(fix=args.fix)
             sys.exit(0 if ok else 1)
 
         case "validate":

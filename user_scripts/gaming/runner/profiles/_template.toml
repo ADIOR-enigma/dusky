@@ -2,8 +2,8 @@
 # Master Game Runner Engine - Definitive Game Profile Reference Template
 # ==============================================================================
 # This template is the comprehensive reference for creating and maintaining game
-# profiles. It documents all 12 configuration tables, preset inheritance, path
-# resolution rules, runtime environments, and graphics pipelines.
+# profiles. It documents all configuration tables, preset inheritance, path
+# resolution rules, runtime environments, input mapping, and graphics pipelines.
 #
 # QUICK START GUIDE:
 # 1. Copy this template: cp profiles/_template.toml profiles/<game_id>.toml
@@ -41,9 +41,13 @@ description = "A concise description of the game profile."
 # 3. Paths & Storage Lifecycle [paths]
 # ------------------------------------------------------------------------------
 # String variable expansions supported:
-#   $HOME or ~      -> User's home directory
-#   $GAME_DIR       -> Resolved paths.game_dir
-#   $ZRAM           -> Resolves to /mnt/zram1
+#   $HOME or ~        -> User's home directory (/home/<user>)
+#   $GAME_DIR         -> Resolved paths.game_dir
+#   $ZRAM             -> Resolves to /mnt/zram1
+#   $USER             -> Current username
+#   $XDG_DATA_HOME    -> ~/.local/share
+#   $XDG_CONFIG_HOME  -> ~/.config
+#   $XDG_CACHE_HOME   -> ~/.cache
 [paths]
 game_dir = "/mnt/zram1/ExampleGame"         # Base game directory or container
 
@@ -66,7 +70,7 @@ arguments = []                              # Command-line arguments list, e.g. 
 # ------------------------------------------------------------------------------
 [runtime]
 # "native" -> Linux ELF executable or launcher script
-# "wine"   -> Windows executable (.exe) run via Wine-Staging / Proton
+# "wine"   -> Windows executable (.exe) run via Wine-Staging / Proton / UMU
 type = "native"
 
 # ------------------------------------------------------------------------------
@@ -74,7 +78,7 @@ type = "native"
 # (Active only when runtime.type = "wine")
 # ------------------------------------------------------------------------------
 [runtime.wine]
-wine_binary = "wine"                        # "wine", "wine64", custom path, or "proton"
+wine_binary = "wine"                        # "wine", "wine64", custom path, "proton", or "umu-run"
 prefix_dir = "files/wine-prefix"            # WINEPREFIX directory path
 arch = "win64"                              # "win64" (64-bit) or "win32" (legacy 32-bit)
 sync_mode = "fsync"                         # Thread synchronization: "fsync", "esync", "ntsync", or "server"
@@ -87,7 +91,7 @@ dll_overrides = { "winemenubuilder.exe" = "d", "mshtml" = "d", "dxgi" = "n", "d3
 # Graphics API Translators
 dxvk = true                                 # Direct3D 9/10/11 -> Vulkan translation
 vkd3d = true                                # Direct3D 12 -> Vulkan translation
-dxvk_nvapi = false                          # DXVK-NVAPI for NVIDIA DLSS and Reflex support
+dxvk_nvapi = false                          # DXVK-NVAPI for NVIDIA DLSS 2/3 & Reflex hardware support
 
 # Automated Prefix Provisioning (executed on first launch)
 redistributables = ["VC_redist.x64.exe"]    # Silent installer executables to run
@@ -99,20 +103,22 @@ winetricks = ["dxvk"]                       # Winetricks verbs to apply automati
 [graphics]
 # GPU Selection:
 #   "auto"       -> Automatic selection (iGPU for lightweight/2D, dGPU for heavy 3D)
-#   "discrete"   -> Force NVIDIA RTX 3050 Ti dGPU (PRIME render offload)
-#   "integrated" -> Force Intel Iris Xe iGPU (power-efficient, low heat)
+#   "discrete"   -> Force NVIDIA RTX / AMD dGPU (PRIME render offload)
+#   "integrated" -> Force Intel Iris Xe / AMD iGPU (power-efficient, low heat)
 gpu = "auto"
 
 wayland_native = true                       # Enable Wayland surfaces (SDL_VIDEODRIVER=wayland)
-prefer_xwayland = false                     # Force DISPLAY=:0 for engines without Wayland support
+prefer_xwayland = false                     # Force DISPLAY=:0 for legacy engines without Wayland support
 vulkan_icd = "auto"                         # "auto", "nvidia", "intel", or "radv"
+gl_multithread = true                       # Enable multithreaded OpenGL (MESA_GL_THREAD / __GL_THREADED_OPTIMIZATIONS)
+hdr = false                                 # Enable HDR surface presentation (PROTON_ENABLE_HDR=1)
 
 # Gamescope Micro-Compositor Sandbox
 # Recommended for legacy X11 games (Unity 2017, Source 1, FNA/MonoGame) on pure Wayland desktops.
 # Provides isolated Xwayland nested presentation without requiring global XWayland or system reboots.
 [graphics.gamescope]
 enabled = false                             # Enable Gamescope Wayland micro-compositor
-mode = "embedded"                           # "embedded" (borderless window) or "fullscreen"
+mode = "embedded"                           # "embedded" (borderless window), "fullscreen", or "nested"
 width = 0                                   # Internal render resolution width (-w, 0 = auto-detect monitor width)
 height = 0                                  # Internal render resolution height (-h, 0 = auto-detect monitor height)
 output_width = 0                            # Monitor output width (-W, 0 = auto-detect native display)
@@ -122,7 +128,7 @@ fsr_upscaling = false                       # Enable AMD FidelityFX Super Resolu
 fsr_sharpness = 2                           # FSR sharpness (0 to 20)
 allow_tearing = true                        # Low-latency immediate presentation (--immediate-flips)
 force_grab_cursor = false                   # Confine cursor to Gamescope window
-hdr = false                                 # Enable HDR surface presentation
+hdr = false                                 # Enable HDR Gamescope rendering
 extra_args = []                             # Additional custom CLI flags for Gamescope
 
 # ------------------------------------------------------------------------------
@@ -144,7 +150,15 @@ driver = "pipewire"                         # Audio backend: "pipewire", "pulsea
 pipewire_latency = "128/48000"              # Low-latency buffer quantum (PIPEWIRE_LATENCY)
 
 # ------------------------------------------------------------------------------
-# 9. Storage & DwarFS Tuning [storage]
+# 9. Gamepad & Input Mapping [input]
+# ------------------------------------------------------------------------------
+[input]
+# Path to gamecontrollerdb.txt or custom SDL_GAMECONTROLLERCONFIG mapping string.
+# Leave empty to auto-detect from local directory, ~/.config/gamecontrollerdb.txt, or system paths.
+sdl_gamecontrollerconfig = ""
+
+# ------------------------------------------------------------------------------
+# 10. Storage & DwarFS Tuning [storage]
 # ------------------------------------------------------------------------------
 [storage]
 dwarfs_cache_percent = 25                   # Decompressed block cache size as percentage of total RAM
@@ -154,7 +168,13 @@ persistent_overlay = true                   # Keep overlay-storage modifications
 auto_clean_workdir = true                   # Clean .game-root-work scratch directory before mount
 
 # ------------------------------------------------------------------------------
-# 10. Sandboxing & Isolation [sandbox]
+# 11. Runner Lifecycle Options [runner]
+# ------------------------------------------------------------------------------
+[runner]
+auto_unmount_on_exit = true                 # Automatically unmount DwarFS & OverlayFS upon game exit
+
+# ------------------------------------------------------------------------------
+# 12. Sandboxing & Isolation [sandbox]
 # ------------------------------------------------------------------------------
 [sandbox]
 enabled = false                             # Run process inside Bubblewrap (bwrap) sandbox
@@ -166,7 +186,7 @@ bind_wayland = true                         # Pass Wayland compositor socket
 bind_network = false                        # Block network / internet access
 
 # ------------------------------------------------------------------------------
-# 11. Lifecycle Hooks [hooks]
+# 13. Lifecycle Hooks [hooks]
 # ------------------------------------------------------------------------------
 # Shell command arrays executed at specific lifecycle stages.
 # Common use cases: compile runtime shims, symlink compatibility libraries, fix configs.
@@ -178,10 +198,10 @@ post_launch = []                            # Executed immediately after process
 post_unmount = []                           # Executed after unmounting FUSE layers
 
 # ------------------------------------------------------------------------------
-# 12. Environment Variables [env]
+# 14. Custom Environment Variables [env]
 # ------------------------------------------------------------------------------
 # Custom environment variables injected into the game process pipeline.
-# Supports variable interpolation ($HOME, $GAME_DIR, etc.)
+# Supports variable interpolation ($HOME, $GAME_DIR, $USER, etc.)
 [env]
 # Examples:
 # LD_PRELOAD = "$HOME/.local/lib32/libmeminfo_fix32.so"
