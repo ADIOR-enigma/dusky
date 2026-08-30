@@ -3084,9 +3084,9 @@ class EnvironmentBuilder:
     def stage_profile_env(self) -> None:
         custom = self.p.sect("env")
         for key, raw in custom.items():
-            value = str(raw)
+            value = expand_str(str(raw), self.env)
             if key == "LD_PRELOAD":
-                shim = Path(expand_str(value, {})).expanduser()
+                shim = Path(value).expanduser()
                 if not shim.exists():
                     Log.warn(f"LD_PRELOAD shim missing, not injected: {shim}")
                     continue
