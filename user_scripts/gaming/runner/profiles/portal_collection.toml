@@ -5,7 +5,7 @@
 # Source: FitGirl repack Windows binaries + LumaEmu/SmartSteamEmu crack
 # Borrows full 15-table logic from profiles/_template.toml:1
 # Preset: base_wine_dxvk (Wine + DXVK, D3D9 for Source) - optimized for hybrid
-#         NVIDIA RTX 3050 Ti + Intel Iris Xe (discrete for max FPS)
+#         NVIDIA RTX 3050 Ti + Intel Iris Xe (integrated for shared RAM / low power)
 # ==============================================================================
 
 extends = "base_wine_dxvk"
@@ -81,9 +81,10 @@ winetricks       = []
 # 6. Graphics Pipeline & Wayland Integration [graphics]
 # ------------------------------------------------------------------------------
 [graphics]
-# auto on hybrid picks discrete RTX 3050 Ti (master_runner.py:1478 dgpus[0]) for max FPS.
-# If power saving needed, override --set graphics.gpu=integrated (uses shared RAM, fine for Portal).
-gpu = "discrete"
+# integrated = Intel Iris Xe (boot_vga, master_runner.py:1454) - uses shared RAM (up to 32G on 64G host,
+# per _template.toml:143) ideal for Source (low VRAM need), saves power vs discrete RTX 3050 Ti.
+# Use --set graphics.gpu=discrete to force dGPU if needed.
+gpu = "integrated"
 
 wayland_native      = true                         # Wine waylanddrv - native Wayland
 prefer_xwayland     = true                         # CRITICAL for Source 32-bit SDL2: native SDL2 has no Wayland backend, pure Wayland SEGVs without gamescope XWayland (see portal_2.toml:10)
@@ -216,4 +217,4 @@ post_unmount = []
 # gpu = "discrete"  # Already set to discrete above - auto would also pick discrete
 
 [when.hybrid]
-graphics.gpu = "discrete"
+graphics.gpu = "integrated"
