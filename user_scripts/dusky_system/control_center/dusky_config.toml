@@ -2269,6 +2269,19 @@ terminal = false
 requires_root = true
 
 [[pages.layout.items.layout.items.layout]]
+type = "warning_banner"
+[pages.layout.items.layout.items.layout.properties]
+title = "Tuning Guidelines & Dial Reference"
+icon = "dialog-information-symbolic"
+compact = true
+message = """
+• Per-App Idle Anon Limit: Max % of cold memory reclaimed per idle app (lower = gentler, higher = more RAM freed).
+• Max Sweep Budget: Memory ceiling per sweep to prevent latency spikes and micro-stutters.
+• Reclaim Chunk Size: Kernel burst size per yield (smaller = smoother UI responsiveness, larger = faster throughput).
+• Sweep Frequency: Periodic interval between background proactive memory reclaim passes.
+• ZRAM Abort Threshold: Safety circuit breaker; aborts sweep if ZRAM fullness exceeds this capacity."""
+
+[[pages.layout.items.layout.items.layout]]
 type = "section"
 [pages.layout.items.layout.items.layout.properties]
 title = "MGLRU Skimmer Dials"
