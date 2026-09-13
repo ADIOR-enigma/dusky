@@ -545,17 +545,24 @@ fi
 
 mem_total=0
 mem_avail=0
+has_tot=0
+has_avail=0
+
 while read -r key val _; do
     case "$key" in
-        MemTotal:)     mem_total=$val ;;
-        MemAvailable:) mem_avail=$val ;;
+        MemTotal:)     mem_total=$val; has_tot=1 ;;
+        MemAvailable:) mem_avail=$val; has_avail=1 ;;
     esac
-    [[ $mem_total -gt 0 && $mem_avail -gt 0 ]] && break
+    (( has_tot && has_avail )) && break
 done < /proc/meminfo
 
-if [[ $mem_total -le 0 ]]; then
+if (( !has_tot || !has_avail || mem_total <= 0 )); then
     exit 0
 fi
+
+# Clamp mem_avail to [0, mem_total] for absolute robustness
+(( mem_avail < 0 )) && mem_avail=0
+(( mem_avail > mem_total )) && mem_avail=$mem_total
 
 used_kb=$(( mem_total - mem_avail ))
 pct=$(( used_kb * 100 / mem_total ))
