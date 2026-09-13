@@ -500,6 +500,79 @@ TIMER_INTERVAL=6min
     write_file_atomic(CONF_PATH, conf_content, mode=0o644)
     ok(f"Runtime configuration reset to script defaults at {CONF_PATH}")
 
+    gate_path = Path("/usr/local/bin/dusky_pro_active_zram_gate")
+    gate_content = r"""#!/usr/bin/env bash
+# Dusky Proactive ZRAM Swap - Ultra-Fast Native Pre-flight Gatekeeper (Kernel 7.2+ / systemd 261+)
+# Executed by systemd via ExecCondition= before spawning Python runtime.
+# Exits 0 if RAM usage >= threshold or --force (proceeds to ExecStart= Python)
+# Exits 1 if RAM usage < threshold (skips ExecStart= completely with zero Python overhead)
+
+set -eo pipefail
+
+for arg in "$@"; do
+    if [[ "$arg" == "--force" ]]; then
+        exit 0
+    fi
+done
+
+CONF="/etc/dusky/dusky_pro_active_zram_swap.conf"
+thresh_pct=80
+
+if [[ -f "$CONF" ]]; then
+    while read -r line; do
+        if [[ "$line" =~ ^(RAM_USAGE_THRESHOLD_RATIO|RAM_THRESHOLD_RATIO)[[:space:]]*=[[:space:]]*(.*) ]]; then
+            val="${BASH_REMATCH[2]}"
+            val="${val//[[:space:]]/}"
+            val="${val//\"/}"
+            val="${val//\'/}"
+            val="${val//%/}"
+            if [[ "$val" =~ ^0\.([0-9]{1,2}) ]]; then
+                frac="${BASH_REMATCH[1]}"
+                [[ ${#frac} -eq 1 ]] && frac="${frac}0"
+                thresh_pct=$(( 10#$frac ))
+            elif [[ "$val" == "1" || "$val" == "1.0" || "$val" == "1.00" ]]; then
+                thresh_pct=100
+            elif [[ "$val" =~ ^[0-9]+$ ]]; then
+                thresh_pct=$(( 10#$val ))
+            fi
+        fi
+    done < "$CONF"
+fi
+
+(( thresh_pct < 1 )) && thresh_pct=1
+(( thresh_pct > 100 )) && thresh_pct=100
+
+mem_total=0
+mem_avail=0
+while read -r key val _; do
+    case "$key" in
+        MemTotal:)     mem_total=$val ;;
+        MemAvailable:) mem_avail=$val ;;
+    esac
+    [[ $mem_total -gt 0 && $mem_avail -gt 0 ]] && break
+done < /proc/meminfo
+
+if [[ $mem_total -le 0 ]]; then
+    exit 0
+fi
+
+used_kb=$(( mem_total - mem_avail ))
+pct=$(( used_kb * 100 / mem_total ))
+pct_tenths=$(( (used_kb * 1000 / mem_total) % 10 ))
+used_mb=$(( used_kb / 1024 ))
+total_mb=$(( mem_total / 1024 ))
+
+if (( pct < thresh_pct )); then
+    printf '[INFO] RAM usage below threshold: %d.%d%% (%d MB / %d MB < %d%% threshold). Skipping proactive sweep to conserve CPU and avoid unnecessary compression.\n' \
+        "$pct" "$pct_tenths" "$used_mb" "$total_mb" "$thresh_pct"
+    exit 1
+fi
+
+exit 0
+"""
+    write_file_atomic(gate_path, gate_content, mode=0o755)
+    ok(f"Native Bash gatekeeper installed to {gate_path}")
+
     service_path = Path("/etc/systemd/system/dusky_pro_active_zram_swap.service")
     python_bin = "/usr/bin/python3"
     if not Path(python_bin).exists():
@@ -515,6 +588,7 @@ ConditionPathExists=/sys/fs/cgroup/system.slice
 [Service]
 Type=oneshot
 TimeoutStartSec=30s
+ExecCondition={gate_path}
 ExecStart={python_bin} {install_path} --run
 RemainAfterExit=no
 Nice=19
@@ -586,6 +660,7 @@ def main() -> None:
 
         files_to_remove = [
             Path("/usr/local/bin/dusky_pro_active_zram_swap"),
+            Path("/usr/local/bin/dusky_pro_active_zram_gate"),
             Path("/etc/systemd/system/dusky_pro_active_zram_swap.service"),
             Path("/etc/systemd/system/dusky_pro_active_zram_swap.timer"),
             CONF_PATH,

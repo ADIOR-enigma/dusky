@@ -52,6 +52,7 @@ CONF_FILE = CONF_DIR / "dusky_pro_active_zram_swap.conf"
 TIMER_UNIT = Path("/etc/systemd/system/dusky_pro_active_zram_swap.timer")
 SERVICE_UNIT = Path("/etc/systemd/system/dusky_pro_active_zram_swap.service")
 BIN_PATH = Path("/usr/local/bin/dusky_pro_active_zram_swap")
+GATE_PATH = Path("/usr/local/bin/dusky_pro_active_zram_gate")
 
 def get_setup_script_path() -> Path:
     """Dynamically resolve the 217 setup script path without hardcoding any user or home directory."""
@@ -149,7 +150,7 @@ def escalate_root_if_needed() -> None:
             die("Root privileges required to modify proactive swap settings.")
 
 def sync_binary_if_needed() -> None:
-    """Ensures /usr/local/bin/dusky_pro_active_zram_swap is synchronized with the source setup script."""
+    """Ensures /usr/local/bin/dusky_pro_active_zram_swap and gatekeeper are synchronized with the source setup script."""
     if os.geteuid() != 0:
         return
     try:
@@ -161,6 +162,8 @@ def sync_binary_if_needed() -> None:
             shutil.copy2(setup_script, BIN_PATH)
             os.chmod(BIN_PATH, 0o755)
             ok(f"Synchronized binary to {BIN_PATH}")
+        if not GATE_PATH.exists() or (SERVICE_UNIT.exists() and "ExecCondition=" not in SERVICE_UNIT.read_text()):
+            subprocess.run([sys.executable, str(setup_script)], check=False)
     except Exception as e:
         warn(f"Could not sync binary: {e}")
 

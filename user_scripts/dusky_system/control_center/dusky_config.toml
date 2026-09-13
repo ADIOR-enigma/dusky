@@ -2264,7 +2264,7 @@ icon = "system-run-symbolic"
 style = "suggested"
 [pages.layout.items.layout.items.layout.items.on_press]
 type = "exec"
-command = "$HOME/user_scripts/performance/zram/dusky_pro_active_swap_modifier_cc.py --run-now"
+command = "$HOME/user_scripts/performance/zram/dusky_pro_active_swap_modifier_cc.py --run-now --force"
 terminal = false
 requires_root = true
 
