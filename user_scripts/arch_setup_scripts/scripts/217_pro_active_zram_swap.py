@@ -365,6 +365,11 @@ def perform_reclaim(force: bool = False) -> None:
             f"{total_b // (1024*1024)} MB < {int(RAM_USAGE_THRESHOLD_RATIO * 100)}% threshold). "
             "Skipping proactive sweep to conserve CPU and avoid unnecessary compression."
         )
+        try:
+            state_path = Path("/run/dusky/pro_active_zram_swap.state")
+            write_file_atomic(state_path, f"Idle (RAM: {ram_ratio * 100:.1f}% < {int(RAM_USAGE_THRESHOLD_RATIO * 100)}%)\n", mode=0o644)
+        except Exception:
+            pass
         return
 
     info(
@@ -391,12 +396,22 @@ def perform_reclaim(force: bool = False) -> None:
             f"{size_zram_b / (1024*1024)} MB >= {ZRAM_MAX_USAGE_RATIO * 100:.0f}%). "
             "Skipping proactive sweep to avoid spilling pages to disk swap."
         )
+        try:
+            state_path = Path("/run/dusky/pro_active_zram_swap.state")
+            write_file_atomic(state_path, f"Idle (zRAM full: {zram_ratio * 100:.0f}%)\n", mode=0o644)
+        except Exception:
+            pass
         return
 
     # 2. Gate on system memory pressure
     psi_sys = get_system_pressure()
     if not force and psi_sys >= PSI_SOME_THRESHOLD:
         info(f"System memory pressure active (some avg10={psi_sys:.2f}% >= {PSI_SOME_THRESHOLD}%). Skipping sweep.")
+        try:
+            state_path = Path("/run/dusky/pro_active_zram_swap.state")
+            write_file_atomic(state_path, f"Idle (PSI active: {psi_sys:.1f}%)\n", mode=0o644)
+        except Exception:
+            pass
         return
 
     start_time = time.perf_counter()
@@ -471,6 +486,14 @@ def perform_reclaim(force: bool = False) -> None:
         pass
 
     ok(f"Sweep finished in {elapsed_ms:.1f}ms. Stolen: {total_stolen / (1024*1024):.1f} MB to ZRAM{zram_info}")
+    try:
+        state_path = Path("/run/dusky/pro_active_zram_swap.state")
+        stolen_mb = total_stolen / (1024 * 1024)
+        stolen_str = f"{int(round(stolen_mb))} MB" if stolen_mb >= 10 else f"{stolen_mb:.1f} MB"
+        dur_str = f"{elapsed_ms/1000:.1f}s" if elapsed_ms >= 1000 else f"{int(round(elapsed_ms))}ms"
+        write_file_atomic(state_path, f"{stolen_str} ({dur_str})\n", mode=0o644)
+    except Exception:
+        pass
 
 def deploy_systemd_units() -> None:
     info("Deploying MGLRU proactive ZRAM memory reclaim units...")
@@ -573,6 +596,11 @@ total_mb=$(( mem_total / 1024 ))
 if (( pct < thresh_pct )); then
     printf '[INFO] RAM usage below threshold: %d.%d%% (%d MB / %d MB < %d%% threshold). Skipping proactive sweep to conserve CPU and avoid unnecessary compression.\n' \
         "$pct" "$pct_tenths" "$used_mb" "$total_mb" "$thresh_pct"
+    mkdir -p /run/dusky 2>/dev/null || true
+    tmp_f="/run/dusky/.state.$$"
+    printf 'Idle (RAM: %d.%d%% < %d%%)\n' "$pct" "$pct_tenths" "$thresh_pct" > "$tmp_f" 2>/dev/null && \
+        chmod 0644 "$tmp_f" 2>/dev/null && \
+        mv -f "$tmp_f" /run/dusky/pro_active_zram_swap.state 2>/dev/null || true
     exit 1
 fi
 
@@ -609,7 +637,9 @@ ProtectHome=yes
 PrivateTmp=yes
 ProtectKernelTunables=no
 ProtectControlGroups=no
-ReadWritePaths=/sys/fs/cgroup
+RuntimeDirectory=dusky
+RuntimeDirectoryPreserve=yes
+ReadWritePaths=/sys/fs/cgroup /run/dusky
 LockPersonality=yes
 RestrictSUIDSGID=yes
 RestrictRealtime=yes
@@ -671,6 +701,7 @@ def main() -> None:
             Path("/usr/local/bin/dusky_pro_active_zram_gate"),
             Path("/etc/systemd/system/dusky_pro_active_zram_swap.service"),
             Path("/etc/systemd/system/dusky_pro_active_zram_swap.timer"),
+            Path("/run/dusky/pro_active_zram_swap.state"),
             CONF_PATH,
         ]
         for f in files_to_remove:

@@ -53,6 +53,7 @@ TIMER_UNIT = Path("/etc/systemd/system/dusky_pro_active_zram_swap.timer")
 SERVICE_UNIT = Path("/etc/systemd/system/dusky_pro_active_zram_swap.service")
 BIN_PATH = Path("/usr/local/bin/dusky_pro_active_zram_swap")
 GATE_PATH = Path("/usr/local/bin/dusky_pro_active_zram_gate")
+STATE_FILE = Path("/run/dusky/pro_active_zram_swap.state")
 
 def get_setup_script_path() -> Path:
     """Dynamically resolve the 217 setup script path without hardcoding any user or home directory."""
@@ -162,7 +163,7 @@ def sync_binary_if_needed() -> None:
             shutil.copy2(setup_script, BIN_PATH)
             os.chmod(BIN_PATH, 0o755)
             ok(f"Synchronized binary to {BIN_PATH}")
-        if not GATE_PATH.exists() or (SERVICE_UNIT.exists() and "ExecCondition=" not in SERVICE_UNIT.read_text()):
+        if not GATE_PATH.exists() or (SERVICE_UNIT.exists() and ("ExecCondition=" not in SERVICE_UNIT.read_text() or "RuntimeDirectoryPreserve=" not in SERVICE_UNIT.read_text())):
             subprocess.run([sys.executable, str(setup_script)], check=False)
     except Exception as e:
         warn(f"Could not sync binary: {e}")
@@ -475,9 +476,21 @@ def run_now(force: bool = False) -> None:
             die("Neither systemd service nor binary could be executed.")
 
 def get_last_sweep_summary() -> str:
+    # Tier 1: Instant State File (/run/dusky/pro_active_zram_swap.state)
+    # World-readable (0644), persistent across runs via RuntimeDirectoryPreserve=yes.
+    # Completely avoids slow journalctl subprocesses and permission errors for unprivileged desktop users.
+    try:
+        if STATE_FILE.is_file():
+            content = STATE_FILE.read_text(encoding="utf-8").strip()
+            if content:
+                return content
+    except OSError:
+        pass
+
+    # Tier 2: Systemd Journal Fallback (if user has journal permissions)
     try:
         res = subprocess.run(
-            ["journalctl", "-u", "dusky_pro_active_zram_swap.service", "-n", "25", "--no-pager", "-o", "cat"],
+            ["journalctl", "-u", "dusky_pro_active_zram_swap.service", "-n", "30", "--no-pager", "-o", "cat"],
             capture_output=True,
             text=True,
             check=False
@@ -504,8 +517,36 @@ def get_last_sweep_summary() -> str:
                     if m:
                         return f"Idle (RAM: {m.group(1)}% < {thresh_str})"
                     return f"Idle (RAM < {thresh_str})"
+                elif "Condition check resulted in" in clean and "being skipped" in clean:
+                    thresh_str = get_ram_threshold_str()
+                    return f"Idle (RAM < {thresh_str})"
     except Exception:
         pass
+
+    # Tier 3: Real-Time Dynamic Fallback via /proc/meminfo (< 0.2ms, zero permissions required)
+    # Covers fresh boots before initial 45s timer fires or systems with restricted journals.
+    if is_timer_active():
+        try:
+            mem_tot = 0
+            mem_avail = 0
+            with open("/proc/meminfo", "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("MemTotal:"):
+                        mem_tot = int(line.split()[1])
+                    elif line.startswith("MemAvailable:"):
+                        mem_avail = int(line.split()[1])
+                    if mem_tot and mem_avail:
+                        break
+            if mem_tot > 0:
+                used_pct = ((mem_tot - mem_avail) * 100.0) / mem_tot
+                thresh_str = get_ram_threshold_str()
+                thresh_val = float(thresh_str.rstrip("%"))
+                if used_pct < thresh_val:
+                    return f"Idle (RAM: {used_pct:.1f}% < {thresh_str})"
+                return f"Pending sweep (RAM: {used_pct:.1f}% >= {thresh_str})"
+        except Exception:
+            pass
+
     return "None yet"
 
 def get_zram_overview() -> str:
