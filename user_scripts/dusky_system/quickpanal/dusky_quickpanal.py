@@ -98,6 +98,8 @@ def is_pointer_inside_window(win: Gtk.Widget) -> bool:
     except Exception:
         return False
 
+POWERTOP_AUTOTUNE_CMD: Final[list[str]] = ['/usr/bin/sudo', '-n', '/usr/bin/powertop', '--auto-tune']
+
 class QuickPanalWindow(Gtk.ApplicationWindow):
 
     def __init__(self, app: Gtk.Application, pool: RefreshPool, config: dict[str, Any], volume_submit: Any, brightness_submit: Any, sunset_submit: Any) -> None:
@@ -281,6 +283,11 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
             self.btn_save.connect('toggled', self._on_power_toggled, 'Power Saver')
             self.btn_bal.connect('toggled', self._on_power_toggled, 'Balanced')
             self.btn_perf.connect('toggled', self._on_power_toggled, 'Performance')
+            self.btn_save.set_tooltip_text('Power Saver\nRMB: Powertop auto-tune now')
+            self.btn_bal.set_tooltip_text('Balanced')
+            self.btn_perf.set_tooltip_text('Performance')
+            self.btn_save.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
+            self.btn_save.connect('button-press-event', self._on_power_save_button_press)
             for btn in (self.btn_save, self.btn_bal, self.btn_perf):
                 self.power_box.pack_start(btn, False, False, 0)
             self.power_container.pack_end(self.power_box, False, False, 0)
@@ -580,6 +587,27 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
         except Exception as e:
             LOG.error(f'Failed to apply power profile: {e}')
         GLib.idle_add(self._power_cmd_finished, revision)
+
+    def _on_power_save_button_press(self, button: Gtk.RadioButton, event: Gdk.EventButton) -> bool:
+        if event.button != 3:
+            return False
+        start_thread('powertop-autotune', self._run_powertop_autotune_worker)
+        return True
+
+    def _run_powertop_autotune_worker(self) -> None:
+        GLib.idle_add(_add_css_class, self.btn_save, 'applying')
+        try:
+            result = run_command(POWERTOP_AUTOTUNE_CMD, timeout=120.0, capture_stdout=True)
+            if result is None:
+                LOG.error('Powertop auto-tune failed to launch (missing binary or timeout)')
+            elif result.returncode != 0:
+                LOG.error(f'Powertop auto-tune exited with code {result.returncode} (sudoers NOPASSWD rule for /usr/bin/powertop missing?)')
+            else:
+                LOG.info('Powertop auto-tune applied via Power Saver right-click')
+        except Exception as e:
+            LOG.error(f'Powertop auto-tune failed: {e}')
+        finally:
+            GLib.idle_add(_remove_css_class, self.btn_save, 'applying')
 
     def _power_cmd_finished(self, revision: int) -> bool:
         if revision != self._power_pending_revision:

@@ -1,26 +1,17 @@
 [Unit]
 Description=Dusky Powertop Auto-Tune (battery saver one-shot)
 Documentation=man:powertop(8)
-# Order after late boot + TLP when present (harmless when TLP is absent).
 After=multi-user.target tlp.service
-# Graceful skip when powertop is not installed instead of failing the boot.
 ConditionPathExists=/usr/bin/powertop
 
 [Service]
 Type=oneshot
-# Explicit no: every trigger/start must actually execute (with
-# RemainAfterExit=yes, repeat starts in the same boot would be no-ops).
 RemainAfterExit=no
 TimeoutStartSec=60s
 ExecStart=/usr/bin/powertop --auto-tune
-# De-prioritize so the delayed tune never stalls interactive boot.
 Nice=19
 IOSchedulingClass=idle
 CPUSchedulingPolicy=idle
-
-# Hardening mirrored from Arch's stock tlp.service (same workload class:
-# root-owned sysfs power-tunable writer). /sys and /proc/sys stay writable
-# (ProtectKernelTunables left at default no) so --auto-tune can apply.
 LockPersonality=yes
 KeyringMode=private
 MemoryDenyWriteExecute=yes
@@ -33,6 +24,3 @@ ProtectKernelLogs=yes
 RestrictRealtime=yes
 RestrictNamespaces=yes
 RestrictSUIDSGID=yes
-
-# No [Install] section on purpose: this unit is triggered by
-# dusky_powertop_autotune.timer (or started manually). Enable the timer, not this service.
