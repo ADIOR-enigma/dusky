@@ -508,6 +508,7 @@ TIMER_INTERVAL=6min
 # Exits 1 if RAM usage < threshold (skips ExecStart= completely with zero Python overhead)
 
 set -eo pipefail
+export LC_ALL=C
 
 for arg in "$@"; do
     if [[ "$arg" == "--force" ]]; then
