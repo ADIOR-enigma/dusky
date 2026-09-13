@@ -2275,11 +2275,12 @@ title = "Tuning Guidelines & Dial Reference"
 icon = "dialog-information-symbolic"
 compact = true
 message = """
-• Per-App Idle Anon Limit: Max % of cold memory reclaimed per idle app (lower = gentler, higher = more RAM freed).
-• Max Sweep Budget: Memory ceiling per sweep to prevent latency spikes and micro-stutters.
-• Reclaim Chunk Size: Kernel burst size per yield (smaller = smoother UI responsiveness, larger = faster throughput).
-• Sweep Frequency: Periodic interval between background proactive memory reclaim passes.
-• ZRAM Abort Threshold: Safety circuit breaker; aborts sweep if ZRAM fullness exceeds this capacity."""
+• Per-App Idle Anon Limit: Max idle RAM reclaimed per inactive app (higher frees more memory, lower keeps apps warm).
+• Max Sweep Budget: Maximum RAM moved to ZRAM per pass to prevent CPU spikes and micro-stutters.
+• Reclaim Chunk Size: Memory batch size per pass (smaller = completely stutter-free UI, larger = faster sweeps).
+• Sweep Frequency: How often the background service checks and cleans idle memory.
+• RAM Trigger Threshold: Sweeps only activate when system RAM reaches this % (sleeps below it to save CPU and battery).
+• ZRAM Abort Threshold: Safety cutoff that stops sweeps if ZRAM is nearly full to prevent disk swap spills."""
 
 [[pages.layout.items.layout.items.layout]]
 type = "section"
@@ -2340,8 +2341,8 @@ description = "Periodic interval"
 icon = "alarm-symbolic"
 value_command = "$HOME/user_scripts/performance/zram/dusky_pro_active_swap_modifier_cc.py --get-interval"
 interval = 3
-options = ["1 min", "2 min", "3 min", "5 min", "10 min", "15 min"]
-options_map = { "1min" = "1 min", "2min" = "2 min", "3min" = "3 min", "5min" = "5 min", "10min" = "10 min", "15min" = "15 min" }
+options = ["1 min", "2 min", "3 min", "5 min", "6 min", "10 min", "15 min"]
+options_map = { "1min" = "1 min", "2min" = "2 min", "3min" = "3 min", "5min" = "5 min", "6min" = "6 min", "10min" = "10 min", "15min" = "15 min" }
 [pages.layout.items.layout.items.layout.items.on_change."1 min"]
 type = "exec"
 command = "$HOME/user_scripts/performance/zram/dusky_pro_active_swap_modifier_cc.py --set-interval 1min"
@@ -2362,6 +2363,11 @@ type = "exec"
 command = "$HOME/user_scripts/performance/zram/dusky_pro_active_swap_modifier_cc.py --set-interval 5min"
 terminal = false
 requires_root = true
+[pages.layout.items.layout.items.layout.items.on_change."6 min"]
+type = "exec"
+command = "$HOME/user_scripts/performance/zram/dusky_pro_active_swap_modifier_cc.py --set-interval 6min"
+terminal = false
+requires_root = true
 [pages.layout.items.layout.items.layout.items.on_change."10 min"]
 type = "exec"
 command = "$HOME/user_scripts/performance/zram/dusky_pro_active_swap_modifier_cc.py --set-interval 10min"
@@ -2370,6 +2376,21 @@ requires_root = true
 [pages.layout.items.layout.items.layout.items.on_change."15 min"]
 type = "exec"
 command = "$HOME/user_scripts/performance/zram/dusky_pro_active_swap_modifier_cc.py --set-interval 15min"
+terminal = false
+requires_root = true
+
+[[pages.layout.items.layout.items.layout.items]]
+type = "entry"
+[pages.layout.items.layout.items.layout.items.properties]
+title = "RAM Trigger Threshold"
+description = "Minimum RAM % to trigger sweep"
+button_text = "Apply"
+icon = "memory-symbolic"
+value_command = "$HOME/user_scripts/performance/zram/dusky_pro_active_swap_modifier_cc.py --get-ram-threshold"
+toast = "RAM trigger threshold set to {value}"
+[pages.layout.items.layout.items.layout.items.on_action]
+type = "exec"
+command = "$HOME/user_scripts/performance/zram/dusky_pro_active_swap_modifier_cc.py --set-ram-threshold {value}"
 terminal = false
 requires_root = true
 

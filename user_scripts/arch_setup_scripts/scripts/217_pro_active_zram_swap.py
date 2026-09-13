@@ -42,6 +42,7 @@ CHUNK_SIZE: int = 32 * 1024 * 1024       # 32 MiB write chunks for ultra-low lat
 PSI_SOME_THRESHOLD: float = 0.50         # Abort if some avg10 >= 0.50%
 ZRAM_MAX_USAGE_RATIO: float = 0.95       # Abort sweep if zRAM swap is >= 95% full to protect disk swap
 APP_IDLE_RECLAIM_RATIO: float = 0.40     # Reclaim up to 40% of idle app anon memory to protect warm UI buffers
+RAM_USAGE_THRESHOLD_RATIO: float = 0.80  # Only trigger proactive sweep if total system RAM usage is >= 80%
 
 def get_total_ram_bytes() -> int:
     try:
@@ -54,6 +55,29 @@ def get_total_ram_bytes() -> int:
         pass
     return 16 * 1024 * 1024 * 1024
 
+def get_ram_usage() -> tuple[int, int, float]:
+    """
+    Returns (used_bytes, total_bytes, usage_ratio) from /proc/meminfo.
+    Uses MemTotal and MemAvailable to calculate actual system memory consumption.
+    """
+    total = 0
+    available = 0
+    try:
+        with open("/proc/meminfo", "r", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    total = int(line.split()[1]) * 1024
+                elif line.startswith("MemAvailable:"):
+                    available = int(line.split()[1]) * 1024
+    except Exception:
+        pass
+
+    if total <= 0:
+        total = get_total_ram_bytes()
+    used = max(0, total - available) if available > 0 else 0
+    ratio = used / total if total > 0 else 0.0
+    return used, total, ratio
+
 TOTAL_RAM: int = get_total_ram_bytes()
 # Run budget: capped at 256 MiB per sweep to eliminate background micro-stutter
 MAX_PER_RUN: int = min(256 * 1024 * 1024, max(128 * 1024 * 1024, int(TOTAL_RAM * 0.10)))
@@ -62,7 +86,7 @@ CONF_PATH: Path = Path("/etc/dusky/dusky_pro_active_zram_swap.conf")
 
 def load_runtime_config() -> None:
     """Load dynamic overrides from /etc/dusky/dusky_pro_active_zram_swap.conf if present."""
-    global APP_IDLE_RECLAIM_RATIO, MAX_PER_RUN, ZRAM_MAX_USAGE_RATIO, PSI_SOME_THRESHOLD, CHUNK_SIZE
+    global APP_IDLE_RECLAIM_RATIO, MAX_PER_RUN, ZRAM_MAX_USAGE_RATIO, PSI_SOME_THRESHOLD, CHUNK_SIZE, RAM_USAGE_THRESHOLD_RATIO
     if not CONF_PATH.exists():
         return
     try:
@@ -85,6 +109,9 @@ def load_runtime_config() -> None:
                 elif k == "ZRAM_MAX_USAGE_RATIO":
                     val = float(v.rstrip("%")) / 100.0 if "%" in v else float(v)
                     ZRAM_MAX_USAGE_RATIO = max(0.10, min(1.0, val))
+                elif k in ("RAM_USAGE_THRESHOLD_RATIO", "RAM_THRESHOLD_RATIO", "RAM_USAGE_THRESHOLD", "RAM_THRESHOLD"):
+                    val = float(v.rstrip("%")) / 100.0 if "%" in v else float(v)
+                    RAM_USAGE_THRESHOLD_RATIO = max(0.01, min(1.0, val))
                 elif k == "PSI_SOME_THRESHOLD":
                     PSI_SOME_THRESHOLD = float(v)
     except Exception:
@@ -95,6 +122,7 @@ parser = argparse.ArgumentParser(description="Elite Arch Linux MGLRU Proactive Z
 group = parser.add_mutually_exclusive_group()
 group.add_argument("--run", action="store_true", help="Directly trigger the memory reclaim task")
 group.add_argument("--restore", action="store_true", help="Remove reclaimer binaries, systemd units and timer")
+parser.add_argument("--force", action="store_true", help="Bypass RAM threshold and PSI checks")
 parser.add_argument("--no-color", action="store_true", help="Disable ANSI color output")
 
 args = parser.parse_args()
@@ -326,9 +354,24 @@ def reclaim_cgroup_chunked(cgroup_dir: Path, target_bytes: int, label: str) -> t
     actual_stolen = max(0, after_steal - before_steal)
     return reclaimed_requested, actual_stolen
 
-def perform_reclaim() -> None:
+def perform_reclaim(force: bool = False) -> None:
     load_runtime_config()
-    info(f"Initiating MGLRU proactive idle memory sweep (budget={MAX_PER_RUN // (1024*1024)}MB, chunk={CHUNK_SIZE // (1024*1024)}MB, ratio={int(APP_IDLE_RECLAIM_RATIO*100)}%, zram_limit={int(ZRAM_MAX_USAGE_RATIO*100)}%)...")
+
+    # 0. Gate on overall system RAM usage: only reclaim when system RAM usage reaches threshold (default 80%)
+    used_b, total_b, ram_ratio = get_ram_usage()
+    if not force and ram_ratio < RAM_USAGE_THRESHOLD_RATIO:
+        info(
+            f"RAM usage below threshold: {ram_ratio * 100:.1f}% ({used_b // (1024*1024)} MB / "
+            f"{total_b // (1024*1024)} MB < {int(RAM_USAGE_THRESHOLD_RATIO * 100)}% threshold). "
+            "Skipping proactive sweep to conserve CPU and avoid unnecessary compression."
+        )
+        return
+
+    info(
+        f"Initiating MGLRU proactive idle memory sweep (RAM usage={ram_ratio*100:.1f}% >= {int(RAM_USAGE_THRESHOLD_RATIO*100)}%, "
+        f"budget={MAX_PER_RUN // (1024*1024)}MB, chunk={CHUNK_SIZE // (1024*1024)}MB, "
+        f"ratio={int(APP_IDLE_RECLAIM_RATIO*100)}%, zram_limit={int(ZRAM_MAX_USAGE_RATIO*100)}%)..."
+    )
 
     if not is_cgroup2_mounted():
         die("cgroup v2 not mounted at /sys/fs/cgroup. Arch uses cgroup2 by default.")
@@ -336,23 +379,23 @@ def perform_reclaim() -> None:
     if not has_swap_or_zram():
         warn("No active swap or ZRAM detected. Kernel will reject anon reclaim.")
 
-    # 0. Gate on zRAM presence and capacity: never spill cold pages to disk swap
+    # 1. Gate on zRAM presence and capacity: never spill cold pages to disk swap
     zram_stat = get_zram_swap_usage()
     if zram_stat is None:
         warn("No active zRAM swap device detected in /proc/swaps. Skipping proactive sweep to avoid spilling pages to disk swap.")
         return
-    used_b, size_b, ratio = zram_stat
-    if ratio >= ZRAM_MAX_USAGE_RATIO:
+    used_zram_b, size_zram_b, zram_ratio = zram_stat
+    if zram_ratio >= ZRAM_MAX_USAGE_RATIO:
         warn(
-            f"zRAM swap capacity at {ratio * 100:.1f}% ({used_b / (1024*1024):.1f} MB / "
-            f"{size_b / (1024*1024):.1f} MB >= {ZRAM_MAX_USAGE_RATIO * 100:.0f}%). "
+            f"zRAM swap capacity at {zram_ratio * 100:.1f}% ({used_zram_b / (1024*1024)} MB / "
+            f"{size_zram_b / (1024*1024)} MB >= {ZRAM_MAX_USAGE_RATIO * 100:.0f}%). "
             "Skipping proactive sweep to avoid spilling pages to disk swap."
         )
         return
 
-    # 1. Gate on system memory pressure
+    # 2. Gate on system memory pressure
     psi_sys = get_system_pressure()
-    if psi_sys >= PSI_SOME_THRESHOLD:
+    if not force and psi_sys >= PSI_SOME_THRESHOLD:
         info(f"System memory pressure active (some avg10={psi_sys:.2f}% >= {PSI_SOME_THRESHOLD}%). Skipping sweep.")
         return
 
@@ -451,7 +494,8 @@ APP_IDLE_RECLAIM_RATIO={APP_IDLE_RECLAIM_RATIO:.2f}
 MAX_PER_RUN_MB={MAX_PER_RUN // (1024*1024)}
 CHUNK_SIZE_MB={CHUNK_SIZE // (1024*1024)}
 ZRAM_MAX_USAGE_RATIO={ZRAM_MAX_USAGE_RATIO:.2f}
-TIMER_INTERVAL=3min
+RAM_USAGE_THRESHOLD_RATIO={RAM_USAGE_THRESHOLD_RATIO:.2f}
+TIMER_INTERVAL=6min
 """
     write_file_atomic(CONF_PATH, conf_content, mode=0o644)
     ok(f"Runtime configuration reset to script defaults at {CONF_PATH}")
@@ -494,12 +538,12 @@ MemoryDenyWriteExecute=no
 
     timer_path = Path("/etc/systemd/system/dusky_pro_active_zram_swap.timer")
     timer_content = """[Unit]
-Description=Trigger MGLRU Proactive ZRAM Swap at 45s Boot & 3min Periodic
+Description=Trigger MGLRU Proactive ZRAM Swap at 45s Boot & 6min Periodic
 Documentation=https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html
 
 [Timer]
 OnBootSec=45s
-OnUnitActiveSec=3min
+OnUnitActiveSec=6min
 AccuracySec=5s
 RandomizedDelaySec=15s
 Persistent=false
@@ -523,7 +567,7 @@ WantedBy=timers.target
     except subprocess.CalledProcessError as e:
         die(f"Failed to enable timer: {e}")
 
-    ok("MGLRU skimmer timer active: initial run at 45s after boot, recurring every 3min thereafter.")
+    ok("MGLRU skimmer timer active: initial run at 45s after boot, recurring every 6min thereafter.")
     info("Verify with: systemctl status dusky_pro_active_zram_swap.timer && systemctl status dusky_pro_active_zram_swap.service && journalctl -u dusky_pro_active_zram_swap.service")
 
 def main() -> None:
@@ -564,7 +608,7 @@ def main() -> None:
         return
 
     if args.run:
-        perform_reclaim()
+        perform_reclaim(force=args.force)
     else:
         deploy_systemd_units()
 

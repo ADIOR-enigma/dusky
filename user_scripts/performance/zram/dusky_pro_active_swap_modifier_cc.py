@@ -75,7 +75,8 @@ DEFAULT_RATIO = 0.40        # 40% per idle app
 DEFAULT_BUDGET_MB = 256     # 256 MB per run
 DEFAULT_CHUNK_MB = 32       # 32 MB write chunks per yield
 DEFAULT_ZRAM_LIMIT = 0.95   # 95% full zram abort
-DEFAULT_INTERVAL = "3min"   # Periodic sweep interval
+DEFAULT_RAM_THRESHOLD = 0.80 # 80% RAM usage threshold to trigger sweep
+DEFAULT_INTERVAL = "6min"   # Periodic sweep interval
 
 def write_file_atomic(path: Path, content: str, mode: int = 0o644) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -170,6 +171,7 @@ def read_config() -> dict[str, str]:
         "MAX_PER_RUN_MB": str(DEFAULT_BUDGET_MB),
         "CHUNK_SIZE_MB": str(DEFAULT_CHUNK_MB),
         "ZRAM_MAX_USAGE_RATIO": str(DEFAULT_ZRAM_LIMIT),
+        "RAM_USAGE_THRESHOLD_RATIO": str(DEFAULT_RAM_THRESHOLD),
         "TIMER_INTERVAL": DEFAULT_INTERVAL,
     }
     if CONF_FILE.exists():
@@ -180,7 +182,12 @@ def read_config() -> dict[str, str]:
                     if not line or line.startswith("#") or "=" not in line:
                         continue
                     k, v = line.split("=", 1)
-                    config[k.strip()] = v.strip().strip("\"'")
+                    k = k.strip()
+                    v = v.strip().strip("\"'")
+                    if k in ("RAM_USAGE_THRESHOLD_RATIO", "RAM_THRESHOLD_RATIO", "RAM_USAGE_THRESHOLD", "RAM_THRESHOLD"):
+                        config["RAM_USAGE_THRESHOLD_RATIO"] = v
+                    else:
+                        config[k] = v
         except Exception:
             pass
     return config
@@ -193,6 +200,7 @@ APP_IDLE_RECLAIM_RATIO={conf.get("APP_IDLE_RECLAIM_RATIO", str(DEFAULT_RATIO))}
 MAX_PER_RUN_MB={conf.get("MAX_PER_RUN_MB", str(DEFAULT_BUDGET_MB))}
 CHUNK_SIZE_MB={conf.get("CHUNK_SIZE_MB", str(DEFAULT_CHUNK_MB))}
 ZRAM_MAX_USAGE_RATIO={conf.get("ZRAM_MAX_USAGE_RATIO", str(DEFAULT_ZRAM_LIMIT))}
+RAM_USAGE_THRESHOLD_RATIO={conf.get("RAM_USAGE_THRESHOLD_RATIO", str(DEFAULT_RAM_THRESHOLD))}
 TIMER_INTERVAL={conf.get("TIMER_INTERVAL", DEFAULT_INTERVAL)}
 """
     write_file_atomic(CONF_FILE, content, mode=0o644)
@@ -387,6 +395,37 @@ def set_zram_limit(val_str: str) -> None:
     ok(f"ZRAM safety limit set to {pct}%.")
     notify("Proactive Swap Safety Limit", f"ZRAM abort limit set to {pct}%")
 
+# --- RAM Trigger Threshold ---
+def get_ram_threshold_str() -> str:
+    conf = read_config()
+    try:
+        val = float(conf.get("RAM_USAGE_THRESHOLD_RATIO", str(DEFAULT_RAM_THRESHOLD)))
+        return f"{int(round(val * 100))}%"
+    except ValueError:
+        return f"{int(DEFAULT_RAM_THRESHOLD * 100)}%"
+
+def set_ram_threshold(val_str: str) -> None:
+    escalate_root_if_needed()
+    sync_binary_if_needed()
+    has_pct = "%" in val_str
+    val_clean = val_str.strip().rstrip("%")
+    try:
+        num = float(val_clean)
+        if has_pct or num > 1.0:
+            threshold = num / 100.0
+        else:
+            threshold = num
+        threshold = max(0.01, min(1.0, threshold))
+    except ValueError:
+        die(f"Invalid RAM threshold value '{val_str}'. Example: '80%' or '0.80'.")
+
+    conf = read_config()
+    conf["RAM_USAGE_THRESHOLD_RATIO"] = f"{threshold:.2f}"
+    write_config(conf)
+    pct = int(round(threshold * 100))
+    ok(f"RAM trigger threshold set to {pct}%.")
+    notify("Proactive Swap RAM Threshold", f"RAM trigger threshold set to {pct}%")
+
 # --- Service & Timer Status / Control ---
 def is_timer_active() -> bool:
     res = subprocess.run(
@@ -408,10 +447,16 @@ def disable_timer() -> None:
     ok("dusky_pro_active_zram_swap.timer stopped and disabled.")
     notify("Proactive Swap", "Automatic background reclaim timer disabled.")
 
-def run_now() -> None:
+def run_now(force: bool = False) -> None:
     escalate_root_if_needed()
     sync_binary_if_needed()
     info("Triggering proactive memory sweep now...")
+    if force:
+        if BIN_PATH.exists():
+            subprocess.run([sys.executable, str(BIN_PATH), "--run", "--force"], check=False)
+            ok("Forced sweep initiated directly.")
+            notify("Proactive Swap", "Forced memory sweep completed.")
+            return
     res = subprocess.run(["systemctl", "start", "dusky_pro_active_zram_swap.service"], check=False)
     if res.returncode == 0:
         ok("Sweep initiated successfully via systemd service.")
@@ -419,31 +464,43 @@ def run_now() -> None:
     else:
         # Fallback to direct execution
         if BIN_PATH.exists():
-            subprocess.run([sys.executable, str(BIN_PATH), "--run"], check=False)
+            cmd = [sys.executable, str(BIN_PATH), "--run"]
+            if force:
+                cmd.append("--force")
+            subprocess.run(cmd, check=False)
         else:
             die("Neither systemd service nor binary could be executed.")
 
 def get_last_sweep_summary() -> str:
     try:
         res = subprocess.run(
-            ["journalctl", "-u", "dusky_pro_active_zram_swap.service", "-g", "Sweep finished", "-n", "1", "--no-pager", "-o", "cat"],
+            ["journalctl", "-u", "dusky_pro_active_zram_swap.service", "-n", "25", "--no-pager", "-o", "cat"],
             capture_output=True,
             text=True,
             check=False
         )
         out = res.stdout.strip()
         if out:
-            clean = re.sub(r"\x1b\[[0-9;]*[mGKF]", "", out)
-            match = re.search(r"Stolen:\s*([0-9.]+)\s*MB", clean)
-            dur_match = re.search(r"in\s*([0-9.]+)\s*ms", clean)
-            if match:
-                stolen_mb = float(match.group(1))
-                stolen_str = f"{int(round(stolen_mb))} MB" if stolen_mb >= 10 else f"{stolen_mb:.1f} MB"
-                if dur_match:
-                    ms = float(dur_match.group(1))
-                    dur_str = f"{ms/1000:.1f}s" if ms >= 1000 else f"{int(round(ms))}ms"
-                    return f"{stolen_str} ({dur_str})"
-                return stolen_str
+            lines = out.splitlines()
+            for line in reversed(lines):
+                clean = re.sub(r"\x1b\[[0-9;]*[mGKF]", "", line)
+                if "Sweep finished" in clean:
+                    match = re.search(r"Stolen:\s*([0-9.]+)\s*MB", clean)
+                    dur_match = re.search(r"in\s*([0-9.]+)\s*ms", clean)
+                    if match:
+                        stolen_mb = float(match.group(1))
+                        stolen_str = f"{int(round(stolen_mb))} MB" if stolen_mb >= 10 else f"{stolen_mb:.1f} MB"
+                        if dur_match:
+                            ms = float(dur_match.group(1))
+                            dur_str = f"{ms/1000:.1f}s" if ms >= 1000 else f"{int(round(ms))}ms"
+                            return f"{stolen_str} ({dur_str})"
+                        return stolen_str
+                elif "RAM usage below threshold" in clean or "Skipping proactive sweep" in clean:
+                    m = re.search(r"RAM usage (?:at|below threshold:)\s*([0-9.]+)%", clean)
+                    thresh_str = get_ram_threshold_str()
+                    if m:
+                        return f"Idle (RAM: {m.group(1)}% < {thresh_str})"
+                    return f"Idle (RAM < {thresh_str})"
     except Exception:
         pass
     return "None yet"
@@ -474,6 +531,7 @@ def get_compact_status() -> str:
 def print_full_status() -> None:
     active = is_timer_active()
     interval = get_timer_interval()
+    ram_threshold = get_ram_threshold_str()
     ratio = get_ratio_str()
     budget = get_max_budget_str()
     chunk = get_chunk_size_str()
@@ -488,6 +546,7 @@ def print_full_status() -> None:
     status_word = "ACTIVE (Running)" if active else "DISABLED (Stopped)"
     print(f"  {C.BOLD}Timer Subsystem:{C.RST}   {status_color}{status_word}{C.RST}")
     print(f"  {C.BOLD}Sweep Frequency:{C.RST}   {C.CYN}{interval}{C.RST}")
+    print(f"  {C.BOLD}RAM Trigger Cap:{C.RST}   {C.CYN}{ram_threshold}{C.RST} (only sweeps when RAM >= {ram_threshold})")
     print(f"  {C.BOLD}App Skim Limit:{C.RST}    {C.CYN}{ratio}{C.RST} anon memory per idle app")
     print(f"  {C.BOLD}Run Budget Cap:{C.RST}    {C.CYN}{budget}{C.RST} max per sweep")
     print(f"  {C.BOLD}Burst Chunk Size:{C.RST}  {C.CYN}{chunk}{C.RST} per kernel reclaim yield")
@@ -549,17 +608,20 @@ def main() -> None:
     parser.add_argument("--get-chunk-size", action="store_true", help="Print kernel memory reclaim write chunk size")
     parser.add_argument("--get-interval", action="store_true", help="Print periodic sweep timer interval")
     parser.add_argument("--get-zram-limit", action="store_true", help="Print ZRAM abort limit percentage")
+    parser.add_argument("--get-ram-threshold", action="store_true", help="Print RAM trigger threshold percentage")
     parser.add_argument("--last-sweep", action="store_true", help="Print last sweep summary")
 
     # Mutation Handlers (Root Escalated)
     parser.add_argument("--enable", action="store_true", help="Enable and start proactive swap timer")
     parser.add_argument("--disable", action="store_true", help="Disable and stop proactive swap timer")
     parser.add_argument("--run-now", action="store_true", help="Trigger an immediate memory sweep")
+    parser.add_argument("--force", action="store_true", help="With --run-now, force immediate sweep bypassing RAM threshold")
     parser.add_argument("--set-ratio", nargs="+", metavar="PCT", help="Set per-app idle anon memory ratio (e.g. '40%%', '25%%')")
     parser.add_argument("--set-max-budget", nargs="+", metavar="SIZE", help="Set max sweep budget ceiling (e.g. '256 MB', '512 MB', '1 GB')")
     parser.add_argument("--set-chunk-size", nargs="+", metavar="SIZE", help="Set kernel memory reclaim write chunk size (e.g. '16 MB', '32 MB', '64 MB')")
-    parser.add_argument("--set-interval", nargs="+", metavar="INTERVAL", help="Set periodic timer interval (e.g. '3min', '5min')")
+    parser.add_argument("--set-interval", nargs="+", metavar="INTERVAL", help="Set periodic timer interval (e.g. '3min', '6min')")
     parser.add_argument("--set-zram-limit", nargs="+", metavar="LIMIT", help="Set ZRAM abort fullness limit (e.g. '95%%')")
+    parser.add_argument("--set-ram-threshold", nargs="+", metavar="PCT", help="Set RAM trigger threshold percentage (e.g. '80%%', '75%%')")
 
     args = parser.parse_args()
 
@@ -588,6 +650,9 @@ def main() -> None:
     if args.get_zram_limit:
         print(get_zram_limit_str())
         return
+    if args.get_ram_threshold:
+        print(get_ram_threshold_str())
+        return
     if args.last_sweep:
         print(get_last_sweep_summary())
         return
@@ -600,7 +665,7 @@ def main() -> None:
         disable_timer()
         return
     if args.run_now:
-        run_now()
+        run_now(force=args.force)
         return
     if args.set_ratio:
         set_ratio(" ".join(args.set_ratio) if isinstance(args.set_ratio, list) else str(args.set_ratio))
@@ -616,6 +681,9 @@ def main() -> None:
         return
     if args.set_zram_limit:
         set_zram_limit(" ".join(args.set_zram_limit) if isinstance(args.set_zram_limit, list) else str(args.set_zram_limit))
+        return
+    if args.set_ram_threshold:
+        set_ram_threshold(" ".join(args.set_ram_threshold) if isinstance(args.set_ram_threshold, list) else str(args.set_ram_threshold))
         return
 
     # Default fallback
