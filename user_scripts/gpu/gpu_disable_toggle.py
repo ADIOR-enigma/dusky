@@ -90,6 +90,9 @@ CMDLINE_D = Path("/etc/cmdline.d")
 CMDLINE_D_DROPIN = CMDLINE_D / "99-gpu-disable.conf"
 STATE_DIR = Path("/var/lib/gpu-disable")
 STATE_FILE = STATE_DIR / "state.json"
+ASUS_DGPU_DISABLE = Path("/sys/devices/platform/asus-nb-wmi/dgpu_disable")
+ASUS_ARMOURY_DGPU_DISABLE = Path("/sys/devices/virtual/firmware-attributes/asus-armoury/attributes/dgpu_disable/current_value")
+ASUS_TMPFILES = Path("/etc/tmpfiles.d/99-asus-dgpu-disable.conf")
 
 # Only these cmdline keys are owned. The iommu keys are required: without an
 # active IOMMU, vfio-pci probe fails with -EINVAL and the GPU stays half-claimed.
@@ -900,6 +903,67 @@ def reload_udev() -> None:
         console.print("[dim]    udev rules reloaded.[/dim]")
 
 
+def asus_wmi_available() -> bool:
+    return ASUS_ARMOURY_DGPU_DISABLE.exists() or ASUS_DGPU_DISABLE.exists()
+
+
+def set_asus_dgpu_disable(disabled: bool) -> None:
+    val = "1" if disabled else "0"
+    if DRY_RUN:
+        console.print(f"[magenta]  [dry-run] would set ASUS WMI dgpu_disable to {val}[/magenta]")
+        return
+    for p in (ASUS_ARMOURY_DGPU_DISABLE, ASUS_DGPU_DISABLE):
+        if p.exists():
+            try:
+                p.write_text(val, encoding="utf-8")
+                console.print(f"[green]  ~[/green] ASUS WMI dgpu_disable set to {val} ({p.name})")
+            except OSError as exc:
+                console.print(f"[yellow]  ! Failed to write {val} to {p}: {exc}[/yellow]")
+    if disabled:
+        payload = (
+            "# Managed by gpu-disable-toggle. Ensure ASUS firmware dGPU power cut persists across boots.\n"
+            f"w- {ASUS_ARMOURY_DGPU_DISABLE} - - - - 1\n"
+            f"w- {ASUS_DGPU_DISABLE} - - - - 1\n"
+        )
+        if atomic_write(ASUS_TMPFILES, payload):
+            console.print(f"[green]  ~[/green] {ASUS_TMPFILES}")
+    else:
+        if ASUS_TMPFILES.exists():
+            ASUS_TMPFILES.unlink()
+            console.print(f"[green]  ~[/green] removed {ASUS_TMPFILES}")
+
+
+def find_upstream_bridge(slot: str) -> Path | None:
+    try:
+        domain, bus_dev = slot.split(":", 1)
+        bus_str, _ = bus_dev.split(":", 1)
+        bus_num = int(bus_str, 16)
+    except (ValueError, IndexError):
+        return None
+    if not SYS_PCI.is_dir():
+        return None
+    for b in SYS_PCI.iterdir():
+        sec_f = b / "secondary_bus_number"
+        sub_f = b / "subordinate_bus_number"
+        if sec_f.is_file() and sub_f.is_file():
+            try:
+                sec = int(sec_f.read_text().strip())
+                sub = int(sub_f.read_text().strip())
+                if sec <= bus_num <= sub:
+                    return b
+            except (ValueError, OSError):
+                pass
+    return None
+
+
+def pci_bridge_power_state(bridge: Path) -> tuple[str, str]:
+    import time
+    time.sleep(0.15)
+    pst = _read(bridge / "power_state") or "unknown"
+    rst = _read(bridge / "power" / "runtime_status") or "unknown"
+    return pst, rst
+
+
 def effective_hooks() -> list[str]:
     """Evaluate effective HOOKS mkinitcpio will see, excluding our own drop-in."""
     files = [MKINITCPIO_CONF]
@@ -1044,6 +1108,26 @@ def do_status() -> None:
                   f"[cyan]{action}[/cyan]" if state else "[dim]none[/dim]")
     table.add_row("state.json claimed IDs",
                   f"[green]{', '.join(staged_ids)}[/green]" if staged_ids else "[dim]none[/dim]")
+
+    # Show PCIe Root Port power status for disabled slot
+    target_slots = state.get("slots", [])
+    for s in target_slots:
+        bridge = find_upstream_bridge(s)
+        if bridge:
+            pst, rst = pci_bridge_power_state(bridge)
+            style = "green" if pst == "D3cold" else "yellow"
+            table.add_row(f"PCIe Root Port ({bridge.name})", f"[{style}]{pst} ({rst})[/{style}]")
+
+    # Show ASUS hardware power gate if supported
+    if asus_wmi_available():
+        val = None
+        for p in (ASUS_ARMOURY_DGPU_DISABLE, ASUS_DGPU_DISABLE):
+            if p.exists():
+                val = _read(p)
+                break
+        status_str = "[green]disabled (power cut)[/green]" if val == "1" else "[yellow]enabled (powered)[/yellow]"
+        table.add_row("ASUS WMI dgpu_disable", status_str)
+
     console.print(table)
     if modprobe:
         console.print(Panel(MODPROBE_FILE.read_text(encoding="utf-8").strip(),
@@ -1108,6 +1192,8 @@ def do_disable(args: argparse.Namespace) -> None:
 
     write_modprobe(claim, softdeps, blacklist)
     write_udev_hide(claim)
+    if asus_wmi_available():
+        set_asus_dgpu_disable(True)
     patch_bootloader(entry, blacklist, claim.ids, vendor, args.amd_force_enable, enable=False)
     configure_initramfs(enable=False)
     state_save(ids=claim.ids, addrs=claim.addrs, slots=claim.slots,
@@ -1138,6 +1224,8 @@ def do_enable(args: argparse.Namespace) -> None:
     entry = resolve_boot_entry()
     remove_modprobe()
     remove_udev_hide()
+    if asus_wmi_available() or ASUS_TMPFILES.exists():
+        set_asus_dgpu_disable(False)
     patch_bootloader(entry, set(), [], cpu_vendor(), args.amd_force_enable,
                      enable=True, restore=restore)
     # Stale cmdline.d drop-in sweep if active target is type1 or KERNEL_CMDLINE
