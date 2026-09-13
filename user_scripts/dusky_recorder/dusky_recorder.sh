@@ -14,9 +14,13 @@ set -Eeuo pipefail
 # --- CONFIGURATION ---
 readonly CFG="$HOME/.config/dusky_recorder/config.conf"
 readonly ROFI_THEME_STR='window { width: 450px; } listview { lines: 8; }'
-readonly INDICATOR_PID="/tmp/dusky_recorder_daemon.pid"
+readonly RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$UID}"
+readonly RECORDER_STATE_DIR="$RUNTIME_DIR/dusky-recorder"
+readonly INDICATOR_PID_FILE="$RECORDER_STATE_DIR/indicator.pid"
+readonly INDICATOR_ID_FILE="$RECORDER_STATE_DIR/indicator.id"
 
 # Ensure config exists and load it
+# shellcheck source=/dev/null
 [[ -f "$CFG" ]] && source "$CFG"
 
 # --- FALLBACKS & DEFAULTS ---
@@ -107,55 +111,144 @@ get_audio_name() {
     fi
 }
 
+# --- PROCESS & NOTIFICATION STATE HELPERS ---
+process_start() {
+    local pid="$1"
+    local raw
+    local -a fields
+
+    [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+    (( pid > 1 )) || return 1
+
+    { IFS= read -r raw < "/proc/$pid/stat"; } 2>/dev/null || return 1
+
+    read -r -a fields <<< "${raw##*) }"
+    (( ${#fields[@]} >= 20 )) || return 1
+    [[ "${fields[0]}" != Z && "${fields[0]}" != X ]] || return 1
+
+    printf '%s\n' "${fields[19]}"
+}
+
+same_process() {
+    local actual_start
+    actual_start=$(process_start "$1") || return 1
+    [[ "$actual_start" == "$2" ]]
+}
+
+dismiss_indicator() {
+    local dismissed=false
+
+    # 1. Defensively dismiss all notifications matching app-name "dusky-recorder" in mako
+    if command -v makoctl >/dev/null 2>&1; then
+        local nid
+        while read -r nid; do
+            if [[ -n "$nid" && "$nid" =~ ^[0-9]+$ ]] && (( nid > 0 )); then
+                makoctl dismiss -n "$nid" >/dev/null 2>&1 || true
+                dismissed=true
+            fi
+        done < <(makoctl list -j 2>/dev/null | jq -r '.[] | select(.app_name == "dusky-recorder") | .id' 2>/dev/null || true)
+    fi
+
+    # 2. Close saved notification ID via standard D-Bus CloseNotification as fallback
+    if [[ -f "$INDICATOR_ID_FILE" ]]; then
+        if [[ "$dismissed" == false ]]; then
+            local saved_id=""
+            saved_id=$(<"$INDICATOR_ID_FILE") || true
+            if [[ -n "$saved_id" && "$saved_id" =~ ^[0-9]+$ ]] && (( saved_id > 0 )); then
+                busctl --user --timeout=1 -- call \
+                    org.freedesktop.Notifications /org/freedesktop/Notifications \
+                    org.freedesktop.Notifications CloseNotification \
+                    u "$saved_id" >/dev/null 2>&1 || true
+            fi
+        fi
+        rm -f "$INDICATOR_ID_FILE" 2>/dev/null || true
+    fi
+}
+
 manage_indicator() {
     local action="$1"
-    
+
     if [[ "$action" == "start" ]]; then
         [[ "$show_indicator" != "yes" ]] && return 0
+        mkdir -p "$RECORDER_STATE_DIR"
+
         # Prevent duplicate indicator loops by terminating any existing daemon process
-        if [[ -f "$INDICATOR_PID" ]]; then
-            local d_pid
-            d_pid=$(cat "$INDICATOR_PID" 2>/dev/null || echo "")
-            if [[ -n "$d_pid" ]]; then
-                kill "$d_pid" 2>/dev/null || true
-                pkill -P "$d_pid" 2>/dev/null || true
-            fi
-            rm -f "$INDICATOR_PID"
-        fi
+        manage_indicator "stop"
+
         (
+            trap 'dismiss_indicator; exit 0' TERM INT HUP EXIT
+            local my_pid=$BASHPID
+            local my_start
+            my_start=$(process_start "$my_pid") || my_start=""
+            printf '%s %s\n' "$my_pid" "$my_start" > "$INDICATOR_PID_FILE"
+
+            # Immediate initial frame: Show red dot without delay
+            local init_id=""
+            init_id=$(notify-send -p -a "dusky-recorder" -t 0 \
+                -h string:x-canonical-private-synchronous:recorder "" "" 2>/dev/null || true)
+            if [[ "$init_id" =~ ^[0-9]+$ ]]; then
+                printf '%s\n' "$init_id" > "$INDICATOR_ID_FILE"
+            fi
+
             local visible=true
             while true; do
+                sleep 1 &
+                wait $! 2>/dev/null || true
+
                 # Auto-terminate indicator loop if backend recorder process dies unexpectedly
                 if ! pidof gpu-screen-recorder >/dev/null 2>&1; then
-                    notify-send -a "dusky-recorder" -t 1 -h string:x-canonical-private-synchronous:recorder " " "" >/dev/null 2>&1 || true
-                    rm -f "$INDICATOR_PID" 2>/dev/null || true
                     break
                 fi
-                sleep 1
+
+                local symbol=""
                 if $visible; then
-                    notify-send -a "dusky-recorder" -t 0 -h string:x-canonical-private-synchronous:recorder " " "" 2>/dev/null || true
+                    symbol=" "
                     visible=false
                 else
-                    notify-send -a "dusky-recorder" -t 0 -h string:x-canonical-private-synchronous:recorder "" "" 2>/dev/null || true
+                    symbol=""
                     visible=true
                 fi
+
+                local next_id=""
+                next_id=$(notify-send -p -a "dusky-recorder" -t 0 \
+                    -h string:x-canonical-private-synchronous:recorder "$symbol" "" 2>/dev/null || true)
+                if [[ "$next_id" =~ ^[0-9]+$ ]]; then
+                    printf '%s\n' "$next_id" > "$INDICATOR_ID_FILE"
+                fi
             done
-        ) >/dev/null 2>&1 & 
-        echo $! > "$INDICATOR_PID"
-        
+        ) >/dev/null 2>&1 &
+
     elif [[ "$action" == "stop" ]]; then
-        if [[ -f "$INDICATOR_PID" ]]; then
-            local d_pid
-            d_pid=$(cat "$INDICATOR_PID" 2>/dev/null || echo "")
-            if [[ -n "$d_pid" ]]; then
-                kill "$d_pid" 2>/dev/null || true
-                pkill -P "$d_pid" 2>/dev/null || true
+        if [[ -f "$INDICATOR_PID_FILE" ]]; then
+            local d_pid="" d_start=""
+            read -r d_pid d_start < "$INDICATOR_PID_FILE" 2>/dev/null || true
+            if [[ -n "$d_pid" && "$d_pid" =~ ^[0-9]+$ ]]; then
+                local is_valid=true
+                if [[ -n "$d_start" ]]; then
+                    if ! same_process "$d_pid" "$d_start"; then
+                        is_valid=false
+                    fi
+                fi
+
+                if $is_valid; then
+                    kill -TERM "$d_pid" 2>/dev/null || true
+                    pkill -P "$d_pid" 2>/dev/null || true
+                    local attempt=0
+                    while kill -0 "$d_pid" 2>/dev/null && (( attempt < 15 )); do
+                        sleep 0.05
+                        ((attempt++))
+                    done
+                    if kill -0 "$d_pid" 2>/dev/null; then
+                        kill -9 "$d_pid" 2>/dev/null || true
+                        pkill -9 -P "$d_pid" 2>/dev/null || true
+                    fi
+                fi
             fi
-            rm -f "$INDICATOR_PID"
+            rm -f "$INDICATOR_PID_FILE" 2>/dev/null || true
         fi
-        
-        # Overwrite the synchronous indicator group with a 1ms blank frame to force Mako to drop it
-        notify-send -a "dusky-recorder" -t 1 -h string:x-canonical-private-synchronous:recorder " " "" >/dev/null 2>&1 || true
+
+        # Explicitly and completely dismiss indicator notifications
+        dismiss_indicator
     fi
     return 0
 }
@@ -207,12 +300,19 @@ save_replay() {
                 kill -SIGUSR1 "$pid" 2>/dev/null || true
             done
             notify-send -a "dusky-recorder-status" -h string:x-canonical-private-synchronous:dusky-recorder-status -u normal -i media-record 'Dusky Replay' '  Replay buffer saved'
+            return 0
         fi
     fi
+    notify-send -a "dusky-recorder-status" -h string:x-canonical-private-synchronous:dusky-recorder-status -u critical 'Dusky Replay' 'No recording active to save'
 }
 
 start_recording() {
     local target_mode="$1"
+
+    if pidof gpu-screen-recorder >/dev/null 2>&1; then
+        notify-send -a "dusky-recorder-status" -h string:x-canonical-private-synchronous:dusky-recorder-status -u normal -i dialog-information 'Dusky Recorder' 'Recording is already running'
+        return 0
+    fi
     
     local region_coords=""
     if [[ "$target_mode" == "region" ]]; then
@@ -548,8 +648,16 @@ main() {
     if pids=$(pidof gpu-screen-recorder || true); then
         if [[ -n "$pids" ]]; then
             is_running=true
-            if grep -zqxa -- '-r' "/proc/$(echo "$pids" | awk '{print $1}')/cmdline" 2>/dev/null; then
-                is_replay=true
+            local first_pid="${pids%% *}"
+            if [[ -r "/proc/$first_pid/cmdline" ]]; then
+                local -a cmdargs=()
+                mapfile -d '' cmdargs < "/proc/$first_pid/cmdline" 2>/dev/null || true
+                for arg in "${cmdargs[@]}"; do
+                    if [[ "$arg" == "-r" ]]; then
+                        is_replay=true
+                        break
+                    fi
+                done
             fi
         fi
     fi
@@ -560,6 +668,8 @@ main() {
         main_opts+=("  Stop Recording")
         main_opts+=("  Cancel")
     else
+        # Purge any stale or orphaned indicator if recorder backend is not running
+        manage_indicator "stop"
         main_opts+=("  Record Full Screen")
         main_opts+=("  Record Region")
         main_opts+=("  Settings Hub")
