@@ -72,6 +72,7 @@ SYSTEM_SERVICES: Final[list[ServiceConfig]] = [
     ServiceConfig("dusky_pro_active_zram_swap.timer", True, "Proactive ZRAM idle memory reclaimer timer"),
     # Optional / Disabled by Default:
     ServiceConfig("tlp.service", False, "Power management daemon (disabled by default)"),
+    ServiceConfig("dusky_powertop_autotune.timer", False, "Powertop auto-tune 2min after boot (disabled by default, conflicts with TLP)"),
     ServiceConfig("vsftpd.service", False, "FTP server daemon (disabled by default)"),
     ServiceConfig("reflector.timer", False, "Pacman mirrorlist reflector timer (disabled by default)"),
 ]

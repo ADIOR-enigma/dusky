@@ -1,0 +1,16 @@
+[Unit]
+Description=Apply Powertop auto-tune 2 minutes after boot (dusky)
+Documentation=man:powertop(8) man:systemd.timer(5)
+
+[Timer]
+# Delayed one-shot per boot: lets USB/PCI devices, TLP (if present),
+# and the desktop settle before flipping tunables to "Good".
+OnBootSec=2min
+# Allow the kernel to batch this wakeup with others for power efficiency.
+AccuracySec=30s
+# Boot-relative one-shot: never catch up after a missed boot.
+Persistent=false
+Unit=dusky_powertop_autotune.service
+
+[Install]
+WantedBy=timers.target

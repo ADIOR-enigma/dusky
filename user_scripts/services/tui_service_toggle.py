@@ -178,6 +178,10 @@ CORE_SYSTEM_DEFS = {
         "Dusky Keystroke Statistics Daemon",
         "Always-on keystroke statistics daemon. Captures raw key presses via evdev (no Wayland/X11), classifies them (Shift/Caps/NumLock, shortcut chords), and stores them with kernel timestamps in SQLite at ~/.local/share/dusky-keylogger/keys.db (mode 0600). Powers the `dusky stats` / `dusky dashboard` analytics. Stop/disable it here to pause logging.",
     ),
+    "dusky_powertop_autotune.timer": (
+        "Powertop Auto-Tune (Battery Saver)",
+        "One-shot boot timer that runs `powertop --auto-tune` 2 minutes after boot to flip all power tunables to their Good setting. Enable this timer to auto-tune on every boot; the companion dusky_powertop_autotune.service runs only when triggered. Disabled by default because it can conflict with TLP.",
+    ),
 }
 
 import concurrent.futures
