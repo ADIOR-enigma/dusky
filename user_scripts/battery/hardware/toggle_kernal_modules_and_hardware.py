@@ -456,6 +456,100 @@ def set_platform_profile(profile: str) -> bool:
         write_sysfs(THROTTLE_POLICY, pol_map.get(profile, "0"))
     return True
 
+# --- K. Thunderbolt 4 Port & Controller ---
+THUNDERBOLT_PCI = "0000:00:0d.2"
+THUNDERBOLT_DRIVER_DIR = Path("/sys/bus/pci/drivers/thunderbolt")
+
+def get_thunderbolt_status() -> bool:
+    """Returns True if Thunderbolt 4 NHI controller is bound and active, False if unbound/disabled."""
+    return (THUNDERBOLT_DRIVER_DIR / THUNDERBOLT_PCI).exists()
+
+def set_thunderbolt(enable: bool) -> bool:
+    """Enables or disables the Thunderbolt 4 NHI controller on PCIe."""
+    is_bound = (THUNDERBOLT_DRIVER_DIR / THUNDERBOLT_PCI).exists()
+    if enable:
+        if not is_bound:
+            write_sysfs(THUNDERBOLT_DRIVER_DIR / "bind", THUNDERBOLT_PCI)
+        return True
+    else:
+        if is_bound:
+            write_sysfs(THUNDERBOLT_DRIVER_DIR / "unbind", THUNDERBOLT_PCI)
+        return True
+
+# --- L. External USB Data Ports (Type-A & Type-C Data) ---
+TB_USB_PCI = "0000:00:0d.0"
+TB_USB_DRIVER_DIR = Path("/sys/bus/pci/drivers/xhci_hcd")
+
+def get_external_usb_status() -> bool:
+    """Returns True if external USB data ports are authorized, False if blocked."""
+    u4 = Path("/sys/bus/usb/devices/usb4/authorized_default")
+    if u4.exists() and safe_read(u4) == "0":
+        return False
+    return True
+
+def set_external_usb(enable: bool) -> bool:
+    """
+    Enables or disables external USB ports.
+    When disabled:
+      - Sets authorized_default=0 on external USB root hubs (blocks any newly inserted USB device)
+      - Unbinds external Thunderbolt/Type-C USB controller 0000:00:0d.0
+      - Preserves internal devices (Webcam, C-Media Audio, Bluetooth) and hardware charging (USB-PD / DC-in).
+    """
+    val = "1" if enable else "0"
+    for r in Path("/sys/bus/usb/devices").glob("usb*"):
+        auth_f = r / "authorized_default"
+        if auth_f.exists():
+            write_sysfs(auth_f, val)
+
+    # Also handle the dedicated external Type-C USB controller (0000:00:0d.0)
+    tb_bound = (TB_USB_DRIVER_DIR / TB_USB_PCI).exists()
+    if enable and not tb_bound:
+        write_sysfs(TB_USB_DRIVER_DIR / "bind", TB_USB_PCI)
+    elif not enable and tb_bound:
+        write_sysfs(TB_USB_DRIVER_DIR / "unbind", TB_USB_PCI)
+    return True
+
+# --- M. Ethernet LAN Controller (RJ-45) ---
+def get_ethernet_status() -> tuple[str, bool]:
+    """Returns (status_string, is_controllable)."""
+    res = subprocess.run(["ip", "-o", "link"], capture_output=True, text=True)
+    eth_ifaces = [
+        line.split(": ")[1] for line in res.stdout.splitlines()
+        if any(line.split(": ")[1].startswith(prefix) for prefix in ("eth", "enp", "eno", "ens"))
+    ]
+    if eth_ifaces:
+        iface = eth_ifaces[0]
+        is_up = "state UP" in res.stdout
+        return f"{'ACTIVE (UP)' if is_up else 'DOWN (Link Off)'} ({iface})", True
+
+    # Check if r8169 kernel driver is compiled/available
+    r8169_drv = Path("/sys/bus/pci/drivers/r8169")
+    if r8169_drv.exists() and list(r8169_drv.glob("0000:*")):
+        return "ENABLED (Bound)", True
+
+    return "OFF (Kernel Driver Not Loaded / Power Down)", False
+
+def set_ethernet(enable: bool) -> bool:
+    res = subprocess.run(["ip", "-o", "link"], capture_output=True, text=True)
+    eth_ifaces = [
+        line.split(": ")[1] for line in res.stdout.splitlines()
+        if any(line.split(": ")[1].startswith(prefix) for prefix in ("eth", "enp", "eno", "ens"))
+    ]
+    for iface in eth_ifaces:
+        action = "up" if enable else "down"
+        run_sudo(["ip", "link", "set", iface, action], timeout_sec=2)
+    return True
+
+# --- N. HDMI Display Port ---
+def get_hdmi_status() -> str:
+    """HDMI on ASUS TUF is hardwired to the dGPU. Reports whether HDMI is powered down."""
+    asus_val = safe_read("/sys/devices/virtual/firmware-attributes/asus-armoury/attributes/dgpu_disable/current_value")
+    if not asus_val:
+        asus_val = safe_read("/sys/devices/platform/asus-nb-wmi/dgpu_disable")
+    if asus_val == "1":
+        return "OFF (dGPU Powered Down / 0W)"
+    return "ACTIVE (dGPU Powered)"
+
 # ==============================================================================
 # 4. SYSTEM POWER & TELEMETRY MONITORING
 # ==============================================================================
@@ -642,7 +736,26 @@ def render_dashboard() -> None:
     prof_str = f"[bold {prof_color}]{prof.upper()}[/]"
     table.add_row("10", "ASUS Platform Profile", "Thermal governor & CPU TDP ceiling", prof_str)
 
+    # 11. Thunderbolt 4
+    tb_on = get_thunderbolt_status()
+    tb_str = "[bold green]ENABLED (Bound)[/]" if tb_on else "[bold red]DISABLED (D3cold Cut)[/]"
+    table.add_row("11", "Thunderbolt 4 / USB4", "PCIe & DP tunneling NHI controller", tb_str)
+
+    # 12. External USB Data Ports
+    usb_on = get_external_usb_status()
+    usb_str = "[bold green]AUTHORIZED (Data On)[/]" if usb_on else "[bold red]BLOCKED (Data Guard)[/]"
+    table.add_row("12", "External USB Data Ports", "Type-A & Type-C data guard (keeps PD charge)", usb_str)
+
+    # 13. Ethernet LAN
+    eth_str, _ = get_ethernet_status()
+    table.add_row("13", "Ethernet LAN (RJ-45)", "Realtek controller link / driver state", f"[bold cyan]{eth_str}[/]")
+
+    # 14. HDMI Video Port
+    hdmi_str = get_hdmi_status()
+    table.add_row("14", "HDMI Video Output", "Dedicated NVIDIA GPU display bus", f"[bold green]{hdmi_str}[/]")
+
     console.print(table)
+    console.print(Align.center("[dim]* Note: Power / Charging Port (DC Barrel & USB-PD) is hardware EC managed and always safe.[/dim]"))
 
     # Prominent SSD Warning if mounted
     if is_mounted:
@@ -692,18 +805,27 @@ def apply_max_battery() -> None:
     set_platform_profile("quiet")
     console.print("  [bold green][OK][/] ASUS Platform profile set to QUIET (silent thermal policy).")
 
-    # 8. PCIe ASPM & WiFi Power Save
+    # 8. Thunderbolt 4 Controller Unbind
+    set_thunderbolt(False)
+    console.print("  [bold green][OK][/] Thunderbolt 4 NHI controller unbound and locked in D3cold.")
+
+    # 9. External USB Ports Data Guard
+    set_external_usb(False)
+    console.print("  [bold green][OK][/] External USB data guard active (charging ports untouched).")
+
+    # 10. PCIe ASPM & WiFi Power Save
     write_sysfs("/sys/module/pcie_aspm/parameters/policy", "powersupersave")
     for iface in Path("/sys/class/net").glob("*"):
         if (iface / "wireless").exists():
             run_sudo(["iw", "dev", iface.name, "set", "power_save", "on"], timeout_sec=2)
     console.print("  [bold green][OK][/] PCIe ASPM powersupersave & Wi-Fi power-save active.")
 
-    # 9. Connectivity & Input Safety Notes
+    # 11. Connectivity & Input Safety Notes
     console.print("  [dim]~ Touchpad: Kept ACTIVE to preserve cursor control (use --touchpad off or Menu to toggle).[/dim]")
     console.print("  [dim]~ Wi-Fi: Kept ACTIVE to prevent disconnects (use --wifi off or Menu with confirmation to toggle).[/dim]")
+    console.print("  [dim]~ Power / Charging Port: Hardware EC managed (always charging safe).[/dim]")
 
-    # 10. Secondary SSD Advisory
+    # 12. Secondary SSD Advisory
     _, is_mounted, mounts = get_secondary_nvme_power_info()
     if is_mounted:
         console.print(f"  [bold yellow][!] REMINDER:[/] Secondary SSD is mounted at {', '.join(mounts)}. Unmount manually for deep sleep!")
@@ -753,7 +875,15 @@ def apply_restore_all() -> None:
     set_platform_profile("balanced")
     console.print("  [bold green][OK][/] ASUS Platform profile restored to BALANCED.")
 
-    # 10. Rebind Secondary NVMe if unbound
+    # 10. Thunderbolt 4
+    set_thunderbolt(True)
+    console.print("  [bold green][OK][/] Thunderbolt 4 controller restored & bound.")
+
+    # 11. External USB Data Ports
+    set_external_usb(True)
+    console.print("  [bold green][OK][/] External USB data ports re-authorized.")
+
+    # 12. Rebind Secondary NVMe if unbound
     toggle_secondary_nvme_driver(True)
     console.print("  [bold green][OK][/] Secondary NVMe bound and ready.")
 
@@ -779,9 +909,12 @@ def interactive_custom_selection():
         console.print("  [bold yellow]8[/] Toggle Microphone (Hardware ADC Cut & Mute)")
         console.print("  [bold yellow]9[/] Toggle Wi-Fi Radio (phy0) [bold red][Requires Confirmation][/]")
         console.print("  [bold yellow]10[/] Cycle Platform Profile (Quiet / Balanced / Performance)")
+        console.print("  [bold yellow]11[/] Toggle Thunderbolt 4 / USB4 (Cut PCIe Tunneling / Rebind)")
+        console.print("  [bold yellow]12[/] Toggle External USB Data Guard (Block/Authorize Data Lines)")
+        console.print("  [bold yellow]13[/] Toggle Ethernet LAN Port (if controllable)")
         console.print("  [bold green]b[/] Back to Main Menu")
 
-        choice = Prompt.ask("\nSelect action (1-10, b)", choices=["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "b"], default="b")
+        choice = Prompt.ask("\nSelect action (1-13, b)", choices=["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "b"], default="b")
         if choice == "b":
             break
 
@@ -863,6 +996,29 @@ def interactive_custom_selection():
             set_platform_profile(nxt)
             console.print(f"[green]  ~[/green] Platform Profile set to: {nxt.upper()}")
 
+        elif choice == "11":
+            cur = get_thunderbolt_status()
+            set_thunderbolt(not cur)
+            console.print(f"[green]  ~[/green] Thunderbolt 4 set to: {'DISABLED (D3cold Cut)' if cur else 'ENABLED (Bound)'}")
+
+        elif choice == "12":
+            cur = get_external_usb_status()
+            set_external_usb(not cur)
+            console.print(f"[green]  ~[/green] External USB Data Ports set to: {'BLOCKED (Data Guard)' if cur else 'AUTHORIZED (Data On)'}")
+
+        elif choice == "13":
+            status_str, controllable = get_ethernet_status()
+            if controllable:
+                is_up = "UP" in status_str or "ENABLED" in status_str
+                set_ethernet(not is_up)
+                console.print(f"[green]  ~[/green] Ethernet LAN set to: {'DOWN' if is_up else 'UP'}")
+            else:
+                console.print(Panel(
+                    "[bold yellow]Notice: Ethernet controller is unprobed in this kernel (CONFIG_R8169 is not set in linux-dusky-battery),\n"
+                    "so the Realtek LAN chip is already resting in unpowered hardware sleep.[/bold yellow]",
+                    title="[bold cyan]Ethernet Status[/bold cyan]"
+                ))
+
         time.sleep(0.5)
 
 def main():
@@ -878,6 +1034,9 @@ def main():
     parser.add_argument("--mic", choices=["on", "off", "toggle", "mute", "unmute"], help="Control microphone ADC capture and mute.")
     parser.add_argument("--wifi", choices=["on", "off", "toggle"], help="Control Wi-Fi radio transceiver state.")
     parser.add_argument("--profile", choices=["quiet", "balanced", "performance"], help="Set ASUS platform/thermal profile.")
+    parser.add_argument("--thunderbolt", choices=["on", "off", "toggle"], help="Control Thunderbolt 4 NHI controller state.")
+    parser.add_argument("--external-usb", choices=["on", "off", "toggle"], help="Control external USB data ports authorization.")
+    parser.add_argument("--ethernet", choices=["on", "off", "toggle"], help="Control Ethernet LAN interface state.")
     parser.add_argument("-i", "--interactive", action="store_true", help="Launch interactive TUI menu.")
 
     args = parser.parse_args()
@@ -953,6 +1112,27 @@ def main():
         elevate_if_needed()
         set_platform_profile(args.profile)
         console.print(f"[green]  ~[/green] Platform Profile: {args.profile.upper()}")
+        return
+
+    if args.thunderbolt:
+        elevate_if_needed()
+        val = not get_thunderbolt_status() if args.thunderbolt == "toggle" else (args.thunderbolt == "on")
+        set_thunderbolt(val)
+        console.print(f"[green]  ~[/green] Thunderbolt 4: {'ENABLED' if val else 'DISABLED'}")
+        return
+
+    if args.external_usb:
+        elevate_if_needed()
+        val = not get_external_usb_status() if args.external_usb == "toggle" else (args.external_usb == "on")
+        set_external_usb(val)
+        console.print(f"[green]  ~[/green] External USB Data Ports: {'AUTHORIZED' if val else 'BLOCKED'}")
+        return
+
+    if args.ethernet:
+        elevate_if_needed()
+        val = (args.ethernet == "on")
+        set_ethernet(val)
+        console.print(f"[green]  ~[/green] Ethernet LAN: {'UP' if val else 'DOWN'}")
         return
 
     # Default: Interactive TUI Menu
