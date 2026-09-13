@@ -313,6 +313,10 @@ def toggle_secondary_nvme_driver(power_on: bool) -> tuple[bool, str]:
 KBD_BRIGHTNESS = Path("/sys/class/leds/asus::kbd_backlight/brightness")
 KBD_RGB_MODE = Path("/sys/devices/platform/asus-nb-wmi/leds/asus::kbd_backlight/kbd_rgb_mode")
 KBD_RGB_STATE = Path("/sys/devices/platform/asus-nb-wmi/leds/asus::kbd_backlight/kbd_rgb_state")
+STATE_DIR = Path("/etc/dusky")
+USER_SETTINGS_DIR = REAL_HOME / ".config" / "dusky" / "settings"
+KBD_STATE_FILE = STATE_DIR / "kbd_backlight_state"
+USER_KBD_STATE_FILE = USER_SETTINGS_DIR / "kbd_backlight_state"
 
 def get_kbd_backlight() -> int:
     try:
@@ -320,25 +324,61 @@ def get_kbd_backlight() -> int:
     except ValueError:
         return 0
 
+def is_kbd_backlight_locked() -> bool:
+    try:
+        mode = oct(KBD_BRIGHTNESS.stat().st_mode)[-3:]
+        return mode == "444"
+    except Exception:
+        return False
+
 def set_kbd_backlight(level: int) -> bool:
     lvl = max(0, min(3, level))
+
+    # 1. Persist state across reboots (system-wide and user session)
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        KBD_STATE_FILE.write_text(f"{lvl}\n", encoding="utf-8")
+    except Exception:
+        run_sudo(["sh", "-c", f"mkdir -p /etc/dusky && echo '{lvl}' > /etc/dusky/kbd_backlight_state"])
+    try:
+        USER_SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
+        USER_KBD_STATE_FILE.write_text(f"{lvl}\n", encoding="utf-8")
+    except Exception:
+        pass
+
     if lvl == 0:
-        # 1. Zero brightness
+        # 1. Unlock sysfs attribute first if currently write-protected
+        run_sudo(["chmod", "644", str(KBD_BRIGHTNESS)], timeout_sec=2)
+        # 2. Zero brightness
         write_sysfs(KBD_BRIGHTNESS, "0")
-        # 2. Set static black RGB color to kill LED diodes completely
+        # 3. Set static black RGB color to kill LED diodes completely
         if KBD_RGB_MODE.exists():
             write_sysfs(KBD_RGB_MODE, "1 0 0 0 0 0")
-        # 3. Cut aura state animations (boot, awake, sleep, keypress)
+        # 4. Cut aura state animations (boot, awake, sleep, keypress)
         if KBD_RGB_STATE.exists():
             write_sysfs(KBD_RGB_STATE, "1 0 0 0 0")
+        # 5. Update user and system brightnessctl / systemd cache
+        run_user(["brightnessctl", "-sd", "asus::kbd_backlight", "set", "0"], timeout_sec=2)
+        sys_bl = Path("/var/lib/systemd/backlight/platform-asus-nb-wmi:leds:asus::kbd_backlight")
+        if sys_bl.parent.is_dir():
+            write_sysfs(sys_bl, "0")
+        # 6. Apply immutable hardware lock: mode 0444 blocks systemd-logind, brightnessctl, and desktop shortcuts
+        run_sudo(["chmod", "444", str(KBD_BRIGHTNESS)], timeout_sec=2)
         return True
     else:
+        # Unlock sysfs attribute
+        run_sudo(["chmod", "644", str(KBD_BRIGHTNESS)], timeout_sec=2)
         # Re-enable aura states, set white/default color, and apply brightness
         if KBD_RGB_STATE.exists():
             write_sysfs(KBD_RGB_STATE, "1 1 1 1 1")
         if KBD_RGB_MODE.exists():
             write_sysfs(KBD_RGB_MODE, "1 0 255 255 255 0")
-        return write_sysfs(KBD_BRIGHTNESS, str(lvl))
+        write_sysfs(KBD_BRIGHTNESS, str(lvl))
+        run_user(["brightnessctl", "-sd", "asus::kbd_backlight", "set", str(lvl)], timeout_sec=2)
+        sys_bl = Path("/var/lib/systemd/backlight/platform-asus-nb-wmi:leds:asus::kbd_backlight")
+        if sys_bl.parent.is_dir():
+            write_sysfs(sys_bl, str(lvl))
+        return True
 
 # --- E. Bluetooth Adapter ---
 def get_bluetooth_status() -> bool:
@@ -474,6 +514,7 @@ def set_thunderbolt(enable: bool) -> bool:
     else:
         if is_bound:
             write_sysfs(THUNDERBOLT_DRIVER_DIR / "unbind", THUNDERBOLT_PCI)
+        write_sysfs(f"/sys/bus/pci/devices/{THUNDERBOLT_PCI}/power/control", "auto")
         return True
 
 # --- L. External USB Data Ports (Type-A & Type-C Data) ---
@@ -482,9 +523,10 @@ TB_USB_DRIVER_DIR = Path("/sys/bus/pci/drivers/xhci_hcd")
 
 def get_external_usb_status() -> bool:
     """Returns True if external USB data ports are authorized, False if blocked."""
-    u4 = Path("/sys/bus/usb/devices/usb4/authorized_default")
-    if u4.exists() and safe_read(u4) == "0":
-        return False
+    for r in Path("/sys/bus/usb/devices").glob("usb*"):
+        auth_f = r / "authorized_default"
+        if auth_f.exists() and safe_read(auth_f) == "0":
+            return False
     return True
 
 def set_external_usb(enable: bool) -> bool:
@@ -492,7 +534,7 @@ def set_external_usb(enable: bool) -> bool:
     Enables or disables external USB ports.
     When disabled:
       - Sets authorized_default=0 on external USB root hubs (blocks any newly inserted USB device)
-      - Unbinds external Thunderbolt/Type-C USB controller 0000:00:0d.0
+      - Unbinds external Thunderbolt/Type-C USB controller 0000:00:0d.0 and sets power/control to auto
       - Preserves internal devices (Webcam, C-Media Audio, Bluetooth) and hardware charging (USB-PD / DC-in).
     """
     val = "1" if enable else "0"
@@ -507,6 +549,7 @@ def set_external_usb(enable: bool) -> bool:
         write_sysfs(TB_USB_DRIVER_DIR / "bind", TB_USB_PCI)
     elif not enable and tb_bound:
         write_sysfs(TB_USB_DRIVER_DIR / "unbind", TB_USB_PCI)
+        write_sysfs(f"/sys/bus/pci/devices/{TB_USB_PCI}/power/control", "auto")
     return True
 
 # --- M. Ethernet LAN Controller (RJ-45) ---
@@ -702,8 +745,11 @@ def render_dashboard() -> None:
 
     # 4. Keyboard Backlight & Aura
     kbd_lvl = get_kbd_backlight()
-    kbd_str = f"[bold green]ON ({kbd_lvl}/3)[/]" if kbd_lvl > 0 else "[bold red]OFF (Blackout)[/]"
-    table.add_row("4", "Keyboard RGB Backlight & Aura", "ASUS LED brightness & firmware state (~0.8W)", kbd_str)
+    if kbd_lvl == 0:
+        kbd_str = "[bold red]OFF (Hardware Locked)[/]" if is_kbd_backlight_locked() else "[bold red]OFF (Blackout)[/]"
+    else:
+        kbd_str = f"[bold green]ON ({kbd_lvl}/3)[/]"
+    table.add_row("4", "Keyboard RGB Backlight & Aura", "ASUS LED brightness & hardware lock (~0.8W)", kbd_str)
 
     # 5. Bluetooth
     bt_on = get_bluetooth_status()
@@ -950,7 +996,8 @@ def interactive_custom_selection():
             cur = get_kbd_backlight()
             nxt = (cur + 1) % 4
             set_kbd_backlight(nxt)
-            console.print(f"[green]  ~[/green] Keyboard backlight set to: {nxt}/3")
+            lock_info = " (Hardware Locked & Persisted)" if nxt == 0 else " (Unlocked)"
+            console.print(f"[green]  ~[/green] Keyboard backlight set to: {nxt}/3{lock_info}")
 
         elif choice == "5":
             cur = get_bluetooth_status()
@@ -1029,6 +1076,8 @@ def main():
     parser.add_argument("--panel-od", choices=["on", "off", "toggle"], help="Control LCD panel overdrive.")
     parser.add_argument("--webcam", choices=["on", "off", "toggle"], help="Control USB WebCam hardware state.")
     parser.add_argument("--kbd-backlight", choices=["0", "1", "2", "3", "off"], help="Set keyboard backlight level.")
+    parser.add_argument("--secondary-ssd", choices=["bind", "unbind", "toggle", "status"], help="Control Secondary NVMe SSD driver binding.")
+    parser.add_argument("--apply-saved", action="store_true", help="Apply all saved hardware power states (boot enforcer).")
     parser.add_argument("--bluetooth", choices=["on", "off", "toggle"], help="Control Bluetooth radio state.")
     parser.add_argument("--touchpad", choices=["on", "off", "toggle"], help="Control Precision Touchpad I2C bus state.")
     parser.add_argument("--mic", choices=["on", "off", "toggle", "mute", "unmute"], help="Control microphone ADC capture and mute.")
@@ -1046,12 +1095,37 @@ def main():
         render_dashboard()
         return
 
+    if args.apply_saved:
+        elevate_if_needed()
+        saved_lvl = 0
+        if KBD_STATE_FILE.exists():
+            try:
+                saved_lvl = int(safe_read(KBD_STATE_FILE) or "0")
+            except ValueError:
+                saved_lvl = 0
+        set_kbd_backlight(saved_lvl)
+        console.print(f"[green]  ~[/green] Restored keyboard backlight state: {saved_lvl}/3 (Locked: {is_kbd_backlight_locked()})")
+        return
+
     if args.max_battery:
         apply_max_battery()
         return
 
     if args.restore_all:
         apply_restore_all()
+        return
+
+    if args.secondary_ssd:
+        if args.secondary_ssd == "status":
+            stat_str, mounted, mounts = get_secondary_nvme_power_info()
+            console.print(f"[cyan]Secondary SSD Status:[/] {stat_str}")
+            return
+        elevate_if_needed()
+        status_str, is_mounted, mounts = get_secondary_nvme_power_info()
+        is_bound = "UNBOUND" not in status_str
+        target_on = (not is_bound) if args.secondary_ssd == "toggle" else (args.secondary_ssd == "bind")
+        success, msg = toggle_secondary_nvme_driver(target_on)
+        console.print(f"[{'green' if success else 'red'}]{msg}[/]")
         return
 
     if args.panel_od:
@@ -1072,7 +1146,8 @@ def main():
         elevate_if_needed()
         lvl = 0 if args.kbd_backlight == "off" else int(args.kbd_backlight)
         set_kbd_backlight(lvl)
-        console.print(f"[green]  ~[/green] Keyboard Backlight: {lvl}/3")
+        lock_info = " (Hardware Locked & Persisted)" if lvl == 0 else " (Unlocked)"
+        console.print(f"[green]  ~[/green] Keyboard Backlight: {lvl}/3{lock_info}")
         return
 
     if args.bluetooth:
