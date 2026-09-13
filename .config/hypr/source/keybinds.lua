@@ -551,7 +551,7 @@ cond_bind(
 
 -- Google Image Search
 hl.bind(
-    "SUPER + G",
+    "SUPER + SHIFT + G",
     hl.dsp.exec_cmd(dusky_scripts .. "google_image_search/google_image_search.sh"),
     { description = "Image Search (Select and search)" }
 )
@@ -750,6 +750,69 @@ hl.bind(
     "SUPER + SHIFT + D",
     hl.dsp.window.pseudo({ action = "toggle" }),
     { description = "Toggle Pseudo" }
+)
+
+
+-- -------------------------------------------------------------------------------------------------
+-- GROUPED (TABBED) WINDOWS - i3-style tabs in one tile
+-- Wiki: Window-Rules #group-window-rule-options (auto-group) + Dispatchers hl.dsp.group.* (manual)
+-- Behavior: togglegroup alone only makes the ACTIVE window a single-tab group.
+-- New windows then auto-join that unlocked focused group (what you saw with SUPER+Q).
+-- To merge two EXISTING windows, use Move Into / Create Group toward the other window.
+-- -------------------------------------------------------------------------------------------------
+
+hl.bind(
+    "SUPER + G",
+    hl.dsp.group.toggle(),
+    { description = "Group Toggle (tabbed)" }
+)
+
+hl.bind(
+    "SUPER + ALT + H",
+    hl.dsp.group.prev(),
+    { description = "Group Prev Tab" }
+)
+
+hl.bind(
+    "SUPER + ALT + L",
+    hl.dsp.group.next(),
+    { description = "Group Next Tab" }
+)
+
+hl.bind(
+    "SUPER + ALT + SHIFT + H",
+    hl.dsp.window.move({ into_or_create_group = "l" }),
+    { description = "Group Merge Left (create if none)" }
+)
+
+hl.bind(
+    "SUPER + ALT + SHIFT + L",
+    hl.dsp.window.move({ into_or_create_group = "r" }),
+    { description = "Group Merge Right (create if none)" }
+)
+
+hl.bind(
+    "SUPER + ALT + SHIFT + K",
+    hl.dsp.window.move({ into_or_create_group = "u" }),
+    { description = "Group Merge Up (create if none)" }
+)
+
+hl.bind(
+    "SUPER + ALT + SHIFT + J",
+    hl.dsp.window.move({ into_or_create_group = "d" }),
+    { description = "Group Merge Down (create if none)" }
+)
+
+hl.bind(
+    "SUPER + ALT + U",
+    hl.dsp.window.move({ out_of_group = true }),
+    { description = "Group Move Out (ungroup)" }
+)
+
+hl.bind(
+    "SUPER + ALT + K",
+    hl.dsp.group.lock_active({ action = "toggle" }),
+    { description = "Group Lock Toggle" }
 )
 
 
