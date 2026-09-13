@@ -349,22 +349,32 @@ def download_silero(stage: Path, expected_sha256: str | None) -> str:
 
 
 def prefetch_model(worker_py: Path, model: str, model_dir: Path, quantization: str) -> None:
-    log_step(f"Prefetching ASR model: {model} ({quantization}) -- ~600 MiB, progress below")
+    expected_size = "~660 MiB" if quantization == "int8" else "~3.1 GiB"
+    log_step(f"Prefetching ASR model: {model} ({quantization}) -- {expected_size}, progress below")
     repo = MODEL_REPOS.get(model)
     if repo is None:
         raise InstallError(f"Unknown model {model!r}; known: {sorted(MODEL_REPOS)}")
     model_dir.mkdir(parents=True, exist_ok=True)
-    # Phase 1: snapshot_download the HF repo (load_model alone with
-    # local_files_only will NOT download -- that was the
-    # ModelFileNotFoundError: encoder-model int8.onnx bug).
+    # Phase 1: snapshot_download the HF repo with allow_patterns matching the requested quantization.
+    # Without allow_patterns, snapshot_download pulls uncompressed FP32 weights (.onnx.data ~2.4GB)
+    # even when only int8 (~650MB) is requested.
+    if quantization == "int8":
+        patterns = ["config.json", "vocab.txt", "nemo*.onnx", "*.int8.onnx"]
+    elif quantization in ("none", "fp32"):
+        patterns = ["config.json", "vocab.txt", "nemo*.onnx", "encoder-model.onnx*", "decoder_joint-model.onnx"]
+    elif quantization == "fp16":
+        patterns = ["config.json", "vocab.txt", "nemo*.onnx", "*.fp16.onnx*"]
+    else:
+        patterns = ["*"]
     dl_code = (
-        "import sys; from huggingface_hub import snapshot_download; "
-        "p = snapshot_download(repo_id=sys.argv[1], local_dir=sys.argv[2]); print(p)"
+        "import sys, json; from huggingface_hub import snapshot_download; "
+        "patterns = json.loads(sys.argv[3]); "
+        "p = snapshot_download(repo_id=sys.argv[1], local_dir=sys.argv[2], allow_patterns=patterns); print(p)"
     )
     dl_env = dict(os.environ)
     dl_env["HF_HUB_OFFLINE"] = "0"
     dl_env["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
-    run([str(worker_py), "-c", dl_code, repo, str(model_dir)], env=dl_env, timeout=5400, quiet=False)
+    run([str(worker_py), "-c", dl_code, repo, str(model_dir), json.dumps(patterns)], env=dl_env, timeout=5400, quiet=False)
     onnx_files = list(model_dir.rglob("*.onnx"))
     if not onnx_files:
         raise InstallError(f"No .onnx graphs found in {model_dir} after download of {repo}")
@@ -501,13 +511,55 @@ def install_entrypoints() -> None:
     log_ok("Service enabled.")
 
 
+def choose_interactive(detected: str, info: JsonObject) -> tuple[str, str]:
+    print(f"\n{BOLD}Hardware Scan:{RESET}")
+    if detected == "nvidia":
+        gpus = info.get("gpus", [{}])
+        gpu_name = gpus[0].get("name", "NVIDIA GPU")
+        vram = gpus[0].get("memory_total_mib", 0)
+        driver = gpus[0].get("driver", "unknown")
+        print(f"  Found NVIDIA GPU: {GREEN}{gpu_name}{RESET} ({vram} MiB, driver {driver})")
+    elif detected == "amd":
+        print(f"  Found AMD device: {GREEN}{info.get('reason', 'AMD GPU')}{RESET}")
+    else:
+        print(f"  No discrete NVIDIA/AMD GPU detected ({GREEN}CPU fallback{RESET})")
+
+    print(f"\n{BOLD}Select inference backend:{RESET}")
+    print(f"  1) Auto-detect [{GREEN}{detected}{RESET}]")
+    print(f"  2) CPU only    (lightweight, universal, no CUDA packages)")
+    print(f"  3) NVIDIA      (CUDA 13 + onnxruntime-gpu, ~2.5 GiB wheels)")
+    print(f"  4) AMD         (ROCm opportunistic, CPU fallback)")
+    try:
+        raw_hw = input(f"Choice [1-4] (default: 1 [{detected}]): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        raise InstallError("Installation cancelled by user.")
+    hw_map = {"1": detected, "2": "cpu", "3": "nvidia", "4": "amd", "": detected}
+    hardware = hw_map.get(raw_hw, detected)
+
+    print(f"\n{BOLD}Select model precision:{RESET}")
+    print("  1) int8  (~660 MiB, fast, recommended for CPU and low VRAM)")
+    print("  2) fp32  (~3.1 GiB, full precision float32)")
+    try:
+        raw_q = input("Choice [1-2] (default: 1 [int8]): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        raise InstallError("Installation cancelled by user.")
+    quantization = "fp32" if raw_q == "2" else "int8"
+
+    return hardware, quantization
+
+
 def parse_arguments(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="dusky_installer", description="Hardware-agnostic installer for Dusky STT")
-    p.add_argument("--hardware", default="auto", choices=("auto", "cpu", "nvidia", "amd"),
-                   help="ASR backend (default auto-detects nvidia > amd > cpu)")
+    p.add_argument("--hardware", default=None, choices=("auto", "cpu", "nvidia", "amd"),
+                   help="ASR backend (default prompts interactively or auto-detects)")
     p.add_argument("--model", default="nemo-parakeet-tdt-0.6b-v2",
                    choices=sorted(MODEL_REPOS))
-    p.add_argument("--quantization", default="int8", choices=("int8", "fp16", "fp32", "none"))
+    p.add_argument("--quantization", default=None, choices=("int8", "fp16", "fp32", "none"),
+                   help="Model quantization (default: int8)")
+    p.add_argument("-y", "--yes", action="store_true",
+                   help="Non-interactive mode: accept auto-detected defaults without prompting")
     p.add_argument("--gpu-device", type=int, default=0)
     p.add_argument("--gpu-mem-limit-mb", type=int, default=None)
     p.add_argument("--input-device", default=None)
@@ -540,8 +592,14 @@ def main(argv: list[str]) -> int:
         return uninstall()
     assert_runtime()
     detected, info = detect_hardware()
-    hardware = detected if args.hardware == "auto" else args.hardware
-    if args.hardware != "auto" and args.hardware != detected and detected != "cpu":
+
+    if sys.stdin.isatty() and not args.yes and args.hardware is None:
+        hardware, quantization = choose_interactive(detected, info)
+    else:
+        hardware = detected if (args.hardware is None or args.hardware == "auto") else args.hardware
+        quantization = args.quantization or "int8"
+
+    if args.hardware is not None and args.hardware != "auto" and args.hardware != detected and detected != "cpu":
         log_warn(f"Requested {args.hardware} but auto-detected {detected} {info}; using requested.")
     log_step(f"Hardware backend: {hardware} (auto-detected: {detected})")
 
@@ -550,11 +608,11 @@ def main(argv: list[str]) -> int:
         total_mb, _driver = query_nvidia_gpu(args.gpu_device)
         # 2GB-VRAM guard: fp32 encoder alone is ~2.5 GB and can never fit;
         # fail fast with a clear message instead of a post-download OOM.
-        if total_mb < 3072 and args.quantization in ("none", "fp32"):
+        if total_mb < 3072 and quantization in ("none", "fp32"):
             raise InstallError(
                 f"GPU has {total_mb} MiB VRAM: fp32 model needs ~2.5 GB just for "
                 "weights. Re-run with --quantization int8 (recommended) or fp16.")
-        if total_mb < 3072 and args.quantization == "fp16":
+        if total_mb < 3072 and quantization == "fp16":
             log_warn(f"Only {total_mb} MiB VRAM with fp16 (~1.25 GB weights + CUDA "
                      "context + activations): tight. Prefer --quantization int8.")
         gpu_limit = choose_vram_limit(total_mb, args.gpu_mem_limit_mb)
@@ -583,13 +641,13 @@ def main(argv: list[str]) -> int:
         verify_namespaces(main_py, worker_py, hardware)
         verify_cpu_vad(main_py, stage / "models" / "silero_vad.onnx")
         model_dir = Path(args.model_dir).expanduser() if args.model_dir else DEFAULT_MODEL_ROOT / args.model
-        prefetch_model(worker_py, args.model, model_dir, args.quantization)
+        prefetch_model(worker_py, args.model, model_dir, quantization)
         config: JsonObject = {
             "schema_version": SCHEMA_VERSION,
             "hardware": hardware,
             "model": args.model,
             "model_dir": str(model_dir),
-            "quantization": None if args.quantization in ("none", "fp32") else args.quantization,
+            "quantization": None if quantization in ("none", "fp32") else quantization,
             "gpu_device": args.gpu_device,
             "gpu_mem_limit_mb": gpu_limit,
             "input_device": args.input_device,
