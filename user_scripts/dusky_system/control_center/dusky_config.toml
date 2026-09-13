@@ -2606,6 +2606,156 @@ icon = ""
 description = ""
 
 [[pages.layout.items]]
+type = "navigation"
+[pages.layout.items.properties]
+title = "Quick Toggles"
+description = "Trim startup RAM: autostart + services"
+icon = "preferences-system-power-symbolic"
+
+[[pages.layout.items.layout]]
+type = "section"
+[pages.layout.items.layout.properties]
+title = "Startup Apps"
+description = "Launch at login — off saves RAM"
+
+[[pages.layout.items.layout.items]]
+type = "toggle"
+[pages.layout.items.layout.items.properties]
+title = "XWayland"
+description = "X11 compat layer (~30 MB RAM)"
+icon = "video-display-symbolic"
+state_command = "python3 $HOME/user_scripts/dusky_tui/python/main/main.py $HOME/user_scripts/hypr/misc/tui_autostart.py --export-state 2>/dev/null | grep -q '\"xwayland/enabled\": true' && echo yes || echo no"
+interval = 5
+[pages.layout.items.layout.items.on_toggle.enabled]
+type = "exec"
+command = "python3 $HOME/user_scripts/dusky_tui/python/main/main.py $HOME/user_scripts/hypr/misc/tui_autostart.py --set xwayland.enabled=true"
+terminal = false
+[pages.layout.items.layout.items.on_toggle.disabled]
+type = "exec"
+command = "python3 $HOME/user_scripts/dusky_tui/python/main/main.py $HOME/user_scripts/hypr/misc/tui_autostart.py --set xwayland.enabled=false"
+terminal = false
+
+[[pages.layout.items.layout.items]]
+type = "toggle"
+[pages.layout.items.layout.items.properties]
+title = "Wallpaper Engine"
+description = "awww daemon wallpaper renderer"
+icon = "image-x-generic-symbolic"
+state_command = "python3 $HOME/user_scripts/dusky_tui/python/main/main.py $HOME/user_scripts/hypr/misc/tui_autostart.py --export-state 2>/dev/null | grep -q '\"autostart/awww_daemon\": true' && echo yes || echo no"
+interval = 5
+[pages.layout.items.layout.items.on_toggle.enabled]
+type = "exec"
+command = "python3 $HOME/user_scripts/dusky_tui/python/main/main.py $HOME/user_scripts/hypr/misc/tui_autostart.py --set autostart.awww_daemon=true"
+terminal = false
+[pages.layout.items.layout.items.on_toggle.disabled]
+type = "exec"
+command = "python3 $HOME/user_scripts/dusky_tui/python/main/main.py $HOME/user_scripts/hypr/misc/tui_autostart.py --set autostart.awww_daemon=false"
+terminal = false
+
+[[pages.layout.items.layout.items]]
+type = "toggle"
+[pages.layout.items.layout.items.properties]
+title = "Status Bar"
+description = "Waybar panel on login"
+icon = "view-more-symbolic"
+state_command = "python3 $HOME/user_scripts/dusky_tui/python/main/main.py $HOME/user_scripts/hypr/misc/tui_autostart.py --export-state 2>/dev/null | grep -q '\"autostart/waybar\": true' && echo yes || echo no"
+interval = 5
+[pages.layout.items.layout.items.on_toggle.enabled]
+type = "exec"
+command = "python3 $HOME/user_scripts/dusky_tui/python/main/main.py $HOME/user_scripts/hypr/misc/tui_autostart.py --set autostart.waybar=true"
+terminal = false
+[pages.layout.items.layout.items.on_toggle.disabled]
+type = "exec"
+command = "python3 $HOME/user_scripts/dusky_tui/python/main/main.py $HOME/user_scripts/hypr/misc/tui_autostart.py --set autostart.waybar=false"
+terminal = false
+
+[[pages.layout.items.layout.items]]
+type = "toggle"
+[pages.layout.items.layout.items.properties]
+title = "Plugin Reload"
+description = "hyprpm reload on startup"
+icon = "application-x-addon-symbolic"
+state_command = "python3 $HOME/user_scripts/dusky_tui/python/main/main.py $HOME/user_scripts/hypr/misc/tui_autostart.py --export-state 2>/dev/null | grep -q '\"autostart/hyprpm_reload\": true' && echo yes || echo no"
+interval = 5
+[pages.layout.items.layout.items.on_toggle.enabled]
+type = "exec"
+command = "python3 $HOME/user_scripts/dusky_tui/python/main/main.py $HOME/user_scripts/hypr/misc/tui_autostart.py --set autostart.hyprpm_reload=true"
+terminal = false
+[pages.layout.items.layout.items.on_toggle.disabled]
+type = "exec"
+command = "python3 $HOME/user_scripts/dusky_tui/python/main/main.py $HOME/user_scripts/hypr/misc/tui_autostart.py --set autostart.hyprpm_reload=false"
+terminal = false
+
+[[pages.layout.items.layout]]
+type = "section"
+[pages.layout.items.layout.properties]
+title = "Background Services"
+description = "enable --now / disable --now"
+
+[[pages.layout.items.layout.items]]
+type = "service"
+[pages.layout.items.layout.items.properties]
+title = "Quick Panel"
+description = "Dusky quick access overlay"
+icon = "view-grid-symbolic"
+service = "dusky_quickpanal.service"
+scope = "user"
+
+[[pages.layout.items.layout.items]]
+type = "service"
+[pages.layout.items.layout.items.properties]
+title = "FTP Server"
+description = "vsftpd file sharing"
+icon = "network-server-symbolic"
+service = "vsftpd.service"
+scope = "system"
+
+[[pages.layout.items.layout.items]]
+type = "service"
+[pages.layout.items.layout.items.properties]
+title = "CPU Power Restorer"
+description = "Restore cores & power limits"
+icon = "cpu-symbolic"
+service = "dusky_cpu.service"
+scope = "system"
+
+[[pages.layout.items.layout.items]]
+type = "service"
+[pages.layout.items.layout.items.properties]
+title = "SSH Server"
+description = "OpenSSH remote access"
+icon = "system-users-symbolic"
+service = "sshd.service"
+scope = "system"
+
+[[pages.layout.items.layout.items]]
+type = "service"
+[pages.layout.items.layout.items.properties]
+title = "Cloudflare WARP"
+description = "WARP VPN daemon"
+icon = "security-high-symbolic"
+service = "warp-svc.service"
+scope = "system"
+
+[[pages.layout.items.layout.items]]
+type = "service"
+[pages.layout.items.layout.items.properties]
+title = "Tailscale"
+description = "Mesh VPN daemon"
+icon = "network-vpn-symbolic"
+service = "tailscaled.service"
+scope = "system"
+
+[[pages.layout.items.layout.items]]
+type = "service"
+[pages.layout.items.layout.items.properties]
+title = "Firewall"
+description = "UFW packet filter"
+icon = "security-high-symbolic"
+service = "ufw.service"
+scope = "system"
+
+[[pages.layout.items]]
 type = "button"
 [pages.layout.items.properties]
 title = "Service Manager"
