@@ -107,6 +107,10 @@ ROOT_DIR: Final = _resolve_root()
 GLOBAL_CONFIG_PATH: Final = ROOT_DIR / "config.toml"
 PRESETS_DIR: Final = ROOT_DIR / "presets"
 PROFILES_DIR: Final = ROOT_DIR / "profiles"
+DUSKY_SETTINGS_DIR: Final = XDG_CONFIG_HOME / "dusky" / "settings" / "dusky_game_runner"
+LIB_DIR: Final = ROOT_DIR / "lib"
+RUNNER_SHIM_SRC: Final = LIB_DIR / "runner_shim.c"
+RUNNER_SHIM_BIN: Final = DUSKY_SETTINGS_DIR / "runner_shim.so"
 STATE_DIR: Final = XDG_STATE_HOME / ENGINE_SLUG
 CACHE_DIR: Final = XDG_CACHE_HOME / ENGINE_SLUG
 RUNTIME_DIR: Final = XDG_RUNTIME_DIR / ENGINE_SLUG
@@ -265,6 +269,27 @@ def run_cmd(
 @cache
 def have(binary: str) -> bool:
     return shutil.which(binary) is not None
+
+
+def ensure_runner_shim() -> Path | None:
+    """Ensure universal runner_shim.so is compiled and up-to-date."""
+    if not RUNNER_SHIM_SRC.is_file():
+        return RUNNER_SHIM_BIN if RUNNER_SHIM_BIN.is_file() else None
+    needs_compile = (
+        not RUNNER_SHIM_BIN.is_file()
+        or RUNNER_SHIM_SRC.stat().st_mtime > RUNNER_SHIM_BIN.stat().st_mtime
+    )
+    if needs_compile and have("gcc"):
+        DUSKY_SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
+        cmd = [
+            "gcc", "-O3", "-fPIC", "-shared", "-Wall", "-Wextra",
+            str(RUNNER_SHIM_SRC), "-o", str(RUNNER_SHIM_BIN), "-ldl"
+        ]
+        res = subprocess.run(cmd, capture_output=True)
+        if res.returncode != 0:
+            Log.warn(f"failed to compile runner_shim: {res.stderr.decode(errors='ignore')}")
+            return None
+    return RUNNER_SHIM_BIN if RUNNER_SHIM_BIN.is_file() else None
 
 
 def read_text(path: str | os.PathLike[str], limit: int = 1 << 20) -> str:
@@ -3551,8 +3576,34 @@ class EnvironmentBuilder:
         self._set("MASTER_RUNNER_PROFILE", self.p.pid)
         self._set("MASTER_RUNNER_VERSION", ENGINE_VERSION)
 
+    def stage_runtime_shims(self) -> None:
+        if not bool(self.p.get("runner.enable_io_shim", True)):
+            return
+        needs_shim = self.paths.uses_dwarfs or self._is_mono_game()
+        if not needs_shim:
+            return
+        shim = ensure_runner_shim()
+        if shim and shim.is_file():
+            cur = self.env.get("LD_PRELOAD", "")
+            if str(shim) not in cur.split(":"):
+                self.env["LD_PRELOAD"] = f"{shim}:{cur}" if cur else str(shim)
+                Log.debug(f"auto-injected runner shim: {shim.name}")
+
+    def _is_mono_game(self) -> bool:
+        root = self.paths.root
+        if (root / "mscorlib.dll").is_file() or (root / "FNA.dll").is_file():
+            return True
+        tree = self.paths.game_dir / "files" / "dwarfs-tree"
+        if tree.is_file():
+            with suppress(OSError):
+                content = tree.read_text(errors="ignore")
+                if "mscorlib.dll" in content or "FNA.dll" in content:
+                    return True
+        return False
+
     def build(self, *, under_gamescope: bool) -> dict[str, str]:
         self.stage_profile_env()
+        self.stage_runtime_shims()
         self.stage_session(under_gamescope=under_gamescope)
         self.stage_audio()
         self.stage_input()
@@ -3626,10 +3677,12 @@ def parse_affinity(spec: str) -> list[int]:
 
 
 class PipelineBuilder:
-    def __init__(self, prof: Profile, paths: GamePaths, extra_args: Sequence[str]) -> None:
+    def __init__(self, prof: Profile, paths: GamePaths, extra_args: Sequence[str],
+                 *, dry_run: bool = False) -> None:
         self.p = prof
         self.paths = paths
         self.extra_args = list(extra_args)
+        self.dry_run = dry_run
 
     # -- gamescope --------------------------------------------------------
     @property
@@ -3828,6 +3881,8 @@ class PipelineBuilder:
                 if cand.is_file():
                     Log.warn(f"executable not at {rel}; using {cand.relative_to(root)}")
                     return cand
+        if self.dry_run and self.paths.uses_dwarfs:
+            return direct
         raise ConfigError(
             f"[{self.p.pid}] executable {rel!r} not found under {root}"
             + (" (is the game mounted?)" if self.paths.uses_dwarfs else "")
@@ -4154,7 +4209,7 @@ class GameSession:
                     )
             self.hooks("post_mount")
 
-            pipe = PipelineBuilder(prof, self.paths, opts.extra_args)
+            pipe = PipelineBuilder(prof, self.paths, opts.extra_args, dry_run=opts.dry_run)
             under_gs = pipe.gamescope_enabled
 
             envb = EnvironmentBuilder(prof, self.paths, dry_run=opts.dry_run)
@@ -5510,7 +5565,7 @@ def overrides_from_args(ns: argparse.Namespace) -> TomlDict:
 def cmd_env(mgr: ProfileManager, ns: argparse.Namespace) -> int:
     prof = mgr.load(ns.profile, overrides=overrides_from_args(ns))
     paths = resolve_paths(prof)
-    pipe = PipelineBuilder(prof, paths, [])
+    pipe = PipelineBuilder(prof, paths, [], dry_run=True)
     under_gs = pipe.gamescope_enabled
     builder = EnvironmentBuilder(prof, paths, dry_run=True)
     env = builder.build(under_gamescope=under_gs)

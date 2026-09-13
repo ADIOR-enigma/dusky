@@ -12,6 +12,7 @@ user_scripts/theme_matugen/firefox/config.json
 .config/foot/foot-colors.ini
 .config/autostart/ghelper.desktop
 *.o
+*.so
 
 # Python compilation cache files
 __pycache__/
