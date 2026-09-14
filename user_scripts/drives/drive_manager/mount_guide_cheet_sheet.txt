@@ -88,7 +88,7 @@ type = "SIMPLE"
 mountpoint = "/mnt/windows"
 outer_uuid = "848A215E8A214E4C"
 fstype = "ntfs"
-mount_options = ["noatime", "uid=1000", "gid=1000", "umask=002", "windows_names", "iocharset=utf8", "prealloc"]
+mount_options = ["noatime", "uid=1000", "gid=1000", "umask=002", "windows_names", "iocharset=utf8"]
 
 [drives.usb_flash]                       # exFAT stick (UUID format XXXX-XXXX, uppercase)
 type = "SIMPLE"
@@ -107,7 +107,7 @@ ext4    | HDD           | noatime,lazytime,delalloc,commit=20              | del
 btrfs   | SSD/NVMe      | noatime,compress=zstd:3,space_cache=v2,discard=async | tool skips fstrim when discard=async present
 btrfs   | HDD           | noatime,compress=zstd:3,space_cache=v2,autodefrag| autodefrag NEVER on SSD (write amplification)
 ntfs    | dual-boot/USB | noatime,uid,gid,umask=002,windows_names,         | mount -t ntfs (in-kernel); NEVER 'force'
-        |               | iocharset=utf8,prealloc                          | (clears Windows dirty bit -> chkdsk data loss)
+        |               | iocharset=utf8                                   | (clears Windows dirty bit -> chkdsk data loss)
 exfat   | flash >32 GB  | uid,gid,dmask=022,fmask=133,errors=remount-ro,   | in-kernel exfat; TRIM supported
         |               | iocharset=utf8                                   |
 vfat    | EFI/tiny USB  | fmask=0137,dmask=0027,shortname=mixed,utf8,      | NEVER 'flush' (kills flash endurance)

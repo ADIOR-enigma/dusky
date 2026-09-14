@@ -904,6 +904,8 @@ def audit_mount_options(drive: Drive, fstype: str | None, rotational: bool) -> N
     opts = set(drive.mount_options)
     if "force" in opts:
         warn(f"'{drive.name}': 'force' is set — this clears the Windows dirty bit and risks NTFS corruption.")
+    if "prealloc" in opts and fstype == "ntfs":
+        warn(f"'{drive.name}': 'prealloc' is not supported by the in-kernel ntfs driver; omitting it.")
     if "discard" in opts and rotational:
         warn(f"'{drive.name}': 'discard' on a rotational disk is a no-op; remove it.")
     if "discard" in opts and fstype == "ext4":
@@ -928,6 +930,8 @@ def build_mount_argv(drive: Drive, source: str, fstype: str | None) -> list[str]
                 options.append(f"uid={uid}")
             elif opt.startswith("gid="):
                 options.append(f"gid={gid}")
+            elif opt == "prealloc" and fstype == "ntfs":
+                continue
             else:
                 options.append(opt)
     elif fstype in NON_POSIX_FSTYPES:
