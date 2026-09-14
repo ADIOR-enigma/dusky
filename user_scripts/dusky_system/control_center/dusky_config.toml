@@ -3411,7 +3411,7 @@ icon = "applications-graphics-symbolic"
 style = "suggested"
 [pages.layout.items.layout.items.properties.buttons.on_press]
 type = "exec"
-command = "foot --app-id=dusky_tui --hold python3 $HOME/user_scripts/hypr/rules/tui_workspace_rules.py"
+command = "foot --app-id=dusky_tui --hold python3 $HOME/user_scripts/hypr/workspace/tui_workspace_rules.py"
 
 [[pages.layout.items.layout.items]]
 type = "button"
