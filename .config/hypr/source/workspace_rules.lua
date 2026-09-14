@@ -275,10 +275,11 @@ hl.config({
         direction                = "right",
         -- single-column workspace fills screen
         fullscreen_on_one_column = true,
-        column_width             = 0.5,
+        column_width             = 0.9,
         -- 0 = center (previews adjacent windows on both left & right) | 1 = fit (preview right only)
         focus_fit_method         = 0,
         follow_focus             = true,
+        -- Require 40% window visibility before mouse hover auto-scrolls; prevents runaway scrolling on edge previews
         follow_min_visible       = 0.4,
         explicit_column_widths   = "0.333, 0.5, 0.667, 1.0",
         wrap_focus               = true,

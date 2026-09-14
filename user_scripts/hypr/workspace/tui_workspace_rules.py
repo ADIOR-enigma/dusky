@@ -296,12 +296,12 @@ SCHEMA = {
             key="follow_min_visible",
             scope="scrolling",
             type_="float",
-            default=0.1,
+            default=0.4,
             min_val=0.0,
             max_val=1.0,
             step=0.05,
             group="Scrolling Layout Settings",
-            extended_help="**Min Focus Visibility (follow_min_visible)**\n\nMinimum visible fraction (0.0 - 1.0) of a window required for automatic focus scrolling. Direct clicks and keybinds always scroll to focus."
+            extended_help="**Min Focus Visibility (follow_min_visible)**\n\nMinimum visible fraction (0.0 - 1.0) of a window required for mouse hover to automatically scroll the layout.\n\nSetting this to `0.4` (default) prevents runaway scrolling loops when the cursor lingers on edge previews. Edge windows can always be focused and scrolled by clicking on them or using keybinds."
         ),
         ConfigItem(
             label="Width Breakpoints",
@@ -637,7 +637,8 @@ SCHEMA = {
                 "scrolling.focus_fit_method": 0,
                 "scrolling.column_width": 0.9,
                 "scrolling.fullscreen_on_one_column": True,
-                "scrolling.follow_focus": True
+                "scrolling.follow_focus": True,
+                "scrolling.follow_min_visible": 0.4
             },
             extended_help="**Balanced Scrolling Profile**\n\nApplies centered focus alignment (previews visible on both left and right edges) with 90% column width for balanced scrolling workspaces."
         ),
