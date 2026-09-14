@@ -162,6 +162,7 @@ MATUGEN_TUI_JSON = CONFIG_HOME / "matugen" / "generated" / "dusky_tui.json"
 THEME_STATE_CONF = CONFIG_HOME / "dusky" / "settings" / "dusky_theme" / "state.conf"
 USER_ENV_LUA = CONFIG_HOME / "hypr" / "edit_here" / "source" / "environment_variables.lua"
 SIZE_STATE_FILE = CACHE_HOME / "hypr-cursor-size"
+CURSOR_CONF = CONFIG_HOME / "dusky" / "settings" / "cursor.conf"
 WORK_DIR = CACHE_HOME / "dusky-cursor"
 HOOK_LOG = WORK_DIR / "hook.log"
 LOCK_FILE = RUNTIME_DIR / "dusky-cursor.lock"
@@ -359,35 +360,101 @@ def detect_mode(background: str) -> Mode:
     return Mode.LIGHT if rel_luma(hex_to_rgb(background)) > 0.5 else Mode.DARK
 
 
+def set_conf_key(key: str, val: str) -> bool:
+    """Safely update or append KEY="val" in CURSOR_CONF."""
+    try:
+        CURSOR_CONF.parent.mkdir(parents=True, exist_ok=True)
+        current = CURSOR_CONF.read_text(encoding="utf-8") if CURSOR_CONF.is_file() else ""
+        escaped_val = val.replace('\\', '\\\\').replace('"', '\\"')
+        target_line = f'{key}="{escaped_val}"'
+        pattern = re.compile(rf"^\s*{re.escape(key)}\s*=.*$", re.MULTILINE)
+        if pattern.search(current):
+            new_text = pattern.sub(target_line, current)
+        else:
+            new_text = current.rstrip("\n") + f"\n{target_line}\n" if current.strip() else f"{target_line}\n"
+        if new_text != current:
+            atomic_write(CURSOR_CONF, new_text)
+        return True
+    except OSError as e:
+        log.warning("Cannot update %s in %s: %s", key, CURSOR_CONF, e)
+        return False
+
+
+def load_theme_size() -> tuple[str | None, int | None]:
+    """Load THEME and SIZE preferences from cursor.conf."""
+    conf = read_env_file(CURSOR_CONF)
+    theme = (conf.get("THEME") or "").strip() or None
+    if theme is not None and not THEME_NAME_RE.fullmatch(theme):
+        log.warning("Ignoring invalid THEME %r in %s", theme, CURSOR_CONF)
+        theme = None
+    size = _as_size((conf.get("SIZE") or "").strip())
+    return theme, size
+
+
 def load_palette() -> Palette:
-    """matugen env > dusky_tui.json > fallback."""
+    """matugen env > dusky_tui.json > fallback, with optional cursor.conf overrides."""
     env = read_env_file(MATUGEN_ENV)
-    accent = valid_hex(env.get("DUSKY_CURSOR_ACCENT"))
-    background = valid_hex(env.get("DUSKY_CURSOR_BACKGROUND"))
-    origin = f"matugen env ({MATUGEN_ENV})" if accent else ""
+    conf = read_env_file(CURSOR_CONF)
+
+    # Custom color overrides from cursor.conf (accept valid hex, ignore "default", empty, etc.)
+    custom_accent = valid_hex(conf.get("ACCENT")) or valid_hex(conf.get("DUSKY_CURSOR_ACCENT"))
+    custom_base = (
+        valid_hex(conf.get("BASE"))
+        or valid_hex(conf.get("DEEP_ACCENT"))
+        or valid_hex(conf.get("DUSKY_CURSOR_DEEP_ACCENT"))
+    )
+    custom_border = (
+        valid_hex(conf.get("BORDER"))
+        or valid_hex(conf.get("OUTLINE"))
+        or valid_hex(conf.get("DUSKY_CURSOR_OUTLINE"))
+    )
+    custom_watch_bg = (
+        valid_hex(conf.get("WATCH_BG"))
+        or valid_hex(conf.get("BACKGROUND"))
+        or valid_hex(conf.get("DUSKY_CURSOR_BACKGROUND"))
+    )
+    has_custom = bool(custom_accent or custom_base or custom_border or custom_watch_bg)
+
+    accent = custom_accent or valid_hex(env.get("DUSKY_CURSOR_ACCENT"))
+    background = custom_watch_bg or valid_hex(env.get("DUSKY_CURSOR_BACKGROUND"))
+    origin = f"matugen env ({MATUGEN_ENV})" if (accent and not custom_accent) else ""
     if accent is None:
         try:
             data = json.loads(MATUGEN_TUI_JSON.read_text(encoding="utf-8"))
-        except OSError, ValueError:
+        except (OSError, ValueError):
             data = None
         if isinstance(data, dict) and (hx := valid_hex(data.get("accent"))):
             accent, origin = hx, f"dusky_tui.json ({MATUGEN_TUI_JSON})"
     accent = accent or FALLBACK_ACCENT
     background = background or FALLBACK_BACKGROUND
     deep_accent = (
-        valid_hex(env.get("DUSKY_CURSOR_DEEP_ACCENT"))
+        custom_base
+        or valid_hex(env.get("DUSKY_CURSOR_DEEP_ACCENT"))
         or valid_hex(env.get("DUSKY_CURSOR_ACCENT_DARK"))
         or valid_hex(os.environ.get("DUSKY_CURSOR_DEEP_ACCENT"))
         or derive_deep_accent(accent)
     )
     outline = (
-        valid_hex(env.get("DUSKY_CURSOR_OUTLINE"))
+        custom_border
+        or valid_hex(env.get("DUSKY_CURSOR_OUTLINE"))
         or valid_hex(os.environ.get("DUSKY_CURSOR_OUTLINE"))
         or accent
     )
-    pal = Palette(accent, deep_accent, outline, background, detect_mode(background), origin or "fallback defaults")
+    pal_origin = (origin or "fallback defaults") + (" + cursor.conf overrides" if has_custom else "")
+    pal = Palette(accent, deep_accent, outline, background, detect_mode(background), pal_origin)
     log.debug("palette %s", pal)
     return pal
+
+
+def apply_palette_overrides(pal: Palette, args: argparse.Namespace) -> Palette:
+    """CLI --base/--border/--accent/--watch-bg overrides."""
+    accent = getattr(args, "accent", None) or pal.accent
+    fill = getattr(args, "base", None) or pal.deep_accent
+    border = getattr(args, "border", None) or pal.outline
+    bg = getattr(args, "watch_bg", None) or pal.background
+    if (accent, fill, border, bg) == (pal.accent, pal.deep_accent, pal.outline, pal.background):
+        return pal
+    return Palette(accent, fill, border, bg, detect_mode(bg), "cli override")
 
 
 # ---------------------------------------------------------------------------
@@ -954,8 +1021,25 @@ def _locate_source(source_name: str) -> Path | None:
 
 
 def do_apply(args: argparse.Namespace, source_name: str) -> int:
-    pal = load_palette()
-    size = args.size or detect_size()
+    pal = apply_palette_overrides(load_palette(), args)
+    conf_theme, conf_size = load_theme_size()
+    theme = getattr(args, "theme", None) or conf_theme or THEME_NAME
+    size = args.size or conf_size or detect_size()
+
+    if theme != THEME_NAME:
+        log.info("Cursor: applying stock theme %r @ %dpx (no build)", theme, size)
+        if _locate_source(theme) is None:
+            notify("Dusky Cursor", f"Theme {theme!r} not found", "critical")
+            return 1
+        if args.dry_run:
+            print(f"would apply stock theme {theme} @ {size}px (no build)")
+            return 0
+        cur_theme, cur_size = current_state()
+        if not apply_all(theme, size, nudge=(cur_theme == theme and cur_size == size)):
+            notify("Dusky Cursor", f"{theme} partially applied (see {HOOK_LOG})", "critical")
+            return 1
+        return 0
+
     log.info("Dusky Cursor: accent=%s (outline) deep_accent=%s (fill) watch_bg=%s mode=%s size=%dpx (%s)",
              pal.accent, pal.deep_accent, pal.background, pal.mode, size, pal.origin)
 
@@ -1016,6 +1100,7 @@ def do_apply(args: argparse.Namespace, source_name: str) -> int:
 def do_restore(args: argparse.Namespace, source_name: str) -> int:
     size = args.size or detect_size()
     if _locate_source(source_name) is None:
+        notify("Dusky Cursor", f"source theme {source_name} missing", "critical")
         return 1
     if args.dry_run:
         print(f"would restore {source_name} @ {size}px (Dusky build left in place)")
@@ -1023,11 +1108,132 @@ def do_restore(args: argparse.Namespace, source_name: str) -> int:
     log.info("Restoring cursor -> %r @ %dpx", source_name, size)
     cur_theme, cur_size = current_state()
     if not apply_all(source_name, size, nudge=(cur_theme == source_name and cur_size == size)):
+        notify("Dusky Cursor", f"failed to restore {source_name}", "critical")
         return 1
+    set_conf_key("THEME", source_name)
+    notify("Dusky Cursor", f"Restored {source_name} ({size}px)")
     return 0
 
 
+PICK_PRESETS: tuple[tuple[str, str], ...] = (
+    ("matugen accent", ""),
+    ("white", "#ffffff"),
+    ("black", "#000000"),
+    ("red", "#ff5555"),
+    ("orange", "#faba72"),
+    ("yellow", "#f8e369"),
+    ("green", "#5ff08a"),
+    ("cyan", "#5fd8f0"),
+    ("blue", "#5f8ff0"),
+    ("purple", "#b48cf2"),
+    ("pink", "#f06cb0"),
+)
+
+
+def _swatch(hex_color: str) -> str:
+    hx = valid_hex(hex_color)
+    if not hx:
+        return "(auto)"
+    r, g, b = hex_to_rgb(hx)
+    if not sys.stdout.isatty() or os.environ.get("NO_COLOR"):
+        return hx
+    return f"\033[48;2;{r};{g};{b}m  \033[0m {hx}"
+
+
+def pick_one(label: str, current: str, accent: str) -> str:
+    """Prompt for one color: preset number, custom #rrggbb, or empty to keep."""
+    print(f"\n{label} (current: {_swatch(current)})")
+    for i, (name, hx) in enumerate(PICK_PRESETS, 1):
+        shown = accent if name == "matugen accent" else hx
+        print(f"  {i:2d}. {name:<16} {_swatch(shown)}")
+    while True:
+        try:
+            raw = input(f"Pick 1-{len(PICK_PRESETS)} or type #rrggbb [keep {current}]: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            raise SystemExit(130)
+        if not raw:
+            return current
+        if raw.isdigit() and 1 <= int(raw) <= len(PICK_PRESETS):
+            name, hx = PICK_PRESETS[int(raw) - 1]
+            return accent if name == "matugen accent" else hx
+        if (hx := valid_hex(raw)):
+            return hx
+        print("  Not a preset number or #rrggbb, try again.")
+
+
+def do_pick(args: argparse.Namespace, source_name: str) -> int:
+    if not sys.stdin.isatty():
+        log.error("--pick needs an interactive terminal")
+        return 2
+    pal = load_palette()
+    print(f"Interactive Cursor Recolor (Source: {source_name})")
+    print("Base is the dark middle fill, border is the light edge.")
+    base = pick_one("Base fill", pal.deep_accent, pal.accent)
+    border = pick_one("Border outline", pal.outline, pal.accent)
+    print(f"\nBase: {_swatch(base)}  Border: {_swatch(border)}")
+    set_conf_key("BASE", base)
+    set_conf_key("BORDER", border)
+    set_conf_key("THEME", "Dusky")
+    args.base = base
+    args.border = border
+    args.theme = "Dusky"
+    args.rebuild = True
+    return do_apply(args, source_name)
+
+
+def do_reset_colors(args: argparse.Namespace, source_name: str) -> int:
+    """Reset color overrides in cursor.conf and rebuild from Matugen."""
+    drop = {"ACCENT", "BASE", "DEEP_ACCENT", "BORDER", "OUTLINE", "WATCH_BG", "BACKGROUND",
+            "DUSKY_CURSOR_ACCENT", "DUSKY_CURSOR_DEEP_ACCENT", "DUSKY_CURSOR_OUTLINE",
+            "DUSKY_CURSOR_BACKGROUND"}
+    try:
+        current = CURSOR_CONF.read_text(encoding="utf-8") if CURSOR_CONF.is_file() else ""
+    except OSError as e:
+        log.error("Cannot read %s: %s", CURSOR_CONF, e)
+        return 1
+    kept: list[str] = []
+    seen: set[str] = set()
+    for ln in current.splitlines():
+        m = ENV_LINE_RE.fullmatch(ln.strip())
+        if not m:
+            kept.append(ln)
+            continue
+        key = m.group(1).strip().upper()
+        if key in drop or key == "THEME":
+            continue
+        seen.add(key)
+        kept.append(ln)
+    kept.append('THEME="Dusky"')
+    text = "\n".join(kept) + ("\n" if kept else "")
+    if args.dry_run:
+        print(f"would reset color overrides in {CURSOR_CONF} and rebuild from matugen")
+        return 0
+    if text != current:
+        try:
+            atomic_write(CURSOR_CONF, text)
+        except OSError as e:
+            log.error("Cannot write %s: %s", CURSOR_CONF, e)
+            return 1
+        log.info("Reset color overrides in %s", CURSOR_CONF)
+    args.base = args.border = args.accent = args.watch_bg = None
+    args.theme = "Dusky"
+    args.rebuild = True
+    notify("Dusky Cursor", "Reset colors to Matugen defaults")
+    return do_apply(args, source_name)
+
+
 def do_check(source_name: str) -> int:
+    conf_theme, conf_size = load_theme_size()
+    theme = conf_theme or THEME_NAME
+    if theme != THEME_NAME:
+        cur_theme, cur_size = current_state()
+        want_size = conf_size or detect_size()
+        ok = cur_theme == theme and cur_size == want_size
+        print(f"CHECK {'OK' if ok else 'FAIL'}: stock theme {theme} @ {want_size}px "
+              f"(live: theme={cur_theme} size={cur_size})")
+        return 0 if ok else 1
+
     src_cursors = _locate_source(source_name)
     if src_cursors is None:
         print(f"CHECK FAIL: source {source_name} missing")
@@ -1045,8 +1251,10 @@ def do_check(source_name: str) -> int:
 
 def do_status(source_name: str) -> int:
     pal = load_palette()
+    conf_theme, conf_size = load_theme_size()
     cur_theme, cur_size = current_state()
     print(f"theme:      {THEME_NAME} (source: {source_name})")
+    print(f"override:   theme={conf_theme or 'Dusky (default)'} size={conf_size or 'auto'} ({CURSOR_CONF})")
     print(f"palette:    accent={pal.accent} (outline) deep_accent={pal.deep_accent} (fill) "
           f"background={pal.background} mode={pal.mode} ({pal.origin})")
     print(f"gsettings:  theme={cur_theme} size={cur_size}")
@@ -1081,6 +1289,12 @@ def _size_arg(value: str) -> int:
     return size
 
 
+def _hex_arg(value: str) -> str:
+    if (hx := valid_hex(value)) is None:
+        raise argparse.ArgumentTypeError(f"color must be #rrggbb, got {value!r}")
+    return hx
+
+
 def _theme_arg(value: str) -> str:
     if not THEME_NAME_RE.fullmatch(value):
         raise argparse.ArgumentTypeError(f"invalid theme name {value!r}")
@@ -1095,6 +1309,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     for name, help_ in (("apply", "rebuild if stale, then apply"),
                         ("rebuild", "force rebuild + apply"),
                         ("restore", "revert every layer to the source theme"),
+                        ("pick", "interactive base/border color picker, then apply"),
+                        ("reset-colors", "clear color overrides, rebuild from matugen"),
                         ("status", "print state, change nothing"),
                         ("check", "verify installed theme == what --apply would build (exit 1 if not)")):
         g.add_argument(f"--{name}", dest="action", action="store_const", const=name, help=help_)
@@ -1102,6 +1318,16 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     p.add_argument("--dry-run", action="store_true", help="print the plan without changing anything")
     p.add_argument("--force", action="store_true", help="re-apply even when already current")
     p.add_argument("--size", type=_size_arg, default=None, help="cursor size (default: auto-detect)")
+    p.add_argument("--theme", type=_theme_arg, default=None,
+                   help="stock theme to apply as-is, no build (default: Dusky build)")
+    p.add_argument("--base", "--fill", dest="base", type=_hex_arg, default=None,
+                   help="cursor base fill color, #rrggbb (default: deep matugen accent)")
+    p.add_argument("--border", "--outline", dest="border", type=_hex_arg, default=None,
+                   help="cursor border color, #rrggbb (default: matugen accent)")
+    p.add_argument("--accent", type=_hex_arg, default=None,
+                   help="override the matugen accent (border defaults to this)")
+    p.add_argument("--watch-bg", type=_hex_arg, default=None,
+                   help="spinner background color, #rrggbb (default: matugen background)")
     p.add_argument("--source", type=_theme_arg, default=None,
                    help=f"source theme name (default: $DUSKY_CURSOR_SOURCE or {DEFAULT_SOURCE_THEME})")
     p.add_argument("--quiet", "-q", action="store_true", help="errors only on stderr (hook.log unaffected)")
@@ -1127,6 +1353,12 @@ def main(argv: list[str] | None = None) -> int:
             case "restore":
                 with exclusive_lock(LOCK_FILE):
                     return do_restore(args, source_name)
+            case "pick":
+                with exclusive_lock(LOCK_FILE):
+                    return do_pick(args, source_name)
+            case "reset-colors":
+                with exclusive_lock(LOCK_FILE):
+                    return do_reset_colors(args, source_name)
             case _:
                 with exclusive_lock(LOCK_FILE):
                     return do_apply(args, source_name)
@@ -1142,3 +1374,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+

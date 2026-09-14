@@ -93,6 +93,7 @@ USER_ENV_LUA = CONFIG_HOME / "hypr" / "edit_here" / "source" / "environment_vari
 BASE_ENV_LUA = CONFIG_HOME / "hypr" / "source" / "environment_variables.lua"
 STATE_FILE = CACHE_HOME / "hypr-cursor-size"
 LOCK_FILE = CACHE_HOME / "hypr-cursor-size.lock"
+CURSOR_CONF = CONFIG_HOME / "dusky" / "settings" / "cursor.conf"
 
 # Sane universal bounds (freedesktop/XCursor convention, not machine-specific).
 # All overridable via flags or CURSOR_SIZE_* env vars.
@@ -627,6 +628,18 @@ def persist_lua_env(theme: str, size: int) -> bool:
 def write_state(size: int) -> bool:
     try:
         atomic_write(STATE_FILE, f"{size}\n")
+        # Keep ~/.config/dusky/settings/cursor.conf in sync if it exists
+        if CURSOR_CONF.is_file():
+            try:
+                conf_text = CURSOR_CONF.read_text(encoding="utf-8")
+                if re.search(r"^\s*SIZE\s*=", conf_text, re.MULTILINE):
+                    new_conf = re.sub(r"^(\s*SIZE\s*=).*$", rf"\g<1>{size}", conf_text, flags=re.MULTILINE)
+                else:
+                    new_conf = conf_text.rstrip("\n") + f"\nSIZE={size}\n"
+                if new_conf != conf_text:
+                    atomic_write(CURSOR_CONF, new_conf)
+            except OSError:
+                pass
         return True
     except OSError as e:
         log_warn(f"Cannot write state file {STATE_FILE}: {e}")
