@@ -821,8 +821,6 @@ class UnsavedChangesDialog(ModalScreen[str]):
 class HybridInputScreen(ModalScreen[str | None]):
     BINDINGS = [
         Binding("escape", "dismiss_modal", "Cancel", priority=True),
-        Binding("down,j", "focus_list", "Focus List", priority=True),
-        Binding("up,k", "focus_input", "Focus Input", priority=True),
     ]
 
     def __init__(self, prompt: str, default: str, options: list[Any] | None = None) -> None:
@@ -860,6 +858,55 @@ class HybridInputScreen(ModalScreen[str | None]):
                     ol.highlighted = idx
                     break
 
+    def on_key(self, event: events.Key) -> None:
+        if not self.options:
+            return
+
+        inp = self.query_one(Input)
+        ol = self.query_one(OptionList)
+
+        if inp.has_focus:
+            if event.key == "down":
+                event.stop()
+                ol.focus()
+                if ol.highlighted is None:
+                    ol.highlighted = 0
+                elif ol.highlighted < len(self.options) - 1:
+                    ol.action_cursor_down()
+                if ol.highlighted is not None:
+                    inp.value = str(self.options[ol.highlighted])
+        elif ol.has_focus:
+            if event.key in ("down", "j"):
+                event.stop()
+                if ol.highlighted is None:
+                    ol.highlighted = 0
+                else:
+                    ol.action_cursor_down()
+                if ol.highlighted is not None:
+                    inp.value = str(self.options[ol.highlighted])
+            elif event.key in ("up", "k"):
+                event.stop()
+                if ol.highlighted is None or ol.highlighted <= 0:
+                    inp.focus()
+                else:
+                    ol.action_cursor_up()
+                    if ol.highlighted is not None:
+                        inp.value = str(self.options[ol.highlighted])
+            elif event.key == "enter":
+                event.stop()
+                if ol.highlighted is not None and 0 <= ol.highlighted < len(self.options):
+                    self.dismiss(str(self.options[ol.highlighted]))
+                else:
+                    self.dismiss(inp.value)
+
+    @on(OptionList.OptionHighlighted)
+    def handle_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        if self.options and event.option_index is not None and 0 <= event.option_index < len(self.options):
+            val = str(self.options[event.option_index])
+            inp = self.query_one(Input)
+            if inp.value != val:
+                inp.value = val
+
     @on(Input.Submitted)
     def handle_submit(self, event: Input.Submitted) -> None:
         event.stop()
@@ -868,7 +915,10 @@ class HybridInputScreen(ModalScreen[str | None]):
     @on(OptionList.OptionSelected)
     def handle_option_selected(self, event: OptionList.OptionSelected) -> None:
         event.stop()
-        self.dismiss(str(event.option.prompt))
+        if self.options and event.option_index is not None and 0 <= event.option_index < len(self.options):
+            self.dismiss(str(self.options[event.option_index]))
+        else:
+            self.dismiss(str(event.option.prompt))
 
     def action_focus_list(self) -> None:
         if self.options:
