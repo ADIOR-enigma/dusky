@@ -102,9 +102,9 @@ hl.config({
             font_weight_active = "bold", -- Font weight of active title -> bolder
             font_weight_inactive = "normal", -- Font weight of inactive title
             gradients = true, -- Enables gradients -> squircle pill background for each title
-            height = 20, -- Height of groupbar (taller = pill)
+            height = 20, -- Height of groupbar (taller = gradients)
             indicator_gap = 2, -- Gap between indicator and title
-            indicator_height = 0, -- Hide thin bar, keep only pill
+            indicator_height = 0, -- Hide indicator bar, keep only gradients
             stacked = false, -- Render as vertical stack
             priority = 3, -- Decoration priority
             render_titles = true, -- Render titles in decoration
@@ -124,8 +124,8 @@ hl.config({
             ["col.inactive"] = inverse_on_surface, -- Inactive background color (#2f312a dark)
             ["col.locked_active"] = tertiary, -- Active locked background color
             ["col.locked_inactive"] = tertiary_container, -- Inactive locked background color
-            gaps_in = 6, -- Gap between pills
-            gaps_out = 4, -- Gap between pills and window
+            gaps_in = 6, -- Gap between gradients
+            gaps_out = 4, -- Gap between gradients and window
             keep_upper_gap = true, -- Add/remove upper gap
             blur = false -- Apply blur to indicators and gradients
         }
