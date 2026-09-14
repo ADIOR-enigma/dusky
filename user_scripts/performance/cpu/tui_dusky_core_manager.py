@@ -152,6 +152,14 @@ SCHEMA[tab_idx] = [
 ]
 tab_idx += 1
 
+TAB_NOTICES = {
+    TABS.index("System Affinity"): {
+        "level": "warning",
+        "position": "top",
+        "message": "Affinity needs logout/login or reboot to apply to the running session.",
+    }
+}
+
 
 def ensure_root(argv: list[str]) -> None:
     """Seamlessly escalates to root via sudo if unprivileged."""
