@@ -28,9 +28,12 @@ if str(_CURSOR_DIR) not in sys.path:
 
 try:
     import dusky_cursor
-    _DETECTED_SIZE = dusky_cursor.detect_size()
+    _conf_theme, _conf_size = dusky_cursor.load_theme_size()
+    _DETECTED_SIZE = _conf_size or dusky_cursor.detect_size() or 24
+    _DETECTED_THEME = _conf_theme or "Dusky"
 except Exception:
     _DETECTED_SIZE = 24
+    _DETECTED_THEME = "Dusky"
 
 from python.frontend.core_types import ConfigItem
 
@@ -161,8 +164,8 @@ SCHEMA: dict[int, list[ConfigItem]] = {
             label="Cursor Theme",
             key="THEME",
             scope="DEFAULT",
-            type_="string",
-            default="Dusky",
+            type_="picker",
+            default=_DETECTED_THEME,
             options=DISCOVERED_THEMES,
             hints=THEME_HINTS,
             group="Theme & Size",
@@ -178,12 +181,9 @@ SCHEMA: dict[int, list[ConfigItem]] = {
             label="Cursor Size",
             key="SIZE",
             scope="DEFAULT",
-            type_="int",
-            default=_DETECTED_SIZE,
-            min_val=16,
-            max_val=64,
-            step=2,
-            options=[16, 18, 20, 24, 28, 32, 36, 40, 48, 56, 64],
+            type_="picker",
+            default=str(_DETECTED_SIZE),
+            options=["16", "18", "20", "24", "28", "32", "36", "40", "48", "56", "64"],
             hints=[
                 "16px (Compact)",
                 "18px (Dusky Base)",
@@ -209,7 +209,7 @@ SCHEMA: dict[int, list[ConfigItem]] = {
             key="action_apply_rebuild",
             scope="DEFAULT",
             type_="action",
-            default="python3 ~/user_scripts/cursor/color/dusky_cursor.py --apply --rebuild",
+            default="python3 ~/user_scripts/cursor/color/dusky_cursor.py --rebuild",
             group="Actions",
             extended_help=(
                 "**Apply & Rebuild Theme**\n\n"
@@ -314,7 +314,7 @@ SCHEMA: dict[int, list[ConfigItem]] = {
             key="action_apply_colors",
             scope="DEFAULT",
             type_="action",
-            default="python3 ~/user_scripts/cursor/color/dusky_cursor.py --apply --rebuild",
+            default="python3 ~/user_scripts/cursor/color/dusky_cursor.py --rebuild",
             group="Actions",
             extended_help="Rebuilds the Dusky theme bitmaps with custom colors and applies them.",
         ),

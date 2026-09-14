@@ -1038,10 +1038,11 @@ def do_apply(args: argparse.Namespace, source_name: str) -> int:
         if not apply_all(theme, size, nudge=(cur_theme == theme and cur_size == size)):
             notify("Dusky Cursor", f"{theme} partially applied (see {HOOK_LOG})", "critical")
             return 1
+        print(f"Applied {theme} cursor @ {size}px")
         return 0
 
-    log.info("Dusky Cursor: accent=%s (outline) deep_accent=%s (fill) watch_bg=%s mode=%s size=%dpx (%s)",
-             pal.accent, pal.deep_accent, pal.background, pal.mode, size, pal.origin)
+    log.info("Dusky Cursor: outline=%s base=%s watch_bg=%s accent=%s mode=%s size=%dpx (%s)",
+             pal.outline, pal.deep_accent, pal.background, pal.accent, pal.mode, size, pal.origin)
 
     src_cursors = _locate_source(source_name)
     if src_cursors is None:
@@ -1089,11 +1090,13 @@ def do_apply(args: argparse.Namespace, source_name: str) -> int:
     already = cur_theme == THEME_NAME and cur_size == size
     if not rebuilt and already and not args.force:
         log.info("Cursor already applied; nothing to do.")
+        print(f"Cursor already current ({THEME_NAME} @ {size}px)")
         return 0
     # Hyprland early-returns on same name+size: nudge to force a reload of new pixels.
     if not apply_all(THEME_NAME, size, nudge=already):
         notify("Dusky Cursor", f"{THEME_NAME} partially applied (see {HOOK_LOG})", "critical")
         return 1
+    print(f"Applied {THEME_NAME} cursor @ {size}px")
     return 0
 
 
@@ -1112,6 +1115,7 @@ def do_restore(args: argparse.Namespace, source_name: str) -> int:
         return 1
     set_conf_key("THEME", source_name)
     notify("Dusky Cursor", f"Restored {source_name} ({size}px)")
+    print(f"Restored {source_name} cursor @ {size}px")
     return 0
 
 
@@ -1307,7 +1311,6 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         epilog="With no action flag, --apply is assumed (matugen post_hook entrypoint).")
     g = p.add_mutually_exclusive_group()
     for name, help_ in (("apply", "rebuild if stale, then apply"),
-                        ("rebuild", "force rebuild + apply"),
                         ("restore", "revert every layer to the source theme"),
                         ("pick", "interactive base/border color picker, then apply"),
                         ("reset-colors", "clear color overrides, rebuild from matugen"),
@@ -1315,6 +1318,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
                         ("check", "verify installed theme == what --apply would build (exit 1 if not)")):
         g.add_argument(f"--{name}", dest="action", action="store_const", const=name, help=help_)
     p.set_defaults(action="apply")
+    p.add_argument("--rebuild", action="store_true", help="force rebuild before applying")
     p.add_argument("--dry-run", action="store_true", help="print the plan without changing anything")
     p.add_argument("--force", action="store_true", help="re-apply even when already current")
     p.add_argument("--size", type=_size_arg, default=None, help="cursor size (default: auto-detect)")
@@ -1333,7 +1337,6 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     p.add_argument("--quiet", "-q", action="store_true", help="errors only on stderr (hook.log unaffected)")
     p.add_argument("--verbose", "-v", action="store_true", help="debug output")
     args = p.parse_args(argv)
-    args.rebuild = args.action == "rebuild"
     return args
 
 
