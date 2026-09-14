@@ -5627,6 +5627,57 @@ def _kernelreleases_for_pkgbases(pkgbases: set[str]) -> dict[str, str]:
     return found
 
 
+def ensure_acpi_call_dkms_for_custom_kernel() -> bool:
+    """Migrate regular acpi_call -> acpi_call-dkms when building a custom dusky kernel.
+
+    Rationale: the regular 'acpi_call' package ships a prebuilt module only for
+    the exact stock 'linux' version (e.g. /usr/lib/modules/7.2.4-arch1-2/...).
+    It can never work after rebooting into linux-dusky-*. Only the DKMS variant
+    rebuilds via the -headers pacman hook for every kernelrelease.
+
+    This is intentionally based on "a custom kernel is being compiled" (this
+    script always builds linux-dusky-*), NOT on "a custom kernel is currently
+    running". First builds always run on stock, but need DKMS for the *target*
+    kernel after reboot. Best-effort: warns, never raises.
+    """
+    try:
+        has_dkms_variant = run(["pacman", "-Q", "acpi_call-dkms"], check=False, timeout=20).returncode == 0
+    except DuskyError:
+        has_dkms_variant = False
+    if has_dkms_variant:
+        debug("acpi_call-dkms already present; no migration needed")
+        return True
+    try:
+        has_regular = run(["pacman", "-Q", "acpi_call"], check=False, timeout=20).returncode == 0
+    except DuskyError:
+        return True
+    if not has_regular:
+        debug("regular acpi_call not installed; no migration needed")
+        return True
+    info("Custom kernel build with regular acpi_call detected -- migrating to acpi_call-dkms (prebuilt cannot work on linux-dusky-*)")
+    try:
+        PRIV.ensure()
+    except DuskyError as e:
+        warn(f"acpi_call migration skipped (no privilege): {e}")
+        return False
+    # Two-step: regular and -dkms conflict, and 'pacman -S --noconfirm' answers
+    # No to the remove-conflict prompt. Remove first, then install DKMS variant
+    # (which pulls 'dkms' via Depends).
+    rm = PRIV.run(["pacman", "-R", "--noconfirm", "acpi_call"], check=False)
+    if rm.returncode != 0:
+        debug(f"pacman -R acpi_call exited {rm.returncode}; continuing to install -dkms anyway")
+    ins = PRIV.run(["pacman", "-S", "--needed", "--noconfirm", "acpi_call-dkms"], check=False)
+    if ins.returncode != 0:
+        warn("Failed to install acpi_call-dkms; after reboot 'modprobe acpi_call' will fail on the dusky kernel. Fix with: sudo pacman -S acpi_call-dkms")
+        return False
+    try:
+        host_facts.cache_clear()  # type: ignore[attr-defined]
+    except (AttributeError, TypeError):
+        pass
+    ok("Migrated acpi_call -> acpi_call-dkms; DKMS hook will build it for the new kernelrelease")
+    return True
+
+
 def audit_dkms(pkgbases: set[str]) -> bool:
     """Force-rebuild DKMS modules that are not 'installed' for the given pkgbases.
 
@@ -6005,6 +6056,15 @@ def do_build(args: argparse.Namespace) -> int:
     if not args.no_install and not args.configure_only:
         PRIV.ensure()
         check_pacman_preflight(require_install=True)
+    if not args.configure_only:
+        # Target is always a custom linux-dusky-* kernel, even when currently
+        # running stock (first build). Regular acpi_call can never work after
+        # reboot, so migrate to the DKMS variant now while headers hooks run.
+        if ensure_acpi_call_dkms_for_custom_kernel():
+            try:
+                facts = host_facts()
+            except DuskyError:
+                pass
     JOURNAL.open(profile.name)
     note(f"journal: {JOURNAL.path}")
     check_dependencies(profile, facts, profile.g("compiler", "toolchain"), bool(profile.g("compiler", "rust")))
