@@ -18,7 +18,7 @@
 #     gitglossary(7)    pathspec magic, :(literal,top)
 #     git-branch(1)     --show-current is empty on detached HEAD
 #     git-rev-parse(1)  --verify --quiet, REV^{commit}, BR@{upstream}
-#     delta             --paging=never --color=always --width
+#     delta             --paging=never --width
 #     fzf(1)            previews run through $SHELL; $FZF_PREVIEW_COLUMNS
 #     zshbuiltins(1)    cd -q (no chpwd hooks, no print)
 #     zshmisc(1)        { try } always { cleanup }
@@ -229,7 +229,7 @@ function _gitdelta_show() {
     elif [[ -t 1 ]]; then
         git_dusky show "${fmt[@]}" "$1" | delta
     else
-        git_dusky show "${fmt[@]}" "$1" | delta --paging=never --color=always
+        git_dusky show "${fmt[@]}" "$1" | delta --paging=never
     fi
 }
 
@@ -239,7 +239,7 @@ function _gitdelta_show() {
 function _gitdelta_browse() {
     emulate -L zsh
     setopt localoptions extendedglob
-    local c_bg c_fg c_acc c_mut c_ok sel hash preview REPLY
+    local c_bg c_fg c_acc c_mut c_ok sel hash preview REPLY raw_hash TAB=$'\t'
     local -i rc=0
 
     if (( ! $+commands[fzf] )); then
@@ -262,13 +262,14 @@ function _gitdelta_browse() {
     preview="/usr/bin/git --git-dir=${(q)DUSKY_GIT_DIR} --work-tree=${(q)HOME}"
     preview+=" show --color=always --decorate=short --date=format-local:'%Y-%m-%d %H:%M'"
     preview+=" --format='%C(bold blue)󰏖 %h%C(reset) %C(bold green)%an%C(reset) %C(dim)%ad%C(reset)%d%n%C(bold yellow)%s%C(reset)'"
-    preview+=' --stat --patch {1}'
-    (( $+commands[delta] )) && preview+=' | delta --paging=never --color=always --width=$FZF_PREVIEW_COLUMNS'
+    preview+=' --stat --patch {-1}'
+    (( $+commands[delta] )) && preview+=' | delta --paging=never --width=$FZF_PREVIEW_COLUMNS'
 
     sel=$(git_dusky log --color=always \
             --date=format-local:'%Y-%m-%d %H:%M' \
-            --format='%h %C(dim)%ad%C(reset) %C(bold green)%an%C(reset) %C(yellow)%s%C(reset)%d' \
+            --format="%C(yellow)%s%C(reset)%C(auto)%d%C(reset)${TAB}%C(green)(%cr)%C(reset)${TAB}%C(dim)%ad%C(reset)${TAB}%C(bold green)%an%C(reset)${TAB}%C(bold cyan)%h%C(reset)" \
         | fzf --ansi \
+            --delimiter="$TAB" \
             --no-sort \
             --tiebreak=index \
             --prompt='󰏖 commits ❯ ' \
@@ -282,7 +283,7 @@ function _gitdelta_browse() {
             --preview-label=' commit diff ' \
             --preview-label-pos=center \
             --preview="$preview" \
-            --header='[ENTER] full diff   [q/ESC] quit   filter by hash / author / subject' \
+            --header='[ENTER] full diff   [q/ESC] quit   filter by subject / date / author / hash' \
             --bind='q:abort' \
             --color="bg:$c_bg,bg+:$c_mut,fg:$c_fg,fg+:$c_fg" \
             --color="hl:$c_acc,hl+:$c_acc,pointer:$c_ok,marker:$c_ok" \
@@ -291,7 +292,8 @@ function _gitdelta_browse() {
     (( rc == 0 )) || return 0            # 1 = no match, 130 = abort
     [[ -n $sel ]] || return 0
 
-    hash=${${=sel}[1]}
+    raw_hash=${sel##*$TAB}
+    hash=${${raw_hash//(#b)$'\e'\[[0-9;]#m/}//[[:space:]]/}
     if ! git_dusky rev-parse --verify --quiet "${hash}^{commit}" >/dev/null 2>&1; then
         print -ru2 -- "gitdelta: could not resolve commit '$hash'"
         return 1
