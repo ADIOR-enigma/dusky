@@ -96,16 +96,30 @@ def _discover_themes() -> tuple[list[str], list[str]]:
 DISCOVERED_THEMES, THEME_HINTS = _discover_themes()
 
 TAB_NOTICES = {
-    0: {
-        "level": "info",
-        "position": "top",
-        "message": "Select theme and pointer size. Select **Apply & Rebuild** to push changes across all desktop layers.",
-    },
-    1: {
-        "level": "info",
-        "position": "top",
-        "message": "Color customizations apply to the **Dusky** theme. Set to 'matugen' to follow your wallpaper automatically.",
-    },
+    0: [
+        {
+            "level": "info",
+            "position": "top",
+            "message": "Select theme and pointer size. Select **Apply & Rebuild** to push changes across all desktop layers.",
+        },
+        {
+            "level": "info",
+            "position": "bottom",
+            "message": "**Wayland Note**: After applying, cursor updates reflect once the pointer switches shapes. Move across window borders, hover text, or switch workspaces to refresh.",
+        },
+    ],
+    1: [
+        {
+            "level": "info",
+            "position": "top",
+            "message": "Color customizations apply to the **Dusky** theme. Set to 'matugen' to follow your wallpaper automatically.",
+        },
+        {
+            "level": "info",
+            "position": "bottom",
+            "message": "**Wayland Note**: After applying, cursor updates reflect once the pointer switches shapes. Move across window borders, hover text, or switch workspaces to refresh.",
+        },
+    ],
     2: {
         "level": "info",
         "position": "top",
@@ -214,7 +228,10 @@ SCHEMA: dict[int, list[ConfigItem]] = {
             extended_help=(
                 "**Apply & Rebuild Theme**\n\n"
                 "Rebuilds the Dusky cursor theme if needed and applies changes immediately across "
-                "the Hyprland compositor, XWayland, GTK 3/4, and session environment."
+                "the Hyprland compositor, XWayland, GTK 3/4, and session environment.\n\n"
+                "**Wayland Refresh Note**:\n"
+                "After applying, cursor changes reflect once the pointer switches shapes. Move "
+                "across window borders, hover text, or switch workspaces to refresh."
             ),
         ),
         ConfigItem(
@@ -316,7 +333,13 @@ SCHEMA: dict[int, list[ConfigItem]] = {
             type_="action",
             default="python3 ~/user_scripts/cursor/color/dusky_cursor.py --rebuild",
             group="Actions",
-            extended_help="Rebuilds the Dusky theme bitmaps with custom colors and applies them.",
+            extended_help=(
+                "**Apply & Rebuild Theme**\n\n"
+                "Rebuilds the Dusky theme bitmaps with custom colors and applies them.\n\n"
+                "**Wayland Refresh Note**:\n"
+                "After applying, cursor changes reflect once the pointer switches shapes. Move "
+                "across window borders, hover text, or switch workspaces to refresh."
+            ),
         ),
         ConfigItem(
             label="Reset Colors to Matugen",
